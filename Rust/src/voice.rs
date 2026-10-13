@@ -445,6 +445,7 @@ impl Drop for PyVoiceCipher {
 /// they can be wiped, so this zeroes it here rather than relying on the
 /// caller's `finally` -- one fewer place the wipe can be forgotten or, as had
 /// already happened twice elsewhere, defeated by an intervening copy.
+#[cfg_attr(not(feature = "raw-key-test-api"), allow(dead_code))]
 fn take_shared(value: &Bound<'_, PyAny>, expect_len: usize, what: &str)
     -> PyResult<Vec<u8>>
 {
@@ -490,6 +491,7 @@ impl PyVoiceRoot {
         })
     }
 
+    #[cfg_attr(not(feature = "raw-key-test-api"), allow(dead_code))]
     fn from_bytes(bytes: &[u8]) -> PyResult<Self> {
         SecretBytes::<ROOT_LEN>::from_slice(bytes)
             .map(|r| Self { root: Some(r) })
@@ -567,6 +569,7 @@ impl PyVoiceRoot {
     /// Both secrets are mandatory: an X448-only root would be classically
     /// secure and post-quantum worthless, which is the whole reason the
     /// exchange is hybrid.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     fn from_initial_agreement(
         x448_shared:  &Bound<'_, PyAny>,
@@ -592,6 +595,7 @@ impl PyVoiceRoot {
     ///
     /// The old root is NOT consumed -- a rekey that fails to confirm must
     /// leave the call running on the epoch it already had.
+    #[cfg(feature = "raw-key-test-api")]
     fn derive_rekey(
         &self,
         x448_shared:  &Bound<'_, PyAny>,
@@ -681,6 +685,7 @@ impl PyVoiceRoot {
     /// exists as a Python object.  This exists so tests can build a schedule
     /// from a fixed root without a full hybrid agreement, and so a caller
     /// holding a root from an older build can hand it over rather than keep it.
+    #[cfg(feature = "raw-key-test-api")]
     #[staticmethod]
     #[pyo3(name = "from_bytes")]
     fn py_from_bytes(bytes: &[u8]) -> PyResult<Self> {
@@ -891,7 +896,11 @@ impl PyVoiceAgreement {
 #[pymethods]
 impl PyVoiceAgreement {
     /// The initial epoch root. Consumes the agreement.
-    fn into_root(&mut self, transcript: &[u8]) -> PyResult<PyVoiceRoot> {
+    ///
+    /// Python calls it `into_root`. It takes `&mut self` because a pyclass
+    /// cannot be moved out of; the consuming happens in `take()`.
+    #[pyo3(name = "into_root")]
+    fn take_root(&mut self, transcript: &[u8]) -> PyResult<PyVoiceRoot> {
         let (x, k) = self.take()?;
         PyVoiceRoot::derive_initial(x.expose_slice(), k.expose_slice(), transcript)
     }
@@ -899,7 +908,8 @@ impl PyVoiceAgreement {
     /// The next epoch's root, chained onto `current`. Consumes the agreement
     /// but not `current`: a rekey that fails to confirm must leave the call
     /// on the epoch it already had.
-    fn into_rekey_root(&mut self, current: PyRef<'_, PyVoiceRoot>, transcript: &[u8])
+    #[pyo3(name = "into_rekey_root")]
+    fn take_rekey_root(&mut self, current: PyRef<'_, PyVoiceRoot>, transcript: &[u8])
         -> PyResult<PyVoiceRoot>
     {
         let (x, k) = self.take()?;

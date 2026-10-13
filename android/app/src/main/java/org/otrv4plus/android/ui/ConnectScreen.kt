@@ -16,6 +16,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ConnectionViewModel
+import org.otrv4plus.android.connection.RouterChoice
 import org.otrv4plus.android.connection.SignIn
 import org.otrv4plus.android.security.WipeAndExit
 
@@ -187,11 +188,28 @@ fun ConnectScreen(
                 label = { Text("Server address") },
                 placeholder = { Text("chat.example.i2p") },
                 supportingText = {
-                    Text("A domain, or a full .b32.i2p destination.")
+                    // The route comes from the name (android_bridge.route):
+                    // .i2p -> I2P, .onion -> Tor, anything else -> clearnet
+                    // TLS with a checked certificate.
+                    Text("A domain (clearnet, .i2p or .onion), or a " +
+                         "full .b32.i2p destination.")
                 },
                 singleLine = true,
                 enabled = !status.connected && busy == null,
                 modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        // ── Which I2P router ──────────────────────────────────────────────
+        //
+        // Only in an APK that carries one. Automatic uses an I2P app already
+        // on the phone when its SAM bridge answers, and the built-in router
+        // otherwise -- so somebody with no I2P app still gets connected.
+        if (model.routerBundled) {
+            RouterPicker(
+                mode = model.routerMode,
+                enabled = !status.connected && busy == null && !model.connecting,
+                onChoose = { model.chooseRouter(it) },
             )
         }
 
@@ -330,6 +348,9 @@ fun ConnectScreen(
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(model.connectingLabel,
                  style = MaterialTheme.typography.bodySmall)
+            model.routerLabel?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall)
+            }
         }
 
         busy?.let {
@@ -372,12 +393,56 @@ fun ConnectScreen(
             }
         }
 
-        if (status.detail.isNotBlank() && status.stage == "failed") {
+        model.identityChange?.let { change ->
+            ServerIdentityWarning(
+                change = change,
+                onTrust = { model.trustNewServerAddress() },
+                onKeep = { model.dismissIdentityChange() },
+            )
+        }
+
+        model.serverTest?.let {
             Spacer(Modifier.height(4.dp))
-            Text("Could not connect",
-                style = MaterialTheme.typography.titleSmall)
+            Text(
+                if (it.ok) "Server test: reached" else "Server test: failed",
+                style = MaterialTheme.typography.titleSmall,
+                color = if (it.ok) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.error,
+            )
             SelectionContainer {
-                Text(status.detail, style = MaterialTheme.typography.bodySmall)
+                Text("${it.code}: ${it.detail}" +
+                         (if (it.reached.isNotBlank()) "\nReached: ${it.reached}" else ""),
+                     style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+        // What went wrong, if anything did -- and NOT while the app is still
+        // doing its job (owner report, 2026-10-11: with the built-in router a
+        // red "failed" showed while it was starting and building tunnels).
+        // ConnectProblem decides: expected I2P start-up trouble is a quiet
+        // "still connecting" line until it has repeated, a wrong password or
+        // a security stop is an error at once.
+        val problem = org.otrv4plus.android.connection.ConnectProblem.line(
+            failure = model.failureCode,
+            connected = status.connected,
+            retrying = model.connecting,
+            failuresInARow = model.failuresInARow,
+        )
+        problem?.let { line ->
+            val error = line.tone == org.otrv4plus.android.connection.ConnectProblem.Tone.ERROR
+            Spacer(Modifier.height(4.dp))
+            Text(
+                line.text,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (error) MaterialTheme.colorScheme.error
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            // The transport's own sentence, for an error only: the details of
+            // a step that is still being retried are noise.
+            if (error && status.detail.isNotBlank() && status.stage == "failed") {
+                SelectionContainer {
+                    Text(status.detail, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
 
@@ -408,15 +473,6 @@ fun ConnectScreen(
         // fix is about. Not while connecting either: an attempt in progress
         // has not failed yet, and the previous attempt's code next to a
         // running progress bar reads as the current one having failed.
-        if (!status.connected && !model.connecting) {
-            model.connectionFailure?.let {
-                Text(
-                    "The last connection attempt failed ($it).",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                )
-            }
-        }
 
         if (status.connected) {
             Spacer(Modifier.height(8.dp))
@@ -436,11 +492,84 @@ fun ConnectScreen(
                 onClick = onOpenDiagnostics,
             ) { Text("Debug") }
 
+            // Reaches the server and stops: no sign-in, no account, no
+            // password. Needs only the address, so it is enabled without one.
+            TextButton(
+                enabled = busy == null && !status.connected && target != null,
+                onClick = { model.testServer(target!!.jid, target.server) },
+            ) { Text("Test server") }
+
             // Never disabled, and reachable before anyone signs in: the
             // licence notice and the third-party attribution are obligations
             // that do not depend on the app's state.
             TextButton(onClick = onOpenAbout) { Text("About & licences") }
         }
+    }
+}
+
+/**
+ * SECURITY_ISSUES X1, the user-visible half.
+ *
+ * The server's `.i2p` name now resolves to a different I2P destination --
+ * a different key -- than the one this phone trusted. The connection was
+ * stopped before anything reached the new destination, so no password went
+ * to it. Moving to the new address needs TWO deliberate presses (the button,
+ * then the confirmation), and even then nothing connects: the user presses
+ * Log in again themselves.
+ */
+@Composable
+private fun ServerIdentityWarning(
+    change: org.otrv4plus.android.bridge.ServerIdentityChange,
+    onTrust: () -> Unit,
+    onKeep: () -> Unit,
+) {
+    var confirming by remember { mutableStateOf(false) }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "Security warning: the server's address changed",
+        style = MaterialTheme.typography.titleSmall,
+        color = MaterialTheme.colorScheme.error,
+    )
+    Text(
+        "${change.server} now points at a different I2P destination than " +
+            "the one this phone trusted. The connection was stopped before " +
+            "anything was sent to it, and you were not signed in. This can " +
+            "be the server moving, or someone impersonating it. Check with " +
+            "the server's operator before trusting the new address.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    SelectionContainer {
+        Column {
+            Text("Trusted: ${change.trusted}",
+                style = MaterialTheme.typography.bodySmall)
+            Text("Now:     ${change.seen}",
+                style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = onKeep) { Text("Keep the old address") }
+        TextButton(onClick = { confirming = true }) { Text("Trust new address\u2026") }
+    }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Trust the new address?") },
+            text = {
+                Text(
+                    "Only if the operator of ${change.server} confirmed the " +
+                        "move to ${change.seen}. Your password will be used " +
+                        "with that destination the next time you log in.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirming = false; onTrust() }) {
+                    Text("Trust it")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
+        )
     }
 }
 
@@ -451,10 +580,65 @@ fun ConnectScreen(
  * is slow tells the user what to do: a stall at `building_tunnels` is normal
  * and wants patience, a stall anywhere else does not.
  */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RouterPicker(
+    mode: RouterChoice.Mode,
+    enabled: Boolean,
+    onChoose: (RouterChoice.Mode) -> Unit,
+) {
+    var open by remember { mutableStateOf(false) }
+    fun name(m: RouterChoice.Mode) = when (m) {
+        RouterChoice.Mode.AUTOMATIC -> "Automatic"
+        RouterChoice.Mode.EXTERNAL -> "My I2P app"
+        RouterChoice.Mode.BUILT_IN -> "Built-in router"
+    }
+    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = !open }) {
+        OutlinedTextField(
+            value = name(mode),
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("I2P router") },
+            supportingText = {
+                Text(when (mode) {
+                    RouterChoice.Mode.AUTOMATIC ->
+                        "Uses an I2P app on this phone if one is running, " +
+                            "otherwise the router built into OTRv4+."
+                    RouterChoice.Mode.EXTERNAL ->
+                        "Needs an I2P app on this phone with its SAM bridge on."
+                    RouterChoice.Mode.BUILT_IN ->
+                        "Always the router built into OTRv4+. Its first start " +
+                            "takes a few minutes."
+                })
+            },
+            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(open) },
+            enabled = enabled,
+            modifier = Modifier
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            for (m in RouterChoice.Mode.entries) {
+                DropdownMenuItem(
+                    text = { Text(name(m)) },
+                    onClick = {
+                        onChoose(m)
+                        open = false
+                    },
+                )
+            }
+        }
+    }
+}
+
 private fun stageLabel(stage: String): String = when (stage) {
     "idle" -> "Not connected"
+    // Only .i2p servers pass through checking_router and only .onion (or an
+    // explicit Tor choice) through checking_tor; a clearnet server goes
+    // straight to connecting (android_bridge.route).
     "checking_router" -> "Checking for an I2P router"
-    "building_tunnels" -> "Building I2P tunnels (this is the slow part)"
+    "checking_tor" -> "Checking for Tor (Orbot)"
+    "building_tunnels" -> "Building the I2P or Tor tunnel (this is the slow part)"
     "connecting" -> "Connecting to the server"
     "authenticating" -> "Signing in"
     "connected" -> "Connected"

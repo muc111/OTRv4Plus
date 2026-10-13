@@ -1,6 +1,6 @@
 """A wrong `--peer` must look like a wrong `--peer`.
 
-A device run was started with `--peer bob@xmpp-elite`, missing the `.i2p`.
+A device run was started with `--peer bob@otrv4plus`, missing the `.i2p`.
 Nothing about that address is malformed — one `@`, a non-empty local part, a
 non-empty domain — so `_check_jid` passed it. What followed looked like a
 protocol bug for the whole session, and both people concluded the software was
@@ -10,9 +10,9 @@ broken at one end:
     domains is not enabled"), printed once and never explained;
   * the *peer's* DAKE arrived and established a session under their real JID,
     so the log showed ENCRYPTED, fingerprints, and SMP all working;
-  * `/smp` then said "no encrypted session with bob@xmpp-elite. Run /otr
+  * `/smp` then said "no encrypted session with bob@otrv4plus. Run /otr
     first" — about an address that could never have one — while a fully
-    verified session sat under `bob@xmpp-elite.i2p`;
+    verified session sat under `bob@otrv4plus.i2p`;
   * the verified banner printed twice, once per identity.
 
 None of these were wrong individually. Together they told the user everything
@@ -58,18 +58,18 @@ class TestTheStartupWarning:
         return capsys.readouterr().out
 
     def test_matching_domains_say_nothing(self, capsys):
-        out = self._warn("alice@xmpp-elite.i2p", "bob@xmpp-elite.i2p", capsys)
+        out = self._warn("alice@otrv4plus.i2p", "bob@otrv4plus.i2p", capsys)
         assert out.strip() == "", "it warns about a perfectly ordinary pair"
 
     def test_a_truncated_peer_is_reported(self, capsys):
-        out = self._warn("alice@xmpp-elite.i2p", "bob@xmpp-elite", capsys)
+        out = self._warn("alice@otrv4plus.i2p", "bob@otrv4plus", capsys)
         assert "DIFFERENT servers" in out
 
     def test_it_names_the_missing_part_and_the_fix(self, capsys):
         """The whole value is turning "something is wrong" into "type this"."""
-        out = self._warn("alice@xmpp-elite.i2p", "bob@xmpp-elite", capsys)
+        out = self._warn("alice@otrv4plus.i2p", "bob@otrv4plus", capsys)
         assert "'.i2p'" in out or '".i2p"' in out
-        assert "--peer bob@xmpp-elite.i2p" in out
+        assert "--peer bob@otrv4plus.i2p" in out
 
     def test_it_does_not_refuse_a_genuinely_federated_pair(self, capsys):
         """Cross-domain XMPP is ordinary and this client must not block it."""
@@ -88,29 +88,29 @@ class TestTheNoSessionHintNamesTheRealPeer:
     """"Run /otr first" is sound advice unless /otr can never work."""
 
     def test_it_is_silent_when_there_is_genuinely_no_session(self):
-        assert _client()._no_session_hint("bob@xmpp-elite.i2p") == ""
+        assert _client()._no_session_hint("bob@otrv4plus.i2p") == ""
 
     def test_it_names_a_session_held_under_another_address(self):
-        hint = _client({"bob@xmpp-elite.i2p"})._no_session_hint(
-            "bob@xmpp-elite")
-        assert "bob@xmpp-elite.i2p" in hint
+        hint = _client({"bob@otrv4plus.i2p"})._no_session_hint(
+            "bob@otrv4plus")
+        assert "bob@otrv4plus.i2p" in hint
         assert "encrypted session" in hint
 
     def test_it_spots_the_truncation_specifically(self):
-        hint = _client({"bob@xmpp-elite.i2p"})._no_session_hint(
-            "bob@xmpp-elite")
+        hint = _client({"bob@otrv4plus.i2p"})._no_session_hint(
+            "bob@otrv4plus")
         assert "truncated" in hint
 
     def test_it_says_commands_follow_peer(self):
         """Without this the user knows the session exists and still has no
         idea why the command cannot see it."""
-        hint = _client({"bob@xmpp-elite.i2p"})._no_session_hint(
-            "bob@xmpp-elite")
+        hint = _client({"bob@otrv4plus.i2p"})._no_session_hint(
+            "bob@otrv4plus")
         assert "--peer" in hint
 
     def test_it_does_not_claim_a_truncation_that_is_not_there(self):
         hint = _client({"carol@elsewhere.i2p"})._no_session_hint(
-            "bob@xmpp-elite.i2p")
+            "bob@otrv4plus.i2p")
         assert "carol@elsewhere.i2p" in hint
         assert "truncated" not in hint
 

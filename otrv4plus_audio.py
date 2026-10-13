@@ -82,8 +82,8 @@ transport. `probe()` reports this rather than pretending otherwise.
 FORMAT
 ======
 
-The voice pipeline is fixed at PCM signed 16-bit, mono, 16 kHz,
-little-endian, in 60 ms frames (960 samples, 1920 bytes).  AAudio is asked
+The voice pipeline is fixed at PCM signed 16-bit, mono, 24 kHz,
+little-endian, in 60 ms frames (1440 samples, 2880 bytes).  AAudio is asked
 for exactly that.  When the device refuses and grants another rate — 48 kHz
 is the common case — the stream is resampled here so the pipeline above
 always sees the canonical format.  The negotiated values are reported by
@@ -101,7 +101,17 @@ import time
 
 # Canonical pipeline format.  These mirror otrv4plus_voice and are asserted
 # against it by the test suite so the two cannot drift apart.
-SAMPLE_RATE = 16000
+#
+# 24 kHz (rc.61; was 16 kHz). Opus then codes "super-wideband" speech, up to
+# 12 kHz of audio instead of 8 -- the sibilants and air that make a voice
+# sound present rather than telephone-like -- at the SAME bitrate and packet
+# size, and with no added delay (delay comes from FRAME_MS and buffering,
+# not the rate). NOT wire format: an Opus packet decodes at any rate, so a
+# peer still at 16 kHz plays ours (band-limited to 8 kHz) and we play
+# theirs. OTRV4PLUS_SAMPLE_RATE=16000 goes back, for a device that misbehaves.
+_RATE_RAW = os.environ.get("OTRV4PLUS_SAMPLE_RATE", "").strip()
+SAMPLE_RATE = (int(_RATE_RAW) if _RATE_RAW in ("16000", "24000", "48000")
+               else 24000)
 CHANNELS = 1
 SAMPLE_WIDTH = 2                      # PCM_16BIT
 def _env_choice(name: str, default: int, allowed) -> int:
@@ -146,7 +156,7 @@ def _env_int(name: str, default: int, lo: int, hi: int) -> int:
 #
 # WIRE FORMAT: both peers must use the same value.
 FRAME_MS = _env_choice("OTRV4PLUS_OPUS_FRAME_MS", 60, (10, 20, 40, 60))
-FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 960
+FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000        # 1440 at 24 kHz
 
 #: Align playback writes to the device's burst.  On by default because the
 #: alternative is measured: a device with framesPerBurst=1920 at 16 kHz took a
@@ -1542,6 +1552,48 @@ class AAudioPlayback(AAudioStreamBase):
 # the bootstrap installs the package, so removing it would break paths the
 # brief says to leave alone.  It is simply no longer the default for calls.
 
+#: The command that turns echo cancellation on for PulseAudio or PipeWire
+#: (webrtc AEC, the same family as a phone's). Not run by us: it changes the
+#: user's audio system, so /audiotest says it and the user decides.
+ECHO_CANCEL_COMMAND = ("pactl load-module module-echo-cancel aec_method=webrtc "
+                       "source_name=echo-cancel-source sink_name=echo-cancel-sink")
+
+
+def pulse_device(kind: str, which=None, env=None, runner=None) -> str:
+    """The PulseAudio source or sink to use: the echo-cancelled one if it is
+    loaded, else the default ("").
+
+    Linux has no system echo cancellation for a plain parec/pacat, so a
+    laptop on speakers sends the far end's own voice back to them -- the
+    phones get theirs from Android's VOICE_COMMUNICATION path. With
+    module-echo-cancel loaded (ECHO_CANCEL_COMMAND) its source and sink are
+    picked up by themselves. OTRV4PLUS_PULSE_SOURCE / _SINK choose by name."""
+    override = os.environ.get(
+        "OTRV4PLUS_PULSE_SOURCE" if kind == "source" else "OTRV4PLUS_PULSE_SINK", "").strip()
+    if override:
+        return override
+    which = which or _default_which
+    pactl = which("pactl")
+    if pactl is None:
+        return ""
+    try:
+        if runner is None:
+            import subprocess
+            out = subprocess.run([pactl, "list", "short", kind + "s"],
+                                 capture_output=True, text=True, timeout=2,
+                                 env=env or dict(os.environ)).stdout
+        else:
+            out = runner([pactl, "list", "short", kind + "s"])
+    except Exception:
+        return ""
+    for line in (out or "").splitlines():
+        fields = line.split("\t")
+        name = fields[1] if len(fields) > 1 else ""
+        if "echo-cancel" in name and not name.endswith(".monitor"):
+            return name
+    return ""
+
+
 class PulseCapture(AudioStream):
     """parec -> pipe.  The legacy path, kept as an explicit opt-in."""
 
@@ -1556,10 +1608,14 @@ class PulseCapture(AudioStream):
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, "parec not found")
         self._read_exact = read_exact
         self._closed = False
+        #: The echo-cancelled source when one is loaded (see pulse_device).
+        self.device = pulse_device("source", which, env)
+        self.echo_cancelled = "echo-cancel" in self.device
         self._proc = subprocess.Popen(
             [parec, "--client-name=otrv4plus-mic", "--channels=%d" % CHANNELS,
              "--rate=%d" % SAMPLE_RATE, "--format=s16le",
-             "--latency-msec=%d" % FRAME_MS],
+             "--latency-msec=%d" % FRAME_MS]
+            + (["--device=%s" % self.device] if self.device else []),
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             stdin=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
         time.sleep(0.25)
@@ -1611,10 +1667,14 @@ class PulsePlayback(AudioStream):
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, "pacat not found")
         self._write_all = write_all
         self._closed = False
+        # Playback must go through the echo canceller's sink too, or it has
+        # nothing to subtract.
+        self.device = pulse_device("sink", which, env)
         self._proc = subprocess.Popen(
             [pacat, "--playback", "--client-name=otrv4plus-spk",
              "--channels=%d" % CHANNELS, "--rate=%d" % SAMPLE_RATE,
-             "--format=s16le", "--latency-msec=%d" % FRAME_MS],
+             "--format=s16le", "--latency-msec=%d" % FRAME_MS]
+            + (["--device=%s" % self.device] if self.device else []),
             stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
         time.sleep(0.25)

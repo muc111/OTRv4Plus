@@ -66,6 +66,7 @@ fun ConversationScreen(
     model: ChatViewModel,
     jid: String,
     onBack: () -> Unit,
+    onOpenProfile: ((String) -> Unit)? = null,
 ) {
     val conversation = model.conversation(jid)
     val messages = model.messages(jid)
@@ -116,6 +117,12 @@ fun ConversationScreen(
                             style = MaterialTheme.typography.titleMedium,
                         )
                         PresenceDot(conversation.presence)
+                    }
+                },
+                actions = {
+                    // A person's profile; a room has none.
+                    if (onOpenProfile != null && !model.isRoom(jid)) {
+                        TextButton(onClick = { onOpenProfile(jid) }) { Text("Profile") }
                     }
                 },
             )
@@ -249,16 +256,25 @@ fun ConversationScreen(
  */
 @Composable
 private fun RoomHeader(model: ChatViewModel, jid: String) {
-    val level = org.otrv4plus.android.crypto.SecurityLevel.Level.NOT_ENCRYPTED
+    val secure = model.isSecureRoom(jid)
+    val level = if (secure) org.otrv4plus.android.crypto.SecurityLevel.Level.ENCRYPTED_UNVERIFIED
+                else org.otrv4plus.android.crypto.SecurityLevel.Level.NOT_ENCRYPTED
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
         Text(
-            "${level.mark} Room — not end-to-end encrypted. Everyone in the " +
-                "room and the server can read every message.",
+            "${level.mark} " + if (secure && model.isSyncingRoom(jid))
+                org.otrv4plus.android.chat.GroupText.SYNCING_HEADER
+            else org.otrv4plus.android.chat.GroupText.header(secure),
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
+            color = if (secure) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.error,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         )
     }
+    if (secure) GroupVerifyAndCallBar(model, jid)
+    // Files to the whole group, over MLS; the same picker, metadata
+    // question, rows and viewer as a 1:1 conversation.
+    if (secure) TransferBar(model, jid, group = true)
+    if (secure) SecureGroupPanel(model, jid)
     val expanded = model.occupantsShown(jid)
     val people = model.occupants(jid)
     Row(
@@ -553,7 +569,7 @@ private fun VerificationPrompt(
  * `TransferUiTest`.
  */
 @Composable
-private fun TransferBar(model: ChatViewModel, jid: String) {
+private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = false) {
     val context = LocalContext.current
     val transfers = model.transfers(jid)
     val offer = model.transferOffer(jid)
@@ -596,7 +612,8 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
     }
 
     model.viewing?.let { file ->
-        FileViewerDialog(path = file.path, name = file.filename,
+        FileViewerDialog(container = file.path, name = file.filename,
+                         materialize = { dir -> model.openReceivedTo(file.path, dir) },
                          onClose = { model.closeViewer() })
     }
 
@@ -670,11 +687,12 @@ private fun TransferBar(model: ChatViewModel, jid: String) {
     when (offer) {
         is TransferUi.Offer.Available ->
             TextButton(onClick = { picker.launch(arrayOf("*/*")) }) {
-                Text("Send a file")
+                Text(if (group) "Send a file to the group" else "Send a file")
             }
         is TransferUi.Offer.NeedsVerification ->
             TextButton(enabled = false, onClick = {}) {
-                Text("Send a file — SMP verification required")
+                Text(if (group) "Send a file — every member must be verified first"
+                     else "Send a file — SMP verification required")
             }
         // The plaintext banner above already offers the handshake; a second
         // disabled control would be noise.
@@ -1124,5 +1142,255 @@ private fun HandshakeCard(status: HandshakeUi.Status) {
             Text(view.elapsed, style = MaterialTheme.typography.labelSmall,
                  color = MaterialTheme.colorScheme.onSecondaryContainer)
         }
+    }
+}
+
+/**
+ * Members of a secure group, each with whether you have verified their key,
+ * and an invite field. Invitations go over an encrypted OTRv4+ conversation
+ * with the person invited; the room never sees them.
+ */
+@Composable
+private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
+    var shown by androidx.compose.runtime.saveable.rememberSaveable(jid) {
+        androidx.compose.runtime.mutableStateOf(false)
+    }
+    var invitee by androidx.compose.runtime.saveable.rememberSaveable(jid) {
+        androidx.compose.runtime.mutableStateOf("")
+    }
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("Group members", style = MaterialTheme.typography.labelMedium,
+             modifier = Modifier.weight(1f))
+        TextButton(onClick = {
+            shown = !shown
+            if (shown) model.refreshGroupMembers(jid)
+        }) { Text(if (shown) "Hide" else "Show") }
+    }
+    if (!shown) return
+    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
+        for (m in model.groupMembers(jid)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    org.otrv4plus.android.chat.GroupText.memberLine(
+                        m.jid, m.me, m.verified, m.bound),
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.weight(1f),
+                )
+                if (!m.me) {
+                    TextButton(onClick = { model.removeGroupMember(jid, m.jid) }) {
+                        Text("Remove")
+                    }
+                }
+            }
+        }
+        androidx.compose.material3.OutlinedTextField(
+            value = invitee,
+            onValueChange = { invitee = it },
+            label = { Text("Invite a contact (user name or address)") },
+            singleLine = true,
+            // An address, so no auto-capital: "B@otrv4plus.i2p" was stored as
+            // the invitee and B's answer, from "b@...", was dropped as
+            // uninvited (device test). The bridge folds case too.
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        TextButton(
+            enabled = invitee.isNotBlank(),
+            onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
+        ) { Text("Invite over OTRv4+") }
+        GroupEndButtons(model, jid)
+    }
+}
+
+/**
+ * Owner design (2026-10-10): Verify the group with its passphrase; once every
+ * member is verified the button becomes Call. A call rings the group and every
+ * verified member joins by themselves (only when they have allowed the
+ * microphone; otherwise they see Join). In a call: Pause and Hang up.
+ */
+@Composable
+private fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    fun micGranted(): Boolean = ContextCompat.checkSelfPermission(
+        context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+    var pending by rememberSaveable { mutableStateOf<String?>(null) }   // "call" / "join"
+    val launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { allowed ->
+        model.setGroupCallAutoJoin(allowed)
+        if (allowed) {
+            when (pending) {
+                "call" -> model.startGroupCall(jid)
+                "join" -> model.joinGroupCall(jid)
+            }
+        }
+        pending = null
+    }
+    fun withMic(what: String) {
+        if (micGranted()) {
+            if (what == "call") model.startGroupCall(jid) else model.joinGroupCall(jid)
+        } else {
+            pending = what
+            launcher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+    // Poll while this screen is up: verification and calls move by themselves.
+    LaunchedEffect(jid) {
+        model.setGroupCallAutoJoin(micGranted())
+        while (true) {
+            model.refreshGroupState(jid)
+            kotlinx.coroutines.delay(2000)
+        }
+    }
+    val verify = model.groupVerifyState(jid)
+    val callState = model.groupCallState(jid)
+    var asking by rememberSaveable { mutableStateOf(false) }
+
+    Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
+            when {
+                callState.inCall -> {
+                    Text(if (callState.paused) "In the group call (paused: nobody hears you)"
+                         else "In the group call" +
+                             if (callState.participants.isNotEmpty())
+                                 " with ${callState.participants.joinToString()}" else "",
+                         style = MaterialTheme.typography.bodyMedium)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { model.pauseGroupCall(jid) }) {
+                            Text(if (callState.paused) "Resume" else "Pause")
+                        }
+                        Button(onClick = { model.hangupGroupCall(jid) }) { Text("Hang up") }
+                    }
+                }
+                callState.ringingFrom.isNotEmpty() -> {
+                    Text("${callState.ringingFrom} is calling the group",
+                         style = MaterialTheme.typography.bodyMedium)
+                    Button(onClick = { withMic("join") }) { Text("\uD83D\uDCDE Join") }
+                }
+                else -> {
+                    val running = verify.members.count { it.value == "running" }
+                    val anyVerified = verify.members.values.any { it == "verified" }
+                    if (verify.active && verify.total > 0) {
+                        // Owner request (2026-10-10): progress and an ETA until
+                        // everyone who knew the passphrase is verified.
+                        LinearProgressIndicator(
+                            progress = { verify.done.toFloat() / verify.total },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        Text(org.otrv4plus.android.chat.GroupText.verifyProgress(
+                                 verify.done, verify.total, verify.etaSeconds,
+                                 verify.members, verify.excluded),
+                             style = MaterialTheme.typography.labelSmall)
+                    } else if (verify.members.isNotEmpty() && !verify.allVerified) {
+                        val notYet = verify.members.filterValues { it != "verified" }
+                        Text("Verified: ${verify.members.count { it.value == "verified" }} of " +
+                             "${verify.members.size} (not verified: ${notYet.keys.joinToString()})",
+                             style = MaterialTheme.typography.labelSmall)
+                    }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        // Callable once the checks are done and someone is
+                        // verified: anyone not verified is simply not in it.
+                        if (anyVerified && running == 0) {
+                            Button(onClick = { withMic("call") }) {
+                                Text("\uD83D\uDCDE Call the group")
+                            }
+                        }
+                        if (!verify.allVerified) {
+                            OutlinedButton(onClick = { asking = true }) {
+                                Text(if (verify.startedBy.isNotEmpty())
+                                         "Join the verification (${verify.startedBy})"
+                                     else "Verify group")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (asking) GroupPassphrasePrompt(model, jid) { asking = false }
+}
+
+/**
+ * The group passphrase. Composition-local on purpose, like the SMP
+ * passphrase in [VerificationPrompt]: a secret must not outlive its dialog
+ * (not in the ViewModel, not in saved state).
+ */
+@Composable
+private fun GroupPassphrasePrompt(model: ChatViewModel, jid: String, close: () -> Unit) {
+    var passphrase by remember { mutableStateOf("") }
+    run {
+        AlertDialog(
+            onDismissRequest = { passphrase = ""; close() },
+            title = { Text("Verify the group") },
+            text = {
+                Column {
+                    Text("Type the group passphrase. Every member who types the same " +
+                         "one is verified with you; anyone else is left out of group " +
+                         "calls. If you created this group with a passphrase, you can " +
+                         "leave this empty.",
+                         style = MaterialTheme.typography.bodySmall)
+                    OutlinedTextField(
+                        value = passphrase,
+                        onValueChange = { passphrase = it },
+                        label = { Text("Group passphrase") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    model.startGroupVerify(jid, passphrase)
+                    passphrase = ""
+                    close()
+                }) { Text("Verify") }
+            },
+            dismissButton = {
+                TextButton(onClick = { passphrase = ""; close() }) { Text("Not now") }
+            },
+        )
+    }
+}
+
+/**
+ * Leave the group (this phone only), or delete it for everyone. Deleting is
+ * the group creator's: the server lets only the room's owner destroy it, and
+ * says so to anyone else. Both ask first; neither can be undone.
+ */
+@Composable
+private fun GroupEndButtons(model: ChatViewModel, jid: String) {
+    var asking by androidx.compose.runtime.saveable.rememberSaveable(jid) {
+        androidx.compose.runtime.mutableStateOf("")
+    }
+    // Group calls are among verified members only: this sends our key to each
+    // member over OTRv4+; SMP with a member (in their chat) completes it.
+    TextButton(onClick = { model.verifyGroupMembers(jid) }) { Text("Verify members (for calls)") }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TextButton(onClick = { asking = "leave" }) { Text("Leave group") }
+        TextButton(onClick = { asking = "delete" }) {
+            Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+        }
+    }
+    if (asking.isNotEmpty()) {
+        val delete = asking == "delete"
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { asking = "" },
+            title = { Text(if (delete) "Delete this group?" else "Leave this group?") },
+            text = {
+                Text(org.otrv4plus.android.chat.GroupText.endConfirm(delete, jid))
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (delete) model.deleteSecureGroup(jid) else model.leaveSecureGroup(jid)
+                    asking = ""
+                }) { Text(if (delete) "Delete" else "Leave") }
+            },
+            dismissButton = { TextButton(onClick = { asking = "" }) { Text("Cancel") } },
+        )
     }
 }

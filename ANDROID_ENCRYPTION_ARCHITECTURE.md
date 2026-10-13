@@ -89,9 +89,9 @@ the account contributing nothing to the key — fails 9 of them.
   OtrV4PlusProvider   Omemo2Provider       MlsProvider
      1:1, native      group + 1:1, XMPP    group, prototype
         │                   │                   │
-  Rust OTRv4+ core    python-omemo /       MlsTransport
-   (DAKE, SMP,          twomemo                 │
-    ratchet)          (NOT PRESENT)      I2P datagrams
+  Rust OTRv4+ core    (none -- retired      MlsTransport
+   (DAKE, SMP,         placeholder, §4)         │
+    ratchet)                             I2P datagrams
 ```
 
 `EncryptionProvider` is a **question surface, not a crypto API**. Nothing on it
@@ -124,12 +124,14 @@ send in the clear" are different facts.
 | | 1:1 | Group/MUC |
 |---|---|---|
 | OTRv4+ | **default** | not applicable |
-| OMEMO 2.0 | offered | **default** |
-| MLS | not applicable | not implemented |
+| OMEMO 2.0 | not available (§4) | not available (§4) |
+| MLS | not applicable | not through this surface (see below) |
 
 OTRv4+ in a room is not a weaker option but a meaningless one: OTR is a
 two-party protocol and a MUC message is fanned out by the service to everybody
-present. MLS in a 1:1 would be a second answer to a question OTRv4+ already
+present. Encrypted groups are OTRv4Plus secure groups (MLS, `otrv4-mls`),
+created and joined from the Rooms screen through `android_bridge.groups`, not
+through this provider list -- see [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md). MLS in a 1:1 would be a second answer to a question OTRv4+ already
 answers, with SMP and a verified fingerprint.
 
 **Executed**, by `EncryptionArchitectureTest` (43 tests).
@@ -168,73 +170,29 @@ suite and is unchanged by this milestone.
 
 ---
 
-## 4. OMEMO 2.0 — half implemented, and which half
+## 4. OMEMO 2.0 — retired
 
-### 4.1 What is present
+**Nothing OMEMO is shipped.** `otrv4plus_omemo.py` -- the XMPP half of
+XEP-0384 (device lists, bundles, recipient derivation from membership) --
+was removed on 2026-09-28 with its tests. Nothing imported it; it was packaged
+into the APK on the stated ground that the bridge imported it, which was not
+true. Its own text planned `python-omemo` as the group ratchet, which the
+project superseded with its own MLS groups in Rust
+([RUST_AUTHORITY_AUDIT.md](RUST_AUTHORITY_AUDIT.md) item C).
 
-`otrv4plus_omemo` implements the XMPP half of XEP-0384 (`urn:xmpp:omemo:2`):
+What remains is `Omemo2Provider` with no backend: it reports
+`Availability.NOT_IMPLEMENTED`, every operation fails with
+`EncryptionError.UNAVAILABLE`, and `EncryptionSelector` therefore never offers
+it. It is kept, deliberately, as a named placeholder -- a provider that says
+"not implemented" is checkable, and `EncryptionArchitectureTest` uses it to pin
+that an unavailable protocol is never silently replaced by another or by
+plaintext.
 
-* device lists at `urn:xmpp:omemo:2:devices` and bundles at
-  `urn:xmpp:omemo:2:bundles`, over PEP;
-* **recipient derivation from room membership, never from presence** — see
-  below;
-* which bundles must actually be fetched, so a session is not rebuilt per
-  message (on I2P that is a round trip per device per message);
-* stale-device-list detection;
-* room anonymity capability detection;
-* failure classification into codes the UI renders.
+The earlier blocker analysis stands for anyone who revisits it: OMEMO 2's
+cryptography lives in `twomemo` / `X3DH` / `DoubleRatchet` / `XEdDSA`
+(`libxeddsa`, C), none of which publish Android wheels.
 
-**The rule that matters.** A recipient set built from the occupant list a UI is
-showing silently excludes anyone offline, with no error anywhere — the sender's
-message simply never arrives for someone. `recipients_for_room` takes
-membership and device lists and **has no presence parameter at all**, so the
-rule is enforced by the signature rather than by remembering to obey it. It
-returns the members whose device list is missing rather than dropping them.
-
-The second form of the same mistake — leaving out the sender's own other
-devices — is covered too: the message is delivered, the recipient reads it, and
-it is unreadable on the sender's laptop, which looks like data loss.
-
-**Executed**, by `tests/test_omemo_rules.py` (54 tests).
-
-### 4.2 What is NOT present, and exactly why
-
-**The cryptography.** There is no key agreement, no ratchet, and no encryption
-of any kind. `Omemo2Provider` reports `Availability.NOT_IMPLEMENTED` and every
-operation fails with `EncryptionError.UNAVAILABLE`.
-
-This is a **build blocker, not a design gap**. OMEMO 2's cryptography is
-implemented by `python-omemo` / `twomemo`, the reference implementations, and
-writing a second Double Ratchet for a security product is the worst kind of
-wheel to reinvent. The dependency chain is:
-
-```
-slixmpp-omemo 2.2.0
-  └── twomemo 2.1.0  (urn:xmpp:omemo:2)
-        ├── X3DH 1.3.0 ──────┐
-        ├── DoubleRatchet 1.3.0 ──► cryptography, pydantic
-        ├── XEdDSA 1.2.0 ──► libxeddsa  (C library)
-        └── protobuf
-```
-
-Verified against PyPI on 2026-09-16:
-
-| Package | Android wheel on PyPI | Note |
-|---|---|---|
-| `xeddsa` 1.2.0 | **none** | CFFI binding to `libxeddsa`, a C library |
-| `cryptography` | **none** | Rust extension |
-| `pydantic-core` | **none** | Rust extension |
-| `protobuf` | **none** | pure-Python fallback exists |
-
-Each would have to be cross-compiled for `arm64-v8a` and `x86_64`, the way
-`otrv4_core` already is. That is tractable — CI has the NDK toolchain and
-already cross-compiles a Rust extension — and it is packaging work, not
-protocol work. Whether Chaquopy's own index supplies any of them could not be
-checked from the build container, which does not have network access to
-`chaquo.com`; that is the first thing to establish.
-
-**Not claimed:** interoperability with any other OMEMO client. Nothing has been
-tested against anything, because there is nothing to test yet.
+**Not claimed:** any OMEMO interoperability.
 
 ---
 
@@ -307,9 +265,6 @@ Unchanged from the previous milestone and extended to the new layers.
 
 Everything new here follows the same rule:
 
-* `otrv4plus_omemo.classify` never returns an exception's text — an OMEMO error
-  can carry a JID, a device id and key material;
-* `Device.__repr__` prints the device id and not the account;
 * `MlsTransport.TransportOutcome.code` is a short code, never a message from
   below, because a SAM error text can contain an I2P destination;
 * every sentence in `CODES` is checked by test to contain no `@` and no `.i2p`.
@@ -324,9 +279,7 @@ Everything new here follows the same rule:
 | Chat layout fix | **Compiled** — 17 source tests; not verified on a screen |
 | Provider abstraction | **Executed** — 43 tests |
 | OTRv4+ adapter | **Executed** |
-| OMEMO XMPP layer | **Executed** — 54 tests |
-| OMEMO cryptography | **Not implemented** — dependency chain has no Android wheels |
-| OMEMO MUC encryption | **Not implemented** — recipient derivation is executed; nothing encrypts |
+| OMEMO | **Retired** (2026-09-28) — placeholder provider reports not implemented; nothing shipped |
 | MLS provider | **Not implemented** — boundary only |
 | MLS transport | **Not implemented** — interface only |
 

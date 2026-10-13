@@ -31,7 +31,7 @@ if ROOT not in sys.path:
 
 import otrv4plus_muc as muc
 
-ROOM = "general@rooms.xmpp-elite.i2p"
+ROOM = "general@rooms.otrv4plus.i2p"
 
 
 class Stanza(dict):
@@ -196,7 +196,7 @@ class TestPullingAnAddressApart:
         assert muc.nick_of(ROOM) == ""
 
     def test_the_service_is_the_domain(self):
-        assert muc.service_of(ROOM) == "rooms.xmpp-elite.i2p"
+        assert muc.service_of(ROOM) == "rooms.otrv4plus.i2p"
 
     def test_a_nickname_containing_nothing_odd_survives(self):
         assert muc.nick_of(ROOM + "/Bob Smith") == "Bob Smith"
@@ -350,7 +350,7 @@ class TestClassifyNeverEchoesTheStanza:
         for exc in (IqError("conflict"), PresenceError("forbidden")):
             _, detail = muc.classify(exc)
             assert "general" not in detail
-            assert "xmpp-elite" not in detail
+            assert "otrv4plus" not in detail
 
     def test_the_nickname_does_not_either(self):
         _, detail = muc.classify(PresenceError("conflict"))

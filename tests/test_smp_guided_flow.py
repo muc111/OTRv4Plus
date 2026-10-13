@@ -35,7 +35,7 @@ core = pytest.importorskip("otrv4_core")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 xmpp = pytest.importorskip("otrv4plus_xmpp")
 
-PEER = "alice@xmpp-elite.i2p"
+PEER = "alice@otrv4plus.i2p"
 SECRET = "correct-horse-battery-staple"
 
 
@@ -691,24 +691,29 @@ class TestTheCoreApiContract:
         assert any("0.10.25" in m for m in missing), (
             "the report does not say which version introduced it")
 
-    def test_the_hint_names_both_supported_builds(self):
-        """Termux builds the .so and copies it; a machine with maturin builds
-        a wheel.  A hint that names only the wheel sends a phone user to a
-        toolchain they do not have, which is how the first version of this
-        message was wrong."""
+    def test_the_hint_names_the_one_supported_build(self):
+        """A hint that named only a maturin wheel once sent phone users to a
+        toolchain they did not have. Rust/build.sh now needs only Python and
+        Rust -- it installs its own pinned maturin into the project .venv --
+        so it is the one command on Termux and Linux alike.
+
+        The old recipes must not come back: a .so copied into the repository
+        root shadows the module build.sh installs and verifies (the clients
+        run from the root, which Python searches first), and a global pip
+        install is not the interpreter the clients are started with."""
         import otrv4plus_coreapi as coreapi
         hint = coreapi.REBUILD_HINT
-        assert "cargo build --release --features extension-module,pq-rust" in hint
-        assert "libotrv4_core.so" in hint
-        assert "pip install" in hint and "./Rust" in hint
+        assert "bash build.sh" in hint
+        assert ".venv/bin/python" in hint
+        assert "../otrv4_core.so" not in hint
+        assert "pip install" not in hint
 
     def test_the_hint_matches_the_readme(self):
         """The two must not drift: the README is where someone looks when the
         client is not running at all."""
         import otrv4plus_coreapi as coreapi
         readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
-        for line in ("cargo build --release --features extension-module,pq-rust",
-                     "cp target/release/libotrv4_core.so ../otrv4_core.so"):
+        for line in ("bash build.sh", ".venv/bin/python otrv4plus_xmpp.py"):
             assert line in readme, "README no longer documents: %s" % line
             assert line in coreapi.REBUILD_HINT
 
@@ -1070,3 +1075,59 @@ class TestAnAbortIsNotAMismatch:
         src = inspect.getsource(xmpp.OTRv4PlusXMPP)
         assert src.count("_smp_reported.add(key_fail)") == 2, (
             "abort and failure share one branch again")
+
+
+class TestCommandsSurviveCopyAndPaste:
+    """Device test, 2026-10-02: "/otr alice@otrv4plus.i2p" pasted from a chat
+    window did not start OTR -- it went out as a chat message and, with no
+    --peer, was answered "no --peer set"."""
+
+    def _client(self):
+        c = _Client()
+        c.started = []
+        c.start_otr = lambda jid: c.started.append(jid)
+        return c
+
+    @pytest.mark.parametrize("junk", ["​", "﻿", "⁠", "‍"])
+    def test_invisible_characters_do_not_hide_a_command(self, capture, junk):
+        c = self._client()
+        c.dispatch_line(None, junk + "/otr alice@otrv4plus.i2p")
+        assert c.started == ["alice@otrv4plus.i2p"]
+        assert c.sent == []
+
+    def test_a_non_breaking_space_separates_like_a_space(self, capture):
+        c = self._client()
+        c.dispatch_line(None, "/otr alice@otrv4plus.i2p")
+        assert c.started == ["alice@otrv4plus.i2p"]
+
+    def test_an_unknown_command_is_never_sent_as_chat(self, capture):
+        c = self._client()
+        c.dispatch_line(PEER, "/otrr alice@otrv4plus.i2p")
+        assert c.sent == [] and c.started == []
+        assert any("unknown command: /otrr" in line for line in capture)
+
+    def test_ordinary_text_still_goes_to_the_peer(self, capture):
+        c = self._client()
+        c.dispatch_line(PEER, "hello there")
+        assert c.sent == [(PEER, "MESSAGE:hello there")]
+
+
+class TestMsgNeverSendsPlaintextIntoASecureGroupRoom:
+    """Device test, 2026-10-02: `/msg mls@conference... hello` sent "hello"
+    unencrypted to the room's address (the server refused it)."""
+
+    def test_refused_and_pointed_at_group_say(self, capture):
+        c = _Client()
+        c.plain = []
+        c.send_plain = lambda t, txt: c.plain.append((t, txt))
+
+        class Groups:
+            def owns_room(self, jid):
+                return jid.lower().startswith("mls@conference.")
+        c._groups = Groups()
+        c.dispatch_line(None, "/msg mls@conference.otrv4plus.i2p hello")
+        assert c.plain == []
+        assert any("/group say mls@conference.otrv4plus.i2p" in l
+                   for l in capture)
+        c.dispatch_line(None, "/msg bob@otrv4plus.i2p hi")
+        assert c.plain == [("bob@otrv4plus.i2p", "hi")]

@@ -36,7 +36,7 @@ import otrv4plus_fragment as _fragment
 from android_bridge.app import OtrApp, Transport
 from android_bridge.events import SecurityState
 
-PEER = "alice@xmpp-elite.i2p"
+PEER = "alice@otrv4plus.i2p"
 
 #: The shape the handset actually saw.
 DAKE = "?OTRv4 NvM3G22wZ5AUSVebh8ZenAA" + "Q" * 400

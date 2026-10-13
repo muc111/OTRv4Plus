@@ -139,7 +139,7 @@ class PeerPresenceTest {
 
     private fun contact(p: PeerPresence) =
         org.otrv4plus.android.bridge.Contact(
-            jid = "alice@xmpp-elite.i2p", displayName = "alice",
+            jid = "alice@otrv4plus.i2p", displayName = "alice",
             presence = p,
             security = org.otrv4plus.android.bridge.SecurityState.PLAINTEXT,
             smp = org.otrv4plus.android.bridge.SmpState.NOT_VERIFIED,

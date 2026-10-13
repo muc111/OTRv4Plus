@@ -28,6 +28,8 @@ __all__ = [
     "jid_error", "server_error", "sam_host_error", "sam_port_error",
     "jid_domain", "profile_errors", "b32_error",
     "B32_LABEL_LENGTH", "B32_SUFFIX",
+    "SHIPPED_SERVERS", "shipped_server_address", "shipped_server_name",
+    "canonical_jid",
 ]
 
 #: A `.b32.i2p` label is the destination hash itself, base32-encoded: 52
@@ -44,6 +46,44 @@ __all__ = [
 #: thing that arrives truncated by a chat client's line wrapping.
 B32_LABEL_LENGTH = 52
 B32_SUFFIX = ".b32.i2p"
+
+#: The project's own XMPP server: the name the app offers in its server list,
+#: and the `.b32.i2p` address of that server's c2s (port 5222) tunnel.
+#:
+#: The name is DIALLED AT THIS ADDRESS. The router's address book is not
+#: asked what the name means: an address book is whatever its subscriptions
+#: say, and one that mapped the name to another destination sent this server
+#: list entry somewhere else (owner's instruction, 2026-10-02: "the drop down
+#: otrv4plus.i2p should go to the correct address"). The b32 is the hash of the
+#: server's key, so the router can only hand back that server's destination
+#: for it -- which makes this entry stronger than a destination pinned on first
+#: use, and the Android pin is not consulted for it. Moving the server means a
+#: release with the new address here; anyone can type a b32 in the meantime.
+#:
+#: Shared by the terminal client (otrv4+.py `I2PSAMConnection.resolve`) and
+#: the Android app (`android_bridge.transport`).
+SHIPPED_SERVERS = {
+    "otrv4plus.i2p": "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p",
+}
+
+
+def shipped_server_address(name: str) -> Optional[str]:
+    """The `.b32.i2p` this version ships for `name`, or None."""
+    return SHIPPED_SERVERS.get((name or "").strip().lower().rstrip("."))
+
+
+def shipped_server_name(address: str) -> Optional[str]:
+    """The name a shipped `.b32.i2p` address serves, or None.
+
+    The b32 is where the server IS; its accounts live on the name. A JID on
+    the b32 (`alice@<b32>.b32.i2p`) introduces itself to the server under a
+    domain the server does not host, and Prosody answers `host-unknown`.
+    """
+    wanted = (address or "").strip().lower().rstrip(".")
+    for name, b32 in SHIPPED_SERVERS.items():
+        if b32 == wanted:
+            return name
+    return None
 _B32_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyz234567")
 _B32_LABEL = re.compile(r"[a-z2-7]{%d}" % B32_LABEL_LENGTH, re.IGNORECASE)
 
@@ -225,3 +265,22 @@ def profile_errors(jid: str, server: str, sam_host: str, sam_port) -> List[str]:
         if err is not None:
             found.append(err)
     return found
+
+
+def canonical_jid(jid: str) -> str:
+    """`jid` with a shipped server's b32 domain replaced by the name it
+    serves; anything else unchanged. A resource, if any, is kept.
+
+    The server hosts its NAME and answers `host-unknown` to a stream
+    addressed to its b32 (device report, 2026-10-02). Used by the Android
+    profile and the terminal client alike.
+    """
+    text = (jid or "").strip()
+    user, at, rest = text.rpartition("@")
+    if not at or not user:
+        return jid
+    domain, slash, resource = rest.partition("/")
+    name = shipped_server_name(domain)
+    if not name:
+        return jid
+    return "%s@%s%s%s" % (user, name, slash, resource)

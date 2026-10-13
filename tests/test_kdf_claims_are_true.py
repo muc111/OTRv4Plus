@@ -46,12 +46,31 @@ class TestArgon2IsInTheRustCore:
 
     def test_it_is_used_by_smp_and_not_by_the_vault(self):
         # smp.rs for the 0x03 wire stretch; at_rest.rs only to read store
-        # files written by the retired Python argon2-cffi code.
+        # files written by the retired Python argon2-cffi code; container.rs
+        # for passphrase-protected .otrv exports (added with the container,
+        # 324777a) -- see test_the_container_uses_it_only_for_passphrases.
         users = sorted(f for f, src in _rust_sources().items()
                        if "argon2" in src.lower())
-        assert users == ["at_rest.rs", "smp.rs"], (
-            "argon2 should appear in smp.rs and at_rest.rs only; found %s" % users)
+        assert users == ["at_rest.rs", "container.rs", "smp.rs"], (
+            "argon2 should appear in smp.rs, at_rest.rs and container.rs "
+            "only; found %s" % users)
         assert "argon2" not in _rust_sources()["smp_vault.rs"].lower()
+
+    def test_the_container_uses_it_only_for_passphrases(self):
+        """A device-keyed container must not pay for, or depend on, Argon2id;
+        a passphrase container must, with parameters a hostile file cannot
+        inflate (the header is read before anything is authenticated)."""
+        src = _rust_sources()["container.rs"]
+        derive = src[src.index("fn derive("):]
+        derive = derive[:derive.index("\n}\n")]
+        arm = derive[derive.index("KeySource::Passphrase(pw), SOURCE_PASSPHRASE"):]
+        assert "Argon2::new(Algorithm::Argon2id" in arm
+        dev = derive[derive.index("KeySource::Device(dek), SOURCE_DEVICE"):
+                     derive.index("KeySource::Passphrase(pw), SOURCE_PASSPHRASE")]
+        assert "argon2" not in dev.lower()
+        for cap in ("ARGON_M_MAX", "ARGON_T_MAX", "ARGON_P_MAX"):
+            assert re.search(r"const %s: u32 = " % cap, src), cap
+            assert src.count(cap) >= 2, "%s is declared but never enforced" % cap
 
     def test_the_low_level_api_is_used_not_the_phc_string(self):
         """A wire protocol needs raw bytes both peers agree on.

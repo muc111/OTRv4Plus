@@ -113,10 +113,9 @@ def _rust_core_info() -> Dict[str, Any]:
     required = [
         "Ed448KeyHandle", "X448KeyHandle", "RustDAKE", "RustSMP", "RustSMPVault",
         "RustDoubleRatchet", "generate_ed448_keypair", "generate_x448_keypair",
-        "verify_ed448_sig", "aes256gcm_encrypt", "aes256gcm_decrypt",
-        "mlkem1024_keygen", "mlkem1024_encaps", "mlkem1024_decaps",
-        "mldsa87_keygen", "mldsa87_sign", "mldsa87_verify",
-        "py_ring_sign", "py_ring_verify",
+        "verify_ed448_sig", "mldsa87_verify", "py_ring_verify",
+        "MlDsa87KeyHandle", "MlKem1024Keypair", "MessageMacKey",
+        "RustVoiceKex", "RustVoiceCipher",
     ]
     present = [name for name in required if hasattr(otrv4_core, name)]
     info["required_symbols_present"] = len(present)
@@ -151,16 +150,26 @@ def _rust_selftest() -> Dict[str, Any]:
         result["ed448_sign_verify"] = bool(
             otrv4_core.verify_ed448_sig(pub, b"otrv4plus-android-selftest", sig))
 
-        ek, dk = otrv4_core.mlkem1024_keygen()
-        ct, ss1 = otrv4_core.mlkem1024_encaps(bytes(ek))
-        ss2 = otrv4_core.mlkem1024_decaps(bytes(ct), bytes(dk))
-        result["mlkem1024_roundtrip"] = bytes(ss1) == bytes(ss2)
+        # Through the handles the live path uses; no key or shared secret
+        # becomes a Python object. One hybrid X448 + ML-KEM-1024 exchange,
+        # compared by one-way digests...
+        initiator = otrv4_core.RustVoiceKex(True)
+        responder = otrv4_core.RustVoiceKex(False)
+        from_responder, ct = responder.responder_agree(
+            bytes(initiator.public), bytes(initiator.mlkem_ek))
+        from_initiator = initiator.initiator_agree(bytes(responder.public), bytes(ct))
+        result["mlkem1024_roundtrip"] = from_initiator.digests() == from_responder.digests()
 
-        key = b"\x00" * 32
-        nonce = b"\x00" * 12
-        sealed = otrv4_core.aes256gcm_encrypt(key, nonce, b"probe", b"aad")
-        opened = otrv4_core.aes256gcm_decrypt(key, nonce, bytes(sealed), b"aad")
+        # ...then AES-256-GCM in both directions under the keys it produced.
+        transcript = b"otrv4plus-android-selftest"
+        call_id = b"\x00" * 16
+        send = from_initiator.into_root(transcript).make_cipher(call_id, 0, True)
+        recv = from_responder.into_root(transcript).make_cipher(call_id, 0, False)
+        counter, sealed = send.seal(b"probe", b"aad")
+        opened = recv.open(bytes(sealed), b"aad", counter)
         result["aes256gcm_roundtrip"] = bytes(opened) == b"probe"
+        send.zeroize()
+        recv.zeroize()
 
         result["ran"] = True
         result["all_passed"] = all(

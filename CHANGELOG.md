@@ -4,6 +4,1273 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.63 — 2026-10-11 — the Connect screen says "failed" only when something is (core 0.13.1)
+
+Owner report: with the built-in router a red failure showed at the bottom
+while the app was still starting the router and building tunnels.
+
+- **While the app is still trying, it says so quietly:** "Still connecting:
+  the I2P network is still building the tunnels ... Trying again by itself
+  (attempt 2)". Timeouts, a router still starting, the server's I2P address
+  not found yet and dropped streams are what I2P does on its way up, not
+  errors.
+- **An error when there is one:**
+  - the same trouble three times in a row: "Can't reach the server: its I2P
+    service seems to be offline", "The I2P tunnels to the server keep timing
+    out", "The server answers over I2P, but its chat service is not
+    responding" -- still retrying;
+  - at once, and retrying stops: a **wrong password** ("The server refused
+    the sign-in: check the address and password"), the server's I2P key
+    changed, no safe sign-in method, an invalid address.
+- **A wrong password is no longer retried in the background** every few
+  minutes; it waits for you.
+- One list decides both what stops the retries and what is shown as needing
+  you (\`ConnectProblem\`, unit-tested).
+
+## Android 0.7.0-experimental.rc.62 — 2026-10-11 — group calls get the 1:1 audio chain; echo cancellation on Linux (core 0.13.1)
+
+- **Group calls receive like 1:1 calls.** They had a bare path: decoded on
+  arrival into a 5-frame queue per member, silence for anything late or
+  lost, no levelling. Now, per member:
+  - the 1:1 **adaptive jitter buffer**: reorders, sizes itself to the I2P
+    path's measured jitter, and sheds latency after a burst;
+  - **loss repair**: one lost frame rebuilt from the next frame's FEC
+    copy, a longer gap concealed (bounded), as in 1:1 -- where it used to
+    be silence;
+  - their own Opus decoder, used by the playback thread only.
+  Then the mix goes through the 1:1 **speech clarity, compressor and
+  gain** before the speaker, and the microphone through the 1:1
+  **compressor and gain** before Opus.
+- **Frames carry their number.** Each group frame's timestamp field now
+  holds frame number x 60 ms, so receivers order it exactly; frames from an
+  older sender (milliseconds) round to the same number. A member who hangs
+  up and rejoins starts a fresh buffer.
+- **Echo cancellation on Linux.** parec/pacat ran without any, so a laptop
+  on speakers sent the other side's voice back to them. The echo-cancelled
+  source and sink of PulseAudio/PipeWire's \`module-echo-cancel\` (webrtc)
+  are used whenever loaded; \`/audiotest\` says whether it is on and the one
+  command that turns it on. \`OTRV4PLUS_PULSE_SOURCE\` / \`_SINK\` pick a
+  device by name.
+- Group call diagnostics add the jitter-buffer state (depth, gaps,
+  underruns, FEC and concealed frames).
+
+## Android 0.7.0-experimental.rc.61 — 2026-10-11 — clearer call audio: 24 kHz super-wideband (core 0.13.1)
+
+- **Calls carry twice the audio bandwidth**, app, Termux and Linux, 1:1 and
+  group: the pipeline runs at 24 kHz (was 16 kHz) and Opus codes
+  super-wideband speech -- up to 12 kHz of audio instead of 8, the
+  consonants and "air" that make a voice sound present rather than like a
+  telephone.
+  - **No added delay:** frames stay 60 ms; the delay comes from the frame
+    length and buffering, not the sample rate.
+  - **No more data and no wire change:** still a constant 24 kbit/s, every
+    frame the same 180 bytes in the same padded packet. A peer on an older
+    version still hears us (limited to 8 kHz), and we hear them.
+  - \`OTRV4PLUS_SAMPLE_RATE=16000\` goes back to the old rate on a device that
+    misbehaves (Termux/Linux).
+- **Group calls use the 1:1 encoder settings.** They created a bare Opus
+  encoder (libopus defaults): a variable bitrate, so packet sizes followed
+  speech, and none of the voice tuning. Now the same constant-rate,
+  voice-tuned settings; the diagnostics count any frame too big for its
+  packet ("oversize").
+
+## Android 0.7.0-experimental.rc.60 — 2026-10-11 — group verification reaches late members (core 0.13.1)
+
+Device test: the phones had verified each other; the laptop, invited back,
+was never asked to verify, and its own \`/smp\` reached nobody.
+
+- **Any word of a verification we have not heard of asks us to join it.**
+  A run's "start" is sent before a newly added member can read the group,
+  and a "ready" for an unknown run used to be ignored. Now either one
+  prompts the user (Termux: y/n; app: the Verify dialog).
+- **Joining a run always announces it again**, not only starting one, so a
+  member who missed it hears of it.
+- **A member added while a run is going is told on the commit that adds
+  them.**
+- **Two runs at once become one:** the lower run id wins everywhere; a
+  member who already typed the passphrase moves over with it, and the other
+  run is ended (its passphrase zeroed). The laptop's leftover run from its
+  old copy of the group was the second run here.
+
+## Android 0.7.0-experimental.rc.59 — 2026-10-11 — an invitation back no longer says "you were removed" (core 0.13.1)
+
+- **Accepting an invitation to a group you are already in no longer reports
+  "you were removed".** The inviter's add replaces your old copy in the
+  same commit, and the old copy saw that as its own removal (laptop,
+  2026-10-11: nobody had removed it). It is now reported as a replacement,
+  in Termux and the app, and the members you had verified stay verified.
+  A real removal is still reported as one.
+
+## Android 0.7.0-experimental.rc.58 — 2026-10-11 — Termux retries a group room that did not rejoin (core 0.13.1)
+
+- **Termux: a secure group whose room did not rejoin is tried again**
+  (30 s, 1, 2, 4, 5, 5 min), then says it gave up. It used to print "could
+  not rejoin the room (TimeoutError)" once and leave the group syncing --
+  holding everything typed -- until a restart (laptop, 2026-10-11).
+
+## Android 0.7.0-experimental.rc.57 — 2026-10-11 — /audiotest on Linux (core 0.13.1)
+
+- **\`/audiotest\` works on Linux** (it said "self-test is Termux-only"). It
+  plays a 1 s tone through the speaker, then records 3 s from the
+  microphone, through the same backend calls use (parec/pacat on Linux),
+  and says which failed and what to install or check (pavucontrol, pactl).
+  App unchanged in behaviour; version bumped with the shared Python.
+
+## Android 0.7.0-experimental.rc.56 — 2026-10-11 — Linux/Termux: voice installed by build.sh (core 0.13.1)
+
+- **A laptop in a group call heard nothing and sent nothing** ("audio
+  unavailable: opuslib unavailable"): the Linux install never set up voice --
+  the Opus binding and the audio tools were a README footnote. Now:
+  - \`Rust/build.sh\` installs \`opuslib==3.0.1\` into \`.venv\`, checks that
+    libopus loads and that parec/pacat exist, and prints a \`!!!\` notice
+    naming the package to install when not.
+  - The Ubuntu/Debian apt line in README and TECHNICAL.md includes
+    \`libopus0 pulseaudio-utils\`.
+  - In a call without audio, Termux now says NO AUDIO in plain words, that
+    you cannot hear or be heard, and the exact fix -- instead of a one-line
+    "audio unavailable" while showing you as in the call.
+- App unchanged in behaviour (it carries its own codec); version bumped with the shared Python.
+
+## Android 0.7.0-experimental.rc.55 — 2026-10-11 — group call diagnostics (core 0.13.1)
+
+- **Group calls now show in the diagnostics report**: when a call starts or
+  is joined, every 10 s during it, and when it ends -- datagrams sent and
+  accepted, refused ones, Opus frames decoded, frames played with audio in
+  them, microphone frames captured, speaker or microphone errors, the audio
+  devices, and how many members are in the call. Counters and device names
+  only: no destination, no identity. Asked for by a one-way call (Pixel
+  heard by the Redmi, nothing heard on the Pixel): these say which leg is
+  silent.
+
+## Android 0.7.0-experimental.rc.54 — 2026-10-11 — files in secure groups; remove-metadata y/n in Termux (core 0.13.1)
+
+- **Send files in a secure group**, app and Termux alike: the same protocol
+  (\`android_bridge/group_files.py\`), so a file goes between them. In the
+  app, an encrypted group's screen has "Send a file to the group"; in
+  Termux, \`/sendfile\` while talking to a group, or \`/group sendfile
+  <room> [path]\`. Each member accepts or declines (Termux: a bare y/n, or
+  \`/transfer accept <id>\`), and a received file opens like a 1:1 one.
+  - Encrypted and signed as MLS application messages (the group's hybrid
+    X448 + ML-KEM-1024 / Ed448 + ML-DSA-87 suite); no new cryptography. Kept
+    only if its SHA-256 and size match, read back from disk.
+  - Sent only when every other member is verified (group passphrase or 1:1
+    SMP) -- the 1:1 rule, for everyone the group delivers to. An offer from
+    an unverified member is refused; an unverified member joining stops a
+    file still going out.
+  - Pieces carry the room's no-store hint (XEP-0334), so the room's history
+    keeps the commits a returning member needs instead of file data; they
+    queue behind chat and group changes rather than ahead of them.
+  - A member that misses pieces (a commit by somebody else mid-transfer) or
+    accepts late asks for them again; the sender keeps the file 30 minutes.
+    Up to 16 MB.
+- **Remove hidden information? y/n in Termux** (1:1 and groups), like the
+  app's dialog: a photo that carries metadata (location, time, camera) is
+  not sent until the user answers -- y removes it, n keeps it and sends the
+  original, c cancels. Nothing to remove: no question; a kind that cannot be
+  checked: sent as it is, and said. The cleaned copy is written to the
+  private staging directory, never beside a file picked from shared storage.
+- The app now explains a "cannot check this file" refusal instead of a
+  generic one.
+- CI: SECURITY_AUDIT_2026-10-11.md declared in REUSE.toml (the rc.53
+  licensing check).
+
+## Android 0.7.0-experimental.rc.53 — 2026-10-11 — security audit: dependencies updated, three fixes (core 0.13.1)
+
+Full record: SECURITY_AUDIT_2026-10-11.md (developer-led with AI assistance;
+not an independent audit).
+
+- **Dependencies.** All Rust lockfiles updated to the latest compatible
+  crates (61 in the core, 26 in the MLS crate, PyO3 0.29.3); **openmls
+  0.9.1**, which validates MLS extensions from the wire more strictly
+  (minimum Rust now 1.91). **i2pd 2.61.0** in the built-in router (reseed,
+  memory-leak and race fixes; bounded streaming queue; post-quantum SSU2).
+  Python packages already at their latest, with no known vulnerabilities;
+  OpenSSL 3.5.9 is the newest LTS release. \`cargo audit --deny warnings\` is
+  clean; three new libcrux advisories are in code that is locked but never
+  built, recorded in \`Rust/.cargo/audit.toml\`.
+- **Fix: the built-in router's SAM port could be taken by another app** on
+  the phone (loopback is shared). It is now random at each start, kept in
+  private storage, and only counts as ours while our own router process is
+  alive; a failed router never falls back to 7656.
+- **Fix: a room could fake the encrypted-group icon** in the room list by
+  its description. 🔐 is now only for groups whose keys are on this phone; a
+  description is shown as a claim.
+- **Fix: router error lines could name peers** on screen and in
+  diagnostics; addresses and identities are now replaced first.
+- Avatar SHA-1 ids (XEP-0084) marked as non-security hashing.
+
+---
+
+## Android 0.7.0-experimental.rc.52 — 2026-10-10 — a server without PEP is named when a picture will not publish (core 0.13.1)
+
+- Device report: a profile picture would not upload. The picture was fine
+  -- run through the app's conversion it is a 13 KB, 96 x 96 PNG that passes
+  every check -- but the server's Prosody had no \`pep\` module, which is
+  where XEP-0084 keeps avatars, and the app only said "could not be
+  published". A refusal for lack of PEP is now \`pep_unavailable\`:
+  "This server does not store profile pictures ... Prosody: add "pep" to
+  modules_enabled." PROSODY_USER_DISCOVERY.md §6.
+
+---
+
+## Android 0.7.0-experimental.rc.51 — 2026-10-10 — a deleted room's tombstone ends the group (core 0.13.1)
+
+Server clean-up (Prosody 13): \`destroy()\` on the old test rooms returned
+true, yet seven still showed in \`muc:list\` -- tombstones, which Prosody
+keeps for a destroyed persistent room (31 days by default) and which refuse
+a join with \`<gone/>\`.
+
+- **A member who held one of those groups now ends it** when its rejoin is
+  refused with \`<gone/>\` (new code \`room_gone\`, "This room was
+  deleted."), in the app and in Termux, exactly as for a room deleted while
+  they were online. Before, Termux printed "could not rejoin the room" at
+  every reconnect and the app failed silently, both keeping a dead group.
+- PROSODY_USER_DISCOVERY.md §5: tombstones, how to check one, and
+  \`muc_tombstones = false\`.
+
+---
+
+## Android 0.7.0-experimental.rc.50 — 2026-10-10 — delete any room you own, and moderation for admins (core 0.13.1)
+
+- **Delete on every room in the search, and for a typed address.** Until
+  now Delete was offered only for a group whose keys are on this phone, or a
+  room you had joined as owner -- so groups left on the server after a
+  reinstall could not be removed from the app. The SERVER decides who may:
+  a room's owner (Prosody: whoever created it) and the server's admins
+  (Prosody makes them owners of every room), which is moderation. A group
+  held on the phone still goes through the secure-group delete, which also
+  destroys its keys here.
+- PROSODY_USER_DISCOVERY.md §5: the server settings for listed, kept and
+  deletable rooms (\`muc_room_default_public\`,
+  \`muc_room_default_persistent\`, \`admins\`), and console commands for
+  rooms that already exist.
+
+---
+
+## Android 0.7.0-experimental.rc.49 — 2026-10-10 — groups show in the room search, with icons (core 0.13.1)
+
+Device test (rc.48, with a laptop on Ubuntu 26.04 as a fourth client): an
+app group call rang the laptop, which joined automatically as a verified
+member. The secure groups were all still on the server (Prosody
+\`muc:list\`), but the app's room search did not show them.
+
+- **Groups are listed.** A service lists only rooms configured public, and
+  nothing asked for that. Rooms the app or Termux create now ask to be
+  public; the groups this account holds are listed (and marked) even when
+  their room is hidden, which covers the rooms made before this change.
+- **What each room is**, in the search: 🔐 an end-to-end encrypted group,
+  \`#\` an ordinary room (channel), and 🔒 after the name when it needs a
+  password. A secure group's room carries a fixed description that marks it;
+  the password comes from the room's own \`muc_passwordprotected\`.
+- **A room the server will not keep is said.** A password-protected secure
+  group's room was never asked to be persistent (the form carried only the
+  password). Both clients now read the room back after creating it and warn
+  if the server did not make it persistent (Prosody:
+  \`muc_room_default_persistent = true\`).
+- A refused listing or keeping field never makes a create fail: the room
+  falls back to the service's defaults (the password always goes).
+- Terminal client: no more slixmpp 1.17 DeprecationWarnings (plugins are
+  reached through \`.plugin\`).
+
+---
+
+## Android 0.7.0-experimental.rc.48 — 2026-10-10 — Termux hears a group call it did not start (core 0.13.1)
+
+Device test (rc.47): the built-in I2P router connected the app, group
+verification ran (2 of 3 verified, the third typed the wrong passphrase),
+and the app's group call showed "in call" -- but no Termux client joined.
+
+- **Fix (Termux): rings were dropped.** The call handler, which is what
+  hears a ring, was only set up the first time that Termux client itself
+  used a call command (\`/group call\`, \`/group answer\`, \`/group calls\`).
+  A client that had not typed one silently dropped every ring. It is now set
+  up when the groups open, as the app always did. Termux clients need
+  \`git pull\` for this.
+- **Fix (both): a second ring was ignored** while the record of an earlier,
+  unanswered ring in that room remained. A new call now replaces one we
+  never joined, and ringing stops when the caller hangs up before anyone
+  answers.
+
+---
+
+## Android 0.7.0-experimental.rc.47 — 2026-10-10 — the built-in I2P router actually starts (core 0.13.1)
+
+- **Fix: "could not run it (IllegalArgumentException)"** (Pixel 7,
+  Android 17, rc.46). The check that keeps i2pd's certificate archive from
+  writing outside its folder refused the archive's first entry -- the
+  `certificates/` folder itself -- so the router was never launched. The
+  folder itself is now allowed; anything outside it is still refused
+  (RouterChoiceTest).
+- A launch failure now reports the exception's message as well as its type.
+
+---
+
+## Android 0.7.0-experimental.rc.46 — 2026-10-10 — the built-in I2P router no longer gives up while it starts (core 0.13.1)
+
+- **Fix: "Built-in I2P router did not start" on a phone with no I2P app.**
+  i2pd opens its SAM bridge only after its first-start download of the
+  router list (the reseed, over HTTPS), which takes minutes. rc.45 waited
+  30 s, reported a failure while the router was still downloading, and the
+  next reconnect killed it and started another -- so it never finished.
+  Now a router that is alive is never killed: the app waits for its SAM
+  bridge for as long as it keeps running, and a router left by an earlier
+  run of the app is reused rather than duplicated.
+- The connect screen says which stage it is in: "downloading the list of
+  I2P routers for its first start (m:ss, usually 1 to 5 minutes)", then
+  "joining the I2P network", then the connection.
+- If the router does exit, the screen and the Debug log say why: its exit
+  code and the last line it printed (i2pd's own output is now kept in its
+  private directory instead of discarded).
+
+---
+
+## Android 0.7.0-experimental.rc.45 — 2026-10-10 — an I2P router built into the app (core 0.13.1)
+
+- **No separate I2P app needed.** The APK carries i2pd 2.59.0 (with
+  OpenSSL 3.5.9 and Boost 1.88.0 linked in), built in CI from source pinned
+  to exact commits, for arm64-v8a and x86_64. Only its SAM bridge listens,
+  on 127.0.0.1:17656 (datagrams 17655, which voice and group calls follow);
+  the web console, HTTP and SOCKS proxies, BOB, I2CP, I2PControl and UPnP are
+  off.
+- **I2P router: Automatic / My I2P app / Built-in router**, on the connect
+  screen. Automatic (the default) uses an I2P app already on the phone when
+  its SAM bridge answers on 7656, and the built-in router otherwise. Only
+  I2P sign-ins start it; clearnet and Tor accounts never do.
+- **Limited transit**: bandwidth class L (32 KB/s), half of it for others,
+  at most 50 transit tunnels, never a floodfill. Reseed downloads are checked
+  against i2pd's bundled certificates.
+- **While it starts**, the connect screen says so and shows how long it has
+  been going ("joining the I2P network for the first time, usually 2 to 5
+  minutes"; afterwards "building tunnels, usually under a minute").
+- **Its data** (router identity, network database, peer profiles, address
+  book) lives in the app's private no_backup/i2pd. The router stops on
+  Disconnect, Sign out and Wipe & Exit, and Wipe & Exit deletes its data.
+- Licences: NOTICE §4 now attributes i2pd (BSD-3-Clause), OpenSSL
+  (Apache-2.0) and Boost (BSL-1.0, text added under LICENSES/); the APK
+  inspection checks the router and its certificates for both ABIs.
+
+---
+
+## Android 0.7.0-experimental.rc.44 — 2026-10-10 — verification progress, ETA, who is in and who is out (core 0.13.1)
+
+- **Progress and an ETA while a group verifies.** App: a progress bar on
+  the group's screen with "2 of 4 verified · about 1 min 30 s left · 1
+  checking · 1 not joined yet", and the members excluded. Termux: a bar
+  (\`[########------------] 2/4 · ~1m30s left · ...\`) on every change and
+  every 15 s while pairs are being checked. The estimate is measured on the
+  run itself (each pair's SMP is timed), with a fixed guess until the first
+  pair finishes.
+- **The end of a verification says who is in and who is out**: verified
+  members, and those excluded because their passphrase did not match --
+  they cannot join group calls.
+- **Call once the checks are done**, not only when every member passed:
+  verified members are in the call, anyone else simply is not.
+- Group calls are documented against 1:1 calls (android_bridge/group_call):
+  the same AES-256-GCM frames, nonce rule, 30 s ratchet, replay window,
+  padding and I2P datagrams; fresh keys every 120 s from a new MLS epoch
+  (X448 + ML-KEM-1024 HPKE) instead of a per-call X448 + ML-KEM-1024 rekey.
+  Group verification is the same Rust SMP as 1:1 \`/smp\`.
+
+---
+
+## Android 0.7.0-experimental.rc.43 — 2026-10-10 — group passphrase verification and group calls in the app (core 0.13.1)
+
+Owner design: whoever creates a secure group sets its passphrase; members
+verify with it; once verified, Call rings the group and every verified
+member joins by themselves; anyone can pause or hang up.
+
+- **The group passphrase.** Set when the group is created (app: a field
+  under "Create end-to-end encrypted group"; Termux: asked right after
+  \`/group create\`, hidden, Enter or any command skips it). Tell it to the
+  members in person or on a call -- it is never stored or sent.
+- **Verify the group.** App: "Verify group" on the group's screen; Termux:
+  \`/group verify <room>\`, or \`/smp\` while in the group. Every member is
+  asked (app: a dialog; Termux: "Join? [y/n]", then the passphrase,
+  hidden). Each pair of members who typed it runs the OTRv4+ SMP (hybrid
+  ML-KEM-1024 + ML-DSA-87 + ZKP, in the Rust core) inside the group,
+  bound to the group, this run and their two group keys: a match verifies
+  them in the group; anyone who typed it wrong fails with everyone and
+  stays out of group calls. The passphrase itself never leaves the device;
+  a pair stops after three failures. 1:1 conversations are not touched.
+- **Call the group.** Once every member is verified, the app's button
+  becomes "Call the group" (Termux: \`/group call <room>\`). Verified members
+  join by themselves -- in the app only when the microphone is allowed,
+  otherwise they get a Join button that asks for it first. In a call:
+  Pause (you still hear, nobody hears you; Termux \`/pause\`) and Hang up
+  (Termux \`/hangup\`).
+- **Group calls in the app**, for the first time: the same media as the
+  terminal client (one I2P datagram session, AAudio, the core's Opus, every
+  frame sealed in Rust with keys from the group's epoch).
+- Termux: \`/group sendkeys <room>\` keeps rc.42's key exchange over 1:1
+  sessions (verified once you have done 1:1 \`/smp\` with someone).
+
+Not yet run on phones: group verification over I2P and group calls from the
+app are new here.
+
+---
+
+## Android 0.7.0-experimental.rc.42 — 2026-10-10 — verified members, queued messages, y/n invitations (core 0.13.1)
+
+From a device test where groups worked, and three requests.
+
+- **Group calls: verifying members now works at any time.** A call is
+  among members you have SMP-verified, but a member counted as verified
+  in a group only if they were SMP-verified when one invited the other.
+  SMP done later -- or with a member someone else invited -- never reached
+  the group. Now, when SMP between two members succeeds, each sends the
+  other its group key for every group they share, over that verified
+  OTRv4+ session, and each group marks them verified (the key must match
+  the one the group holds; anything else is refused). For members verified
+  before this version: app, the group's screen, "Verify members (for
+  calls)"; Termux, \`/group verify <room>\` -- it sends your key and says who
+  still needs SMP (or an OTRv4+ session first).
+- **Messages typed while a group change lands wait instead of failing.**
+  Adding or removing a member (or a rekey) holds the group until the change
+  comes back from the room; a message sent then said "not sent". It is now
+  queued, shown as such, and sent, in order and encrypted, as soon as the
+  change lands.
+- **Termux: answer an invitation with y or n.** The invitation asks
+  "Join? [y/n]"; only an exact y/yes/n/no answers it (anything else is
+  typed as usual), as with an SMP request. \`/group accept <name>\` still
+  works, with the room's name alone.
+
+---
+
+## Android 0.7.0-experimental.rc.41 — 2026-10-05 — encrypted groups on the Rooms screen (core 0.13.1)
+
+- **Rooms now lists your encrypted groups**, from this account's keys (so
+  a group shows even before its room is joined), with **Refresh**, and for
+  each group **Open**, **Leave** and **Delete** (for everyone; asks first).
+- A refused delete says why -- only the group's creator (the room's owner)
+  can delete it -- instead of the service's generic "You are banned from
+  this room". Deleting a group whose room is already gone on the server
+  removes it here too.
+
+---
+
+## Android 0.7.0-experimental.rc.40 — 2026-10-05 — delete a group for everyone (core 0.13.1)
+
+Owner request: test groups had to be cleaned up on the server by hand.
+
+- **Delete a group for everyone.** The group's creator (the room's owner)
+  can delete it: app, the group's screen, "Delete group for everyone";
+  Termux, \`/group delete <room>\`. The room is destroyed on the server, which
+  tells every member in it, and their copy of the group ends (its keys are
+  forgotten; messages already on screen stay). A member who was away finds
+  the room gone when they come back and their copy ends too -- a secure
+  group's room is persistent (rc.33), so a missing room means a deleted
+  group, and it is no longer brought back as an empty room. Anyone else
+  asking is refused by the server and told to leave instead.
+- **Leave a group from the app**: "Leave group" on the group's screen
+  (Termux: \`/group leave\`). Both ask first.
+- Removing a member was already there (app: the group's screen, "Group
+  members" > Show > Remove; Termux: \`/group remove <room> <user>\`); after a
+  removal, invite them again to bring them back.
+
+---
+
+## Android 0.7.0-experimental.rc.39 — 2026-10-05 — invited back into a group (core 0.13.1)
+
+- **Fixed: inviting someone who still held the group did nothing.** Their
+  client dropped the invitation as "already a member" without a word, so
+  the inviter waited and they never saw it -- yet the inviter invites
+  precisely because that member's copy no longer works (behind on changes,
+  or removed). The invitation is now shown, with a note that this device
+  is already in the group; accepting replaces this device's copy with the
+  current one (the inviter's commit replaces the old member entry in the
+  same step, rc.33). Ignoring it changes nothing.
+
+---
+
+## Android 0.7.0-experimental.rc.38 — 2026-10-05 — sign out, then sign in again (core 0.13.1)
+
+From a device test, after the first four-client group chat that worked
+end to end (two apps, two Termux): Sign out left the app unable to sign in
+again.
+
+- **Fixed: Sign out kept the secure groups open.** The app's teardown
+  never closed them, so the lock on the account's group state (rc.31)
+  stayed held by the app that had just signed out, and the next sign-in's
+  groups found it "in use". Sign out now seals the groups to disk and lets
+  them go, lock and timers included; signing in again reopens them.
+
+---
+
+## Android 0.7.0-experimental.rc.37 — 2026-10-05 — a secure group never reads "Not encrypted" (core 0.13.1)
+
+- **Fixed: after signing in again, a secure group's row said "! Not
+  encrypted".** The row took its label from the room address's one-to-one
+  state, which is always plaintext. A secure group's row now says
+  "Encrypted group, syncing…" while it catches up after a sign-in or
+  reconnect, then "Encrypted group"; the conversation header says the same.
+  The app learns which groups it has as soon as they are opened, instead of
+  up to ten seconds later or when the first message arrives.
+- The note about waiting messages appears only when you actually type
+  while the group is syncing. Termux prints "syncing with the group..." and
+  then "in sync".
+
+---
+
+## Android 0.7.0-experimental.rc.36 — 2026-10-05 — no message lost while a group resyncs (core 0.13.1)
+
+From a device test: signed in again on the app, the first message to a
+secure group said "sent, encrypted" and nobody received it; the next one
+worked.
+
+- **Fixed: the first group message after a sign-in or reconnect was lost.**
+  It went out before the client was back in the room and had applied the
+  changes made while it was away (here, the group's automatic rekeys), so
+  it was encrypted for a key generation the others had already left, and
+  they dropped it. Now a group is "syncing" from sign-in (or reconnect)
+  until its room is joined again and its history has been applied (a few
+  seconds); what you type meanwhile waits, shown as queued with a note
+  ("Reconnecting to the group: your messages wait..."), and goes encrypted,
+  in order, once it is in sync. No rekey or other change is sent while out
+  of sync either. Same in Termux.
+- App: the room rejoin after a reconnect now also re-sends a group change
+  of ours that the old connection lost (Termux always did).
+
+---
+
+## Android 0.7.0-experimental.rc.35 — 2026-10-05 — /to takes a name, then a message (core 0.13.1)
+
+- **Fixed (Termux): \`/to secure yes\` made a contact called "secure yes" the
+  conversation.** The name is now the first word, and anything after it is
+  sent there: \`/to secure yes\` switches to the group and says "yes". A name
+  that is no contact or secure group is refused and the conversation stays
+  as it was.
+
+---
+
+## Android 0.7.0-experimental.rc.34 — 2026-10-05 — both Termux clients after build.sh (core 0.13.1)
+
+- **Fixed: \`python otrv4+.py\` (IRC) failed after \`build.sh\`** with "requires
+  otrv4_core.RustDAKE ... not built with the dake module". The build
+  installs the core into ~/OTRv4Plus/.venv and removes older copies from the
+  system Python, so that Python found no core at all; the message blamed
+  the build. Both terminal clients (IRC and XMPP) now re-run themselves
+  with .venv/bin/python when started with another interpreter (once;
+  \`OTRV4PLUS_NO_VENV=1\` keeps yours), with \`PYTHONMALLOC=malloc\`. Without a
+  .venv, the IRC client says the core is missing for that Python and how to
+  fix it.
+- **build.sh checks both clients.** Its last step loads the OTRv4+ engine
+  (the IRC client, which the XMPP client also uses) and the XMPP client
+  against the module just built, and prints how to start each.
+
+---
+
+## Android 0.7.0-experimental.rc.33 — 2026-10-05 — coming back after a wipe (core 0.13.1)
+
+From a device test: Alice wiped the app and signed in again; her secure
+group was gone, and the room was not there to find.
+
+- **A member who wiped (or changed device) is invited back cleanly.** Their
+  old member entry can never read again; inviting them now removes it in
+  the same commit that adds the new one (RFC 9420 Remove + Add), so a group
+  never holds two entries for one person. A new device is a new key: the
+  others see them as unverified until they verify again. Adding our own
+  identity is refused. (Core 0.13.1.)
+- **A secure group's room outlives its members.** It is created persistent,
+  so a moment when every member is offline no longer destroys it, with the
+  commits in its history. A service that refuses persistence still gets
+  its defaults.
+- **A rejoin that re-creates the room unlocks it.** When the room was gone
+  and a member's client re-entered it, the server made a new, locked room
+  that nobody else could join. Both clients now configure a room their join
+  created (status 201).
+
+After a wipe the group's keys are gone by design: finding the room again
+does not bring them back. Ask a member to invite you again
+(Termux: \`/group invite mls3 alice\`).
+
+---
+
+## Android 0.7.0-experimental.rc.32 — 2026-10-05 — just type into a group (core 0.13.0)
+
+From a three-client test (app + two Termux) where the group worked but
+every line needed \`/group say <full room address> ...\`.
+
+- **Termux: names are enough.** \`/group create mls3\`, \`/group invite mls3
+  bob\`, \`/otr bob\`, \`/call bob\`: your server (and its conference service)
+  is filled in. A short room name matches your group of that name, or the
+  one it starts; if it matches several, nothing is sent and they are listed.
+  App: the invite box takes a user name too.
+- **Termux: you are put into the group.** Creating a group, or your Welcome
+  arriving after \`/group accept\`, makes it the conversation: what you type
+  goes to the group, MLS-encrypted. With nothing chosen yet, the first group
+  message (or a single restored group) does the same. \`/to <name>\` switches
+  between contacts and groups; \`/group mls3 hello\` sends without switching.
+  A room you hold no group for is refused, so typing never goes out plain.
+- **Fixed: Termux started OTRv4+ with the room itself.** A room member's
+  presence was read as a contact coming online, so accepting an invitation
+  began a handshake with the room (the server answered
+  \`service-unavailable\`). Room presence is now ignored there, as on
+  Android.
+- **No false alarm on joining.** The room's history from before you joined
+  can never decrypt; it no longer triggers "messages could not be
+  decrypted".
+
+---
+
+## Android 0.7.0-experimental.rc.31 — 2026-10-05 — groups survive restarts and account switches (core 0.13.0)
+
+From a two-phone test: a Termux client warned \`groups_state_unreadable\`,
+a message to a contact who had restarted never arrived, and a rejoined
+secure room showed as unencrypted with raw ciphertext in it.
+
+- **Fixed: one device's group state was shared by every account on it.**
+  Running Termux as one account and then another (or signing the app into
+  a different account) opened the other account's file, failed, set it
+  aside, and a later save overwrote what was left. Each account now has its
+  own state file. An older shared file is adopted by the account it
+  belongs to.
+- **The last good copy is kept.** Every save keeps the previous state as a
+  fallback, writes through a unique temporary file and syncs it to disk; a
+  damaged state falls back to the previous one. If nothing opens, the
+  warning now says why and the file is kept aside, never deleted.
+- **Two clients for the same account on one device are refused**
+  (\`state_in_use\`) instead of overwriting each other's group state.
+  Quit an old Termux client before starting a new one.
+- **Termux recovers when a contact restarts.** Encrypted messages for a
+  session we no longer have now start a new handshake at once (at most
+  once a minute per contact), as the app already did. The message sent
+  during the restart is not recoverable and needs sending again.
+- **A secure room without its keys is never shown as a plain room.** Its
+  ciphertext is hidden, one note explains the keys are missing, and
+  nothing can be sent there until someone re-invites you.
+
+Upgrade note: groups whose state was lost before this release need a new
+invitation (or a new group).
+
+---
+
+## Android 0.7.0-experimental.rc.30 — 2026-10-04 — encrypted by default, nothing lost while it starts (core 0.13.0)
+
+The owner's rules: no plaintext ever to a contact whose app speaks OTRv4+;
+encryption starts by itself; a contact whose app does not speak OTRv4+ is
+written to in the clear, clearly labelled; and say what is happening and
+how long it will take. Same behaviour in the app and the Termux client.
+
+- **Fixed: a message typed while encryption was starting was lost.** Both
+  clients said "queued -- will send once OTR is ready", but the engine's
+  queue was cleared, not sent, when the handshake completed. Lines now wait
+  in the client's own outbox and are sent, in order, the moment the session
+  is up; the app then marks them sent and encrypted.
+- **No plaintext to an OTRv4+ contact, ever.** While the contact's app is
+  still being checked, or they are offline, what you type waits (nothing
+  goes on the wire). Once they are online: OTRv4+ if their app supports
+  it, otherwise the waiting lines go in the clear and are labelled
+  unencrypted. Termux: \`/msg\` refuses to send plaintext to an OTRv4+
+  contact.
+- **OTRv4+ starts by itself when a contact comes online**, so a
+  conversation is usually encrypted before anyone types. Only one side
+  starts it (the lower address), so two handshakes do not collide.
+- **Group invites start OTRv4+ themselves.** Inviting someone with no
+  session yet starts one; the invitation goes as soon as it is up. No more
+  \`/otr\` first (app and \`/group invite\` on Termux).
+- **How long is left.** The handshake card shows "20 s so far, about 40 s
+  left", from how long your past handshakes took (per contact, then
+  overall; 75 s before any), and how many messages are waiting. Termux
+  prints the same estimate and the time each handshake took. The
+  not-encrypted lines now say plainly that messages wait rather than leak.
+
+## Android 0.7.0-experimental.rc.29 — 2026-10-04 — secure groups: no more stall when members are added (core 0.13.0)
+
+Found on the phones: Alice added B and C, both Termux clients waited for
+ever for their Welcome, Alice's messages said "not sent", and the app
+reconnected.
+
+- **The cause: a deadlock.** Room messages are handled on the XMPP event
+  loop's own thread. When Alice's add-member commit came back from the
+  room, the app sent each Welcome from that thread and then waited for the
+  loop to send it -- which it could not, being the thread that was
+  waiting. Each Welcome failed after 30 s, and the stalled loop missed
+  keepalives, so the connection dropped. A send from the loop thread is now
+  queued on the loop instead of waited for. (The same applied to a commit
+  posted when a KeyPackage arrived, and to group fragments re-sent after a
+  bounce.)
+- **A Welcome is now kept until the invitee confirms it** (a new JOINED
+  signal over OTRv4+). It is sent again on every reconnect and every few
+  minutes, for up to 24 hours, and survives a restart. A Welcome that
+  arrives twice is acknowledged, not shown as refused. An older client
+  that sends no JOINED just receives it a few more times.
+
+A group whose Welcomes were lost before this version cannot be repaired:
+create a new one.
+
+## Android 0.7.0-experimental.rc.28 — 2026-10-03 — group voice calls (M5), core and Termux (core 0.13.0)
+
+**Termux: run \`build.sh\` again** (core 0.13.0).
+
+- **Group voice calls in secure groups** (MLS_SECURITY_HARDENING.md §5).
+  Keys come from the group's MLS exporter -- hybrid X448+ML-KEM-1024 since
+  rc.27 -- per epoch and per sender, and never leave Rust
+  (\`RustGroupVoice\`): AES-256-GCM, nonce epoch||counter, a ratchet every
+  500 frames, a replay window per sender. Every commit moves the call to new
+  keys, and whoever started the call forces one every 120 s.
+- **Only SMP-verified members are in a call.** Ring/join/leave travel as MLS
+  messages (never shown as chat) and carry each member's I2P datagram
+  destination; an unverified member's join is refused and reported, and
+  they neither receive nor are heard.
+- **Termux**: \`/group call <room>\`, \`/group answer <room>\`,
+  \`/group hangup\`, \`/group calls\`. One SAM datagram session per call,
+  full mesh, up to 5 people; Opus padded to one frame size as in 1:1
+  calls, mixed per sender.
+- **Not yet**: the Android call screen for group calls; and no group call
+  has been made on real phones over I2P yet.
+
+## Android 0.7.0-experimental.rc.27 — 2026-10-03 — hybrid post-quantum MLS; adaptive group speed; MLS hardening M2-M4 (core 0.12.0)
+
+**Termux: run \`build.sh\` again** -- the core changed (0.12.0). Existing
+groups carry on: the sealed state from rc.26 and earlier is migrated on the
+first start (its one signing key becomes each group's key until that
+group's next rekey).
+
+- **M4: secure groups are hybrid post-quantum.** Every new group uses
+  MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 (private code point
+  0xF0A1): HPKE over **X448 + ML-KEM-1024** joined by a binding SHA3-256
+  combiner (both ciphertexts and both public keys enter the secret), and a
+  composite **Ed448 + ML-DSA-87** signature that only verifies if both
+  halves do; AES-256-GCM and SHA-384 as before. Breaking either half alone
+  breaks nothing. OpenMLS's closed suite list is patched in a vendored
+  `openmls_traits` (decision C1; every change in
+  `Rust/vendor/VENDORED.md`); the crypto is the project's own, on the
+  primitives the core already uses. Groups made before rc.27 (PQ-only)
+  keep working but take no new members -- create a new group to add
+  people; Termux \`/group members\` shows which suite a group uses. Sizes
+  grow by 2-3 % (a self-update in a 4-member group is 22.3 KB).
+- **Adaptive room speed.** Group pieces go out fast (10 at once, then 4 a
+  second) instead of always at the stock-Prosody pace. Each piece is held
+  until the room echoes it back. When the server bounces one
+  (mod_muc_limits), that room slows to the old pace for 5 minutes (doubling
+  per further bounce, at most an hour) and everything not yet echoed goes
+  again; a piece not echoed within 20 s goes again too, at most 3 times.
+  Repeats are harmless (MLS drops a replay and a stale commit). The Termux
+  client says it once a minute, not per piece.
+- **M2: one MLS signing key per group, replaced at every rekey**
+  (MLS_SECURITY_HARDENING.md §1, decision D1 "rotate only"). A member can no
+  longer be linked across groups by key, and each key signs only until the
+  next rekey; the old private key is dropped. The rotation is signed with
+  the old key, so a member verified over SMP **stays verified** across it;
+  a new leaf under an old name (removed, then someone added as them) is
+  not. The core now reports who made each commit.
+- **The inviter's fingerprint now travels with the Welcome** as well as the
+  invite (both over the same OTRv4+ session), so a rekey between the two no
+  longer fails the join. An older inviter that sends none is checked
+  against the invite as before.
+- **M3: members away for 72 hours are removed** (decision U1,
+  \`OTRV4PLUS_MLS_IDLE_REMOVE_HOURS\`, 0 = off). Every online member now
+  rekeys at least every 30 minutes even when silent (that is also how the
+  others know it is there); a member whose key nobody has seen refreshed
+  for 72 h is removed by the next member that notices, and is told to be
+  re-invited. Nothing is judged in the first 10 minutes after a
+  (re)connect, while missed commits arrive.
+- **Group bookkeeping survives a restart**: who was verified over SMP,
+  invitations in flight, a commit of ours still waiting for the room, and
+  key-refresh times are sealed inside the MLS state (AES-256-GCM, bound to
+  the account). Previously a restart forgot them.
+- A KeyPackage that arrives while one of our commits is out is added once
+  it lands, instead of being refused.
+
+## Android 0.7.0-experimental.rc.26 — 2026-10-03 — MLS hardening, step M1 (core 0.11.0)
+
+The owner's MLS + audio hardening specification is audited, point by point,
+in **MLS_SECURITY_HARDENING.md**, with what is met, what is not, the
+library flags that need a decision, and the commit plan (M1-M5).
+
+- **Automatic MLS rekey every 50 messages or 30 minutes** (was 100 / 24 h),
+  per the specification. Set by `OTRV4PLUS_MLS_REKEY_MESSAGES` and
+  `OTRV4PLUS_MLS_REKEY_SECONDS`, which are clamped and fall back to the
+  defaults. A self-update in a 4-member group is about 22 KB (8 room
+  fragments).
+- Flags raised in the document: **D1**, RFC 9420 signs every message, so
+  MLS cannot be fully deniable (plan: per-group, rotated leaf keys);
+  **C1**, OpenMLS cannot express an X448+ML-KEM-1024 / Ed448+ML-DSA-87
+  suite without being patched; **U1**, removing idle members after 24 h
+  would remove every phone that is off overnight.
+
+## Android 0.7.0-experimental.rc.25 — 2026-10-03 — Profile screen, no overlapping buttons, automatic MLS rekey (core 0.11.0)
+
+*Device test: MLS works from the app to Termux. Alice created `mls`, B
+(Termux) accepted, joined at epoch 1 and read Alice's messages. The "+"
+button sat on top of Wipe & Exit.*
+
+- **No overlapping buttons.** The footer (Rooms, Profile, Debug, About,
+  Theme, Wipe & Exit) is now the screen's bottom bar, which Material places
+  below the floating "+". Before, the footer was part of the content and
+  the "+" covered it. The buttons scroll sideways on a narrow phone instead
+  of squashing.
+- **Profile screen** ("Profile" on the main list): your picture (chosen,
+  scaled to 96×96 and re-encoded as PNG, as in rc.24) and your full XMPP
+  profile (vcard-temp, XEP-0054, which Prosody's `vcard` module serves).
+  Fields: full name, first and last name, nickname, birthday, e-mail, phone,
+  web site, organisation, job title, role, town, region, country, about me.
+  "Profile" in a conversation shows that contact's profile, read-only.
+  - Every field is defined once in `android_bridge/profile.py`. Each is
+    length-capped. Control and formatting characters are stripped, including
+    bidi overrides (so "gpj.exe" cannot pose as "exe.jpg"), and text is
+    NFC-normalised. Shaped fields are checked: birthday YYYY-MM-DD, phone
+    digits, e-mail, and web addresses http(s) only, shown as text, never as a
+    link. Anything else in a received vCard (PHOTO, KEY, extensions) is
+    ignored. This applies to what we publish and to what we show.
+  - The screen says that a vcard-temp profile is readable by every user of
+    the server and is not encrypted.
+- **Automatic MLS rekey** (post-compromise security): after 100 messages
+  we sent, or 24 h since our last commit, our client self-updates its
+  group key. It never does so while one of our commits is pending. Every
+  member moves to the new epoch and keeps reading (interop tests: app
+  sends, Termux reads across the rekey). `/group rekey` still works by
+  hand.
+
+## Android 0.7.0-experimental.rc.24 — 2026-10-03 — secure groups recover by themselves; safe avatars (core 0.11.0)
+
+### Secure groups (MLS): no more stuck groups
+- **A commit that never comes back is sent again.** Our own commit (adding
+  or removing a member, or a rekey) is kept until the room echoes it.
+  It is posted again when the server bounces a room message, when we rejoin
+  the room after a reconnect, and when a send is refused because the commit
+  is pending (`commit_resent` group event), at most 3 times. Before, one
+  bounced commit left the group pending forever: every send refused and the
+  new member never got a Welcome. Interop tests cover each trigger with a
+  server that drops the commit.
+- **Room fragments are paced** under Prosody `mod_muc_limits`' default
+  rate: a burst of 3, then one every 2.2 s, in order, per room
+  (`RoomPacer`). An add-member commit is about 11 fragments, so it takes
+  about 20 s on a stock server instead of mostly bouncing. Termux sends
+  the paced fragments on its event loop (slixmpp is not thread-safe).
+- **A bounced room message reaches the group code** on both clients. The
+  app records it (`rooms/message_rejected`) and shows `room_message_rejected`.
+  Termux prints one explanation naming `muc_limits` instead of a raw
+  delivery error.
+
+### Avatars (XEP-0084), without trusting the image
+- Contacts' pictures appear on the conversation list. **No Android image
+  decoder ever reads a peer's file.** `android_bridge/avatar.py` accepts PNG
+  only (the format XEP-0084 requires everyone to support), at most 64 KB
+  and 256×256, 8-bit and not interlaced. It checks the SHA-1 against the
+  published id, every chunk length and CRC, and refuses unknown critical
+  chunks and anything after `IEND`. It decompresses only up to the exact
+  size the header implies, so a 50 MB decompression bomb stops at a few
+  KB. Decoding is pure Python, off the network thread. Only raw RGBA
+  reaches the app, which builds the bitmap from those numbers.
+  `test_avatar_safety.py` covers hostile images and fuzzes 400 random
+  mutations, plus the fetch and publish wiring.
+- **Your own picture** ("Picture" on the main list) is decoded small,
+  centre-cropped, scaled to 96×96 and re-encoded as a plain PNG, so no
+  EXIF, location or trailing data from the original is published. The
+  bridge then checks it with the same decoder before publishing.
+  Avatars are held in memory only, so Wipe & Exit and signing out leave
+  none behind.
+- Termux does not show avatars (it is a terminal).
+
+## Android 0.7.0-experimental.rc.23 — 2026-10-03 — secure groups fit a stock Prosody room (core 0.11.0)
+
+*Device test: Alice (app) created `mls2`, invited B (Termux). B accepted and
+got no Welcome; Alice's sends said "message not sent"; B's `/group say` said
+`not_a_group`.*
+
+**Cause, measured.** Every MLS frame is posted to the room in fragments,
+and each fragment was 6021 characters. Prosody's `mod_muc_limits` (enabled
+on the test server's `conference` component) refuses room messages over
+`muc_max_char_count`, 5664 characters by default. Post-quantum signatures
+make every MLS frame larger than that: "hi" is 6311 characters on the wire,
+and a commit adding a member is 40,439. So every fragment bounced. Alice's
+commit never came back from the room, her group held it pending (refusing
+every send), and the Welcome, sent only when the commit lands, never left.
+A new interop test (the app creates, Termux joins, over a simulated server
+with Prosody's limit) reproduces the failure with the old size.
+
+- **Room fragments are 4000 characters** (`otrv4plus_fragment.ROOM_FRAGMENT`),
+  under the default limit with the header. This applies to both clients,
+  through the shared `SecureGroups`. One-to-one chat is unchanged, and the
+  receiver takes any piece size.
+- **A message the server bounces is in the diagnostic report**
+  (`rooms/message_rejected`, condition only). It was ignored before.
+- **Still a server matter:** `mod_muc_limits` also rate-limits (about 0.5
+  messages per second, with a small burst). A commit is about 11 fragments,
+  so for MLS rooms remove `muc_limits` from the conference component or
+  raise its rate.
+
+## Android 0.7.0-experimental.rc.22 — 2026-10-02 — secure groups survive a reconnect and a capitalised invite; no plaintext into a group room (core 0.11.0)
+
+*Four-account MLS test: Alice (app) invited B (Termux). B accepted and waited
+for the Welcome indefinitely. B then tried `/msg mls@conference… hello`,
+which went to the room address unencrypted (the server refused it).*
+
+- **The invitee's address is folded to bare lower case when the invite is
+  stored.** B's answer (its KeyPackage) is matched on the sender as the app
+  reports it, `b@…`. An invite typed as `B@…`, which a phone keyboard does by
+  default, never matched, so the answer was dropped as uninvited and B
+  never got a Welcome. A test reproduces the hang without the fix. The
+  invite field now uses an email keyboard, with no auto-capital.
+- **The app rejoins every secure group's room after each (re)connect**, as
+  the Termux client always has. Only the Welcome room was rejoined, so
+  after a reconnect the group's room dropped everything: Alice's sends
+  failed ("message not sent"), and her commit adding B never came back from
+  the room. MLS kept that commit pending, which refuses every later send,
+  and B got no Welcome. Rejoining replays the room's recent history, which
+  applies a commit that landed while the app was away
+  (`groups/rooms_rejoined` in the report).
+- **Termux `/msg` refuses a secure-group room** and points at `/group say`.
+  `/msg` sends plaintext to one address, which is never right for a room
+  whose text must be MLS.
+
+## Android 0.7.0-experimental.rc.21 — 2026-10-02 — a new encrypted session is listed; Termux commands survive a paste (core 0.11.0)
+
+*Four-account MLS test: Termux B ran `/otr alice@otrv4plus.i2p` so Alice
+(app) could invite B to the secure group. B showed ENCRYPTED; Alice's app
+showed nothing.*
+
+- **Anyone who opens an encrypted OTRv4+ session with the app is listed in
+  the conversations at once**, contact or not, with or without a message.
+  The session was recorded but only rows with a contact, a message or a
+  saved entry were listed, so the person was invisible and there was no
+  conversation to invite them from.
+- **Termux: a pasted command is still a command.** Zero-width characters,
+  a byte-order mark and non-breaking spaces from a chat window are removed
+  from typed lines. A line starting with `/` that is not a command now
+  prints `unknown command` instead of being sent as a chat message.
+
+## Android 0.7.0-experimental.rc.20 — 2026-10-02 — the Welcome room is created on otrv4plus.i2p; Termux signs in the same way (core 0.11.0)
+
+*First successful sign-in to the new server (rc.19, after its TLS
+certificate was restored). Owner: "we should be auto creating the welcome
+room like the old app had", and Termux must work the same for a four-account
+MLS test.*
+
+- **The OTRv4Plus Welcome room is created automatically on `otrv4plus.i2p`.**
+  The first account to sign in creates it, with the same settings as the
+  button: public, persistent, addresses visible. Later accounts find it by
+  name and join. If another client created it a moment earlier, the app
+  does not create a second one. On any other server the app still asks
+  before creating, because the room shows every occupant's address.
+- **Termux signs in as `<user>@otrv4plus.i2p` when given the b32**
+  (`otrv4plus_address.canonical_jid`, now shared with the Android profile).
+  `--jid you@otrv4plus.i2p` alone already reaches the server at its shipped
+  b32, with no `--server` needed.
+
+## Android 0.7.0-experimental.rc.19 — 2026-10-02 — a failed TLS handshake over I2P says why (core 0.11.0)
+
+*Device report on rc.18: STARTTLS offered and accepted, client sent 701 bytes
+(132 stream header + 52 `<starttls/>` + a 517-byte ClientHello, measured
+against the same code here), received 670, then `server_closed_connection`.
+The client sent no alert, so it never got a certificate to judge: the
+server ended the handshake before sending one.*
+
+- **The TLS failure reason is recorded and shown** (`connection/tls_failed`,
+  OpenSSL's reason, e.g. `SSLV3_ALERT_HANDSHAKE_FAILURE`). Each reason has a
+  plain explanation. A handshake refused by the server points at its
+  certificate/key setup (`prosodyctl check certs`, a key readable by the
+  prosody user). The message says plainly that certificates are not checked
+  over I2P. slixmpp reports every TLS failure as `ssl_invalid_chain` and
+  logs "Invalid certificate trust chain", which was misleading here.
+- **The vague "closed before sign-in" waits 0.5 s** for that reason to
+  arrive: slixmpp signals `disconnected` before the TLS error, so the
+  precise cause was being replaced by the generic one.
+
+## Android 0.7.0-experimental.rc.18 — 2026-10-02 — an account on the server's b32 signs in as otrv4plus.i2p (core 0.11.0)
+
+*Device report on rc.16: the client sent 179 bytes, exactly the stream header
+addressed `to='<b32>.b32.i2p'` (for `otrv4plus.i2p` it is 132 bytes). The
+server hosts `otrv4plus.i2p` and refused the domain.*
+
+- **A JID on the project server's b32 becomes a JID on its name.** Choosing
+  "Custom" and typing the b32 (the only way to reach the server before
+  rc.15) made the account `alice@<b32>.b32.i2p`, and the app remembers it.
+  The server was greeted under a domain it does not serve. The profile now
+  maps `<user>@nquyx…ika.b32.i2p` to `<user>@otrv4plus.i2p` wherever it is
+  built, so new and remembered accounts both sign in. The connection still
+  goes to the b32. Other addresses are untouched.
+
+## Android 0.7.0-experimental.rc.17 — 2026-10-02 — the server's refusal reaches the screen over I2P (core 0.11.0)
+
+*Device report on rc.16 (Xiaomi, Android 15): the tunnel to otrv4plus.i2p
+opened, the server answered in XMPP (`first=xml`, 492 bytes), and the client
+closed the stream 2 s later. No reason was recorded, and the attempt waited
+for the 300 s timeout.*
+
+- **A stream error from the server fails the connect at once, with its
+  meaning.** Over I2P and Tor a server's stream error was dropped: slixmpp
+  closed the stream, nothing ended the wait, and the reason was lost. This
+  was handled on clearnet only. `host-unknown` now reads "the server does
+  not host <domain>, the domain in your address", with the Prosody
+  `VirtualHost` fix. Other RFC 6120 conditions are named. The condition is
+  recorded as `connection/stream_error`; the server's free text is not.
+- **A stream that closes before sign-in says where it stopped**
+  (`server_closed_connection`, with the last step) instead of waiting for
+  the timeout.
+- Sign-in rules are unchanged: SCRAM only over I2P/Tor, and only inside the
+  server's TLS. A server offering no STARTTLS still fails with
+  `no_safe_auth_mechanism`, which now arrives at once as well.
+
+## Android 0.7.0-experimental.rc.16 — 2026-10-02 — the report says why the I2P stream ended (core 0.11.0)
+
+*Device report on rc.14 (Xiaomi, Android 15): the tunnel to otrv4plus.i2p
+opened, no stream features arrived, and the stream closed about 10 s later.*
+
+- **`connection/i2p_stream_ended`** records which side ended the I2P stream
+  (`server` or `client`), the bytes sent and received, and the kind of the
+  server's first byte (`xml`, `tls`, `other`, `none`). It never records
+  content. When the result points at server setup, a `meaning` field says
+  what to check:
+  - nothing received: the server's I2P tunnel reaches nothing that answers
+    (needs `type = server`, `127.0.0.1:5222`, and the XMPP server running);
+  - TLS first: the tunnel points at the direct-TLS port 5223;
+  - anything else: the wrong tunnel type or port.
+  The Termux client prints the same line.
+
+## Android 0.7.0-experimental.rc.15 — 2026-10-02 — otrv4plus.i2p always goes to its own address (core 0.11.0)
+
+- **The server list's `otrv4plus.i2p` is dialled at
+  `nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p`**, and the
+  router's address book is no longer asked what the name means. Before, the
+  router was asked first, and an address book that mapped the name to
+  another destination was followed. The destination must hash to that b32.
+  A pin left over from an earlier address-book answer no longer blocks it.
+  Termux does the same, and its alias file no longer overrides the name.
+  The address now lives in `otrv4plus_address.SHIPPED_SERVERS`, shared by
+  both clients; `SERVER_NAME_FALLBACKS` is gone.
+- **The server's own TLS certificate (self-signed) is accepted over I2P**,
+  as before: no prompt and no CA check. The `.b32.i2p` address already
+  authenticates the server, and sign-in stays SCRAM-only, so the password
+  itself is never sent.
+
+## Android 0.7.0-experimental.rc.14 — 2026-10-02 — a timed-out connect no longer leaves a session in the router (core 0.11.0)
+
+*Device reports on rc.11-rc.13 (Xiaomi, Android 15): connects that ran out
+the 300 s wait, then a router the app could no longer reach.*
+
+- **A connect that times out closes its I2P session.** The wait cancelled
+  the connect but not the thread doing the SAM work. That thread had
+  already created a session (a temporary I2P identity with its own tunnels)
+  and stayed blocked waiting for the server. The session stayed open in
+  i2pd for as long as the app ran, and every retry added another, all
+  competing for the same phone router. The session is now closed when the
+  wait expires, and the blocked thread is woken and ends. The Termux client
+  shares this code and gets the same fix.
+
+## Android 0.7.0-experimental.rc.13 — 2026-10-02 — the router check is in the diagnostic report (core 0.11.0)
+
+*Device report on rc.12 (Xiaomi, Android 15): "i2pd is not reachable" while
+the i2pd app said it was running, and the report said "(no events recorded)".*
+
+- **The router check is recorded**: each check, from the screen or from
+  Connect, adds a `router/probe` event with its code (`ok`, `refused`,
+  `timeout`, `not_sam`, `unreachable`) and the SAM version. The local host
+  and port are not recorded.
+- **"Not reachable" names the usual Android cause**: a router app that
+  Android has stopped or frozen in the background still shows as running.
+  The `refused` and `timeout` messages now say to open the router app and
+  set its battery use to Unrestricted.
+
+## Android 0.7.0-experimental.rc.12 — 2026-10-02 — a connect that times out says where it stopped (core 0.11.0)
+
+*Device report on rc.11 (Xiaomi, Android 15): "did not finish within 300s",
+with 57568 events dropped and none of them about the connection.*
+
+- **The timeout names the last step reached and what it means**: the I2P
+  tunnel to the server was never built (server tunnel down, or a router
+  still integrating); the tunnel opened but the XMPP server never answered
+  (XMPP service down, or not its port-5222 tunnel); the server answered but
+  TLS or sign-in did not finish; and so on.
+- **Every step of an I2P/Tor connect is in the diagnostic report**:
+  opening the SAM stream, the shipped address being used for
+  `otrv4plus.i2p`, the stream established, the tunnel open, the server's
+  stream features, TLS, signed in. No destination is recorded. The screen
+  shows "Connecting to the server" once the tunnel is open.
+- **Roster polling no longer floods the report.** The screen reads the
+  roster about twice a second and each read was recorded, filling the
+  4000-entry ring within minutes; it is recorded only when it changes.
+
+## Android 0.7.0-experimental.rc.11 — 2026-10-01 — the otrv4plus.i2p fallback works with i2pd (core 0.11.0)
+
+*Device report on rc.10 (Xiaomi, Android 15): sign-in stopped at
+`i2p_name_not_found ... (INVALID_KEY)`.*
+
+- **Fixed: the shipped address for `otrv4plus.i2p` was never used with
+  i2pd.** A router answers NAMING LOOKUP for a name its address book lacks
+  with KEY_NOT_FOUND (Java I2P) or INVALID_KEY (i2pd); rc.10 fell back only
+  on the first. Both now mean "unknown name" for a well-formed short name (it
+  is validated before it is sent), for the shipped fallback and for the
+  Termux alias file alike. Any other naming result still gets no fallback.
+
+## Android 0.7.0-experimental.rc.10 — 2026-10-01 — default server is now otrv4plus.i2p (core 0.11.0)
+
+- **The app and the terminal clients point at `otrv4plus.i2p`**, which
+  replaces `xmpp-elite.i2p`. The sign-in screen's Server dropdown shows the
+  new name, and a bare username becomes `name@otrv4plus.i2p`. It is a name,
+  resolved by the phone's I2P router each time (SAM NAMING LOOKUP), and its
+  destination is pinned on first contact (X1).
+- **Works before the name is in any address book.** When the router answers
+  KEY_NOT_FOUND for `otrv4plus.i2p`, the app and the terminal clients dial
+  the server's c2s address shipped with this version,
+  `nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p`. The
+  router is always asked first: once it knows the name, its answer is used,
+  and a router that maps the name to a different destination than the pinned
+  one is refused (X1). On Termux a hand-written `~/.otrv4plus/i2p_hosts`
+  line for the name still takes precedence. No other name has a fallback.
+- An account is per server: anyone signed in on `xmpp-elite.i2p` signs in
+  (or registers) again on `otrv4plus.i2p`. Saved accounts on the old server
+  are not changed or deleted.
+- The Termux build script (`Rust/build.sh`) now removes older otrv4_core
+  copies before installing, reports progress, stalls and kills on a phone,
+  and logs every run (entries under rc.9 below).
+
+## Android 0.7.0-experimental.rc.9 — 2026-09-29 — Termux joins the same secure groups (core 0.11.0)
+
+- **No change to the app's behaviour or wire format.** The APK now also
+  carries `otrv4plus_groups.py`, the terminal client's secure-groups adapter,
+  because the shipped `otrv4plus_xmpp.py` imports it; the app never uses it.
+- **Termux XMPP client: MLS secure groups** with the same Rust/OpenMLS core,
+  the same `?OTRv4MLS1:` room format and the same OTRv4+ setup as the app, so
+  Termux A, Termux B and Android C can share one group. `/group create |
+  invite | accept | say | members | remove | rekey | leave`, and `/wipe`.
+  `/quit` keeps the sealed group state; `/wipe` destroys it. Build the Termux
+  core with `--features mls` (Rust/build.sh does). Not yet tested on devices:
+  `PHYSICAL_TEST_PLAN.md` §7a.
+- Recorded: a tampered copy of a group message that arrives before the
+  genuine one makes the genuine one undecryptable (fail closed; OpenMLS
+  spends the key). See MLS_FEASIBILITY.md.
+- **Termux build: `cd Rust && bash build.sh` is now all it takes.** It creates
+  and uses the project's own `.venv`, installs the pinned maturin 1.13.3
+  there, runs the Rust tests and clippy (-D warnings), installs the MLS build
+  into `.venv` and proves the import comes from there. Run the clients with
+  `.venv/bin/python`. Fixes the Termux import failure `cannot locate symbol
+  "_Py_NoneStruct"`: maturin 1.14+ makes PyO3 0.29 link `libpython3.so` for
+  abi3 builds on Android. PyO3 stays at 0.29 (0.28.x is affected by
+  RUSTSEC-2026-0176).
+- **Termux: the maturin compile no longer dies with `Text file busy (os
+  error 26)`.** Android forbids hard links in app data, so cargo copies each
+  build script into place, and a parallel job forked mid-copy keeps it open
+  for writing when cargo executes it (ETXTBSY). `build.sh` now compiles
+  maturin once with `CARGO_BUILD_JOBS=1`, in a temp/target directory it owns
+  and empties before each attempt (at most 3, only for that error), checks and
+  caches the wheel in `~/.cache/otrv4plus/maturin-1.13.3/`, and installs it
+  from there on later runs. Prerequisites (rustc versions, a C compiler,
+  venv) are checked before anything is built; the project's own cargo
+  commands retry that one error serially too.
+- **Termux build: every run explains itself.** Full log in
+  `~/.cache/otrv4plus/logs/` (`latest.log`), with device and toolchain; a
+  heartbeat during long steps (time, crates compiled, whether the compiler is
+  using CPU) that says plainly when nothing is happening; `BUILD OK` or
+  `BUILD FAILED` with the cause and a diagnostics block. A build Android
+  killed is reported by the next run, which resumes (the maturin target is
+  kept; its last retry starts clean). Killed compilers and memory exhaustion
+  are retried with one job at a time; a full disk is named, and free space is
+  checked first. A wake lock is held, parallel jobs are capped at 4 on a
+  phone, a second concurrent build is refused, and the Android API level for
+  the wheel comes from Python itself. The final step also checks every core
+  function the clients call and runs an MLS round trip on the device.
+- **Termux build, from the first phone run (Xiaomi, Android 15, BUILD OK):**
+  the progress line read "compiler CPU 0s (0 processes)" while rustc was
+  linking -- awk, handed every /proc/*/stat at once, stops at the first
+  process that has exited and skips the rest. Each file is now read on its
+  own; if activity cannot be seen at all it says so instead of reporting 0,
+  and never calls that a stall.
+- **One core per phone.** Before installing, the build removes older
+  otrv4_core copies from the system Python and its user site (pip-installed
+  ones with pip; a module copied into site-packages by hand is deleted), as
+  well as the old copy in .venv and the repository root -- `python
+  otrv4plus_xmpp.py` would otherwise load an old core without secure groups.
+  Anything it may not remove (outside a site-packages directory) is named
+  with the command to delete it. An unexpected stop now names the command
+  that failed.
+- **Zero compiler and clippy warnings.** Deprecated `GenericArray` calls
+  replaced with the equivalent trait conversions (same length checks, no
+  copies); clippy findings fixed rather than allowed. The off-by-default
+  `legacy-dake-keys` feature compiles again on PyO3 0.29.
+
+## Android 0.7.0-experimental.rc.8 — 2026-09-28 — room occupant counts; security status stated (core 0.11.0)
+
+*Handset report on rc.7: account creation and login on yax.im work.*
+
+- **Rooms list shows how many people are in each room**, from the server's
+  own count (XEP-0045 `muc#roominfo_occupants`, one bounded disco#info per
+  room, at most 100, 8 at a time). Occupied rooms are listed first. A room
+  whose server gives no count shows none -- never a guessed "0 users".
+- **README and SECURITY.md** now describe the security work actually done
+  (tests, fuzzing, known-answer and cross-implementation checks, audits,
+  physical tests) and state plainly that there has been no paid independent
+  audit.
+
+## Android 0.7.0-experimental.rc.7 — 2026-09-28 — Wipe & Exit ends with the system's own "Clear storage" (core 0.11.0)
+
+- Handset on rc.5: after Wipe & Exit, Settings showed 8.19 kB user data and
+  119 kB cache. The app's sweep deletes everything it owns, but while the
+  process is alive the renderer and ART keep writing (a GPU shader cache in
+  code_cache, directory entries). The last step is now
+  `ActivityManager.clearApplicationUserData()`: the system kills the app and
+  clears its whole data directory, cache, code_cache and Keystore entries --
+  what Settings' "Clear storage" does. Killing the process remains the
+  fallback. Includes everything in rc.6. Not yet run on a handset.
+
+## Android 0.7.0-experimental.rc.6 — 2026-09-28 — clearnet registration: SRV, every address, and a named stage (core 0.11.0)
+
+*Handset report on rc.5: registering on 07f.de and on yax.im (no CAPTCHA)
+both ended `clearnet_endpoint srv=true -> registration failed code=network`.
+Reproduced against a real STARTTLS server; not yet re-run on a handset —
+`PHYSICAL_TEST_PLAN.md` §0.*
+
+**Root cause (two faults, both client-side)**
+
+- **No SRV lookup.** slixmpp looks up `_xmpp-client._tcp.<domain>` only
+  through aiodns, which the APK does not ship, so it dialled `<domain>:5222`.
+  yax.im's SRV record points at `xmpp.yax.im`, a different machine; 07f.de's
+  points at `xmpp.07f.de`. The app now asks the SRV question itself
+  (`android_bridge/dns_srv.py`, the phone's own DNS servers via Kotlin),
+  with RFC 2782 ordering and a fallback to `<domain>:5222` only when there
+  is no record.
+- **The first failed address ended the attempt.** slixmpp tries each
+  address and reports each failure; the transport treated the first as
+  final. Both domains publish AAAA records, so a phone without working IPv6
+  never tried IPv4. Now every address is tried (IPv4 first), for login too.
+
+**Reporting**
+
+- `code=network` / "Could not reach the server" is replaced by the stage:
+  `dns_failure`, `tcp_failure` (with the OS reason, e.g. ECONNREFUSED),
+  `tls_failure`, `certificate_failure`, `tls_required`,
+  `xmpp_stream_failure`, `server_closed_connection`,
+  `registration_captcha_required`, `registration_fields_required`,
+  `registration_protocol_error`, and the server's own refusals (`conflict`,
+  `not_allowed`, ...). The trace records the SRV result, targets, address
+  counts, and each stage reached. No password, stanza or key.
+- A CAPTCHA or extra required field is detected from the registration form
+  BEFORE the password is sent; the password is then not sent.
+- **Test server** on the connect screen: DNS, TCP, verified TLS, the XMPP
+  stream and registration discovery, then stop — no sign-in, no account, no
+  password.
+
+Certificate verification is unchanged (required, hostname checked against
+the JID's domain). I2P and Tor paths are unchanged.
+
+## Android 0.7.0-experimental.rc.5 — 2026-09-28 — clearnet servers work; no password to a substituted I2P server (core 0.11.0)
+
+*Not tested on a handset. `PHYSICAL_TEST_PLAN.md` §0 is the first thing to
+run. Also carries everything committed on the branch since rc.4 (Wipe &
+Exit completion, SMP and reconnect recovery, MLS stages, file transfer).*
+
+**Transport chosen from the server name** (`TRANSPORT_POLICY.md` §8.2)
+
+- `07f.de` failed with `checking_router` in 3 ms: every server was treated as
+  an I2P server. The route now comes from the name alone, in one place
+  (`android_bridge/route.py`): `.b32.i2p`/`.i2p` over SAM, `.onion` over Tor
+  (Orbot), anything else over clearnet DNS/TCP/STARTTLS with a CA-verified
+  certificate. Clearnet never probes for a router or Tor.
+- No fallback between routes. A clearnet server that offers no TLS gets no
+  password (`tls_required`).
+
+**X1 resolved on Android** (`SECURITY_ISSUES.md` X1)
+
+- The I2P destination a server name resolves to is pinned on first use. A
+  different one is refused before any stream opens, and a security warning
+  shows both addresses. Trusting the new one takes two presses and does not
+  connect on its own. No background retry.
+- SCRAM only wherever certificate checks are off (I2P, onion). A server
+  offering only PLAIN gets nothing.
+- Residuals are stated in `SECURITY_ISSUES.md`: first contact is TOFU, and
+  SCRAM against an impostor allows offline guessing of weak passwords.
+
 ## Android 0.7.0-experimental.rc.4 — 2026-09-24 — automatic OTRv4+ only where OTRv4Plus is, one People list, files you can see (core 0.11.0)
 
 *Supersedes rc.3; the release page now keeps only the newest APK. None of

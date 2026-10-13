@@ -2,7 +2,10 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -17,6 +20,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
@@ -48,8 +53,10 @@ fun ConversationsScreen(
     onOpen: (String) -> Unit,
     onOpenConnection: () -> Unit = {},
     onOpenRooms: () -> Unit = {},
+    onOpenPeople: () -> Unit = {},
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
+    onOpenProfile: () -> Unit = {},
     onWipeAndExit: (() -> Unit)? = null,
     theme: ThemeTokens.Mode = ThemeTokens.DEFAULT,
     onTheme: ((ThemeTokens.Mode) -> Unit)? = null,
@@ -65,6 +72,13 @@ fun ConversationsScreen(
             TopAppBar(
                 title = { Text("OTRv4+") },
                 actions = {
+                    // People sits beside the connection state: who is here is
+                    // a question about the same server.
+                    if (model.canSend()) {
+                        TextButton(onClick = onOpenPeople) {
+                            Text(OnlineUsers.peopleButton(model.directory))
+                        }
+                    }
                     TextButton(onClick = onOpenConnection) {
                         Text(when {
                             model.link != ChatState.Link.OK -> "Checking…"
@@ -74,6 +88,46 @@ fun ConversationsScreen(
                     }
                 },
             )
+        },
+        // THE FOOTER IS THE BOTTOM BAR. It used to be the last thing in the
+        // content column, and Scaffold places its floating "+" over the
+        // content -- on top of Wipe & Exit (device report, 2026-10-03). A
+        // bottom bar is laid out below the floating button, so the two can
+        // no longer overlap. The buttons scroll sideways rather than squash
+        // on a narrow phone.
+        bottomBar = {
+            Surface(tonalElevation = 2.dp) {
+                Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        // Rooms sit alongside one-to-one conversations rather
+                        // than inside them: a room is group chat and is not
+                        // end-to-end encrypted, and listing rooms among
+                        // conversations would blur two things that have
+                        // different guarantees.
+                        TextButton(onClick = onOpenRooms) { Text("Rooms") }
+                        TextButton(onClick = onOpenProfile) { Text("Profile") }
+                        TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
+                        TextButton(onClick = onOpenAbout) { Text("About & licences") }
+                        if (onTheme != null) {
+                            TextButton(onClick = { choosingTheme = true }) { Text("Theme") }
+                        }
+                    }
+                    // Beside Debug and Licences, so it is reachable without
+                    // going back to the connection screen. The same control,
+                    // confirmation and teardown as there.
+                    onWipeAndExit?.let { wipe ->
+                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
+                            horizontalArrangement = Arrangement.End) {
+                            WipeAndExitButton(onWipe = wipe)
+                        }
+                    }
+                }
+            }
         },
         floatingActionButton = {
             if (model.canSend()) {
@@ -118,6 +172,29 @@ fun ConversationsScreen(
                 )
             }
 
+            // Secure-group invitations, each answered explicitly. Accepting
+            // joins the room and sends our key over OTRv4+; nothing is
+            // accepted without the user.
+            for (invite in model.groupInvites()) {
+                Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text(
+                            org.otrv4plus.android.chat.GroupText.invite(invite),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onTertiaryContainer,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = { model.acceptGroupInvite(invite.room) }) {
+                                Text("Join")
+                            }
+                            TextButton(onClick = { model.declineGroupInvite(invite.room) }) {
+                                Text("Decline")
+                            }
+                        }
+                    }
+                }
+            }
+
             if (model.droppedEvents > 0) {
                 Text(
                     "${model.droppedEvents} update(s) were dropped while the " +
@@ -128,23 +205,9 @@ fun ConversationsScreen(
                 )
             }
 
-            // PEOPLE: one list -- roster, requests, and who the server says
-            // is online -- with Add / Pending / Accept / Added per row.
-            // Collapsed by default so it does not push the conversations off
-            // a small screen; the counts are live either way.
-            if (model.canSend()) {
-                PeopleSection(
-                    entries = model.directory,
-                    note = model.discoveryNote,
-                    onOpen = onOpen,
-                    onAdd = { model.addContact(it) },
-                    onAccept = { model.answerSubscription(it, true) },
-                    onRefresh = { model.refreshDiscovery(force = true) },
-                    welcomeMissing = model.welcomeMissing,
-                    creatingWelcome = model.creatingWelcome,
-                    onCreateWelcome = { model.createWelcomeRoom() },
-                )
-            }
+            // PEOPLE lives on its own screen (PeopleScreen), opened from the
+            // button beside the connection state. A request still gets its
+            // banner above; the list itself no longer pushes chats down.
 
             if (conversations.isEmpty()) {
                 // `weight(1f)`, NOT the child's own fillMaxSize().
@@ -170,37 +233,13 @@ fun ConversationsScreen(
                     items(conversations, key = { it.jid }) { conversation ->
                         ConversationRow(
                             conversation,
+                            avatar = model.avatar(conversation.jid),
+                            group = model.groupBadge(conversation.jid),
                             onClick = { onOpen(conversation.jid) },
                             onLongClick = { deleting = conversation.jid },
                         )
                         HorizontalDivider()
                     }
-                }
-            }
-
-            Row(
-                Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                // Rooms sit alongside one-to-one conversations rather
-                // than inside them: a room is group chat and is not
-                // end-to-end encrypted, and listing rooms among
-                // conversations would blur two things that have
-                // different guarantees.
-                TextButton(onClick = onOpenRooms) { Text("Rooms") }
-                TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
-                TextButton(onClick = onOpenAbout) { Text("About & licences") }
-                if (onTheme != null) {
-                    TextButton(onClick = { choosingTheme = true }) { Text("Theme") }
-                }
-            }
-            // At the foot of the main list, beside Debug and Licences, so it
-            // is reachable without going back to the connection screen. The
-            // same control, confirmation and teardown as there.
-            onWipeAndExit?.let { wipe ->
-                Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                    horizontalArrangement = Arrangement.End) {
-                    WipeAndExitButton(onWipe = wipe)
                 }
             }
         }
@@ -411,6 +450,8 @@ private fun EmptyConversations(
 @Composable
 private fun ConversationRow(
     conversation: Conversation,
+    avatar: ImageBitmap?,
+    group: RowSecurity.Badge?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -425,7 +466,7 @@ private fun ConversationRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        AvatarPlaceholder(conversation.displayName)
+        AvatarPlaceholder(conversation.displayName, avatar)
 
         Column(Modifier.weight(1f)) {
             Row(
@@ -474,7 +515,7 @@ private fun ConversationRow(
                     UnreadBadge(conversation.unread)
                 }
             }
-            SecurityBadge(conversation)
+            SecurityBadge(conversation, group)
         }
     }
 }
@@ -490,8 +531,8 @@ private fun ConversationRow(
  * else.
  */
 @Composable
-private fun SecurityBadge(conversation: Conversation) {
-    val badge = RowSecurity.badge(
+private fun SecurityBadge(conversation: Conversation, group: RowSecurity.Badge? = null) {
+    val badge = group ?: RowSecurity.badge(
         security = conversation.security,
         smp = conversation.smp,
         hasHistory = conversation.lastMessage != null,
@@ -508,8 +549,22 @@ private fun SecurityBadge(conversation: Conversation) {
     )
 }
 
+/**
+ * The contact's picture when the bridge holds one -- a bitmap built from
+ * PIXELS it decoded and checked (`chat.AvatarPixels`), never from the file
+ * the contact sent -- and their initial otherwise.
+ */
 @Composable
-private fun AvatarPlaceholder(name: String) {
+private fun AvatarPlaceholder(name: String, avatar: ImageBitmap? = null) {
+    if (avatar != null) {
+        Image(
+            bitmap = avatar,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.size(40.dp).clip(CircleShape),
+        )
+        return
+    }
     Box(
         Modifier
             .size(40.dp)
@@ -649,112 +704,4 @@ private fun DeleteChatDialog(
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(ChatDeletion.CANCEL) } },
     )
-}
-
-/**
- * "PEOPLE (n · m online)", expandable. Each row names the relation in words
- * (Online — Add, Pending, Wants to add you — Accept, Online/Offline — Added)
- * and, separately, the security facts; a tap opens that person's one
- * conversation. The action button, when there is one, is the only thing on
- * the row that changes anything.
- */
-@Composable
-private fun PeopleSection(
-    entries: List<OnlineUsers.Entry>,
-    note: String?,
-    onOpen: (String) -> Unit,
-    onAdd: (String) -> Unit,
-    onAccept: (String) -> Unit,
-    onRefresh: () -> Unit,
-    welcomeMissing: Boolean = false,
-    creatingWelcome: Boolean = false,
-    onCreateWelcome: () -> Unit = {},
-) {
-    var expanded by rememberSaveable { mutableStateOf(false) }
-    var confirmWelcome by remember { mutableStateOf(false) }
-    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
-        Column(Modifier.fillMaxWidth()) {
-            Row(
-                Modifier.fillMaxWidth().clickable { expanded = !expanded }
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(OnlineUsers.directoryTitle(entries),
-                     style = MaterialTheme.typography.labelLarge)
-                Text(if (expanded) "Hide" else "Show",
-                     style = MaterialTheme.typography.labelSmall)
-            }
-            if (expanded) {
-                note?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall,
-                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                }
-                TextButton(onClick = onRefresh,
-                           modifier = Modifier.padding(horizontal = 4.dp)) {
-                    Text("Ask the server again")
-                }
-                // Only when the server has none, and only after the warning.
-                if (welcomeMissing) {
-                    OutlinedButton(
-                        enabled = !creatingWelcome,
-                        onClick = { confirmWelcome = true },
-                        modifier = Modifier.padding(horizontal = 12.dp),
-                    ) {
-                        Text(if (creatingWelcome) "Creating the Welcome room…"
-                             else "Create the OTRv4Plus Welcome room")
-                    }
-                }
-                if (entries.isEmpty()) {
-                    Text("Nobody yet. Add someone by address with +.",
-                         style = MaterialTheme.typography.bodySmall,
-                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
-                }
-                for (entry in entries) {
-                    Row(
-                        Modifier.fillMaxWidth().clickable { onOpen(entry.jid) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Column(Modifier.weight(1f)) {
-                            Text(entry.displayName,
-                                 style = MaterialTheme.typography.bodyMedium)
-                            Text(
-                                entry.facts.joinToString(" · "),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (entry.verified) VerifiedBlue
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        when (entry.relation) {
-                            OnlineUsers.Relation.ONLINE_ADD ->
-                                OutlinedButton(onClick = { onAdd(entry.jid) }) {
-                                    Text(entry.relation.action ?: "Add")
-                                }
-                            OnlineUsers.Relation.ACCEPT ->
-                                Button(onClick = { onAccept(entry.jid) }) {
-                                    Text(entry.relation.action ?: "Accept")
-                                }
-                            else -> {}
-                        }
-                    }
-                }
-            }
-        }
-    }
-    if (confirmWelcome) {
-        AlertDialog(
-            onDismissRequest = { confirmWelcome = false },
-            title = { Text("Create the Welcome room?") },
-            text = { Text(OnlineUsers.WELCOME_CREATE_WARNING) },
-            confirmButton = {
-                TextButton(onClick = { confirmWelcome = false; onCreateWelcome() }) {
-                    Text("Create")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { confirmWelcome = false }) { Text("Cancel") }
-            },
-        )
-    }
 }

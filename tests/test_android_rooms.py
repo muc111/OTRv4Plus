@@ -33,11 +33,12 @@ if ROOT not in sys.path:
 
 import otrv4plus_muc as muc
 from android_bridge.settings import ConnectionProfile
+from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import XmppTransport
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
-MUC_SERVICE = "rooms.xmpp-elite.i2p"
+MUC_SERVICE = "rooms.otrv4plus.i2p"
 ROOM = "general@" + MUC_SERVICE
 NICK = "alice"
 
@@ -139,15 +140,16 @@ class FakeMuc:
 
 class FakeForms:
     def make_form(self, ftype="form", **_kw):
-        return {"type": ftype}
+        return _Form(type=ftype)
 
 
 class FakeBoundJid:
-    domain = "xmpp-elite.i2p"
+    domain = "otrv4plus.i2p"
 
 
 class FakeClient:
     def __init__(self, jid, password, *, disco=None, muc_plugin=None):
+        self.plugin = sasl_plugins()
         self.jid = jid
         self.password = password
         self.boundjid = FakeBoundJid()
@@ -310,18 +312,18 @@ class TestDiscoveringWhatTheServerHosts:
 
     def _disco(self):
         return FakeDisco(
-            items={"xmpp-elite.i2p": [(MUC_SERVICE, None, "Chatrooms"),
-                                      ("upload.xmpp-elite.i2p", None, "")]},
+            items={"otrv4plus.i2p": [(MUC_SERVICE, None, "Chatrooms"),
+                                      ("upload.otrv4plus.i2p", None, "")]},
             info={MUC_SERVICE: ([("conference", "text", None, "Chatrooms")],
                                 ["http://jabber.org/protocol/muc"]),
-                  "upload.xmpp-elite.i2p":
+                  "upload.otrv4plus.i2p":
                       ([("store", "file", None, "Uploads")], [])})
 
     def test_it_asks_the_servers_own_domain(self):
         t, made = build(disco=self._disco())
         try:
             t.discover_services()
-            assert "xmpp-elite.i2p" in made["client"]["xep_0030"].asked
+            assert "otrv4plus.i2p" in made["client"]["xep_0030"].asked
         finally:
             t.close()
 
@@ -331,7 +333,7 @@ class TestDiscoveringWhatTheServerHosts:
             code, _detail, services = t.discover_services()
             assert code == "ok"
             assert {s["jid"] for s in services} == {
-                MUC_SERVICE, "upload.xmpp-elite.i2p"}
+                MUC_SERVICE, "upload.otrv4plus.i2p"}
         finally:
             t.close()
 
@@ -350,8 +352,8 @@ class TestDiscoveringWhatTheServerHosts:
 
     def test_a_service_that_will_not_answer_does_not_empty_the_list(self):
         disco = FakeDisco(
-            items={"xmpp-elite.i2p": [(MUC_SERVICE, None, "Chatrooms"),
-                                      ("broken.xmpp-elite.i2p", None, "")]},
+            items={"otrv4plus.i2p": [(MUC_SERVICE, None, "Chatrooms"),
+                                      ("broken.otrv4plus.i2p", None, "")]},
             info={MUC_SERVICE: ([("conference", "text", None, "")], [])})
         t, _ = build(disco=disco)
         try:
@@ -533,6 +535,75 @@ class TestCreatingARoom:
             t.close()
 
 
+class _Form(dict):
+    def add_field(self, var=None, ftype=None, value=None, **_kw):
+        self.setdefault("fields", {})[var] = value
+
+
+class _Forms:
+    def make_form(self, ftype="form", **_kw):
+        return _Form(type=ftype)
+
+
+class TestSecureGroupRooms:
+    """A secure group's room outlives its members (device test, 2026-10-05:
+    the group's room was gone after everybody had left it)."""
+
+    def test_a_secure_group_room_is_created_persistent(self):
+        room = FakeMuc()
+        t, _ = build(muc=room)
+        try:
+            t._client.plugins["xep_0004"] = _Forms()
+            t.persist_room = lambda r: r == ROOM.lower()
+            assert t.create_room(ROOM, NICK)[0] == "ok"
+            fields = room.configured[0][1].get("fields", {})
+            assert fields.get("muc#roomconfig_persistentroom") is True
+        finally:
+            t.close()
+
+    def test_an_ordinary_room_only_asks_to_be_listed(self):
+        """Not kept when empty, not marked as a group; listed, so it shows
+        in a room search (owner request, 2026-10-10)."""
+        room = FakeMuc()
+        t, _ = build(muc=room)
+        try:
+            t._client.plugins["xep_0004"] = _Forms()
+            t.persist_room = lambda r: False
+            t.create_room(ROOM, NICK)
+            fields = room.configured[0][1]["fields"]
+            assert fields == {
+                "FORM_TYPE": "http://jabber.org/protocol/muc#roomconfig",
+                "muc#roomconfig_publicroom": True}
+        finally:
+            t.close()
+
+    def test_a_join_that_recreated_the_room_unlocks_it(self):
+        class Recreates(FakeMuc):
+            async def join_muc_wait(self, room, nick, password=None,
+                                    timeout=None, **_kw):
+                self.joined.append((str(room), str(nick), password))
+                return ({"muc": {"status_codes": {110, 201}}}, None, [], [])
+
+        room = Recreates()
+        t, _ = build(muc=room)
+        try:
+            t._client.plugins["xep_0004"] = _Forms()
+            t.persist_room = lambda r: True
+            assert t.join_room(ROOM, NICK)[0] == "ok"
+            assert room.configured and room.configured[0][0] == ROOM
+        finally:
+            t.close()
+
+    def test_a_join_of_an_existing_room_configures_nothing(self):
+        room = FakeMuc()
+        t, _ = build(muc=room)
+        try:
+            t.join_room(ROOM, NICK)
+            assert room.configured == []
+        finally:
+            t.close()
+
+
 class TestLeaving:
 
     def test_it_leaves(self):
@@ -653,6 +724,6 @@ class TestTheTraceDoesNotLearnWhoIsInWhatRoom:
             t.discover_rooms(MUC_SERVICE)
             text = repr(TRACE.events()[before:])
             assert "general" not in text
-            assert "rooms.xmpp-elite" not in text
+            assert "rooms.otrv4plus" not in text
         finally:
             t.close()

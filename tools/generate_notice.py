@@ -6,10 +6,12 @@ Attribution is a distribution obligation: every permissive licence in the tree
 reproduced in a binary that includes the code. A hand-written list rots the
 first time someone runs `cargo add`, so this reads the graph instead.
 
-**Only what actually ships.** The graph is walked from the root following
-NORMAL dependency edges only. A build-script helper or a test framework is not
-in the artifact and does not need attributing; including them would pad the
-file and dilute the part that matters.
+**Only what actually ships.** The graph is the feature-resolved one
+(`cargo tree -e normal`) for the shipped features and targets, following
+NORMAL dependency edges only. A build-script helper, a test framework or an
+optional backend that is never enabled is not in the artifact and does not
+need attributing; including them would pad the file and dilute the part that
+matters.
 
 Usage:  python3 tools/generate_notice.py > NOTICE
 """
@@ -54,26 +56,63 @@ def cargo_metadata():
     return json.loads(out.stdout)
 
 
+#: The features and targets of what is actually distributed: the APK
+#: (Android arm64) and the wheels (Termux arm64, Linux x86_64). Test-only
+#: features (raw-key-test-api, test-only-kdf) are not in any artifact.
+SHIPPED_FEATURES = "pyo3/extension-module,android-opus,mls"
+SHIPPED_TARGETS = ("aarch64-linux-android", "x86_64-unknown-linux-gnu")
+
+
+#: Third-party code ported into first-party crates (not a dependency, so
+#: not in the graph). Each entry's licence text is reproduced in §5.
+DERIVED_CODE = (
+    ("openmls_memory_storage", "0.6.0", "MIT",
+     "Rust/mls/src/storage.rs (changed: CBOR, zeroizing values, wipe)",
+     "Copyright (c) OpenMLS Authors"),
+)
+
+
+def _tree(target):
+    out = subprocess.run(
+        ["cargo", "tree", "-e", "normal", "--features", SHIPPED_FEATURES,
+         "--target", target, "--prefix", "none", "--format", "{p}",
+         "--offline"],
+        cwd=CRATE, capture_output=True, check=True, text=True)
+    found = set()
+    for line in out.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].startswith("v"):
+            found.add((parts[0], parts[1][1:]))
+    return found
+
+
 def shipped_packages(meta):
-    """Package ids reachable from the root through normal edges only."""
-    nodes = {n["id"]: n for n in meta["resolve"]["nodes"]}
-    root = meta["resolve"]["root"]
-    seen, stack = set(), [root]
-    while stack:
-        pid = stack.pop()
-        if pid in seen:
-            continue
-        seen.add(pid)
-        for dep in nodes.get(pid, {}).get("deps", []):
-            kinds = dep.get("dep_kinds") or [{"kind": None}]
-            if any(k.get("kind") is None for k in kinds):
-                stack.append(dep["pkg"])
-    seen.discard(root)
-    # First-party path crates (Rust/opus-codec) are this project's own code
-    # under its own licence, not third-party material to attribute. A path
-    # crate has no registry `source`.
-    first_party = {p["id"] for p in meta["packages"] if p.get("source") is None}
-    return seen - first_party
+    """Package ids COMPILED into what ships.
+
+    From `cargo tree -e normal` with the shipped features, per shipped
+    target -- the feature-resolved graph. NOT from `cargo metadata`'s
+    `resolve`, which is lockfile-level and not feature-accurate: with the
+    `mls` feature it lists openmls's optional backends (a SQLite store, two
+    reference crypto providers, hpke-rs) as normal edges, although none of
+    them is compiled. Attributing them would be wrong, and a licence gate
+    reading them would fail on code that is not in the binary.
+    """
+    wanted = set()
+    for target in SHIPPED_TARGETS:
+        wanted |= _tree(target)
+    ids = {p["id"] for p in meta["packages"]
+           if (p["name"], p["version"]) in wanted}
+    # First-party path crates (Rust/opus-codec, Rust/mls) are this project's
+    # own code under its own licence, not third-party material to
+    # attribute. A path crate has no registry `source` -- but a VENDORED
+    # crate (Rust/vendor/, third-party code patched in place; see
+    # Rust/vendor/VENDORED.md) is a path crate too, and is still somebody
+    # else's code under their licence, so it stays attributed.
+    vendor_dir = os.sep + os.path.join("Rust", "vendor") + os.sep
+    first_party = {p["id"] for p in meta["packages"]
+                   if p.get("source") is None
+                   and vendor_dir not in (p.get("manifest_path") or "")}
+    return ids - first_party
 
 
 def copyrights_for(pkg):
@@ -247,9 +286,10 @@ def main():
     w("")
     w("GENERATED — do not edit by hand. Regenerate with:")
     w("    python3 tools/generate_notice.py > NOTICE")
-    w("The Rust section is read from the resolved dependency graph, following")
-    w("normal dependency edges only: a build-script helper or a test")
-    w("framework is not in the shipped artifact and is not attributed here.")
+    w("The Rust section is read from the feature-resolved dependency graph")
+    w("(cargo tree -e normal) for the shipped features and targets: a")
+    w("build-script helper, a test framework or an optional backend that is")
+    w("never enabled is not in the shipped artifact and is not attributed here.")
     w("")
 
     # ---- Rust ------------------------------------------------------------
@@ -271,6 +311,17 @@ def main():
             w("    Source:  %s" % pkg["repository"])
         for line in copyrights_for(pkg):
             w("    %s" % line)
+        w("")
+
+    # Third-party code carried INSIDE this project's own crates. Not a
+    # dependency, so the graph above cannot see it; the licence still asks
+    # for its notice to travel with every copy.
+    w("Code derived from third-party sources, inside this project's crates:")
+    w("")
+    for name, version, licence, where, holder in DERIVED_CODE:
+        w("%s %s  (%s)" % (name, version, licence))
+        w("    Ported into: %s" % where)
+        w("    %s" % holder)
         w("")
 
     # ---- everything else -------------------------------------------------
@@ -346,17 +397,31 @@ def main():
 
     w("")
     w("-" * 76)
-    w("4. Native components (when bundled)")
+    w("4. Native components: the bundled I2P router")
     w("-" * 76)
     w("")
-    w("i2pd")
-    w("    Licence: BSD-3-Clause")
-    w("    Copyright (c) 2013-2026, The PurpleI2P Project")
-    w("    Source:  https://github.com/PurpleI2P/i2pd")
-    w("    i2pd's own dependencies (Boost, OpenSSL 3.x) carry their own")
-    w("    notices and must be attributed by whoever bundles them; see")
-    w("    LICENSING_AUDIT.md §5.")
+    w("The APK carries i2pd as lib/<abi>/libi2pd.so, built from pinned")
+    w("source by .github/scripts/build-i2pd-android.sh, with OpenSSL and")
+    w("Boost linked statically into it. zlib is Android's own and is not")
+    w("bundled.")
     w("")
+    for name, ver, lic, holder, src in (
+        ("i2pd", "2.61.0", "BSD-3-Clause",
+         "Copyright (c) 2013-2026, The PurpleI2P Project",
+         "https://github.com/PurpleI2P/i2pd"),
+        ("OpenSSL (linked into i2pd)", "3.5.9", "Apache-2.0",
+         "Copyright (c) 1998-2026 The OpenSSL Project Authors",
+         "https://github.com/openssl/openssl"),
+        ("Boost (filesystem, program_options, atomic and headers; linked "
+         "into i2pd)", "1.88.0", "BSL-1.0",
+         "Copyright the Boost authors; see each library",
+         "https://github.com/boostorg/boost"),
+    ):
+        w("%s %s" % (name, ver))
+        w("    Licence: %s" % lic)
+        w("    %s" % holder)
+        w("    Source:  %s" % src)
+        w("")
 
     # ---- full licence texts ---------------------------------------------
     used = set()
@@ -364,7 +429,8 @@ def main():
         used.update(chosen_licence(pkg.get("license")))
     # The bundled non-Rust components, whose licences are named in the
     # sections above rather than read from a graph.
-    used.update(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0"])
+    used.update(["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "PSF-2.0",
+                 "BSL-1.0"])
 
     w("")
     w("-" * 76)

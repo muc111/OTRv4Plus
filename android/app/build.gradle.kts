@@ -34,7 +34,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 14
+        versionCode = 64
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -88,7 +88,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.4+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.63+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -214,6 +214,13 @@ android {
         // licences screen (ui/AboutScreen.kt). Removing a real notice would be
         // a distribution defect; removing a duplicate empty marker is not.
         resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
+
+        // The bundled I2P router (lib/<abi>/libi2pd.so) is an EXECUTABLE,
+        // started by connection/BundledRouter.kt. Android only lets an app run
+        // a file from its native library directory, and only puts it there
+        // when native libraries are extracted at install -- which modern AGP
+        // turns off by default.
+        jniLibs.useLegacyPackaging = true
     }
 
     sourceSets {
@@ -222,6 +229,12 @@ android {
             // committed under src/, for the same reason the Python sources
             // are: a second copy in the tree goes stale and nothing fails.
             assets.srcDir(noticeAssetDir)
+            // i2pd and its reseed certificates: built from pinned source by
+            // .github/scripts/build-i2pd-android.sh (the `i2pd` CI job). A
+            // local build without them still works; the app then needs an
+            // I2P router app on the phone, as it did before.
+            jniLibs.srcDir("i2pd/jniLibs")
+            assets.srcDir("i2pd/assets")
         }
     }
 }
@@ -419,13 +432,16 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // android_bridge.connection at module scope, so a missing entry
             // here is an ImportError at launch.
             "otrv4plus_muc.py",
-            // XEP-0384 OMEMO 2: who a message must be encrypted TO, derived
-            // from room MEMBERSHIP rather than presence. Contains no
-            // cryptography -- the ratchet belongs to python-omemo/twomemo,
-            // which do not yet have Android wheels. Packaged now because the
-            // bridge imports it and because the rule it enforces is the one
-            // that decides whether a group message reaches everybody.
-            "otrv4plus_omemo.py",
+            // The terminal client's secure-groups adapter. Never used on
+            // Android -- the app drives android_bridge.groups directly --
+            // but otrv4plus_xmpp.py (shipped for its forwarders) imports it,
+            // guarded, so it ships to keep the import closure whole. It holds
+            // no cryptography: it calls the same SecureGroups the app does.
+            "otrv4plus_groups.py",
+            // Group calls' media (I2P datagrams, AAudio, the core's Opus):
+            // imported by android_bridge.group_call_bridge, the app's group
+            // calls. No key passes through it; RustGroupVoice seals frames.
+            "otrv4plus_groupcall.py",
             // What the voice diagnostics are allowed to claim. Imported by
             // otrv4plus_voice at module scope, so a missing entry here is an
             // ImportError at launch rather than a missing metric.

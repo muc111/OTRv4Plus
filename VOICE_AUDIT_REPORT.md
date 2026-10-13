@@ -731,3 +731,46 @@ cargo audit && cargo deny check
 
 Two things I still cannot check: `ratchet.rs` (not uploaded) and `Cargo.lock`
 (not uploaded, so no advisory review of resolved transitive versions).
+
+## Counter definitions and the "0 dropped" reading (2026-09-28)
+
+Status: automated (tests/test_voice_counters.py, test_voice_gate_at_answer.py).
+Not re-measured on a handset.
+
+**What was wrong.**
+
+1. The hangup summary's `played` was the jitter buffer's `queued`: frames
+   *accepted*, including every frame later shed to cut latency or evicted
+   when full. Shed frames were therefore counted twice (as played and as
+   shed), and delivery `played / (played + missing)` was overstated by the
+   shed share. The 590 s handset baseline ("8573 played, 256 shed") was
+   recorded under that definition, so by the corrected one about 8317 were
+   played. The baseline is history and is not rewritten.
+2. `dropped` counted only LOCAL failures, and mixed directions: a frame we
+   could not encode, seal or send, and bytes that arrived but did not form
+   an authentic frame. It never included loss in transit ("missing") or
+   deliberate shedding, so "0 dropped" said nothing about lost audio.
+3. The session's `late` also counted duplicates.
+
+**Now.** One definition per counter in
+`otrv4plus_mediapath.COUNTER_DEFINITIONS` (sent, received, played, missing,
+reordered, late, duplicate, underrun, shed, dropped), read through
+`counters_from(session)`. The jitter buffer counts `played` (taken for
+playout), `reordered` (accepted behind a later frame) and `cleared`
+(discarded at teardown). `dropped` stays as a total and is split into
+`tx_dropped` / `rx_dropped`. Tests pin the conservation rule
+`queued = played + shed + overflow + cleared + buffered` across loss,
+reordering, duplicates, late frames, a rekey, counter masking at the epoch
+field, shedding, overflow and teardown. A rekey still counts no missing
+frames.
+
+**SMP gate at answer.** The gate was checked when an INVITE arrived and
+when a call was placed. It is now checked again when the receiver answers
+and when the caller receives ACCEPT: an OTRv4+ session replaced during
+ringing starts unverified, and the call is refused with the existing
+`unverified` reason.
+
+**Transports.** Voice media runs over I2P only. Tor and clearnet TLS carry
+XMPP but no voice media (TRANSPORT_POLICY.md §7). Binding the transport
+class into the voice transcript is specified and not implemented. Neither
+is changed here.

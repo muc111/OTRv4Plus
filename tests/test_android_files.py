@@ -338,7 +338,14 @@ class TestAFileReallyArrives:
 
         arrived = landing.files()
         assert arrived, "the accepted file never landed"
-        assert open(arrived[0], "rb").read() == open(a_file, "rb").read(), (
+        # It rests as a Rust-sealed `.otrv` container, not as plaintext
+        # (android_bridge.files.open_received). The bytes are read back the
+        # way the viewer reads them.
+        assert arrived[0].endswith(".otrv"), arrived
+        sent = open(a_file, "rb").read()
+        assert sent[:32] not in open(arrived[0], "rb").read(), \
+            "the received file rests as plaintext"
+        assert verified.bob.open_received(arrived[0]) == sent, (
             "the delivered bytes are not the bytes that were sent")
 
     def test_declining_delivers_nothing(self, verified, a_file, landing):
@@ -698,7 +705,7 @@ class TestTheThirdControlPrefix:
             assert prefix in handled or any(
                 prefix in _io.open(os.path.join(root, "android_bridge", mod),
                                    encoding="utf-8").read()
-                for mod in ("voice.py", "files.py")), (
+                for mod in ("voice.py", "files.py", "groups.py")), (
                 "%s is carried in a message body and nothing on the Android "
                 "inbound path recognises it, so it renders as chat text"
                 % prefix)
@@ -734,7 +741,9 @@ class TestTheMetadataChoiceReachesThePeer:
             time.sleep(0.02)
         arrived = landing.files()
         assert arrived, "nothing landed"
-        return open(arrived[0], "rb").read()
+        # Read the way the viewer reads it: the file rests as a sealed
+        # `.otrv` container (android_bridge.files.open_received).
+        return verified.bob.open_received(arrived[0])
 
     def test_inspect_reports_the_metadata_before_sending(self, verified):
         found = verified.alice.inspect_file(_fixture_photo())
@@ -770,7 +779,7 @@ class TestTheMetadataChoiceReachesThePeer:
             if landing.files():
                 break
             time.sleep(0.02)
-        assert open(landing.files()[0], "rb").read() == original
+        assert verified.bob.open_received(landing.files()[0]) == original
 
     def test_the_users_own_file_is_never_modified(self, verified):
         photo = _fixture_photo()
@@ -879,7 +888,10 @@ class TestOnlyAVerifiedFileCanBeOpened:
         assert row["path"], "a verified file had no path to open"
         assert os.path.realpath(os.path.dirname(row["path"])) == \
             os.path.realpath(landing.path)
-        assert open(row["path"], "rb").read() == open(a_file, "rb").read()
+        # Sealed at rest; the path opens through the bridge, to the bytes
+        # that were sent.
+        assert row["path"].endswith(".otrv")
+        assert verified.bob.open_received(row["path"]) == open(a_file, "rb").read()
         assert os.stat(row["path"]).st_mode & 0o077 == 0, \
             "the received file is readable by others"
 

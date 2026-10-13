@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.chat
 
+import org.otrv4plus.android.crypto.Verification
 import org.otrv4plus.android.crypto.TransferUi
 
 import org.otrv4plus.android.bridge.CallState
@@ -335,7 +336,7 @@ class ChatState(
     fun bindVault(vault: org.otrv4plus.android.security.Vault?) {
         savedContacts = SavedContacts(vault)
         savedContacts.bind(account)
-        deleted = DeletedConversations(vault)
+        deleted = DeletedConversations(vault) { now() }
         deleted.bind(account)
     }
 
@@ -507,10 +508,38 @@ class ChatState(
             // to act on, and only an SMP-verified peer can make one (the
             // engine drops offers from anybody else before they exist).
             is OtrEvent.FileTransferChanged -> noteTransfer(event)
+            // An invitation is worth a banner, not a buzz: returned false.
+            is OtrEvent.GroupInvited -> {
+                val room = bare(event.room)
+                // Also for a group we are in: a member invited us again because
+                // our copy stopped working for them (see GroupText "reinvited").
+                if (room.isNotEmpty()) groupInvites[room] = event
+                false
+            }
+            is OtrEvent.GroupChanged -> {
+                noteGroupChange(event)
+                false
+            }
             // A capability, not a security state: stored and shown, never
             // announced.
             is OtrEvent.CapabilityChanged -> {
                 capabilities[bare(event.peer)] = event.state
+                false
+            }
+            // Lines that waited for the conversation have gone: the oldest
+            // [count] still queued, in order. Labelled with what actually
+            // happened -- encrypted, or in the clear for a contact without
+            // OTRv4+.
+            is OtrEvent.QueuedSent -> {
+                promoteQueued(bare(event.peer), event.count, event.encrypted)
+                true
+            }
+            // A verification refusal says WHY, so "wait and try again" is
+            // not reported as "could not be started". Other codes are left
+            // to the call site that caused them.
+            is OtrEvent.Failed -> {
+                (Verification.refusal(event.code)
+                    ?: GroupText.failure(event.code, event.peer))?.let { note(it) }
                 false
             }
             else -> false
@@ -724,11 +753,75 @@ class ChatState(
      */
     fun isRoom(jid: String): Boolean = bare(jid) in rooms || storedAsRoom(bare(jid))
 
+    // -- secure groups ---------------------------------------------------------
+
+    /** Rooms that are OTRv4Plus secure groups (MLS), as the engine reported. */
+    private val secureRooms = mutableSetOf<String>()
+
+    /** Invitations waiting for an answer, by room. Never auto-accepted. */
+    private val groupInvites = LinkedHashMap<String, OtrEvent.GroupInvited>()
+
+    fun isSecureRoom(jid: String): Boolean = bare(jid) in secureRooms
+
+    /** Each secure group's verification and call, as last read from the engine. */
+    private val groupVerify = HashMap<String, org.otrv4plus.android.bridge.GroupVerifyState>()
+    private val groupCalls = HashMap<String, org.otrv4plus.android.bridge.GroupCallState>()
+
+    fun groupVerifyState(room: String): org.otrv4plus.android.bridge.GroupVerifyState =
+        groupVerify[bare(room)] ?: org.otrv4plus.android.bridge.GroupVerifyState()
+
+    fun groupCallState(room: String): org.otrv4plus.android.bridge.GroupCallState =
+        groupCalls[bare(room)] ?: org.otrv4plus.android.bridge.GroupCallState()
+
+    /** True when what was read differs from what is held (redraw then). */
+    fun noteGroupState(room: String,
+                       verify: org.otrv4plus.android.bridge.GroupVerifyState,
+                       call: org.otrv4plus.android.bridge.GroupCallState): Boolean {
+        val key = bare(room)
+        val changed = groupVerify[key] != verify || groupCalls[key] != call
+        groupVerify[key] = verify
+        groupCalls[key] = call
+        return changed
+    }
+
+    /** Secure groups catching up after a sign-in or reconnect. */
+    private val syncingRooms = mutableSetOf<String>()
+
+    fun isSyncingRoom(jid: String): Boolean = bare(jid) in syncingRooms
+
+    fun noteSecureRooms(jids: Collection<String>) {
+        secureRooms.clear()
+        jids.forEach { secureRooms.add(bare(it)) }
+    }
+
+    val pendingGroupInvites: List<OtrEvent.GroupInvited>
+        get() = groupInvites.values.toList()
+
+    fun clearGroupInvite(room: String) { groupInvites.remove(bare(room)) }
+
+    private fun noteGroupChange(event: OtrEvent.GroupChanged) {
+        val room = bare(event.room)
+        when (event.change) {
+            "created", "joined" -> { secureRooms.add(room); rooms.add(room) }
+            // A restored group says so as soon as the app opens it.
+            "syncing" -> { secureRooms.add(room); rooms.add(room); syncingRooms.add(room) }
+            "synced" -> { secureRooms.add(room); syncingRooms.remove(room) }
+            "left", "removed_us", "deleted" -> {
+                secureRooms.remove(room); syncingRooms.remove(room)
+            }
+        }
+        GroupText.describe(event)?.let { note(it) }
+    }
+
     fun receiveRoom(event: OtrEvent.RoomMessageReceived): Boolean {
         val room = bare(event.room)
         rooms.add(room)
+        if (event.encrypted) secureRooms.add(room)
         val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
                  else now()
+        // A rejoin replays the room's history. What was said before the user
+        // deleted this chat stays deleted: see DeletedConversations.
+        if (deleted.predatesDeletion(room, at)) return false
         val added = store.append(
             Message(
                 id = MessageId.room(room, event.sender, at, event.body),
@@ -736,9 +829,11 @@ class ChatState(
                 body = event.body,
                 outgoing = false,
                 at = at,
-                // Always plaintext: XEP-0045 group chat has no end-to-end
-                // encryption, whatever the room's own settings say.
-                security = SecurityLabel.PLAINTEXT,
+                // ENCRYPTED only when MLS decrypted it (an OTRv4Plus secure
+                // group); any other room is plaintext -- XEP-0045 has no
+                // end-to-end encryption, whatever the room's settings say.
+                security = if (event.encrypted) SecurityLabel.ENCRYPTED
+                           else SecurityLabel.PLAINTEXT,
                 sendState = SendState.NONE,
                 sender = event.sender,
             )
@@ -750,6 +845,12 @@ class ChatState(
 
     fun receive(event: OtrEvent.MessageReceived): Boolean {
         val jid = bare(event.peer)
+        // A blank body is a protocol carrier (SMP TLVs, a heartbeat), never
+        // something a person said. The bridge no longer emits one; this holds
+        // the line on this side too, because a stored blank is both a blank
+        // bubble and -- through `deleted.restore` -- a way to bring back a
+        // conversation the user deleted.
+        if (event.body.isBlank()) return false
         val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
                  else now()
         val added = store.append(
@@ -797,6 +898,14 @@ class ChatState(
         val jids = (contacts.keys.map { bare(it) }.toSet() +
             store.conversationIds().map { bare(it) } +
             savedContacts.all().map { bare(it.jid) } +
+            // Anybody who has opened an encrypted OTRv4+ session with us,
+            // contact or not, message or not. Device test, 2026-10-02: a
+            // Termux user completed the handshake with this app so it could be
+            // invited to a secure group, and nothing appeared here -- the
+            // session was recorded and never listed, so the person was
+            // invisible and there was no conversation to invite them from.
+            sessionStates.filterValues { it != SecurityState.PLAINTEXT }
+                .keys.map { bare(it) } +
             // The Welcome room is the landing room: listed once joined, even
             // before anybody has said anything in it.
             (if (welcome.joined && welcome.room.isNotBlank()) setOf(bare(welcome.room))
@@ -1011,6 +1120,21 @@ class ChatState(
                 },
             )
         )
+
+    /** Mark the oldest [count] QUEUED outgoing messages to [jid] as sent. */
+    fun promoteQueued(jid: String, count: Int, encrypted: Boolean): Int {
+        var left = count
+        for (m in store.messages(jid)) {
+            if (left <= 0) break
+            if (!m.outgoing || m.sendState != SendState.QUEUED) continue
+            store.update(m.copy(
+                sendState = SendState.SENT,
+                security = if (encrypted) SecurityLabel.ENCRYPTED else SecurityLabel.PLAINTEXT,
+            ))
+            left--
+        }
+        return count - left
+    }
 
     /** Whether [jid] is worth sending to the engine as a contact. */
     fun validContact(jid: String): Boolean {

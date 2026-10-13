@@ -93,9 +93,11 @@ secrets the terminal clients keep at rest are held by the Rust core, the
 dependency audit is clean, the documentation licence is decided, the icon's
 origin is recorded, and the release variant is built and its contents
 inspected on this run. It is still **not a release** and it is still
-EXPERIMENTAL: encrypted chat, identity verification, file transfer and
-two-way voice calls (app to app, and app to Termux) have been proved on
-handsets, and the smaller items below are still open.
+EXPERIMENTAL: encrypted chat, identity verification, file transfer,
+two-way voice calls (app to app, and app to Termux) and post-quantum secure
+groups of four members across the app and Termux have been proved on
+handsets; group verification and group calls are not yet, and the items
+below are still open.
 
 ---
 
@@ -128,6 +130,31 @@ against the live server over I2P, with a Termux client as the peer:
 - **rooms**: the MUC service is discovered without anything being typed, a
   room can be created by name, and the app navigates into it.
 
+Reported on 2026-10-02/03, on the project's new server \`otrv4plus.i2p\`:
+
+- **signing in to \`otrv4plus.i2p\`** from the app (server picked from the
+  list, dialled at its built-in .b32.i2p address) and from the **Termux
+  client** (\`--jid you@otrv4plus.i2p\`, no \`--server\` needed), once the
+  server's TLS certificate for the host was in place;
+- **OTRv4+ between the app and Termux** starts in the background with
+  \`/otr\` and needs no user input until somebody chooses to verify;
+- **a secure group (MLS), app to Termux**: Alice created the group in the
+  app, invited a Termux user over OTRv4+, the Termux user joined at epoch 1
+  and read Alice's group messages, decrypted by MLS.
+
+Reported on 2026-10-05/10, on \`otrv4plus.i2p\`, two phones, each running the
+app and a Termux client (four accounts):
+
+- **secure groups of three and four members**, on the **hybrid post-quantum
+  suite** (X448 + ML-KEM-1024 / Ed448 + ML-DSA-87): all four clients sent and
+  read each other's group messages, **app to Termux, Termux to app, Termux to
+  Termux and app to app**, through the stock-limited room (adaptive pacing);
+- **typing straight into a group** in Termux, short names (\`/group create
+  mls3\`, \`/group invite mls3 bob\`), and **messages typed while a group
+  resyncs or changes** waiting and then going, instead of being lost;
+- **re-inviting a member whose copy of the group had fallen behind**
+  (rc.39): the invitation shows, and the member reads the group again.
+
 No cryptography runs in Kotlin or Python: every session, SMP and file key is
 held by the Rust core.
 
@@ -158,21 +185,80 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
-- **What this version adds on top**, not yet run on a handset: automatic
+- **The built-in I2P router on a phone** (rc.45). It builds from pinned
+  source in CI and the APK inspection checks it is there for both ABIs, but
+  it has not yet been started on a handset: the first start (joining the I2P
+  network, usually 2 to 5 minutes), choosing it automatically when no I2P
+  app runs, voice and group calls through it, and Wipe & Exit removing its
+  data all need a phone with no other I2P app.
+- **Group verification with the group passphrase** (rc.43-rc.44: SMP between
+  every pair of members, the progress bar and ETA, excluding a member whose
+  passphrase did not match) has run in tests only, not over I2P on phones.
+- **Group voice calls on phones**, from the app (new in rc.43) or Termux:
+  ringing, automatic joining of verified members, pause and hang up. Tested
+  in-process only. The call uses the 1:1 call's frame encryption, ratchet,
+  replay window and padding, with fresh keys from the group every 120 s.
+- **Since rc.25, in use but not checked one by one**: automatic MLS rekeys
+  and per-group signing keys rotated at each, the re-send of a lost group
+  change, removal of members away for 72 hours, verification that survives
+  a rekey and a restart. Groups made before rc.27 must be re-created to add
+  members.
+- **Recent fixes awaiting a handset re-run**: signing out and in again
+  (rc.38), deleting a group for everyone and its end on members who were
+  away (rc.40-rc.41), encrypted groups listed on the Rooms screen (rc.41),
+  y/n invitations in Termux and member verification by 1:1 SMP (rc.42).
+- **Earlier additions not yet run on a handset**: the Profile screen
+  (vcard-temp) and avatars, the auto-created Welcome room, automatic
   OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
   progress with ETA, the in-app viewer, Wipe & Exit from the conversation
-  list, and the theme. See CHANGELOG.md for this version.
+  list, and the theme.
 - **Background survival, and reconnect** after a transient failure.
 - **The subscription banner**: what the app shows when somebody else asks to
   see your presence.
-- **A room shared with a second account.** Rooms have been created and
-  entered from one handset; the locked-room path needs two.
+- **A plain room shared with a second account.** The locked-room path needs
+  two.
 - **Metadata stripping of a handset camera photo**, and a re-run of Wipe &
   Exit: \`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\` lists every step, separating
   what CI has verified from what needs hardware.
 
-Also absent by design at this stage: **no in-APK I2P router** (an I2P router
-app with SAM enabled must be running on the phone). The icon is a
+## The server (Prosody): what it needs
+
+Found while testing against \`otrv4plus.i2p\`. The app copes with each of
+these where it can, but the server settings decide how well:
+
+- **\`muc_limits\` on the conference component.** With its defaults it
+  refuses any room message over 5664 characters and allows about one
+  message every two seconds. Every secure-group message is larger than that
+  (post-quantum keys and signatures), so the app splits group messages into
+  4000-character pieces. Since rc.27 it sends them **fast** (10 at once,
+  then 4 a second) and, when the server bounces one, **slows that room
+  down** to the default limit's pace for 5 minutes and sends again whatever
+  the room did not echo back. A group therefore works on a stock server,
+  but adding a member is ~1 s on a relaxed server against ~20 s on the
+  defaults. **Recommended:** remove \`muc_limits\` from
+  \`Component "conference.<host>"\`, or set at least
+  \`muc_event_rate = 5\`, \`muc_burst_factor = 10\` (Prosody's names for the
+  limit's rate and burst) and \`muc_max_char_count\` of 5664 or more.
+- **A TLS certificate for every host**, \`<host>\` and \`conference.<host>\`,
+  named \`<host>.crt\`/\`.key\` in Prosody's \`certs\` folder, readable by the
+  prosody user (\`prosodyctl check certs\`). Without one Prosody refuses the
+  TLS handshake and the app reports \`tls_failed\`. The app accepts any
+  certificate over I2P, because the .b32.i2p address already proves the
+  server.
+- **Accounts live on the host name.** \`aliases\` is not a Prosody option:
+  an account must be \`user@otrv4plus.i2p\`, not \`user@<b32>.b32.i2p\` (the
+  app maps the latter for the built-in server).
+- **Profiles are public on the server.** Prosody's \`vcard\` module lets any
+  user of the server read any user's profile; the Profile screen says so.
+  Pictures (XEP-0084, PEP) are contacts-only.
+
+**An I2P router is built in** (new in rc.45): i2pd, with only its SAM
+bridge listening, on loopback. With "I2P router: Automatic" (the default) the
+app uses an I2P app already running on the phone when its SAM bridge answers,
+and starts its own otherwise, so no separate I2P app is needed. It relays a
+little traffic for others (bandwidth class L, at most 50 transit tunnels),
+is never a floodfill, opens no ports on your home router (no UPnP), and is
+stopped on Disconnect, Sign out and Wipe & Exit. The icon is a
 **placeholder** (AI-generated, no licence asserted -- see \`ASSETS.md\`).
 
 \`ANDROID_XMPP_MILESTONE.md\` §7 is the open gate list, item by item;
@@ -195,6 +281,9 @@ an unknown source.
   variant to choose.
 - The first connection takes a while. Building an I2P tunnel is 30-120+
   seconds and the app says so while it waits; that is the network, not a hang.
+  The very first start of the built-in router takes longer (it has to join
+  the I2P network: usually 2 to 5 minutes); the connect screen shows how long
+  it has been going.
 - If something does go wrong, the **Debug** screen — "Open diagnostics" on the
   connect screen, "Debug" from the conversation list — has **Share error log**
   and **Export start-up report**. Both are designed to be shareable: JIDs,

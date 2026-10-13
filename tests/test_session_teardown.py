@@ -50,6 +50,9 @@ def _manager():
     mgr.lock = threading.RLock()
     mgr.sessions = {}
     mgr.dake_engines = {}
+    mgr._pending_sessions = {}
+    mgr._sent_dake1 = {}
+    mgr._answering_dake1 = {}
     mgr.logger = type("L", (), {"debug": lambda *a, **k: None})()
     mgr.tracer = type("T", (), {"trace": lambda *a, **k: None})()
     return mgr
@@ -177,9 +180,14 @@ class TestEverySiteThatCallsItStillCan:
         end_session raised, left the engine's session in place."""
         assert "end_session" in inspect.getsource(xmpp.OTRv4PlusXMPP._forget_otr)
 
-    def test_the_glare_path_calls_it(self):
-        """Yielding the initiator role means dropping our own session."""
-        source = open(xmpp.__file__, encoding="utf-8").read()
-        assert "glare teardown error" in source
-        window = source[source.index("yielding initiator"):]
-        assert "end_session" in window[:600]
+    def test_the_glare_path_drops_our_handshake(self):
+        """Yielding the initiator role means dropping our own handshake.
+
+        Glare moved into the engine so both clients apply one rule (see
+        tests/test_dake_recovery.py, which runs it). The yield branch must
+        still tear our half-finished run down, zeroizing its engine."""
+        src = inspect.getsource(otr.EnhancedSessionManager._handle_dake1)
+        window = src[src.index("GLARE_YIELD"):]
+        assert "_reset_handshake" in window[:600]
+        reset = inspect.getsource(otr.EnhancedSessionManager._reset_handshake)
+        assert "zeroize" in reset

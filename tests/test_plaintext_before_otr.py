@@ -40,8 +40,8 @@ def _code_only(text):
     text = re.sub(r'"""(?:.|\n)*?"""', '""', text)
     return re.sub(r"#[^\n]*", "", text)
 
-PEER = "alice@xmpp-elite.i2p"
-OTHER = "carol@xmpp-elite.i2p"
+PEER = "alice@otrv4plus.i2p"
+OTHER = "carol@otrv4plus.i2p"
 
 
 class TestTheRule:

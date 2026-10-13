@@ -36,8 +36,8 @@ import pytest
 import otrv4plus_fragment as frag
 
 
-PEER = "bob@xmpp-elite.i2p"
-OTHER = "carol@xmpp-elite.i2p"
+PEER = "bob@otrv4plus.i2p"
+OTHER = "carol@otrv4plus.i2p"
 
 
 def payload_of(size, fill="A"):

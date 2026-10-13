@@ -123,8 +123,8 @@ class TestRoundTrip:
 
     def test_the_jid_and_timeout_are_passed_through(self):
         plugin = Plugin()
-        _run(_ping.round_trip(plugin, "xmpp-elite.i2p", 60))
-        assert plugin.calls == [("xmpp-elite.i2p", 60)]
+        _run(_ping.round_trip(plugin, "otrv4plus.i2p", 60))
+        assert plugin.calls == [("otrv4plus.i2p", 60)]
 
     def test_an_iq_error_is_alive(self):
         """A server replying `service-unavailable` has proven the stream

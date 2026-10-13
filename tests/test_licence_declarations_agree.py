@@ -163,11 +163,26 @@ class TestNoCopyleftDependencyCreepsIn:
             pytest.skip("cargo metadata failed (no registry cache?)")
         return json.loads(out.stdout)
 
+    def _shipped(self, meta):
+        """What is COMPILED into a shipped artifact (feature-resolved; see
+        tools/generate_notice.shipped_packages for why not `resolve`)."""
+        import importlib.util
+        path = os.path.join(ROOT, "tools", "generate_notice.py")
+        spec = importlib.util.spec_from_file_location("gen_notice_cl", path)
+        gen = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gen)
+        try:
+            return gen.shipped_packages(meta)
+        except Exception:
+            pytest.skip("cargo tree unavailable")
+
     def test_no_dependency_imposes_copyleft(self):
         meta = self._metadata()
+        shipped = self._shipped(meta)
+        assert len(shipped) > 50, "the shipped graph came back implausibly small"
         offenders = []
         for pkg in meta["packages"]:
-            if pkg["name"] == "otrv4_core":
+            if pkg["name"] == "otrv4_core" or pkg["id"] not in shipped:
                 continue
             lic = pkg.get("license") or ""
             # A disjunction ("X OR GPL-3.0") is a choice, and we choose the
@@ -182,6 +197,21 @@ class TestNoCopyleftDependencyCreepsIn:
         assert offenders == [], (
             "copyleft dependencies now in the tree, which makes the "
             "commercial licence unsellable: %s" % offenders)
+
+
+class TestHpkeRsDoesNotShip:
+    """hpke-rs (MPL-2.0) was replaced by Rust/mls/src/hpke.rs and kept as a
+    dev-dependency only, to cross-check it. It is in Cargo.lock (optional
+    backends of openmls lock it) but must never be compiled into what ships."""
+
+    def test_no_mpl_crate_is_compiled_in(self):
+        gate = TestNoCopyleftDependencyCreepsIn()
+        meta = gate._metadata()
+        shipped = gate._shipped(meta)
+        names = {p["name"] for p in meta["packages"] if p["id"] in shipped}
+        assert not {n for n in names if n.startswith("hpke-rs")}, names
+        assert "libcrux-sha3" not in names, "a second SHA-3 came back"
+        assert "openmls" in names, "the mls feature is not in the shipped build"
 
 
 class TestTheNoticeCoversWhatShips:

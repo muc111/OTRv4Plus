@@ -85,6 +85,19 @@ and system chrome visible in them belong to their respective owners.
 | `xmpp-verify.png` | XMPP client session through `/otr` and `/smp` (`b3341c9`, 2026-09-05) | `172a4d5f65fd3e60a85500f82c60c0e6378a4dacb0117e8ff8ff410590401bc4` |
 | `xmpp-call-sendfile.png` | The same session through `/call` and `/sendfile` (`b3341c9`) | `84fdff3bfb4b9e28d7916ca5dc0734662cd85be820b4556c4bd0dac6074c36a0` |
 
+## Desktop screenshots
+
+Rendered by this project's own test, used in `desktop/README.md`. They are
+not shipped in any package and are covered by the documentation licence.
+
+| File | Origin | SHA-256 |
+|---|---|---|
+| `desktop/docs/chat.jpg` | A verified conversation (contact picture from engine-decoded pixels). Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `62e65ee67e287ab5eb596954a5be9083a1d170186d60d555516588338186c2f9` |
+| `desktop/docs/connect.jpg` | The sign-in screen. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `5cd772dae6e4982ee076f473c7736bf72a5827c104511f2817879366caca05b1` |
+| `desktop/docs/unverified.jpg` | An encrypted, unverified conversation, with Verify offered. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `c55ee7cda09c680cec08511f1474783106d6c7ff3cb2e989649af74b8ee8adff` |
+| `desktop/docs/group.jpg` | An encrypted group: verification in progress and the members panel. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `94659819458f5cf849a1170487cb5c3fbb9ba5249848fdaa66b36c6ba266c553` |
+| `desktop/docs/profile.jpg` | A contact's profile, read-only. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `17ceb147314e4944265dbb63a6821240685ae472d4faa59e18bc61f9cb00b3c9` |
+
 ## Test fixtures
 
 `tests/data/photo_with_gps.jpg`, `tests/data/image_with_text.png` and

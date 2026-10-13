@@ -47,7 +47,11 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
+import otrv4plus_address as _address
 import otrv4plus_caps as _caps
+from . import route as _route_mod
+from . import avatar as _avatar
+from . import profile as _profile
 from . import welcome as _welcome
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
@@ -170,6 +174,52 @@ KEEPALIVE_QUIET_S = 180
 _CANCELLED = (asyncio.CancelledError, _futures.CancelledError)
 
 
+def _sam_failure(exc: BaseException, server: str) -> "TransportError":
+    """The TransportError for a failure opening the I2P stream, by LAYER.
+
+    "Is the router running?" used to be the answer to every failure here,
+    including a name the router did not know and a destination that was not
+    online -- which sent people to restart a router that was working. The
+    SAM layer now says which stage failed (otrv4+.py `SamError`):
+
+      bridge  -> sam_unavailable        the local SAM bridge
+      naming  -> i2p_name_not_found     the router could not resolve the name
+      session -> i2p_session_failed     the router could not build our tunnels
+      stream  -> i2p_destination_unreachable   resolved, but not reachable
+
+    Only the SAM RESULT code is included, never the reply text, which can
+    carry a destination.
+    """
+    stage = getattr(exc, "stage", "")
+    result = str(getattr(exc, "result", "") or "")
+    if stage == "naming":
+        if result == "INVALID_NAME":
+            return TransportError(
+                "i2p_name_invalid",
+                "%s is not a valid I2P address. Use a name ending in .i2p or a "
+                "52-character .b32.i2p address." % server)
+        return TransportError(
+            "i2p_name_not_found",
+            "the I2P router could not resolve %s (%s). Short .i2p names come "
+            "from the router's address book; add the server to it, or use its "
+            ".b32.i2p address. Nothing was looked up in DNS." % (server, result or "no result"))
+    if stage == "stream":
+        return TransportError(
+            "i2p_destination_unreachable",
+            "%s resolved, but its I2P destination is not reachable right now "
+            "(%s). The server or its I2P tunnel may be down; a cold router can "
+            "also need a few minutes." % (server, result or "no result"))
+    if stage == "session":
+        return TransportError(
+            "i2p_session_failed",
+            "the I2P router would not create a session (%s). It may still be "
+            "starting." % (result or "no result"))
+    return TransportError(
+        "sam_unavailable",
+        "could not reach the I2P router's SAM bridge (%s). Is the router "
+        "running and is its SAM bridge enabled?" % type(exc).__name__)
+
+
 def _accepts(fn: Any, name: str) -> bool:
     """Whether *fn* takes a keyword argument called *name*.
 
@@ -198,9 +248,16 @@ _REGISTRATION_CODES = {
     # side that is indistinguishable from the server being unreachable, and
     # the remedy -- check the router, try again -- is the same.
     "sam_unavailable": "network",
+    "i2p_name_not_found": "network",
+    "i2p_name_invalid": "network",
+    "i2p_destination_unreachable": "network",
+    "i2p_session_failed": "network",
     # A packaging fault. Nothing the user can do, and calling it a network
     # problem would send them to look at their router for no reason.
     "forwarder_import_failed": "unknown",
+    # X1 and the Tor route: their own codes, never folded into "network".
+    "i2p_destination_changed": "server_identity_changed",
+    "tor_unavailable": "tor_unavailable",
     "client_build_failed": "unknown",
     "cancelled": "cancelled",
     "timeout": "timeout",
@@ -210,6 +267,402 @@ _REGISTRATION_CODES = {
 def _localpart(jid: str) -> str:
     """The username out of a JID, tolerating one that is only a username."""
     return str(jid or "").strip().split("@", 1)[0]
+
+
+#: X1, part A. The mechanisms allowed when TLS certificate checks are off:
+#: SCRAM only (RFC 5802/7677), with and without channel binding. With SCRAM
+#: the password never crosses the wire -- the server gets a salted proof it
+#: cannot replay elsewhere, and a server that does not hold the credential
+#: fails SCRAM's mutual authentication. PLAIN (the password itself), LOGIN,
+#: DIGEST/CRAM (weak or obsolete) and SCRAM-MD5 are excluded.
+SCRAM_ONLY = frozenset({
+    "SCRAM-SHA-512-PLUS", "SCRAM-SHA-512",
+    "SCRAM-SHA-256-PLUS", "SCRAM-SHA-256",
+    "SCRAM-SHA-1-PLUS", "SCRAM-SHA-1",
+})
+
+
+def _restrict_to_scram(client) -> None:
+    """Never send the password itself where the certificate is not checked.
+
+    `use_mechs` is enforced by slixmpp's mechanism chooser as a hard limit,
+    and `encrypted_plain` False makes PLAIN cancel itself even if it were
+    chosen. A server offering none of these fails with `no_auth` and the
+    user is told why (`no_safe_auth_mechanism`); nothing falls back.
+    """
+    try:
+        plugins = getattr(client, "plugin", None)
+        mech = (plugins["feature_mechanisms"] if plugins is not None
+                else client["feature_mechanisms"])
+    except Exception:
+        raise TransportError(
+            "client_build_failed",
+            "the XMPP client has no SASL plugin to restrict; refusing to "
+            "authenticate without that restriction.")
+    mech.use_mechs = set(SCRAM_ONLY)
+    mech.encrypted_plain = False
+    mech.unencrypted_plain = False
+
+
+def _tls_in_place(client) -> bool:
+    """Whether the stream is TLS-protected (STARTTLS done, or TLS socket)."""
+    try:
+        if "starttls" in getattr(client, "features", set()):
+            return True
+        import ssl
+        return isinstance(getattr(client, "socket", None),
+                          (ssl.SSLSocket, ssl.SSLObject))
+    except Exception:
+        return False
+
+
+# ── clearnet: SRV, address order, and how an attempt ended ──────────────────
+#
+# THE 07f.de / yax.im REPORT (2026-09-28): both registrations ended
+# `clearnet_endpoint srv=true -> registration requested -> code=network`.
+# Two faults, both here:
+#
+#  1. No SRV lookup happened. slixmpp asks for `_xmpp-client._tcp.<domain>`
+#     only through aiodns, which the APK does not ship; without it it dials
+#     `<domain>:5222`. yax.im's SRV points at xmpp.yax.im, a different
+#     machine. `_clearnet_dns_records` asks the SRV question itself
+#     (android_bridge.dns_srv) and hands slixmpp the ordered targets.
+#  2. The first failed ADDRESS ended the attempt. slixmpp tries every
+#     resolved address in turn (AAAA first, as slixmpp orders them), firing
+#     `connection_failed` for each one that fails; the handler here treated
+#     the first as final. Both domains publish AAAA records, so a phone with
+#     no working IPv6 gave up before IPv4 was tried. Reproduced against a
+#     real STARTTLS server in tests/test_clearnet_registration.py.
+#
+# `_StreamWatch` now decides when an attempt has failed -- after every
+# planned address -- and says at which stage, with nothing secret in it.
+
+#: Safe failure codes, by stage. Clearnet only; I2P and Tor keep theirs.
+STAGE_CODES = ("dns_failure", "tcp_failure", "tls_failure",
+               "certificate_failure", "xmpp_stream_failure",
+               "server_closed_connection")
+
+
+def _errno_name(exc) -> str:
+    import errno as _errno
+    num = getattr(exc, "errno", None)
+    if isinstance(num, int) and num in _errno.errorcode:
+        return _errno.errorcode[num]
+    return type(exc).__name__
+
+
+def _family(address: str) -> str:
+    return "IPv6" if ":" in str(address) else "IPv4"
+
+
+async def _clearnet_dns_records(domain: str, loop, lookup=None, getaddrinfo=None,
+                                fallback_port: int = DEFAULT_C2S_PORT):
+    """(service, host, address, port) records for slixmpp, SRV first.
+
+    Returns (records, plan) where `plan` is a safe description for the
+    trace: the SRV status, the targets and ports, and how many addresses of
+    each family. IPv4 before IPv6 within each target: slixmpp has no
+    per-address connect timeout, so an IPv6 route that silently drops
+    packets would stall the attempt for the OS's TCP timeout (minutes)
+    before IPv4 was ever tried; a refused or unreachable IPv4 fails fast.
+    """
+    from . import dns_srv as _dns
+    import socket as _socket
+    lookup = lookup or _dns.lookup
+    getaddrinfo = getaddrinfo or loop.getaddrinfo
+    srv = await loop.run_in_executor(None, lookup, domain)
+    if srv.status == "found" and srv.records:
+        targets = [("xmpp-client", r.target, r.port) for r in _dns.order(srv.records)]
+        fallback = False
+    else:
+        targets = [("", domain, fallback_port)]
+        fallback = True
+    records, v4, v6 = [], 0, 0
+    for service, host, port in targets:
+        for fam in (_socket.AF_INET, _socket.AF_INET6):
+            try:
+                infos = await getaddrinfo(host, port, family=fam,
+                                          type=_socket.SOCK_STREAM)
+            except (OSError, _socket.gaierror):
+                continue
+            for addr in dict.fromkeys(i[4][0] for i in infos):
+                records.append((service, host, addr, port))
+                if fam == _socket.AF_INET:
+                    v4 += 1
+                else:
+                    v6 += 1
+    plan = {"srv": srv.status, "srv_detail": srv.detail,
+            "targets": ",".join("%s:%d" % (h, p) for _s, h, p in targets),
+            "fallback_used": fallback, "ipv4": v4, "ipv6": v6}
+    return records, plan
+
+
+class _StreamWatch:
+    """How one slixmpp connection attempt is going, and when it has failed.
+
+    Fed by slixmpp's own events. `fail(code, detail)` is called at most
+    once, with a code from STAGE_CODES (clearnet) and a detail naming the
+    stage and the OS/TLS reason -- never a password, a stanza or a key.
+    """
+
+    def __init__(self, client, route, fail, label: str):
+        self.client, self.route, self._fail, self.label = client, route, fail, label
+        self.stage = "resolving"
+        self.expected: Optional[int] = None     # planned addresses, if known
+        self.failures: List[str] = []
+        self.done = False
+        #: Stages reached, in order -- the probe reports these.
+        self.reached: List[str] = []
+        for name, fn in (("connection_failed", self._on_conn_failed),
+                         ("reconnect_delay", self._on_reconnect_delay),
+                         ("connected", self._on_connected),
+                         ("tls_success", self._on_tls),
+                         ("ssl_invalid_chain", self._on_invalid_chain),
+                         ("stream_error", self._on_stream_error),
+                         ("disconnected", self._on_disconnected)):
+            client.add_event_handler(name, fn)
+        if route.verify_certificate and hasattr(client, "add_filter"):
+            client.add_filter("in", self._features_filter)
+
+    def _features_filter(self, stanza):
+        """A clearnet server whose first features offer no STARTTLS is
+        refused by name, before anything else is negotiated."""
+        if type(stanza).__name__ == "StreamFeatures" and not self.done:
+            names = [str(c.tag).rsplit("}", 1)[-1] for c in stanza.xml]
+            if not _tls_in_place(self.client):
+                if "starttls" not in names:
+                    self.stage = "xmpp_stream"
+                    self._emit("tls_required",
+                               "The server was reached but offered no TLS, "
+                               "so nothing was sent.")
+                    return None
+                # slixmpp answers <starttls/> next: the handshake is the
+                # stage from here until tls_success.
+                self.stage = "tls_handshake"
+            elif "xmpp_stream" not in self.reached:
+                self.reached.append("xmpp_stream")
+                _TRACE.record(self.label, "stream_features", "info",
+                              register="register" in names,
+                              sasl="mechanisms" in names)
+        return stanza
+
+    def finish(self):
+        self.done = True
+
+    def _emit(self, code, detail):
+        if self.done:
+            return
+        self.done = True
+        _TRACE.record(self.label, "failed_at", "warning", code=code,
+                      stage=self.stage, reasons=";".join(self.failures[-6:]))
+        self._fail(code, detail)
+
+    def _on_conn_failed(self, event):
+        if isinstance(event, BaseException):
+            reason = _errno_name(event)
+        else:
+            reason = "dns"                      # slixmpp passes a string
+        self.failures.append(reason)
+        _TRACE.record(self.label, "address_failed", "info", reason=reason,
+                      attempt=len(self.failures))
+        if self.expected is None or len(self.failures) >= self.expected:
+            self._all_failed()
+
+    def _on_reconnect_delay(self, _event):
+        # slixmpp only reschedules after every address in the round failed.
+        if self.failures:
+            self._all_failed()
+
+    def _all_failed(self):
+        if all(f == "dns" for f in self.failures):
+            self._emit("dns_failure",
+                       "DNS: the server's name did not resolve to any address.")
+        else:
+            self._emit("tcp_failure",
+                       "TCP: no address of the server accepted a connection "
+                       "(%s). The server was not reached; nothing was sent."
+                       % ", ".join(dict.fromkeys(self.failures)))
+
+    def _on_connected(self, _event):
+        self.stage = "tcp_connected"
+        self.reached.append("tcp_connected")
+        _TRACE.record(self.label, "tcp_connected", "info",
+                      after_failures=len(self.failures))
+
+    def _on_tls(self, _event):
+        self.stage = "tls_established"
+        self.reached.append("tls_established")
+        _TRACE.record(self.label, "tls_established", "info",
+                      certificate="verified" if self.route.verify_certificate
+                      else "not used")
+
+    def _on_invalid_chain(self, exc):
+        import ssl as _ssl
+        self.stage = "tls_handshake"
+        if isinstance(exc, _ssl.SSLCertVerificationError):
+            why = getattr(exc, "verify_message", "") or "not trusted"
+            self._emit("certificate_failure",
+                       "TLS: the server's certificate was rejected (%s). "
+                       "Nothing was sent; certificate checks are never "
+                       "switched off for a clearnet server." % why)
+        else:
+            self._emit("tls_failure",
+                       "TLS: the handshake with the server failed (%s)."
+                       % type(exc).__name__)
+        try:
+            self.client.abort()
+        except Exception:
+            pass
+
+    def _on_stream_error(self, stanza):
+        try:
+            cond = stanza["condition"]
+        except Exception:
+            cond = "unknown"
+        self._emit("xmpp_stream_failure",
+                   "XMPP: the server ended the stream with an error (%s) at "
+                   "stage %s." % (cond, self.stage))
+
+    def _on_disconnected(self, _event):
+        if self.stage in ("resolving", "tcp_connecting"):
+            return
+        if self.stage == "tls_handshake":
+            # A rejected certificate makes the server drop the connection,
+            # and `disconnected` can arrive before slixmpp's
+            # `ssl_invalid_chain`. Give the precise event a moment to land.
+            try:
+                asyncio.get_event_loop().call_later(
+                    0.5, self._emit, "tls_failure",
+                    "TLS: the connection closed during the handshake.")
+            except RuntimeError:
+                self._emit("tls_failure",
+                           "TLS: the connection closed during the handshake.")
+            return
+        self._emit("server_closed_connection",
+                   "The server closed the connection after %s, before the "
+                   "operation finished." % self.stage.replace("_", " "))
+
+
+
+#: Error conditions with which a server that has no PEP (XEP-0163) refuses
+#: an avatar publish -- Prosody without "pep" in modules_enabled.
+PEP_MISSING = frozenset({"feature-not-implemented", "service-unavailable",
+                         "item-not-found"})
+
+
+def _room_was_created(join_result) -> bool:
+    """Whether `join_muc_wait`'s answer says the join created the room
+    (XEP-0045 status 201)."""
+    try:
+        own = join_result[0] if isinstance(join_result, tuple) else join_result
+        codes = own["muc"]["status_codes"]
+        return 201 in {int(c) for c in codes}
+    except Exception:
+        return False
+
+def _room_occupant_count(info) -> Optional[int]:
+    """`muc#roominfo_occupants` from a room's disco#info, or None.
+
+    Read from the XML rather than through a form plugin, so it works whether
+    or not XEP-0128 is registered. Only a plain non-negative integer is
+    accepted; anything else is "not given"."""
+    try:
+        xml = info["disco_info"].xml
+    except Exception:
+        try:
+            xml = info.xml
+        except Exception:
+            return None
+    for form in xml.iter("{jabber:x:data}x"):
+        for field in form.iter("{jabber:x:data}field"):
+            if field.get("var") != "muc#roominfo_occupants":
+                continue
+            value = field.find("{jabber:x:data}value")
+            text = (value.text or "").strip() if value is not None else ""
+            if text.isdigit() and len(text) <= 7:
+                return int(text)
+            return None
+    return None
+
+
+def _form_field_names(form) -> str:
+    """The NAMES of the fields a registration form asks for -- never values."""
+    names = []
+    try:
+        query = form["register"]
+        for n in ("username", "password", "email", "name"):
+            if query.xml.find("{jabber:iq:register}%s" % n) is not None:
+                names.append(n)
+        xform = query["form"]
+        if xform is not None:
+            names.extend(k for k in (xform.get_fields() or {}) if k not in names)
+    except Exception:
+        pass
+    return ",".join(names[:12]) or "none"
+
+
+def _safe_condition(exc) -> str:
+    """An XMPP error condition name (RFC 6120 vocabulary), or the type."""
+    try:
+        cond = getattr(exc, "condition", None) or exc.iq["error"]["condition"]
+        if cond and str(cond).replace("-", "").isalpha():
+            return str(cond)
+    except Exception:
+        pass
+    return type(exc).__name__
+
+
+def _registration_blocker(form) -> Optional[str]:
+    """Why this XEP-0077 form cannot be filled with a username and password
+    alone, or None. Read BEFORE the password is sent: a CAPTCHA or an extra
+    required field means the submission would be refused anyway."""
+    try:
+        query = form["register"]
+    except Exception:
+        return None
+    try:
+        xform = query["form"]
+        fields = xform.get_fields() if xform is not None else {}
+    except Exception:
+        fields = {}
+    names = set(fields or {})
+    try:
+        ftype = fields["FORM_TYPE"].get_value() if "FORM_TYPE" in names else ""
+    except Exception:
+        ftype = ""
+    if "urn:xmpp:captcha" in str(ftype) or names & {"ocr", "captcha", "qa",
+                                                   "audio_recog", "picture_recog",
+                                                   "speech_recog", "video_recog"}:
+        return "registration_captcha_required"
+    extra = []
+    for name, field in (fields or {}).items():
+        if name in ("FORM_TYPE", "username", "password"):
+            continue
+        try:
+            required = field["required"]
+        except Exception:
+            required = False
+        if required and field["type"] not in ("hidden", "fixed"):
+            extra.append(name)
+    if extra:
+        return "registration_fields_required"
+    return None
+
+
+def _stream_failure_text(route, what: str) -> str:
+    """Which layer a stream failure belongs to, by route."""
+    if route.kind == _route_mod.CLEARNET_TLS:
+        return ("the XMPP stream could not be established (%s): DNS, the TCP "
+                "connection or the TLS handshake with the server failed. If "
+                "TLS failed, the server's certificate may not be valid for "
+                "its domain; nothing insecure was attempted instead." % what)
+    if route.kind == _route_mod.TOR:
+        return ("the XMPP stream could not be established (%s). The Tor "
+                "circuit was open, so this is the server or the TLS "
+                "handshake rather than Tor." % what)
+    return ("the XMPP stream could not be established (%s). The SAM tunnel "
+            "was open, so this is the server or the TLS handshake rather "
+            "than I2P." % what)
 
 
 def _enable_registration(client) -> None:
@@ -258,6 +711,90 @@ def _forwarder_log(message: str) -> None:
         _log.info("i2p: opening a SAM stream (a cold tunnel can take 30-90s)")
 
 
+#: The steps of a connection over I2P or Tor, in order, each recorded in the
+#: diagnostic log as it is reached ("connection" / <step>), and what it means
+#: when the 300 s wait expires after that step and before the next. A device
+#: report (2026-10-02) said only "did not finish within 300s": nothing
+#: between "building tunnels" and "connected" was recorded, so a tunnel that
+#: never opened and a server that never answered looked the same.
+_PROGRESS_HINTS = {
+    "starting": "the connection had not started",
+    "sam_opening": (
+        "the I2P tunnel to the server was never built. Usually the server's "
+        "I2P tunnel is down or not yet published, or this phone's router has "
+        "not integrated into the network yet (a freshly started router can "
+        "need 5-10 minutes)"),
+    "sam_established": "the I2P tunnel opened but the local bridge to it did not start",
+    "tunnel_open": (
+        "the I2P tunnel to the server opened, but the XMPP server never "
+        "answered over it. Check that the server's XMPP service is running "
+        "and that this is the address of its XMPP (port 5222) tunnel"),
+    "stream_features": (
+        "the XMPP server answered, but the encrypted (TLS) handshake or "
+        "sign-in did not finish"),
+    "tls": "the encrypted (TLS) connection was set up, but signing in did not finish",
+    "signed_in": "signed in, but the session was not completed by the server",
+}
+
+
+#: What a server's stream error means for someone signing in, by RFC 6120
+#: condition. Anything else is named as the condition.
+_STREAM_ERROR_MEANINGS = {
+    "host-unknown": (
+        "the server does not host %(domain)s, the domain in your address. "
+        "The account's domain must be one the server serves (Prosody: a "
+        "VirtualHost \"%(domain)s\" in its configuration), or use an address "
+        "on a domain it does serve"),
+    "host-gone": "the server no longer hosts %(domain)s",
+    "see-other-host": "the server sent this client to another host",
+    "policy-violation": "the server refused this connection by its policy",
+    "not-authorized": "the server refused this connection before sign-in",
+    "system-shutdown": "the server is shutting down",
+    "connection-timeout": "the server timed the connection out",
+    "unsupported-version": "the server does not support this XMPP version",
+}
+
+
+def _tls_failure_text(reason: str, profile) -> str:
+    """A TLS handshake failure over I2P/Tor, for a person. The certificate
+    is never the cause there: it is not checked."""
+    try:
+        domain = str(profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
+    except Exception:
+        domain = "the server's domain"
+    r = reason.upper()
+    head = ("the TLS handshake with the server failed (%s). Any certificate "
+            "is accepted over I2P, so this is not a certificate check: " % reason)
+    if "HANDSHAKE_FAILURE" in r or "NO_SHARED_CIPHER" in r:
+        return head + (
+            "the server refused the handshake, which is what a server with "
+            "no usable certificate and key for %s does. On the server: "
+            "`prosodyctl check certs`, and make sure the prosody user can "
+            "read the key file." % domain)
+    if "UNRECOGNIZED_NAME" in r:
+        return head + ("the server has no certificate configured for %s."
+                       % domain)
+    if "PROTOCOL_VERSION" in r or "UNSUPPORTED_PROTOCOL" in r:
+        return head + ("the server offers only TLS versions older than 1.2.")
+    if "INTERNAL_ERROR" in r:
+        return head + ("the server reported an internal TLS error; its log "
+                       "will say which.")
+    return head + "the server's log will say why."
+
+
+def _stream_error_text(condition: str, profile) -> str:
+    try:
+        domain = str(profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
+    except Exception:
+        domain = "the address's domain"
+    meaning = _STREAM_ERROR_MEANINGS.get(condition)
+    if meaning:
+        return ("the server ended the stream with an error (%s): %s."
+                % (condition, meaning % {"domain": domain}))
+    return ("the server ended the stream with an error (%s) before sign-in."
+            % condition)
+
+
 class TransportError(RuntimeError):
     """The transport could not do what was asked.
 
@@ -287,6 +824,8 @@ class XmppTransport(Transport):
         subscription_policy: str = SubscriptionPolicy.ACCEPT,
         client_factory: Optional[Callable[..., Any]] = None,
         forwarder: Optional[Callable[..., Any]] = None,
+        tor_forwarder: Optional[Callable[..., Any]] = None,
+        server_pins: Optional[Any] = None,
     ):
         profile.validate()
         if not profile.is_complete:
@@ -299,6 +838,11 @@ class XmppTransport(Transport):
         #: Set by `set_room_handler`; None drops room messages.
         self._on_room_message: Optional[Callable[..., None]] = None
         self._on_presence = on_presence
+        #: The route, decided once from the name (android_bridge.route).
+        self._route = profile.route
+        self._tor_forwarder = tor_forwarder
+        #: X1: the I2P destination each human-readable name is trusted at.
+        self._server_pins = server_pins
         #: Which resources speak OTRv4Plus. See otrv4plus_caps: OTRv4+
         #: traffic goes only to a resource this has confirmed.
         self._caps = _caps.CapabilityBook()
@@ -306,6 +850,16 @@ class XmppTransport(Transport):
         self._welcome = _welcome.WelcomeDirectory()
         #: bare room JID (lower case) -> the nickname we joined with.
         self._room_nicks: Dict[str, str] = {}
+        #: Contacts' avatars, decoded by android_bridge.avatar. Memory only.
+        self._avatars = _avatar.AvatarBook()
+        #: Rooms whose join is in flight -> room messages held until the join
+        #: completes. See `_begin_join`: without this, a room's history burst
+        #: arriving in the same read as our self-presence reached the app
+        #: before the room was registered, and was silently dropped.
+        self._joining: Dict[str, list] = {}
+        #: `handler(room)` once ANY room join succeeds, called on the loop
+        #: thread before that room's held messages are delivered.
+        self._on_room_joined: Optional[Callable[[str], None]] = None
         #: Called with a bare JID whenever its capability may have changed,
         #: and whether the resource an OTRv4+ session was pinned to left.
         self._on_capability: Optional[Callable[[str, bool], None]] = None
@@ -363,10 +917,10 @@ class XmppTransport(Transport):
     def __repr__(self) -> str:
         # Written out, never derived. A default repr on a class holding a
         # credential is one logging call away from putting it in a file.
-        return ("<XmppTransport jid=%r server=%r sam=%s:%d i2p=%s connected=%s>"
+        return ("<XmppTransport jid=%r server=%r route=%s connected=%s>"
                 % (self._profile.jid, self._profile.effective_server,
-                   self._profile.sam_host, self._profile.sam_port,
-                   self._profile.use_i2p, self.is_connected))
+                   getattr(getattr(self, "_route", None), "kind", "?"),
+                   self.is_connected))
 
     __str__ = __repr__
 
@@ -417,6 +971,30 @@ class XmppTransport(Transport):
                                      "the transport's event loop did not start")
             self._loop, self._thread = loop, thread
             return loop
+
+    def _on_loop_thread(self) -> bool:
+        thread = getattr(self, "_thread", None)
+        return thread is not None and threading.current_thread() is thread
+
+    def _send_now(self, coro, timeout: float) -> None:
+        """Run a send. From any thread but the loop's, wait for it as `_run`
+        does. FROM THE LOOP THREAD ITSELF -- a room or chat handler that
+        answers at once (a secure group sending a Welcome when its commit
+        comes back, or posting a commit when a KeyPackage arrives) -- waiting
+        would deadlock: the loop cannot run the send while it is blocked
+        waiting for it. That cost 30 s per send and then the connection
+        (the loop could not answer keepalives). There it is queued on the
+        loop instead, in order, and a failure is logged."""
+        if not self._on_loop_thread():
+            self._run(coro, timeout)
+            return
+        task = self._loop.create_task(coro)
+
+        def done(t):
+            if not t.cancelled() and t.exception() is not None:
+                _TRACE.record("transport", "queued_send_failed", "warning",
+                              exception_type=type(t.exception()).__name__)
+        task.add_done_callback(done)
 
     def _run(self, coro, timeout: float):
         """Run *coro* on the loop thread and wait for it."""
@@ -514,11 +1092,14 @@ class XmppTransport(Transport):
             # slixmpp's _connect_loop keeps rescheduling against a tunnel
             # nobody is waiting on any more.
             future.cancel()
+            step = getattr(self, "_progress", "starting")
+            _TRACE.record("connection", "timed_out", "error", last_step=step)
             raise TransportError(
                 "timeout",
                 "the operation did not finish within %gs and nothing raised. "
-                "The connection was still in progress when the wait expired."
-                % CONNECT_TIMEOUT)
+                "The connection was still in progress when the wait expired. "
+                "Last step reached: %s -- %s."
+                % (CONNECT_TIMEOUT, step, _PROGRESS_HINTS.get(step, step)))
         except Exception as exc:
             raise TransportError("unexpected_error", type(exc).__name__)
         finally:
@@ -640,16 +1221,39 @@ class XmppTransport(Transport):
             300s timeout instead of "that username is taken".
             """
             offered["register"] = True
+            blocker = _registration_blocker(form)
+            _TRACE.record("registration", "form_received", "info",
+                          fields=_form_field_names(form),
+                          blocker=blocker or "none")
+            if blocker is not None:
+                # A CAPTCHA or an extra required field: the server would
+                # refuse a username-and-password submission, so the password
+                # is not sent at all.
+                if not done.done():
+                    done.set_exception(_registration.RegistrationFailed(blocker))
+                return
+            if self._route.verify_certificate and not _tls_in_place(client):
+                # Clearnet (or a clearnet name over Tor): the form carries the
+                # new password, and without TLS it would travel in the clear.
+                # slixmpp does not insist on STARTTLS, so this does.
+                if not done.done():
+                    done.set_exception(
+                        _registration.RegistrationFailed("tls_required"))
+                return
             try:
                 iq = client.Iq()
                 iq["type"] = "set"
                 iq["register"]["username"] = _localpart(self._profile.jid)
                 iq["register"]["password"] = self._password
+                _TRACE.record("registration", "submitted", "info")
                 await iq.send()
             except Exception as exc:
+                _TRACE.record("registration", "rejected", "info",
+                              condition=_safe_condition(exc))
                 if not done.done():
                     done.set_exception(exc)
             else:
+                _TRACE.record("registration", "accepted", "info")
                 if not done.done():
                     done.set_result(True)
 
@@ -670,18 +1274,34 @@ class XmppTransport(Transport):
             done.set_exception(
                 _registration.RegistrationFailed("unsupported"))
 
-        def on_connection_failed(event):
-            if not done.done():
-                done.set_exception(ConnectionError(type(event).__name__))
+        watch = None
+        if self._route.kind == _route_mod.CLEARNET_TLS:
+            # Clearnet: every address is tried before giving up, and the
+            # failure names its stage (see _StreamWatch).
+            def fail(code, detail):
+                if not done.done():
+                    done.set_exception(
+                        _registration.RegistrationFailed(code, detail))
+            watch = _StreamWatch(client, self._route, fail, "registration")
+            self._plan_clearnet_dns(client, watch, host)
+        else:
+            def on_connection_failed(event):
+                if not done.done():
+                    done.set_exception(ConnectionError(type(event).__name__))
+            client.add_event_handler("connection_failed", on_connection_failed)
+        self._watch_registration_discovery(client, done)
 
         client.add_event_handler("register", on_register)
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed_auth)
-        client.add_event_handler("connection_failed", on_connection_failed)
 
         _TRACE.record("registration", "requested", "info")
         client.connect(host=host, port=port)
-        await done
+        try:
+            await done
+        finally:
+            if watch is not None:
+                watch.finish()
 
         if not offered["register"]:
             # The stream came up and authentication was reached without the
@@ -689,6 +1309,179 @@ class XmppTransport(Transport):
             # reporting success here would send the user to a sign-in screen
             # for an account that does not exist.
             raise _registration.RegistrationFailed("unsupported")
+        # The server answered the registration as this name's server: pin
+        # the destination it was reached at (X1; I2P names only).
+        self._confirm_destination()
+
+    def _plan_clearnet_dns(self, client, watch, host) -> None:
+        """SRV-first address plan for a clearnet name (see dns_srv).
+
+        Only when slixmpp was left to resolve (no explicit host): an explicit
+        host:port is one attempt, and asyncio tries that host's addresses
+        itself."""
+        if host is not None or not hasattr(client, "get_dns_records"):
+            watch.expected = 1
+            return
+        domain = self._route.host
+
+        async def get_dns_records(_domain, port=None):
+            loop = asyncio.get_event_loop()
+            try:
+                records, plan = await _clearnet_dns_records(
+                    domain, loop, lookup=getattr(self, "_srv_lookup", None),
+                    getaddrinfo=getattr(self, "_getaddrinfo", None),
+                    fallback_port=int(getattr(client, "default_port",
+                                              DEFAULT_C2S_PORT) or DEFAULT_C2S_PORT))
+            except Exception as exc:                 # never let DNS code raise
+                _TRACE.record("transport", "dns_plan_failed", "warning",
+                              error=type(exc).__name__)
+                records, plan = [], {}
+            _TRACE.record("transport", "dns_plan", "info", **plan)
+            watch.expected = max(1, len(records))
+            if records:
+                watch.stage = "tcp_connecting"
+            return records
+
+        client.get_dns_records = get_dns_records
+
+    def _watch_registration_discovery(self, client, done) -> None:
+        """The registration GET (XEP-0077 discovery) is sent by slixmpp's
+        feature handler, where an error is logged and dropped -- a refused
+        discovery used to be a silent wait for the timeout. Wrapped so its
+        failure ends the attempt with its own code."""
+        try:
+            plugin = client["xep_0077"]
+            original = plugin.get_registration
+        except Exception:
+            return
+
+        async def get_registration(*args, **kwargs):
+            _TRACE.record("registration", "discovery_requested", "info")
+            try:
+                return await original(*args, **kwargs)
+            except Exception as exc:
+                code, _ = _registration.classify(exc)
+                if code == "unknown":
+                    code = "registration_protocol_error"
+                _TRACE.record("registration", "discovery_failed", "info",
+                              code=code, condition=_safe_condition(exc))
+                if not done.done():
+                    done.set_exception(_registration.RegistrationFailed(code))
+                raise
+
+        plugin.get_registration = get_registration
+
+    # -- probe: reach the server, sign in to nothing ----------------------------
+
+    def probe_server(self) -> Dict[str, Any]:
+        """DNS, TCP, TLS (certificate verified), the XMPP stream and its
+        features, and XEP-0077 registration DISCOVERY -- then stop. Never
+        authenticates and never submits a registration: the client carries an
+        empty password and the SASL feature is removed before slixmpp sees
+        it. Answers "unreachable" / "reached, registration offered or not" /
+        "reached, then closed" / "reached, form needs a CAPTCHA". Blocks."""
+        loop = self._ensure_loop()
+        future = asyncio.run_coroutine_threadsafe(self._probe(), loop)
+        with self._lock:
+            self._connect_future = future
+        try:
+            return future.result(timeout=CONNECT_TIMEOUT)
+        except BaseException as exc:                 # noqa: BLE001
+            code = getattr(exc, "code", None) or type(exc).__name__
+            return {"ok": False, "code": str(code),
+                    "detail": getattr(exc, "detail", "") or "", "reached": []}
+        finally:
+            with self._lock:
+                self._connect_future = None
+
+    async def _probe(self) -> Dict[str, Any]:
+        try:
+            return await self._probe_inner()
+        finally:
+            await self._abandon()
+
+    async def _probe_inner(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {"ok": False, "code": "", "detail": "",
+                                  "route": self._route.kind, "reached": [],
+                                  "register_offered": None,
+                                  "registration_fields": "", "blocker": ""}
+        try:
+            host, port = await self._endpoint()
+        except TransportError as exc:
+            result.update(code=exc.code, detail=exc.detail)
+            return result
+        password, self._password = self._password, ""
+        try:
+            client = self._make_client()
+        finally:
+            self._password = password
+        _enable_registration(client)
+        self._client = client
+        done = asyncio.get_event_loop().create_future()
+
+        def finish(code, detail="", ok=False):
+            if not done.done():
+                result.update(ok=ok, code=code, detail=detail)
+                done.set_result(True)
+
+        watch = None
+        if self._route.kind == _route_mod.CLEARNET_TLS:
+            watch = _StreamWatch(client, self._route, finish, "probe")
+            self._plan_clearnet_dns(client, watch, host)
+        else:
+            client.add_event_handler(
+                "connection_failed",
+                lambda e: finish("stream_failed", _stream_failure_text(
+                    self._route, type(e).__name__)))
+
+        def features(stanza):
+            if type(stanza).__name__ != "StreamFeatures":
+                return stanza
+            names = [str(c.tag).rsplit("}", 1)[-1] for c in stanza.xml]
+            for child in list(stanza.xml):
+                if str(child.tag).endswith("}mechanisms"):
+                    stanza.xml.remove(child)       # never authenticate
+            if _tls_in_place(client):
+                result["reached"].append("xmpp_stream")
+                result["register_offered"] = "register" in names
+                _TRACE.record("probe", "features", "info",
+                              register="register" in names,
+                              sasl="mechanisms" in names)
+                if "register" not in names:
+                    finish("registration_not_offered",
+                           "Reached; TLS verified; the server does not "
+                           "offer in-app registration.", ok=True)
+            elif "starttls" not in names:
+                finish("tls_required",
+                       "Reached, but the server offered no TLS.")
+            return stanza
+
+        async def on_register(form):
+            blocker = _registration_blocker(form)
+            result["registration_fields"] = _form_field_names(form)
+            result["blocker"] = blocker or ""
+            result["reached"].append("registration_form")
+            finish(blocker or "registration_available",
+                   "Reached; TLS verified; registration form received "
+                   "(%s)." % result["registration_fields"], ok=True)
+
+        client.add_filter("in", features)
+        client.add_event_handler("register", on_register)
+        self._watch_registration_discovery(client, done)
+        _TRACE.record("probe", "requested", "info", route=self._route.kind)
+        client.connect(host=host, port=port)
+        try:
+            await done
+        except _registration.RegistrationFailed as exc:
+            result.update(code=exc.code, detail=_registration.describe(exc.code))
+        finally:
+            if watch is not None:
+                watch.finish()
+                result["reached"] = watch.reached + [
+                    r for r in result["reached"] if r not in watch.reached]
+        _TRACE.record("probe", "result", "info", code=result["code"],
+                      reached=",".join(result["reached"]))
+        return result
 
     async def _connect(self) -> None:
         try:
@@ -703,8 +1496,87 @@ class XmppTransport(Transport):
             await self._abandon()
             raise
 
+    def _reached(self, step: str, **fields: Any) -> None:
+        """Record a connection step (see _PROGRESS_HINTS). Never the
+        destination, the password or a stanza."""
+        self._progress = step
+        _TRACE.record("connection", step, "info", **fields)
+
+    def _forwarder_progress(self, message: str) -> None:
+        """The forwarder's progress lines, as connection steps.
+
+        `_forwarder_log` still decides what reaches logcat (never the
+        destination); this records the step in the diagnostic log, which a
+        report carries, and remembers it for a timeout message."""
+        _forwarder_log(message)
+        text = str(message)
+        if "opening SAM stream" in text:
+            self._reached("sam_opening")
+        elif "ships for it" in text:
+            # The project's server name, dialled at the address this version
+            # ships for it (otrv4plus_address.SHIPPED_SERVERS). The step
+            # stays sam_opening.
+            _TRACE.record("connection", "shipped_address_used", "info")
+        elif "established" in text:
+            self._reached("sam_established")
+        elif "I2P stream ended" in text:
+            self._stream_ended(text)
+
+    #: What the end of the I2P stream means, by (who ended it, bytes
+    #: received, first byte kind). Recorded with the counts; never content.
+    _STREAM_END_HINTS = {
+        "silent": ("server sent nothing: its I2P server tunnel reaches nothing "
+                   "that answers. Needs type=server, host 127.0.0.1, port "
+                   "5222, and the XMPP server running"),
+        "tls": ("server answered in TLS, not XMPP: its I2P tunnel points at "
+                "the direct-TLS port (5223). Point it at 5222"),
+        "other": ("server answered with something other than XMPP: the I2P "
+                  "tunnel is the wrong type (needs type=server) or the wrong "
+                  "port"),
+    }
+
+    def _stream_ended(self, text: str) -> None:
+        import re
+        m = re.search(r"ended by the (\w+): sent=(\d+) received=(\d+) "
+                      r"first=(\w+)", text)
+        if not m:
+            return
+        by, sent, got, first = m.group(1), int(m.group(2)), int(m.group(3)), \
+            m.group(4)
+        verdict = ("silent" if by == "server" and got == 0
+                   else first if first in ("tls", "other") else "")
+        fields = dict(ended_by=by, sent=sent, received=got, first=first)
+        if verdict:
+            fields["meaning"] = self._STREAM_END_HINTS[verdict]
+        _TRACE.record("connection", "i2p_stream_ended",
+                      "warning" if verdict else "info", **fields)
+
+    def _watch_stages(self, client: Any) -> None:
+        """Steps of the XMPP handshake over I2P/Tor, for the diagnostic
+        record: the server answered (stream features), TLS is up, the account
+        is signed in."""
+        def features(stanza):
+            if (type(stanza).__name__ == "StreamFeatures"
+                    and getattr(self, "_progress", "") == "tunnel_open"):
+                # Recorded, not emitted: the controller maps the transport's
+                # later "connected" to its own "connecting", so a stage here
+                # would make the screen step backwards.
+                self._reached("stream_features")
+            return stanza
+
+        if hasattr(client, "add_filter"):
+            client.add_filter("in", features)
+        client.add_event_handler("tls_success", lambda _e: self._reached("tls"))
+        client.add_event_handler("auth_success",
+                                 lambda _e: self._reached("signed_in"))
+
     async def _connect_inner(self) -> None:
+        self._progress = "starting"
         host, port = await self._endpoint()
+        if self._route.kind != _route_mod.CLEARNET_TLS:
+            # The tunnel is up; what is left is the XMPP handshake over it.
+            self._reached("tunnel_open")
+            self._emit_state("connecting")
         # Separately coded for the same reason as the forwarder above: a
         # slixmpp that will not import is a packaging fault, and reporting it
         # as a generic connect failure sends someone to look at their router.
@@ -725,10 +1597,29 @@ class XmppTransport(Transport):
                 started.set_result(True)
 
         def on_failed(_event):
+            if started.done():
+                return
+            if self._route.verify_certificate and not _tls_in_place(client):
+                started.set_exception(TransportError(
+                    "tls_required",
+                    "the server did not offer TLS, so no password was sent. "
+                    "This app does not sign in over an unencrypted stream."))
+                return
+            started.set_exception(
+                TransportError("auth_failed",
+                               "the server rejected the account or password"))
+
+        def on_no_auth(_event):
+            # No mechanism this app allows was offered. Over I2P and Tor that
+            # set is SCRAM only: a server (or an impostor) offering only
+            # PLAIN would receive the password itself, so nothing is sent.
             if not started.done():
-                started.set_exception(
-                    TransportError("auth_failed",
-                                   "the server rejected the account or password"))
+                started.set_exception(TransportError(
+                    "no_safe_auth_mechanism",
+                    "the server offers no sign-in method that keeps the "
+                    "password off the wire (SCRAM). Nothing was sent."
+                    if not self._route.verify_certificate else
+                    "the server offers no sign-in method this app accepts."))
 
         def on_connection_failed(event):
             # slixmpp reschedules a failed connection rather than giving up
@@ -740,14 +1631,86 @@ class XmppTransport(Transport):
             if not started.done():
                 started.set_exception(TransportError(
                     "stream_failed",
-                    "the XMPP stream could not be established (%s). The SAM "
-                    "tunnel was open, so this is the server or the TLS "
-                    "handshake rather than I2P."
-                    % type(event).__name__))
+                    _stream_failure_text(self._route, type(event).__name__)))
+
+        def on_stream_error(stanza):
+            # Over I2P/Tor the server's own refusal -- `host-unknown` for a
+            # domain it does not serve, above all -- was dropped: slixmpp
+            # closed the stream, nothing failed the wait, and the attempt sat
+            # until the 300 s timeout with the reason thrown away (device
+            # report, 2026-10-02: 492 bytes of XMPP received, then nothing).
+            # _StreamWatch does this on clearnet only. The condition is a
+            # fixed RFC 6120 word and is traced; the server's free text is
+            # not -- it can name hosts.
+            try:
+                cond = str(stanza["condition"] or "") or "unknown"
+            except Exception:
+                cond = "unknown"
+            _TRACE.record("connection", "stream_error", "error",
+                          condition=cond,
+                          last_step=getattr(self, "_progress", ""))
+            if not started.done():
+                started.set_exception(TransportError(
+                    "xmpp_stream_failure",
+                    _stream_error_text(cond, self._profile)))
+
+        def on_tls_error(exc):
+            # slixmpp raises EVERY TLS failure as `ssl_invalid_chain` and logs
+            # "Invalid certificate trust chain" -- wrongly here: over I2P/Tor
+            # the certificate is not checked at all (CERT_NONE), so any
+            # certificate is accepted. What fails is the handshake itself, and
+            # the OpenSSL reason says which side and why. Device report,
+            # 2026-10-02: STARTTLS offered and accepted, the client's hello
+            # sent, a few bytes back, closed -- with no reason recorded.
+            reason = (getattr(exc, "reason", None) or type(exc).__name__)
+            _TRACE.record("connection", "tls_failed", "error",
+                          reason=str(reason)[:80])
+            if not started.done():
+                started.set_exception(TransportError(
+                    "tls_failed", _tls_failure_text(str(reason),
+                                                    self._profile)))
+
+        def on_early_disconnect(_event):
+            # The stream ended before sign-in finished and nothing above said
+            # why: say where it stopped now rather than after the timeout.
+            # slixmpp signals `disconnected` BEFORE the `ssl_invalid_chain`
+            # that carries a failed TLS handshake's reason (the device report
+            # got the vague message, not the reason), so a precise event gets
+            # half a second to land first -- as _StreamWatch does on clearnet.
+            if started.done():
+                return
+            try:
+                asyncio.get_event_loop().call_later(0.5, closed_before_sign_in)
+            except RuntimeError:
+                closed_before_sign_in()
+
+        def closed_before_sign_in():
+            if not started.done():
+                step = getattr(self, "_progress", "starting")
+                started.set_exception(TransportError(
+                    "server_closed_connection",
+                    "the server closed the connection before sign-in "
+                    "finished. Last step reached: %s -- %s."
+                    % (step, _PROGRESS_HINTS.get(step, step))))
 
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed)
-        client.add_event_handler("connection_failed", on_connection_failed)
+        client.add_event_handler("no_auth", on_no_auth)
+        watch = None
+        if self._route.kind == _route_mod.CLEARNET_TLS:
+            # Every address before giving up, and the stage named -- the same
+            # fault as registration had (see _StreamWatch).
+            def fail(code, detail):
+                if not started.done():
+                    started.set_exception(TransportError(code, detail))
+            watch = _StreamWatch(client, self._route, fail, "connection")
+            self._plan_clearnet_dns(client, watch, host)
+        else:
+            client.add_event_handler("connection_failed", on_connection_failed)
+            client.add_event_handler("stream_error", on_stream_error)
+            client.add_event_handler("ssl_invalid_chain", on_tls_error)
+            client.add_event_handler("disconnected", on_early_disconnect)
+            self._watch_stages(client)
 
         # host= and port= point slixmpp at the local end of the SAM tunnel
         # rather than at a DNS lookup of the JID's domain. getaddrinfo is never
@@ -764,8 +1727,14 @@ class XmppTransport(Transport):
         # this call against the real slixmpp signature so a fake cannot agree
         # with a mistake again.
         client.connect(host=host, port=port)
-        await started
+        try:
+            await started
+        finally:
+            if watch is not None:
+                watch.finish()
         self._connected.set()
+        _TRACE.record("auth", "allowed", "info", route=self._route.kind)
+        self._confirm_destination()
 
         # WHAT A CLIENT OWES THE SERVER ONCE THE SESSION IS UP.
         #
@@ -1122,12 +2091,111 @@ class XmppTransport(Transport):
                     pass
                 break
 
+    def _pins(self):
+        pins = getattr(self, "_server_pins", None)
+        if pins is None:
+            from . import server_pins as _pins_mod
+            pins = self._server_pins = _pins_mod.default_store()
+        return pins
+
+    def _verify_destination(self, dest_b64: str) -> None:
+        """X1: runs between NAMING LOOKUP and STREAM CONNECT (SAM worker
+        thread). Raising here means no stream to that destination exists, so
+        nothing -- no credential -- is ever sent to it."""
+        from . import server_pins as _pins_mod
+        route = self._route
+        seen = _pins_mod.b32_of_destination(dest_b64)
+        shipped = _address.shipped_server_address(route.host)
+        if shipped:
+            # The project's server: dialled at its shipped b32, which is the
+            # key hash, so it is checked like a typed b32 and no pin is
+            # consulted -- a pin left by an address book that mapped the name
+            # elsewhere must not block the right server.
+            if seen != shipped:
+                _TRACE.record("i2p", "destination_mismatch", "error")
+                raise _pins_mod.DestinationChanged(route.host, shipped, seen)
+            _TRACE.record("i2p", "destination_accepted", "info",
+                          basis="shipped address")
+            return
+        if route.self_authenticating:
+            # A typed .b32.i2p IS the key hash: the router must hand back the
+            # destination that hashes to it.
+            if seen != route.host:
+                _TRACE.record("i2p", "destination_mismatch", "error")
+                raise _pins_mod.DestinationChanged(route.host, route.host, seen)
+            _TRACE.record("i2p", "destination_accepted", "info",
+                          basis="b32 address")
+            return
+        _TRACE.record("i2p", "hostname_resolved", "info")
+        pins = self._pins()
+        verdict = pins.check(route.host, seen)
+        if verdict == "changed":
+            _TRACE.record("i2p", "destination_changed", "error")
+            _TRACE.record("auth", "blocked", "error",
+                          reason="i2p destination changed")
+            raise _pins_mod.DestinationChanged(
+                route.host, pins.pinned(route.host) or "", seen)
+        _TRACE.record("i2p", "destination_accepted", "info",
+                      basis="pinned" if verdict == "match" else "first use")
+
+    def _confirm_destination(self) -> None:
+        """The attempt succeeded: pin a first-use or approved destination."""
+        route = getattr(self, "_route", None)
+        if route is None or route.kind != _route_mod.I2P_SAM \
+                or route.self_authenticating:
+            return
+        if self._pins().confirm(route.host):
+            _TRACE.record("i2p", "destination_pinned", "info")
+
+    def _explicit_host(self) -> bool:
+        """Whether a server other than the JID's own domain was given."""
+        server = (self._profile.server or "").strip().lower()
+        if not server:
+            return False
+        return self._route.host != _address.jid_domain(
+            self._profile.jid).strip().lower()
+
     async def _endpoint(self):
-        """Where slixmpp should point: the SAM tunnel, or the server itself."""
-        if not self._profile.use_i2p:
-            # A clearnet server, which the profile allows and the UI does not
-            # advertise. No tunnel to build, so no forwarder.
-            return self._profile.effective_server, DEFAULT_C2S_PORT
+        """Where slixmpp should point, by route (android_bridge.route).
+
+        clearnet_tls: (None, None) when the server is the JID's own domain,
+            so slixmpp does the standard SRV lookup and falls back to the
+            domain on 5222; the server and port otherwise. System DNS, TCP,
+            STARTTLS, a CA-valid certificate for the JID's domain.
+        tor: a local forwarder into a SOCKS5 CONNECT; the name travels only
+            inside the CONNECT and Tor resolves it. Never DNS.
+        i2p_sam: a local forwarder into a SAM stream, after the destination
+            check (X1). Never DNS.
+        """
+        route = self._route
+        if route.kind == _route_mod.CLEARNET_TLS:
+            srv = route.port is None and not self._explicit_host()
+            _TRACE.record("transport", "clearnet_endpoint", "info", srv=srv)
+            if srv:
+                return None, None
+            return route.host, route.port or DEFAULT_C2S_PORT
+        if route.kind == _route_mod.TOR:
+            try:
+                forward = self._tor_forwarder or _default_tor_forwarder()
+            except Exception as exc:
+                self._emit_state("failed")
+                raise TransportError(
+                    "forwarder_import_failed",
+                    "the Tor forwarder could not be loaded (%s)."
+                    % type(exc).__name__)
+            self._emit_state("building_tunnels")
+            try:
+                return await forward(
+                    route.host, route.port or DEFAULT_C2S_PORT,
+                    getattr(self._profile, "socks_host", "127.0.0.1"),
+                    getattr(self._profile, "socks_port", 9050),
+                    resources=self._i2p_resources, log=self._forwarder_progress)
+            except Exception as exc:
+                self._emit_state("failed")
+                raise TransportError(
+                    "tor_unavailable",
+                    "Tor did not open a circuit to the server (%s). Nothing "
+                    "was sent any other way." % type(exc).__name__)
 
         # Inside its own try, and separately coded. This import pulls in
         # otrv4plus_xmpp and therefore the whole engine, and it sat outside the
@@ -1155,7 +2223,20 @@ class XmppTransport(Transport):
         if _accepts(forward, "resources"):
             extra["resources"] = self._i2p_resources
         if _accepts(forward, "log"):
-            extra["log"] = _forwarder_log
+            extra["log"] = self._forwarder_progress
+        if _accepts(forward, "aliases"):
+            # The app reads no alias file: a name means what the router says.
+            extra["aliases"] = False
+        if _accepts(forward, "verify"):
+            extra["verify"] = self._verify_destination
+        else:
+            # A forwarder that cannot check the destination could hand the
+            # password to a substituted server (X1). Refuse rather than go on.
+            self._emit_state("failed")
+            raise TransportError(
+                "forwarder_import_failed",
+                "the I2P forwarder cannot verify the server's destination; "
+                "refusing to connect without that check.")
         if "resources" not in extra:
             _log.info("the I2P forwarder does not accept resource handover; "
                       "its sockets will not be released on teardown")
@@ -1163,14 +2244,22 @@ class XmppTransport(Transport):
         self._emit_state("building_tunnels")
         try:
             return await forward(
-                self._profile.effective_server, DEFAULT_C2S_PORT,
+                route.host, route.port or DEFAULT_C2S_PORT,
                 self._profile.sam_host, self._profile.sam_port, **extra)
         except Exception as exc:
             self._emit_state("failed")
-            raise TransportError(
-                "sam_unavailable",
-                "could not open an I2P stream (%s). Is the router running and "
-                "is its SAM bridge enabled?" % type(exc).__name__)
+            from . import server_pins as _pins_mod
+            if isinstance(exc, _pins_mod.DestinationChanged):
+                raise TransportError(
+                    "i2p_destination_changed",
+                    "SECURITY: %s now resolves to a DIFFERENT I2P destination "
+                    "than the one this device trusted.\n"
+                    "  trusted: %s\n  now:     %s\n"
+                    "Nothing was sent to the new destination and you were not "
+                    "signed in. If the server's operator confirms it moved, "
+                    "trust the new address explicitly; otherwise someone may "
+                    "be impersonating the server." % (exc.name, exc.pinned, exc.seen))
+            raise _sam_failure(exc, route.host)
 
     # -- rooms: plaintext group chat ---------------------------------------------
     #
@@ -1185,9 +2274,65 @@ class XmppTransport(Transport):
     #: Longest room message carried to the UI.
     MAX_ROOM_BODY = 16 * 1024
 
+    def set_room_rejected_handler(self,
+                                  handler: Optional[Callable[[str, str], None]]) -> None:
+        """`handler(room, condition)` when the server bounces a message we
+        sent to a room we are in (see `_on_message_error`)."""
+        self._on_room_rejected = handler
+
     def set_room_handler(self, handler: Optional[Callable[..., None]]) -> None:
         """`handler(room, nick, body, timestamp)` for each room message."""
         self._on_room_message = handler
+
+    def set_room_joined_handler(self,
+                                handler: Optional[Callable[[str], None]]) -> None:
+        """`handler(room)` when a join succeeds, BEFORE any of that room's
+        messages are delivered. The app registers the room here, so nothing
+        the room sends on arrival can reach it as an unknown room."""
+        self._on_room_joined = handler
+
+    #: Messages held per joining room. A room's history on join is bounded by
+    #: the service (Prosody: 20 by default); this caps a hostile one.
+    MAX_HELD_ROOM_MESSAGES = 200
+
+    @staticmethod
+    def _room_key(room) -> str:
+        return str(room).split("/", 1)[0].strip().lower()
+
+    def _held(self) -> Dict[str, list]:
+        # getattr: several tests build a transport without __init__.
+        held = getattr(self, "_joining", None)
+        if held is None:
+            held = self._joining = {}
+        return held
+
+    def _begin_join(self, room) -> None:
+        """Hold this room's messages until `_end_join`. Idempotent."""
+        self._held().setdefault(self._room_key(room), [])
+
+    def _end_join(self, room, ok: bool) -> None:
+        """Finish a join. On success: register the room with the app (on
+        this, the loop thread), THEN deliver what arrived meanwhile, in
+        order. On failure: drop it -- we are not in that room."""
+        held = self._held().pop(self._room_key(room), None)
+        if not ok:
+            return
+        handler = getattr(self, "_on_room_joined", None)
+        if handler is not None:
+            try:
+                handler(str(room))
+            except Exception:
+                _log.warning("the room-joined handler raised")
+        for args, kwargs in held or ():
+            self._deliver_room_message(*args, **kwargs)
+
+    def _deliver_room_message(self, *args, **kwargs) -> None:
+        if getattr(self, "_on_room_message", None) is None:
+            return
+        try:
+            self._on_room_message(*args, **kwargs)
+        except Exception:
+            _log.warning("the room message handler raised")
 
     @classmethod
     def _clean(cls, text: str, limit: int) -> str:
@@ -1258,7 +2403,11 @@ class XmppTransport(Transport):
             return
         if not body or not nick:
             return
-        if nick == self._our_nick(room):
+        own = nick == self._our_nick(room)
+        # Our own reflection is dropped -- except a secure group's MLS frames,
+        # which need it: a commit learns it won the epoch by coming back
+        # first (android_bridge.groups). Plain text of ours stays dropped.
+        if own and not body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
             return
         stamp = 0.0
         try:
@@ -1267,19 +2416,34 @@ class XmppTransport(Transport):
                 stamp = delay.timestamp()
         except Exception:
             stamp = 0.0
-        try:
-            self._on_room_message(room, nick, body, stamp or time.time())
-        except Exception:
-            _log.warning("the room message handler raised")
+        if own:
+            args, kwargs = (room, nick, body, stamp or time.time()), {"own": True}
+        else:
+            args, kwargs = (room, nick, body, stamp or time.time()), {}
+        held = self._held().get(self._room_key(room))
+        if held is not None:
+            # Our join is still completing: hold it, bounded, for _end_join.
+            if len(held) < self.MAX_HELD_ROOM_MESSAGES:
+                held.append((args, kwargs))
+            return
+        self._deliver_room_message(*args, **kwargs)
 
-    def send_room_message(self, room: str, body: str) -> None:
-        """Send plaintext to a room we are in. Raises TransportError."""
+    def send_room_message(self, room: str, body: str, volatile: bool = False) -> None:
+        """Send plaintext to a room we are in. Raises TransportError.
+
+        `volatile`: with a no-store hint (XEP-0334), so the room keeps it out
+        of its history (a secure group's file pieces)."""
         if not self.is_connected:
             raise TransportError("not_connected", "not connected")
-        self._run(self._send_room(room, body), CALL_TIMEOUT)
+        self._send_now(self._send_room(room, body, volatile), CALL_TIMEOUT)
 
-    async def _send_room(self, room: str, body: str) -> None:
-        self._client.send_message(mto=room, mbody=body, mtype="groupchat")
+    async def _send_room(self, room: str, body: str, volatile: bool = False) -> None:
+        if not volatile:
+            self._client.send_message(mto=room, mbody=body, mtype="groupchat")
+            return
+        msg = self._client.make_message(mto=room, mbody=body, mtype="groupchat")
+        msg.append(_muc.no_store_hint())
+        msg.send()
 
     def room_occupants(self, room: str) -> "tuple[str, str, list]":
         """Who is in a room: `[{nick, role, affiliation}]`, moderators first."""
@@ -1323,7 +2487,7 @@ class XmppTransport(Transport):
                     "no resource of this contact is known to support OTRv4Plus")
             self._caps.pin(peer, _caps.split_jid(target)[1])
             peer = target
-        self._run(self._send(peer, payload), CALL_TIMEOUT)
+        self._send_now(self._send(peer, payload), CALL_TIMEOUT)
 
     # -- OTRv4Plus capability -------------------------------------------------
 
@@ -1443,7 +2607,13 @@ class XmppTransport(Transport):
         # as an occasional empty contact list rather than as a crash.
         try:
             entries = self._run(self._roster(), CALL_TIMEOUT)
-            _TRACE.record("roster", "read", "info", entries=len(entries))
+            # The screen polls this about twice a second. Recorded on every
+            # call, it filled the 4000-entry diagnostic ring in minutes and a
+            # report lost the connection steps it was sent to explain (57568
+            # events dropped, device report 2026-10-02). Only a change now.
+            if len(entries) != getattr(self, "_roster_traced", None):
+                self._roster_traced = len(entries)
+                _TRACE.record("roster", "read", "info", entries=len(entries))
             return entries
         except TransportError as exc:
             _log.warning("could not read the roster")
@@ -1530,8 +2700,10 @@ class XmppTransport(Transport):
                 _log.warning("could not read one roster entry")
                 _TRACE.record_exception("roster", "entry_failed", exc)
                 continue
-        _TRACE.record("roster", "iterated", "info",
-                      entries=len(out), seen=len(jids))
+        if (len(out), len(jids)) != getattr(self, "_roster_iter_traced", None):
+            self._roster_iter_traced = (len(out), len(jids))
+            _TRACE.record("roster", "iterated", "info",
+                          entries=len(out), seen=len(jids))
         return out
 
     def run_on_loop_thread(self, fn, timeout: float = CALL_TIMEOUT):
@@ -1568,6 +2740,9 @@ class XmppTransport(Transport):
         through `_ensure_loop` and got a fresh worker thread nothing would
         ever join.
         """
+        book = getattr(self, "_avatars", None)
+        if book is not None:
+            book.clear()          # contacts' faces do not outlive the session
         with self._lock:
             already = self._closed
             self._closed = True
@@ -1655,6 +2830,9 @@ class XmppTransport(Transport):
                             else "certificate checks off, endpoint "
                                  "authenticated by %s" % by)
         if by is None:
+            # Clearnet (or a clearnet name over Tor): slixmpp's default
+            # context, CERT_REQUIRED with hostname checking against the JID's
+            # domain and the system trust store. Nothing here relaxes it.
             return
         import ssl
 
@@ -1662,6 +2840,8 @@ class XmppTransport(Transport):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
         client.ssl_context = ctx
+        _restrict_to_scram(client)
+        self._tls_policy += "; SCRAM only (no PLAIN)"
 
     @property
     def tls_policy(self) -> str:
@@ -1773,11 +2953,52 @@ class XmppTransport(Transport):
         """
         return self._room_call(self._discover_rooms(service))
 
+    #: Rooms whose occupant count is asked for, and how many at once. One
+    #: disco#info per room: bounded so a service listing thousands of rooms
+    #: costs a few seconds, not a flood.
+    ROOM_INFO_LIMIT = 100
+    ROOM_INFO_PARALLEL = 8
+    ROOM_INFO_TIMEOUT = 8
+
     async def _discover_rooms(self, service: str):
-        items = await self._client["xep_0030"].get_items(
-            jid=service, timeout=CALL_TIMEOUT)
-        return [{"jid": str(jid), "name": str(name or "")}
-                for jid, _node, name in items["disco_items"].get_items()]
+        disco = self._client["xep_0030"]
+        items = await disco.get_items(jid=service, timeout=CALL_TIMEOUT)
+        rooms = [{"jid": str(jid), "name": str(name or ""), "occupants": None,
+                  "secure": False, "claims_secure": False, "password": False}
+                 for jid, _node, name in items["disco_items"].get_items()]
+        # XEP-0045 §6.4: disco#info on a room carries a muc#roominfo form
+        # with `muc#roominfo_occupants`. Optional for the service, so a room
+        # whose count is not given shows none -- never a guessed zero.
+        gate = asyncio.Semaphore(self.ROOM_INFO_PARALLEL)
+
+        async def count(room):
+            async with gate:
+                try:
+                    info = await disco.get_info(
+                        jid=room["jid"], timeout=self.ROOM_INFO_TIMEOUT)
+                    room["occupants"] = _room_occupant_count(info)
+                    # What kind of room it is, from the same answer: an
+                    # encrypted group (its marker), and whether it has a
+                    # password -- shown as icons in the list.
+                    try:
+                        xml = info["disco_info"].xml
+                    except Exception:
+                        xml = getattr(info, "xml", None)
+                    if xml is not None:
+                        # The description is the room's own CLAIM: anybody
+                        # can create a room that says it is an encrypted
+                        # group. Only a group this account holds is "secure"
+                        # (connection._with_held_groups); the claim is shown
+                        # as a claim.
+                        room["claims_secure"], room["password"] = _muc.room_kind(xml)
+                except Exception:
+                    pass
+
+        await asyncio.gather(*(count(r) for r in rooms[:self.ROOM_INFO_LIMIT]))
+        # Occupied rooms first, then the service's own order.
+        order = {id(r): i for i, r in enumerate(rooms)}
+        rooms.sort(key=lambda r: (-(r["occupants"] or 0), order[id(r)]))
+        return rooms
 
     def join_room(self, room: str, nick: str,
                   password: str = "") -> "tuple[str, str, dict]":
@@ -1849,6 +3070,8 @@ class XmppTransport(Transport):
         remove = getattr(self._client, "del_event_handler", None)
         if add is not None:
             add("presence_error", on_error)
+        self._begin_join(room)
+        ok = False
         join = asyncio.ensure_future(muc.join_muc_wait(
             room, nick, password=password or None, timeout=CONNECT_TIMEOUT))
         try:
@@ -1856,13 +3079,19 @@ class XmppTransport(Transport):
                 [join, refused], timeout=CONNECT_TIMEOUT,
                 return_when=asyncio.FIRST_COMPLETED)
             if join in done:
-                return join.result()
+                result = join.result()
+                ok = True
+                if _room_was_created(result):
+                    await self._unlock_new_room(room)
+                    self._recreated = self._recreated | {str(room).split("/", 1)[0].lower()}
+                return result
             join.cancel()
             if refused in done:
                 from slixmpp.exceptions import PresenceError
                 raise PresenceError(refused.result())
             raise TimeoutError()
         finally:
+            self._end_join(room, ok)
             if not refused.done():
                 refused.cancel()
             if remove is not None:
@@ -1870,6 +3099,107 @@ class XmppTransport(Transport):
                     remove("presence_error", on_error)
                 except Exception:
                     pass
+
+    #: Called with a room address; True when a room we create (or that a
+    #: rejoin re-creates) must be persistent -- a secure group's room. Set by
+    #: the controller; None: every room keeps the service's defaults.
+    persist_room = None
+
+    #: Rooms a join CREATED (status 201). For a secure group's room on a
+    #: rejoin that means it had been deleted; the controller asks.
+    _recreated: "set" = set()
+
+    def take_recreated(self, room: str) -> bool:
+        """Whether our last join of `room` created it (asked once)."""
+        room = str(room).split("/", 1)[0].lower()
+        if room in self._recreated:
+            self._recreated = self._recreated - {room}
+            return True
+        return False
+
+    #: Called with a room address when its owner destroyed it (XEP-0045
+    #: §10.9). Set by the controller.
+    room_destroyed = None
+
+    #: Called with a room address when a secure group's room was asked to be
+    #: persistent and the service did not make it so: it will be deleted the
+    #: moment the last member leaves. Set by the controller.
+    room_not_persistent = None
+
+    async def _check_persistent(self, room: str) -> None:
+        """Read the room back (disco#info `muc_persistent`) and report one the
+        service did not keep. Accepting the form proves nothing: a service
+        that ignores or refuses the field says nothing about it."""
+        persistent = False
+        try:
+            info = await self._client["xep_0030"].get_info(
+                jid=room, timeout=CALL_TIMEOUT)
+            persistent = "muc_persistent" in {
+                str(f) for f in info["disco_info"]["features"]}
+        except Exception:
+            persistent = False
+        if not persistent:
+            _TRACE.record("muc", "room_not_persistent", "warning")
+            hook = self.room_not_persistent
+            if hook is not None:
+                try:
+                    hook(str(room).lower())
+                except Exception:
+                    pass
+
+    def _persistent_form(self, room: str):
+        form = self._client["xep_0004"].make_form(ftype="submit")
+        persist = self.persist_room
+        try:
+            wanted = bool(persist is not None and persist(str(room).lower()))
+        except Exception:
+            wanted = False
+        form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
+        # Listed: a room the app makes is one people are meant to find in the
+        # service's room list (owner request, 2026-10-10). A service whose
+        # policy keeps it hidden still creates it.
+        form.add_field(var="muc#roomconfig_publicroom", ftype="boolean", value=True)
+        if wanted:
+            # A secure group's room outlives its occupants: when everybody is
+            # offline at once a non-persistent room is destroyed, with the
+            # commits in its history, and the first member back re-creates
+            # it empty.
+            form.add_field(var="muc#roomconfig_persistentroom",
+                           ftype="boolean", value=True)
+            # Marked, so a room list can show it as an encrypted group.
+            form.add_field(var="muc#roomconfig_roomdesc", ftype="text-single",
+                           value=_muc.SECURE_GROUP_DESC)
+        return form, wanted
+
+    async def _configure_new_room(self, room: str, form=None) -> None:
+        """Submit the configuration of a room we just created; a service that
+        refuses persistence still gets the defaults, so the room is never
+        left locked."""
+        muc = self._client["xep_0045"]
+        if form is None:
+            form, wanted = self._persistent_form(room)
+        else:
+            wanted = False
+        try:
+            await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+        except Exception:
+            # A service that refuses a field (public, persistent, the
+            # description) still gets the plain defaults: the room is never
+            # left locked, and never fails to exist over a listing setting.
+            await muc.set_room_config(
+                room, self._client["xep_0004"].make_form(ftype="submit"),
+                timeout=CALL_TIMEOUT)
+        if wanted:
+            await self._check_persistent(room)
+
+    async def _unlock_new_room(self, room: str) -> None:
+        """A join that CREATED the room (status 201): it stays locked, and
+        nobody else can enter, until its owner -- us -- configures it. Seen
+        when every member had left a secure group's room and one came back."""
+        try:
+            await self._configure_new_room(room)
+        except Exception:
+            pass
 
     def create_room(self, room: str, nick: str,
                     password: str = "") -> "tuple[str, str, dict]":
@@ -1900,19 +3230,50 @@ class XmppTransport(Transport):
     ROOMCONFIG = "http://jabber.org/protocol/muc#roomconfig"
 
     async def _create_room(self, room: str, nick: str, password: str = ""):
+        # Messages are held from the join until the room is known to be kept:
+        # a room destroyed below for want of its password is never
+        # registered with the app, so nothing it said is shown.
+        self._begin_join(room)
+        ok = False
+        try:
+            result = await self._create_room_held(room, nick, password)
+            ok = True
+            return result
+        finally:
+            self._end_join(room, ok)
+
+    async def _create_room_held(self, room: str, nick: str, password: str = ""):
         muc = self._client["xep_0045"]
         await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
         # The empty form. `set_room_config` with a form carrying no fields is
-        # the "accept the defaults" submission §10.1.2 describes.
-        form = self._client["xep_0004"].make_form(ftype="submit")
+        # the "accept the defaults" submission §10.1.2 describes. A secure
+        # group's room asks to be persistent as well.
         if password:
-            form.add_field(var="FORM_TYPE", ftype="hidden",
-                           value=self.ROOMCONFIG)
+            # The persistent field too, for a secure group's room: this form
+            # used to carry only the password, so a password-protected secure
+            # group was never asked to outlive its occupants.
+            form, wanted = self._persistent_form(room)
             form.add_field(var="muc#roomconfig_passwordprotectedroom",
                            ftype="boolean", value=True)
             form.add_field(var="muc#roomconfig_roomsecret",
                            ftype="text-private", value=password)
-        await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+            try:
+                await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+            except Exception:
+                # Refused over a listing or keeping field: the password is
+                # what must not be lost, so it goes again on its own (and is
+                # read back below either way).
+                form = self._client["xep_0004"].make_form(ftype="submit")
+                form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
+                form.add_field(var="muc#roomconfig_passwordprotectedroom",
+                               ftype="boolean", value=True)
+                form.add_field(var="muc#roomconfig_roomsecret",
+                               ftype="text-private", value=password)
+                await muc.set_room_config(room, form, timeout=CALL_TIMEOUT)
+            if wanted:
+                await self._check_persistent(room)
+        else:
+            await self._configure_new_room(room)
         self._room_nicks[str(room).split("/", 1)[0].lower()] = nick
         if password:
             protected = False
@@ -2085,6 +3446,27 @@ class XmppTransport(Transport):
                 except Exception:
                     rooms[service["jid"]] = []
             room, reason = _welcome.find_room(services, rooms)
+            if (room is None and reason == _welcome.NOT_FOUND
+                    and _address.shipped_server_address(
+                        _address.jid_domain(self._profile.jid))):
+                # The project's own server: its operator wants the Welcome
+                # room there, so the first account to arrive creates it,
+                # as the earlier app did. On any other server the user is
+                # asked first (create_welcome), because the room shows every
+                # occupant's address.
+                _TRACE.record("welcome", "auto_create", "info")
+                try:
+                    await self._create_welcome(nick)
+                    return
+                except TransportError as exc:
+                    if exc.code != "welcome_address_taken":
+                        raise
+                    # Another client created it a moment ago and the listing
+                    # had not caught up: look again, once.
+                    rooms = {s["jid"]: await self._discover_rooms(s["jid"])
+                             for s in services
+                             if s.get("category") == "conference"}
+                    room, reason = _welcome.find_room(services, rooms)
             if room is None:
                 self._welcome.not_found(reason)
                 _TRACE.record("welcome", reason, "info")
@@ -2095,7 +3477,7 @@ class XmppTransport(Transport):
             self._welcome.joining(room, features, nick)
             muc = self._client["xep_0045"]
             try:
-                await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
+                await self._join_muc(room, nick)
             except Exception as exc:
                 code, _detail = _muc.classify(exc)
                 if code != "conflict":
@@ -2106,7 +3488,7 @@ class XmppTransport(Transport):
                 import secrets as _secrets
                 nick = "%s-%s" % (nick, _secrets.token_hex(2))
                 self._welcome.nick = nick
-                await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
+                await self._join_muc(room, nick)
             self._welcome.joined(nick)
             self._room_nicks[str(room).lower()] = nick
             self._notify_welcome(room)
@@ -2336,6 +3718,9 @@ class XmppTransport(Transport):
             _log.warning("could not install the inbound filter")
         client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
+        client.add_event_handler("message_error", self._on_message_error)
+        client.add_event_handler("avatar_metadata_publish",
+                                 self._on_avatar_metadata)
         # Room messages arrive as type="groupchat", which `_on_message`
         # deliberately ignores: a room is not a peer, and its traffic must
         # never reach the OTR engine as though it were.
@@ -2369,6 +3754,171 @@ class XmppTransport(Transport):
     #: stanza of whatever size the server allows went to the engine and then
     #: across the JNI boundary into the UI.
     MAX_DIRECT_BODY = 64 * 1024
+
+    # -- avatars (XEP-0084) ----------------------------------------------------
+
+    _AVATAR_META = "{urn:xmpp:avatar:metadata}"
+    _AVATAR_DATA = "{urn:xmpp:avatar:data}data"
+
+    def _on_avatar_metadata(self, msg) -> None:
+        """A contact announced an avatar. Fetched only if acceptable (PNG,
+        within the size limits); see android_bridge.avatar."""
+        try:
+            jid = str(msg["from"]).split("/", 1)[0].lower()
+            meta = next(msg.xml.iter(self._AVATAR_META + "metadata"), None)
+            if not jid or meta is None:
+                return
+            infos = [dict(el.attrib) for el in
+                     meta.iter(self._AVATAR_META + "info")][:16]
+        except Exception:
+            return
+        wanted = self._avatars.note_metadata(jid, infos)
+        if wanted:
+            asyncio.ensure_future(self._fetch_avatar(jid, wanted))
+
+    async def _fetch_avatar(self, jid: str, avatar_id: str) -> None:
+        try:
+            iq = await self._client["xep_0084"].retrieve_avatar(
+                jid, avatar_id, timeout=CALL_TIMEOUT)
+            el = next(iq.xml.iter(self._AVATAR_DATA), None)
+            text = (el.text or "") if el is not None else ""
+        except Exception:
+            _TRACE.record("avatar", "fetch_failed", "info", peer=jid)
+            return
+        if len(text) > _avatar.MAX_B64_CHARS:
+            _TRACE.record("avatar", "refused", "warning", peer=jid,
+                          reason="too_large")
+            return
+        # Decoding is pure Python and can take a moment for a 256x256
+        # image: off the loop thread, so the stream does not stall.
+        loop = asyncio.get_event_loop()
+        ok = await loop.run_in_executor(None, self._avatars.note_data,
+                                        jid, avatar_id, text)
+        _TRACE.record("avatar", "stored" if ok else "refused",
+                      "info" if ok else "warning", peer=jid)
+
+    def avatar_ids(self) -> Dict[str, str]:
+        """Bare JID -> avatar id (SHA-1), for every avatar held."""
+        return self._avatars.ids()
+
+    def avatar(self, jid: str):
+        """The decoded avatar for `jid` (android_bridge.avatar.Avatar) or None."""
+        return self._avatars.get(jid)
+
+    def publish_avatar(self, png: bytes) -> None:
+        """Publish our own avatar. `png` must pass the same checks as any
+        received avatar (android_bridge.avatar.decode_png). Raises
+        TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        png = bytes(png)
+        try:
+            if len(png) > _avatar.MAX_BYTES:
+                raise _avatar.AvatarError("too_large")
+            w, h, _rgba = _avatar.decode_png(png)
+        except _avatar.AvatarError as exc:
+            raise TransportError("avatar_refused", exc.code)
+        try:
+            self._run(self._publish_avatar(png, w, h), CALL_TIMEOUT)
+        except TransportError:
+            raise
+        except Exception as exc:
+            # A server without PEP (XEP-0163) has nowhere to keep an avatar
+            # and refuses the publish. Said as such, not as a vague failure:
+            # it is a server setting, not the picture (device test,
+            # 2026-10-10: Prosody without "pep" in modules_enabled).
+            cond = _muc._condition_of(exc)
+            if cond in PEP_MISSING:
+                raise TransportError("pep_unavailable", cond)
+            raise
+        self._avatars.set_own(self._profile.jid, png)
+
+    async def _publish_avatar(self, png: bytes, w: int, h: int) -> None:
+        import hashlib
+        plugin = self._client["xep_0084"]
+        # XEP-0084: the id IS the SHA-1 of the image -- a name, not security.
+        avatar_id = hashlib.sha1(png, usedforsecurity=False).hexdigest()
+        await plugin.publish_avatar(png, timeout=CALL_TIMEOUT)
+        await plugin.publish_avatar_metadata(
+            [{"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": len(png),
+              "width": w, "height": h}], timeout=CALL_TIMEOUT)
+
+    # -- the XMPP profile (vcard-temp, XEP-0054) --------------------------------
+
+    def get_profile(self, jid: str = "") -> Dict[str, str]:
+        """`jid`'s profile (ours when empty), sanitised by
+        android_bridge.profile. {} when there is none. Raises TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        return self._run(self._get_profile(jid), CALL_TIMEOUT)
+
+    async def _get_profile(self, jid: str) -> Dict[str, str]:
+        iq = self._client.Iq()
+        iq["type"] = "get"
+        if jid:
+            iq["to"] = str(jid).split("/", 1)[0]
+        iq.append(_profile.ET.Element("{%s}vCard" % _profile.NS))
+        try:
+            reply = await iq.send(timeout=CALL_TIMEOUT)
+        except Exception as exc:
+            cond = ""
+            try:
+                cond = exc.iq["error"]["condition"]
+            except Exception:
+                pass
+            if cond == "item-not-found":
+                return {}
+            raise TransportError("profile_unavailable", cond or type(exc).__name__)
+        element = next(reply.xml.iter("{%s}vCard" % _profile.NS), None)
+        return _profile.from_vcard(element)
+
+    def set_profile(self, values: Dict[str, str]) -> Dict[str, str]:
+        """Publish our profile; returns what was actually published (after
+        sanitising). Raises TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        clean = _profile.clean_profile(values)
+        self._run(self._set_profile(clean), CALL_TIMEOUT)
+        return clean
+
+    async def _set_profile(self, clean: Dict[str, str]) -> None:
+        iq = self._client.Iq()
+        iq["type"] = "set"
+        iq.append(_profile.to_vcard(clean))
+        await iq.send(timeout=CALL_TIMEOUT)
+
+    def remove_avatar(self) -> None:
+        """Stop publishing our avatar (empty metadata). Raises TransportError."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        self._run(self._remove_avatar(), CALL_TIMEOUT)
+        self._avatars.forget(self._profile.jid)
+
+    async def _remove_avatar(self) -> None:
+        await self._client["xep_0084"].stop(timeout=CALL_TIMEOUT)
+
+    def _on_message_error(self, stanza) -> None:
+        """A message the server bounced. Recorded, never shown as text.
+
+        Ignored before, which hid the failure of every secure group on a
+        stock Prosody: mod_muc_limits refused each MLS room fragment as too
+        long (device test, 2026-10-02) and the report said nothing. The
+        condition is a fixed RFC 6120 word; the error text, which can quote
+        the message, is not recorded."""
+        try:
+            sender = str(stanza.get("from") or "").split("/", 1)[0].lower()
+            cond = str(stanza["error"]["condition"] or "") or "unknown"
+        except Exception:
+            return
+        to_room = sender in self._room_nicks
+        _TRACE.record("rooms" if to_room else "chat", "message_rejected",
+                      "warning", peer=sender, condition=cond[:40])
+        handler = getattr(self, "_on_room_rejected", None)
+        if to_room and handler is not None:
+            try:
+                handler(sender, cond[:40])
+            except Exception:
+                _log.warning("the room-rejected handler raised")
 
     def _on_message(self, stanza) -> None:
         """Hand the body up, whatever it is.
@@ -2543,6 +4093,18 @@ class XmppTransport(Transport):
         self._welcome.occupant(nick, real, online, is_self=is_self)
 
     def _presence(self, stanza, online: bool) -> None:
+        if not online and self._is_room_presence(stanza):
+            try:
+                gone = stanza.xml.find("{%s}x/{%s}destroy" % (
+                    self.MUC_USER_NS, self.MUC_USER_NS)) is not None
+            except Exception:
+                gone = False
+            hook = self.room_destroyed
+            if gone and hook is not None:
+                try:
+                    hook(str(stanza["from"]).split("/", 1)[0].lower())
+                except Exception:
+                    _log.warning("the room-destroyed handler raised")
         if self._is_room_presence(stanza):
             try:
                 self._room_presence(stanza, online)
@@ -2556,7 +4118,10 @@ class XmppTransport(Transport):
         if self._on_presence is None:
             return
         try:
-            peer = str(stanza["from"]).split("/", 1)[0]
+            # The FULL JID: presence is tracked per resource (see
+            # otrv4plus_presence.PresenceBook.note).
+            full = str(stanza["from"])
+            peer = full.split("/", 1)[0]
         except Exception:
             return
         # RFC 6121 4.7.2.1. Carried because a UI that has it can tell "online"
@@ -2571,7 +4136,7 @@ class XmppTransport(Transport):
         _TRACE.record("presence", "available" if online else "unavailable",
                       "info", peer=peer, show=show)
         try:
-            self._on_presence(peer, online, show)
+            self._on_presence(full, online, show)
         except TypeError:
             # A handler from before `show` existed. Better than dropping the
             # event: availability is the part that matters.
@@ -2626,11 +4191,17 @@ def endpoint_authenticated_by(profile) -> Optional[str]:
 
     None means clearnet, and clearnet still demands a real certificate.
     """
-    if getattr(profile, "use_i2p", False):
-        return "I2P"
-    if str(getattr(profile, "effective_server", "")).endswith(".onion"):
-        return "Tor"
-    return None
+    try:
+        route = profile.route
+    except Exception:
+        # Undecidable names never reach the network; answer by suffix so a
+        # caller asking about policy is never told "clearnet" for them.
+        name = str(getattr(profile, "effective_server", "")).lower()
+        return "I2P" if name.endswith(".i2p") else (
+            "Tor" if name.endswith(".onion") else None)
+    if route.verify_certificate:
+        return None
+    return "I2P" if route.kind == _route_mod.I2P_SAM else "Tor"
 
 
 def _default_client_factory():
@@ -2684,9 +4255,23 @@ def _default_client_factory():
             except Exception:
                 _log.warning("could not register %s; rooms and service "
                              "discovery will not work", plugin)
+        # XEP-0084 user avatars (PEP). Its +notify feature goes into our caps,
+        # which is how contacts' servers know to send us their avatars.
+        # Decoding is android_bridge.avatar's, never slixmpp's or Android's.
+        try:
+            client.register_plugin("xep_0084")
+        except Exception:
+            _log.warning("could not register xep_0084; avatars are off")
         return client
 
     return factory
+
+
+def _default_tor_forwarder():
+    """The terminal client's Tor SOCKS5 forwarder, imported late."""
+    import otrv4plus_xmpp
+
+    return otrv4plus_xmpp.start_tor_socks_forwarder
 
 
 def _default_forwarder():

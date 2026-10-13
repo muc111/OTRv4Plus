@@ -1,0 +1,80 @@
+# cargo-fuzz harnesses for the OTRv4Plus Rust core (audit 2026-09).
+#
+#   rustup toolchain install nightly
+#   cargo install cargo-fuzz
+#   cd Rust && cargo +nightly fuzz run <target> -- -max_total_time=300
+#
+# Targets are listed in FUZZING.md next to this file. None ships; this crate
+# is not a dependency of anything.
+[package]
+name = "otrv4-core-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+
+[dependencies.otrv4_core]
+path = ".."
+# Default features = the shipped crypto (pq-rust), without extension-module.
+
+# Its own workspace, so it never joins the core crate's build or lockfile.
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "ratchet_header"
+path = "fuzz_targets/ratchet_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ratchet_forgery"
+path = "fuzz_targets/ratchet_forgery.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dake1_parse"
+path = "fuzz_targets/dake1_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dake2_parse"
+path = "fuzz_targets/dake2_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "dake3_verify"
+path = "fuzz_targets/dake3_verify.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ring_verify"
+path = "fuzz_targets/ring_verify.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "smp_messages"
+path = "fuzz_targets/smp_messages.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "container_header"
+path = "fuzz_targets/container_header.rs"
+test = false
+doc = false

@@ -1,0 +1,35 @@
+## SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+## Copyright (C) 2025-2026 muc111
+##
+## OTRv4Plus on Qubes OS 4.2. dom0: /etc/qubes/policy.d/30-otrv4plus.policy
+## First match wins; 30- is read before the 90- defaults.
+## Inspect with: qrexec-policy-graph --source otr-chat
+
+## The chat qube reaches the I2P router's SAM bridge in sys-i2p -- TCP 7656
+## for chat, files and groups; otrv4plus.SamUdp for the UDP datagrams of
+## voice calls -- and no other port and no other qube.
+qubes.ConnectTCP     +7656  otr-chat   sys-i2p    allow
+qubes.ConnectTCP     *      otr-chat   @anyvm     deny
+qubes.ConnectTCP     *      @anyvm     otr-chat   deny
+otrv4plus.SamUdp     *      otr-chat   sys-i2p    allow
+otrv4plus.SamUdp     *      @anyvm     @anyvm     deny
+
+## No clipboard into or out of the chat qube (keys, messages, passphrases).
+qubes.ClipboardPaste *      otr-chat   @anyvm     deny
+qubes.ClipboardPaste *      @anyvm     otr-chat   deny
+
+## Files: in or out only through a dom0 prompt. Received files open in a
+## disposable, never in another qube, and no links are opened anywhere.
+qubes.Filecopy       *      @anyvm     otr-chat   ask
+qubes.Filecopy       *      otr-chat   @anyvm     ask
+qubes.OpenInVM       *      otr-chat   @dispvm    ask
+qubes.OpenInVM       *      otr-chat   @anyvm     deny
+qubes.OpenURL        *      otr-chat   @anyvm     deny
+
+## (No blanket "deny everything from sys-i2p": its clock comes from
+## qubes.GetDate, and I2P refuses to work with a wrong clock.)
+
+## Release signing (split-GPG): the build qube asks, the key stays in
+## otr-sign, every signature is confirmed in dom0.
+qubes.Gpg            *      otr-build  otr-sign   ask
+qubes.Gpg            *      @anyvm     otr-sign   deny

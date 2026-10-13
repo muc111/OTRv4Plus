@@ -422,6 +422,33 @@ class TestWhatWasOnDisk:
         OtrApp(_manager(), Wire(), Sink()).wipe()
         assert not os.path.exists(elsewhere)
 
+    def test_the_engine_log_directory_is_destroyed_too(self, isolated_home):
+        """~/.otrv4 is OTRLogger's default. Not written on Android today; if
+        it ever is, the wipe overwrites it rather than leaving it to the
+        storage stage's plain unlink."""
+        logs = os.path.join(isolated_home, ".otrv4", "logs")
+        os.makedirs(logs)
+        with open(os.path.join(logs, "otrv4plus.log"), "w") as f:
+            f.write("session with bob@x.i2p")
+        report = OtrApp(_manager(), Wire(), Sink()).wipe()
+        assert not os.path.exists(os.path.join(isolated_home, ".otrv4"))
+        assert report["files_destroyed"] >= 1
+
+    def test_the_diagnostics_trace_and_room_memberships_are_forgotten(self):
+        from android_bridge.trace import TRACE
+        app = OtrApp(_manager(), Wire(), Sink())
+        app.note_room_joined("lobby@rooms.example.test")
+        TRACE.record("test", "something happened", "info")
+        assert TRACE.events()
+        report = app.wipe()
+        assert TRACE.events() == []
+        assert app.joined_room_list() == []
+        assert "trace" not in report["errors"] and "rooms" not in report["errors"]
+        # A join that completes on the loop thread after the wipe records
+        # nothing (the transport calls note_room_joined from there).
+        app.note_room_joined("late@rooms.example.test")
+        assert app.joined_room_list() == []
+
     def test_a_fresh_launch_afterwards_works_and_is_a_new_identity(self, pair):
         old_fp = pair.alice.local_fingerprint()
         pair.alice.wipe()
@@ -518,12 +545,22 @@ class TestTheAndroidSideIsWired:
     def test_each_step_does_what_the_plan_says(self):
         body = _body(_kt("connection", "OtrConnectionService.kt"),
                      "private fun wipeAndExit()")
-        for needle in ("core.wipe()", "KeystoreVault.destroy(context)",
-                       "cancelAll()", "cacheDir", "killProcess",
+        for needle in ("core.wipeCrypto()", "core.wipe()", "KeystoreVault.destroy(context)",
+                       "cancelAll()", "AppDataWipe.wipe(", "context.dataDir",
+                       "getExternalFilesDirs", "externalCacheDirs", "killProcess",
                        "drainer?.cancel()", "worker?.cancel()"):
             assert needle in body, "the wipe does not do %s" % needle
+        # Rust destruction before the network-bound teardown, and the storage
+        # sweep after it (so nothing writes behind it).
+        assert body.index("core.wipeCrypto()") < body.index("core.wipe()")
+        assert body.index("core.wipe()") < body.index("AppDataWipe.wipe(")
         # Stopped, THEN killed, so a sticky service is not restarted.
         assert body.index("stopSelf()") < body.index("killProcess")
+        # The system's own "Clear storage" is the last word: it removes what
+        # the live process wrote after the sweep (code_cache, shader cache).
+        # killProcess is only the fallback when that call is refused.
+        assert body.index("stopSelf()") < body.index("clearApplicationUserData()")
+        assert body.index("clearApplicationUserData()") < body.index("killProcess")
 
     def test_nothing_starts_once_a_wipe_has_begun(self):
         body = _body(_kt("connection", "OtrConnectionService.kt"),
@@ -645,3 +682,61 @@ class TestTheMediaGateFollowsTheSession:
     def test_a_cleared_session_closes_it(self, verified):
         verified.alice._engine.sessions.pop(verified.bob_jid, None)
         assert not self._gate(verified.alice, verified.bob_jid)
+
+
+# ---------------------------------------------------------------------------
+# Staging: Rust destruction FIRST, before anything that waits on the network
+# ---------------------------------------------------------------------------
+
+class TestCryptoIsDestroyedFirst:
+    """`wipe_crypto` (stage B) runs before the teardown that can block on a
+    network timeout, and `wipe` starts with it."""
+
+    def test_wipe_crypto_destroys_the_ratchet_and_touches_no_network(self, pair):
+        session = pair.alice._engine.sessions[pair.bob_jid]
+        leaked = session.ratchet._rust
+        closed = []
+        pair.alice_wire.close = lambda: closed.append("close")
+        sent_before = len(pair.alice_wire.sent) if hasattr(pair.alice_wire, "sent") else None
+        report = pair.alice.wipe_crypto()
+        assert report["errors"] == []
+        assert _tags(leaked) == _dummy_tags(), "ratchet keys survived stage B"
+        assert closed == [], "stage B closed the transport"
+        if sent_before is not None:
+            assert len(pair.alice_wire.sent) == sent_before, "stage B sent something"
+        assert pair.alice.wiped, "stage B did not refuse further use"
+
+    def test_wipe_runs_the_crypto_stage_before_closing_the_transport(self, pair):
+        order = []
+        real = pair.alice.wipe_crypto
+
+        def crypto():
+            order.append("crypto")
+            return real()
+
+        pair.alice.wipe_crypto = crypto
+        pair.alice_wire.close = lambda: order.append("close")
+        pair.alice.wipe()
+        assert order == ["crypto", "close"]
+
+    def test_the_crypto_stage_is_idempotent(self, pair):
+        first = pair.alice.wipe_crypto()
+        second = pair.alice.wipe_crypto()
+        assert first["already_wiped"] is False and second["already_wiped"] is True
+        report = pair.alice.wipe()           # the full wipe after stage B
+        assert "engine" not in report["errors"]
+
+    def test_no_graceful_call_end_after_the_keys_are_gone(self, pair):
+        """The END would need the keys stage B destroyed."""
+        calls = []
+
+        class Calls:
+            def destroy_keys(self):
+                calls.append("destroy_keys")
+
+            def shutdown(self, graceful=True):
+                calls.append(("shutdown", graceful))
+
+        pair.alice._calls_bridge = Calls()
+        pair.alice.wipe()
+        assert calls == ["destroy_keys", ("shutdown", False)]

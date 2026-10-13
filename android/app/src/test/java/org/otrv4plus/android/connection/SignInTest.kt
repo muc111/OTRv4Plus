@@ -25,7 +25,7 @@ class SignInTest {
     @Test
     fun `a bare username takes the selected server's domain`() {
         val target = SignIn.resolve("alice", default, "")
-        assertEquals("alice@xmpp-elite.i2p", target?.jid)
+        assertEquals("alice@otrv4plus.i2p", target?.jid)
     }
 
     @Test
@@ -47,7 +47,7 @@ class SignInTest {
 
     @Test
     fun `whitespace around the username is forgiven`() {
-        assertEquals("alice@xmpp-elite.i2p",
+        assertEquals("alice@otrv4plus.i2p",
             SignIn.resolve("  alice  ", default, "")?.jid)
     }
 
@@ -63,8 +63,8 @@ class SignInTest {
 
     @Test
     fun `a full address on the default server is unchanged`() {
-        assertEquals("alice@xmpp-elite.i2p",
-            SignIn.resolve("alice@xmpp-elite.i2p", default, "")?.jid)
+        assertEquals("alice@otrv4plus.i2p",
+            SignIn.resolve("alice@otrv4plus.i2p", default, "")?.jid)
     }
 
     @Test
@@ -165,7 +165,7 @@ class SignInTest {
 
     @Test
     fun `a remembered default account restores the default choice`() {
-        assertEquals(default, SignIn.choiceFor("alice@xmpp-elite.i2p"))
+        assertEquals(default, SignIn.choiceFor("alice@otrv4plus.i2p"))
     }
 
     @Test
@@ -176,19 +176,19 @@ class SignInTest {
 
     @Test
     fun `the domain match ignores case`() {
-        assertEquals(default, SignIn.choiceFor("alice@XMPP-Elite.i2p"))
+        assertEquals(default, SignIn.choiceFor("alice@OTRv4Plus.i2p"))
     }
 
     @Test
     fun `the username is recovered for the field`() {
-        assertEquals("alice", SignIn.usernameOf("alice@xmpp-elite.i2p"))
+        assertEquals("alice", SignIn.usernameOf("alice@otrv4plus.i2p"))
         assertEquals("alice", SignIn.usernameOf("alice"))
     }
 
     @Test
     fun `the domain is recovered and a resource is dropped`() {
-        assertEquals("xmpp-elite.i2p",
-            SignIn.domainOf("alice@xmpp-elite.i2p/phone"))
+        assertEquals("otrv4plus.i2p",
+            SignIn.domainOf("alice@otrv4plus.i2p/phone"))
         assertEquals("", SignIn.domainOf("alice"))
     }
 }

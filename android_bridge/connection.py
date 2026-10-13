@@ -41,6 +41,7 @@ result code rather than an argument.
 from __future__ import annotations
 
 import logging
+import os
 import socket
 import threading
 from typing import Any, Callable, Dict, List, Optional
@@ -51,8 +52,10 @@ import otrv4plus_address as _address
 import otrv4plus_muc as _muc
 import otrv4plus_registration as _registration
 
+from . import route as _route
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
+from .groups import GroupError as GroupErrorAlias
 
 
 def _c2s_port() -> int:
@@ -132,12 +135,16 @@ def probe_sam(host: str, port: int, timeout: float = SAM_PROBE_TIMEOUT,
             False, "refused",
             "Nothing is listening on %s:%d. Start your I2P router and make "
             "sure its SAM bridge is enabled (i2pd: sam.enabled=true in "
-            "i2pd.conf)." % (host, port))
+            "i2pd.conf). If the router app says it is running, Android may "
+            "have stopped it in the background: open it, and set its battery "
+            "use to Unrestricted." % (host, port))
     except socket.timeout:
         return SamProbe(
             False, "timeout",
             "%s:%d did not answer within %gs. A SAM bridge on this device "
-            "should answer immediately." % (host, port, timeout))
+            "should answer immediately; one that does not is usually a router "
+            "app Android has frozen in the background. Open the router app, "
+            "and set its battery use to Unrestricted." % (host, port, timeout))
     except OSError as exc:
         # Includes EHOSTUNREACH, ENETUNREACH, EACCES. The type, not the
         # message: an OSError's text carries paths and addresses.
@@ -218,7 +225,7 @@ class ConnectionController:
     #: server drops the stream, the lambda below passed it straight through,
     #: and the screen rendered a stage this tuple said did not exist. A stage
     #: vocabulary that the code can step outside of is not a vocabulary.
-    STAGES = ("idle", "checking_router", "building_tunnels",
+    STAGES = ("idle", "checking_router", "checking_tor", "building_tunnels",
               "connecting", "authenticating", "connected",
               # An account was created and NOBODY IS SIGNED IN. Its own stage
               # rather than "disconnected", because the two look identical on
@@ -401,6 +408,39 @@ class ConnectionController:
                       "code": code, "detail": detail}
         return dict(self._last)
 
+    def _gate_route(self) -> "Optional[SamProbe]":
+        """Decide the transport, record it, and check what that route needs.
+
+        Returns None to go on, or a SamProbe-shaped refusal. THE ORDER IS
+        THE FIX for the 07f.de report: the route is decided from the server
+        name first, and only an I2P route ever enters `checking_router`. A
+        clearnet server goes straight to DNS/TCP/TLS; a Tor route checks for
+        Tor's SOCKS port instead; nothing falls back to another route.
+        """
+        try:
+            route = self._profile.route
+        except _route.RouteError as exc:
+            _TRACE.record("transport", "route_refused", "warning", code=exc.code)
+            return SamProbe(False, exc.code, exc.detail)
+        _TRACE.record("transport", "selected", "info", route=route.kind,
+                      resolver=route.resolver,
+                      certificate="checked" if route.verify_certificate
+                      else "not used (address authenticates)")
+        self._probe_version = ""
+        if route.kind == _route.CLEARNET_TLS:
+            # No local component to check: DNS, TCP and TLS are the attempt.
+            # The prober is NOT called (a test pins this).
+            return None
+        if route.kind == _route.I2P_SAM:
+            self._enter("checking_router")
+        else:
+            self._enter("checking_tor")
+        probe = self._traced_probe()
+        self._probe_version = getattr(probe, "version", "")
+        if not probe.reachable:
+            return probe
+        return None
+
     def connect(self, password: str) -> Dict[str, Any]:
         """Bring the connection up. Returns a result dict, never raises.
 
@@ -435,10 +475,9 @@ class ConnectionController:
 
     def _connect(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
-        self._enter("checking_router")
-        probe = self._prober(self._profile)
-        if not probe.reachable:
-            return self._fail(probe.code, probe.detail)
+        refused = self._gate_route()
+        if refused is not None:
+            return self._fail(refused.code, refused.detail)
 
         # THE PREVIOUS ONE GOES FIRST. `self._transport` was assigned over the
         # top of whatever was there, and the only thing that reaches this line
@@ -474,12 +513,29 @@ class ConnectionController:
             )
         except Exception as exc:
             return self._fail("transport_failed", type(exc).__name__)
+        try:
+            # A secure group's room is made persistent (see the transport),
+            # and its destruction by the owner ends the group here too.
+            self._transport.persist_room = self._is_group_room
+            self._transport.room_destroyed = self._on_room_destroyed
+            self._transport.room_not_persistent = self._on_room_not_persistent
+        except Exception:
+            pass
+        try:
+            # Group calls open their own I2P datagram session on this bridge.
+            self._app.sam_endpoint = (self._profile.sam_host, int(self._profile.sam_port))
+        except Exception:
+            pass
 
         # The transport is what OtrApp sends through. Set before connecting so
         # a stanza arriving during session_start has somewhere to go.
         self._app._transport = self._transport
         # Room messages by a setter rather than the factory call, so a
         # transport without rooms (and every test double) needs no change.
+        bounced = getattr(self._transport, "set_room_rejected_handler", None)
+        rejected = getattr(self._app, "note_room_rejected", None)
+        if bounced is not None and rejected is not None:
+            bounced(rejected)
         attach = getattr(self._transport, "set_room_handler", None)
         receive = getattr(self._app, "receive_room_message", None)
         if attach is not None and receive is not None:
@@ -512,6 +568,14 @@ class ConnectionController:
             return self._fail(code, detail)
 
         self._enter("connected")
+        # Secure groups for this account: the sealed MLS state reopened, or a
+        # new identity for it. A build without group encryption says so.
+        opener = getattr(self._app, "open_groups", None)
+        if opener is not None:
+            try:
+                opener(self._profile.jid)
+            except Exception:
+                _TRACE.record("groups", "open_failed", "warning")
         # The OTRv4Plus Welcome room, joined in the background after every
         # successful sign-in (each connect builds a fresh transport, so a
         # reconnect rejoins). Discovery only: see android_bridge.welcome.
@@ -519,17 +583,25 @@ class ConnectionController:
         joined = getattr(self._app, "note_room_joined", None)
         if hook is not None and joined is not None:
             hook(joined)
+        # Every room, not only Welcome: the transport registers a room with
+        # the app the moment its join succeeds, before delivering anything
+        # the room sent on arrival (see XmppTransport._begin_join).
+        any_room = getattr(self._transport, "set_room_joined_handler", None)
+        if any_room is not None and joined is not None:
+            any_room(joined)
         start = getattr(self._transport, "start_welcome", None)
         if start is not None:
             try:
                 start(self._profile.jid.split("@", 1)[0])
             except Exception:
                 _TRACE.record("welcome", "start_failed", "warning")
+        self._rejoin_secure_rooms()
         self._last = {"ok": True, "stage": "connected", "code": "ok",
                       "detail": "Connected to %s as %s"
                                 % (self._profile.effective_server,
                                    self._profile.jid),
-                      "sam_version": probe.version}
+                      "sam_version": getattr(self, "_probe_version", ""),
+                      "route": _route_summary(self._profile)}
         return dict(self._last)
 
     def register(self, password: str) -> Dict[str, Any]:
@@ -569,16 +641,24 @@ class ConnectionController:
     def _register(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
         _TRACE.record("registration", "started", "info")
-        self._enter("checking_router")
-        probe = self._prober(self._profile)
-        if not probe.reachable:
-            # The same first gate `connect` has. Without a router there is no
-            # tunnel, and spending the registration timeout discovering that
-            # tells the user nothing a probe would not have said in
-            # milliseconds.
+        refused = self._gate_route()
+        if refused is not None:
+            # The same first gate `connect` has: a route that cannot be used
+            # is said in milliseconds, not after the registration timeout.
             self._enter("failed")
-            return {"ok": False, "stage": "failed", "code": "network",
-                    "detail": _registration.describe("network")}
+            # A route the name cannot take keeps its own code and sentence;
+            # Tor missing keeps its own; any other probe failure is the
+            # registration table's "network".
+            if refused.code in _route.ROUTE_CODES:
+                code, detail = refused.code, refused.detail
+            elif refused.code == "tor_unavailable":
+                code, detail = "tor_unavailable", _registration.describe(
+                    "tor_unavailable")
+            else:
+                code, detail = "network", _registration.describe("network")
+            self._last = {"ok": False, "stage": "failed", "code": code,
+                          "detail": detail}
+            return dict(self._last)
 
         transport = None
         try:
@@ -621,6 +701,44 @@ class ConnectionController:
                       code=code)
         return dict(self._last)
 
+    def destination_change(self) -> Dict[str, Any]:
+        """X1: the refused destination change for this profile's server, for
+        the warning -- {} when there is none. Public values only: the name
+        and two .b32.i2p hashes."""
+        try:
+            route = self._profile.route
+        except _route.RouteError:
+            return {}
+        if route.kind != _route.I2P_SAM or route.self_authenticating:
+            return {}
+        from . import server_pins as _pins
+        change = _pins.default_store().last_change(route.host)
+        if not change:
+            return {}
+        return {"server": route.host, "trusted": change[0], "seen": change[1]}
+
+    def approve_server_destination(self, b32: str) -> Dict[str, Any]:
+        """X1: the user explicitly trusts `b32` as this I2P server's new
+        destination, after being shown both. Only that exact destination is
+        approved, only for this server name, and it becomes the pin only
+        when the next attempt to it succeeds. Nothing connects here."""
+        try:
+            route = self._profile.route
+        except _route.RouteError as exc:
+            return {"ok": False, "code": exc.code, "detail": exc.detail}
+        if route.kind != _route.I2P_SAM or route.self_authenticating:
+            return {"ok": False, "code": "not_applicable",
+                    "detail": "Only a human-readable .i2p server name is pinned."}
+        from . import server_pins as _pins
+        try:
+            _pins.default_store().approve(route.host, b32)
+        except ValueError as exc:
+            return {"ok": False, "code": "bad_destination", "detail": str(exc)}
+        _TRACE.record("i2p", "destination_approved_by_user", "warning")
+        return {"ok": True, "code": "ok",
+                "detail": "The new destination will be trusted if the next "
+                          "connection to it succeeds."}
+
     def cancel(self) -> Dict[str, Any]:
         """Stop an attempt that is still running.
 
@@ -644,6 +762,19 @@ class ConnectionController:
                     "detail": type(exc).__name__}
         return {"ok": True, "code": "ok",
                 "detail": "Stopping the connection attempt."}
+
+    def wipe_crypto(self) -> Dict[str, Any]:
+        """Wipe & Exit stage B: refuse further connects, then destroy every
+        secret in Rust (`OtrApp.wipe_crypto`). Local and fast; `wipe` does
+        the rest. Idempotent; never raises."""
+        with self._connect_lock:
+            self._wiped = True
+        try:
+            report = dict(self._app.wipe_crypto())
+        except Exception as exc:
+            report = {"errors": ["app:%s" % type(exc).__name__]}
+        report["ok"] = not report.get("errors")
+        return report
 
     def wipe(self) -> Dict[str, Any]:
         """Wipe & Exit: stop any attempt, destroy everything, never reconnect.
@@ -796,7 +927,100 @@ class ConnectionController:
         evidence that a service has no rooms -- which is why the UI also
         offers joining a room by address.
         """
-        return self._muc_call("discover_rooms", service)
+        result = self._muc_call("discover_rooms", service)
+        return self._with_held_groups(result, service)
+
+    def _with_held_groups(self, result: Dict[str, Any], service: str) -> Dict[str, Any]:
+        """Groups this account holds are secure whatever the listing says, and
+        are listed even when the service hides their room (a room made before
+        rooms were created public). Only rooms on this service.
+
+        "secure" means HELD here -- keys on this device. A room's own
+        description saying it is a group is only "claims_secure": anybody can
+        write that description (security audit, 2026-10-11)."""
+        if not result.get("ok"):
+            return result
+        groups = getattr(self._app, "groups", None)
+        try:
+            held = [str(r).lower() for r in (groups.rooms() if groups else [])]
+        except Exception:
+            held = []
+        rooms = list(result.get("value") or [])
+        listed = {str(r.get("jid", "")).lower() for r in rooms}
+        for room in rooms:
+            if str(room.get("jid", "")).lower() in held:
+                room["secure"] = True
+        suffix = "@" + str(service).lower()
+        for room in sorted(held):
+            if room.endswith(suffix) and room not in listed:
+                rooms.append({"jid": room, "name": "", "occupants": None,
+                              "secure": True, "claims_secure": True,
+                              "password": False})
+        return dict(result, value=rooms)
+
+    def _rejoin_secure_rooms(self) -> None:
+        """Re-enter every secure group's room after a (re)connect, in the
+        background.
+
+        A dropped stream takes every room membership with it (forget_rooms),
+        and only the Welcome room was joined again. A secure group's room
+        then dropped everything it carried: our sends failed ("message not
+        sent"), and our own commit adding a member never came back, so MLS
+        held it pending -- which refuses every later send -- and the new
+        member never got its Welcome (device test, 2026-10-02). Rejoining
+        also replays the room's recent history, which is how a commit that
+        landed while we were away is applied. The terminal client has always
+        rejoined its group rooms."""
+        groups = getattr(self._app, "groups", None)
+        rooms_of = getattr(groups, "rooms", None)
+        if rooms_of is None:
+            return
+        try:
+            rooms = list(rooms_of())
+        except Exception:
+            return
+        if not rooms:
+            return
+        nick = self._profile.jid.split("@", 1)[0]
+        # Until each room is joined again and its history applied, what is
+        # typed is held: sent now it would be encrypted for an epoch the
+        # others may have left, and lost (device test, 2026-10-05).
+        mark = getattr(groups, "mark_syncing", None)
+        if mark is not None:
+            mark()
+
+        def run():
+            ok = 0
+            for room in rooms:
+                try:
+                    joined = self.join_room(room, nick)
+                    taken = getattr(self._transport, "take_recreated", None)
+                    if joined.get("ok") and taken is not None and taken(room):
+                        # Gone while we were away: secure groups' rooms are
+                        # persistent, so its owner deleted it. The empty room
+                        # our join made is taken down and the group ends.
+                        self.destroy_room(room, "secure group deleted")
+                        self._on_room_destroyed(room)
+                        continue
+                    if joined.get("code") == "room_gone":
+                        # Deleted while we were away, and the service keeps
+                        # its tombstone: the join is refused with <gone/>.
+                        # The group ends here too, instead of failing at
+                        # every reconnect.
+                        self._on_room_destroyed(room)
+                        continue
+                    if joined.get("ok") or joined.get("code") == "already_in_room":
+                        ok += 1
+                        rejoined = getattr(groups, "on_room_rejoined", None)
+                        if rejoined is not None:
+                            rejoined(room)
+                except Exception:
+                    pass
+            _TRACE.record("groups", "rooms_rejoined", "info" if ok == len(rooms)
+                          else "warning", rejoined=ok, total=len(rooms))
+
+        threading.Thread(target=run, name="secure-room-rejoin",
+                         daemon=True).start()
 
     def join_room(self, room: str, nick: str,
                   password: str = "") -> Dict[str, Any]:
@@ -826,6 +1050,231 @@ class ConnectionController:
         return self._noting_room(self._muc_call("create_room", *args),
                                  room, joined=True)
 
+    # -- secure groups (MLS over a room; see android_bridge.groups) --------
+
+    def _group_call(self, fn, *args) -> Dict[str, Any]:
+        from .groups import GroupError  # noqa: F811
+        try:
+            value = fn(*args)
+        except GroupError as exc:
+            return {"ok": False, "code": exc.code, "detail": exc.detail, "value": None}
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if isinstance(code, str) and code:
+                return {"ok": False, "code": code,
+                        "detail": str(getattr(exc, "detail", ""))[:200], "value": None}
+            return {"ok": False, "code": "group_failed",
+                    "detail": type(exc).__name__, "value": None}
+        return {"ok": True, "code": "ok", "detail": "", "value": value}
+
+    def _is_group_room(self, room: str) -> bool:
+        """A room that is (or is about to be) a secure group's."""
+        groups = getattr(self._app, "groups", None)
+        if groups is None:
+            return False
+        room = str(room).lower()
+        try:
+            return bool(room in self._creating_groups or groups.is_secure(room)
+                        or groups.awaiting_welcome(room)
+                        or any(i["room"] == room for i in groups.pending_invites()))
+        except Exception:
+            return False
+
+    _creating_groups: "set" = set()
+
+    def create_secure_group(self, room: str, password: str = "",
+                            passphrase: str = "") -> Dict[str, Any]:
+        """A new room that is an OTRv4Plus secure group from its first message.
+
+        The room is created first, then the MLS group. If the MLS step fails
+        the room is left rather than kept as a plaintext room the user thinks
+        is secure."""
+        nick = self._profile.jid.split("@", 1)[0]
+        self._creating_groups = self._creating_groups | {str(room).lower()}
+        try:
+            made = (self.create_room(room, nick, password) if password
+                    else self.create_room(room, nick))
+        finally:
+            self._creating_groups = self._creating_groups - {str(room).lower()}
+        if not made.get("ok"):
+            return made
+        result = self._group_call(self._app.groups.create, room)
+        if not result["ok"]:
+            self.leave_room(room, nick)
+            return result
+        if passphrase:
+            # The group passphrase (owner design, 2026-10-10): kept in memory
+            # for this group's first verification; never stored or sent.
+            secret = bytearray(passphrase.encode("utf-8"))
+            try:
+                self._app.group_verify.set_passphrase(room, secret)
+            except (ValueError, GroupErrorAlias) as exc:
+                result = dict(result, code=str(getattr(exc, "code", exc)),
+                              detail="The group was created; its passphrase was "
+                                     "not set (8 characters or more).")
+        return result
+
+    # -- group verification (the group passphrase) and group calls -----------
+
+    def start_group_verify(self, room: str, passphrase: str = "") -> Dict[str, Any]:
+        """Verify every member with the group passphrase (or the one set at
+        creation when `passphrase` is empty: "passphrase_needed" if none)."""
+        secret = bytearray(passphrase.encode("utf-8")) if passphrase else None
+
+        def go():
+            try:
+                return self._app.group_verify.start(room, secret)
+            except ValueError as exc:
+                raise GroupErrorAlias(str(exc))
+        return self._group_call(go)
+
+    def group_verify_state(self, room: str) -> Dict[str, Any]:
+        """{"members": {jid: verified|failed|running|waiting|not_verified},
+        "all_verified": bool, "started_by": jid of a run we have not joined}."""
+        def go():
+            v = self._app.group_verify
+            pending = v.pending(room)
+            pr = v.progress(room)
+            return {"members": v.status(room), "all_verified": v.all_verified(room),
+                    "started_by": pending["starter"] if pending else "",
+                    "active": pr["active"], "done": pr["done"], "total": pr["total"],
+                    "eta": pr["eta"], "excluded": pr["excluded"]}
+        return self._group_call(go)
+
+    def set_group_call_auto_join(self, allowed: bool) -> Dict[str, Any]:
+        """The app sets this from the microphone permission."""
+        def go():
+            self._app.group_calls.auto_join = bool(allowed)
+            return bool(allowed)
+        return self._group_call(go)
+
+    def start_group_call(self, room: str) -> Dict[str, Any]:
+        return self._group_call_outcome(lambda: self._app.group_calls.start(room))
+
+    def join_group_call(self, room: str) -> Dict[str, Any]:
+        return self._group_call_outcome(lambda: self._app.group_calls.join(room))
+
+    def pause_group_call(self) -> Dict[str, Any]:
+        def go():
+            try:
+                return self._app.group_calls.pause()
+            except ValueError as exc:
+                raise GroupErrorAlias(str(exc))
+        return self._group_call(go)
+
+    def hangup_group_call(self) -> Dict[str, Any]:
+        return self._group_call(lambda: self._app.group_calls.hangup())
+
+    def group_call_state(self, room: str) -> Dict[str, Any]:
+        return self._group_call(lambda: self._app.group_calls.status(room))
+
+    def _group_call_outcome(self, fn) -> Dict[str, Any]:
+        def go():
+            code = fn()
+            if code != "ok":
+                raise GroupErrorAlias(code)
+            return code
+        return self._group_call(go)
+
+    def invite_to_group(self, room: str, peer: str) -> Dict[str, Any]:
+        """Invite over OTRv4+; if there is no session with them yet, one is
+        started and the invite goes when it is up (value "waiting_for_otr")."""
+        result = self._group_call(self._app.invite_when_ready, room, peer)
+        if result.get("ok") and result.get("value") == "waiting_for_otr":
+            result["code"] = "waiting_for_otr"
+        return result
+
+    def accept_group_invite(self, room: str) -> Dict[str, Any]:
+        """Join the room, then answer the invitation over OTRv4+."""
+        nick = self._profile.jid.split("@", 1)[0]
+        joined = self.join_room(room, nick)
+        if not joined.get("ok"):
+            return joined
+        return self._group_call(self._app.groups.accept, room)
+
+    def decline_group_invite(self, room: str) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.decline, room)
+
+    def remove_group_member(self, room: str, member: str) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.remove, room, member)
+
+    def _on_room_not_persistent(self, room: str) -> None:
+        """The service will delete this secure group's room when the last
+        member leaves. Said on screen: the group would otherwise vanish the
+        first time everybody is offline, with no clue why."""
+        try:
+            from .events import ErrorOccurred
+            self._app._emit(ErrorOccurred(peer=room, code="room_not_persistent",
+                                          detail=""))
+        except Exception:
+            pass
+
+    def _on_room_destroyed(self, room: str) -> None:
+        groups = getattr(self._app, "groups", None)
+        if groups is not None:
+            try:
+                groups.on_room_destroyed(room)
+            except Exception:
+                _TRACE.record("groups", "destroy_handling_failed", "warning")
+
+    def delete_secure_group(self, room: str) -> Dict[str, Any]:
+        """Delete a secure group for everyone: destroy its room (the service
+        allows only the owner, the group's creator), which tells the members
+        in it; one who was away finds it gone on return. Then our copy goes."""
+        result = self.destroy_room(room, "secure group deleted")
+        if result.get("ok"):
+            self._on_room_destroyed(room)
+        elif result.get("code") in ("forbidden", "not_allowed"):
+            # The service's refusal of a destroy is about ownership; its
+            # generic sentence for "forbidden" ("banned") is not.
+            result = dict(result, detail="Only the group's creator (the room's "
+                          "owner) can delete it for everyone. Leave it instead "
+                          "to remove it from this phone.")
+        elif result.get("code") == "item_not_found":
+            # Already gone on the server: end our copy too.
+            self._on_room_destroyed(room)
+            result = dict(result, ok=True, code="ok",
+                          detail="The group's room was already gone; removed here.")
+        return result
+
+    def leave_secure_group(self, room: str) -> Dict[str, Any]:
+        """Forget the group's keys here, then leave the room."""
+        result = self._group_call(self._app.groups.leave, room)
+        self.leave_room(room, self._profile.jid.split("@", 1)[0])
+        return result
+
+    def verify_group_members(self, room: str) -> Dict[str, Any]:
+        """Send our group key to each member over OTRv4+ (see
+        SecureGroups.verify_members). `detail` says who still needs SMP."""
+        result = self._group_call(self._app.groups.verify_members, room)
+        if not result.get("ok"):
+            return result
+        status = result.get("value") or {}
+        need_smp = sorted(j for j, s in status.items() if s == "sent")
+        no_session = sorted(j for j, s in status.items() if s == "no_session")
+        parts = []
+        if need_smp:
+            parts.append("Your key went to %s; you are verified with each of them "
+                         "once you have done SMP together (Verify in their chat)."
+                         % ", ".join(need_smp))
+        if no_session:
+            parts.append("No encrypted session yet with %s: open their chat, then "
+                         "verify with SMP." % ", ".join(no_session))
+        if not parts:
+            parts.append("Every member is verified: group calls are possible.")
+        result["detail"] = " ".join(parts)
+        result["value"] = None
+        return result
+
+    def group_members(self, room: str) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.members, room)
+
+    def group_invites(self) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.pending_invites)
+
+    def secure_groups(self) -> Dict[str, Any]:
+        return self._group_call(self._app.groups.rooms)
+
     def leave_room(self, room: str, nick: str) -> Dict[str, Any]:
         return self._noting_room(self._muc_call("leave_room", room, nick),
                                  room, joined=False)
@@ -838,6 +1287,156 @@ class ConnectionController:
     def room_occupants(self, room: str) -> Dict[str, Any]:
         """Who is in [room], as `{nick, role, affiliation}` rows."""
         return self._muc_call("room_occupants", room)
+
+    # -- avatars --------------------------------------------------------------
+
+    def avatar_ids(self) -> Dict[str, str]:
+        """Bare JID -> avatar id, for every avatar held. Cheap: the app polls
+        it and fetches pixels only for an id it has not drawn yet."""
+        ids = getattr(self._transport, "avatar_ids", None)
+        if ids is None:
+            return {}
+        try:
+            return dict(ids())
+        except Exception:
+            return {}
+
+    def avatar_pixels(self, jid: str) -> Optional[Dict[str, Any]]:
+        """{id, width, height, rgba} for `jid`, or None.
+
+        `rgba` is raw pixels, 4 bytes each -- the app turns them into the
+        int array Bitmap.createBitmap(int[], ...) takes, so the picture is
+        built from numbers and no image decoder of the platform reads the
+        file a peer sent (android_bridge.avatar)."""
+        get = getattr(self._transport, "avatar", None)
+        if get is None:
+            return None
+        try:
+            avatar = get(jid)
+        except Exception:
+            return None
+        if avatar is None:
+            return None
+        import base64
+        rgba = bytes(avatar.rgba)
+        # Base64 TEXT for Kotlin (android.util.Base64 -- a text decoder, not
+        # an image decoder), plus the raw bytes for Python callers.
+        return {"id": avatar.id, "width": avatar.width,
+                "height": avatar.height, "rgba": rgba,
+                "rgba_b64": base64.b64encode(rgba).decode("ascii")}
+
+    def avatar_index(self) -> List[str]:
+        """`avatar_ids` as "jid<TAB>id" strings: a plain list of strings is
+        the one shape the Kotlin side reads everywhere."""
+        return ["%s\t%s" % (jid, aid) for jid, aid in sorted(self.avatar_ids().items())]
+
+    def set_avatar(self, png) -> Dict[str, Any]:
+        """Publish our avatar: PNG bytes the app made (scaled, re-encoded)."""
+        transport = self._transport
+        if transport is None or not hasattr(transport, "publish_avatar"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            transport.publish_avatar(bytes(png))
+        except Exception as exc:
+            # TransportError carries `code` and `detail`; anything else is
+            # named by its type only.
+            code = getattr(exc, "code", None) or type(exc).__name__
+            _TRACE.record("avatar", "publish_failed", "warning", code=code)
+            if code == "pep_unavailable":
+                detail = ("This server does not store profile pictures (it has "
+                          "no PEP service). Its admin can turn it on -- "
+                          "Prosody: add \"pep\" to modules_enabled.")
+            elif code == "avatar_refused":
+                detail = ("The picture could not be used (%s)."
+                          % getattr(exc, "detail", ""))
+            else:
+                detail = "The picture could not be published."
+            return {"ok": False, "code": code, "detail": detail, "value": None}
+        _TRACE.record("avatar", "published", "info")
+        return {"ok": True, "code": "ok", "detail": "", "value": None}
+
+    def set_avatar_b64(self, text: str) -> Dict[str, Any]:
+        """`set_avatar` for the Kotlin side, which passes base64 text (the
+        one byte transport this bridge uses everywhere)."""
+        import base64
+        import binascii
+        from . import avatar as _avatar_mod
+        text = str(text or "")
+        if len(text) > _avatar_mod.MAX_B64_CHARS:
+            return {"ok": False, "code": "avatar_refused",
+                    "detail": "The picture is too large.", "value": None}
+        try:
+            png = base64.b64decode(text, validate=True)
+        except (binascii.Error, ValueError):
+            return {"ok": False, "code": "avatar_refused",
+                    "detail": "The picture could not be read.", "value": None}
+        return self.set_avatar(png)
+
+    def remove_avatar(self) -> Dict[str, Any]:
+        transport = self._transport
+        if transport is None or not hasattr(transport, "remove_avatar"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            transport.remove_avatar()
+        except Exception as exc:
+            return {"ok": False, "code": getattr(exc, "code", "unexpected_error"),
+                    "detail": "The picture could not be removed.", "value": None}
+        return {"ok": True, "code": "ok", "detail": "", "value": None}
+
+    # -- the XMPP profile ----------------------------------------------------
+
+    def profile_fields(self) -> List[str]:
+        """The editable fields, as "key<TAB>label<TAB>maxlen<TAB>multiline".
+        The app builds its form from this, so the two cannot drift."""
+        from . import profile as _p
+        return ["%s\t%s\t%d\t%d" % (k, label, limit, 1 if multi else 0)
+                for k, label, _path, limit, multi in _p.FIELDS]
+
+    def profile_get_json(self, jid: str = "") -> Dict[str, Any]:
+        """{ok, code, detail, value: JSON object of fields}. `jid` empty =
+        our own. Everything in `value` has been sanitised."""
+        import json
+        transport = self._transport
+        if transport is None or not hasattr(transport, "get_profile"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            values = transport.get_profile(str(jid or ""))
+        except Exception as exc:
+            code = getattr(exc, "code", None) or type(exc).__name__
+            _TRACE.record("profile", "get_failed", "warning", code=code)
+            return {"ok": False, "code": code,
+                    "detail": "The profile could not be read.", "value": None}
+        return {"ok": True, "code": "ok", "detail": "",
+                "value": json.dumps(values, ensure_ascii=False)}
+
+    def profile_set_json(self, text: str) -> Dict[str, Any]:
+        """Publish our profile from a JSON object of fields. Returns what was
+        published (sanitised), as JSON."""
+        import json
+        transport = self._transport
+        if transport is None or not hasattr(transport, "set_profile"):
+            return {"ok": False, "code": "not_connected",
+                    "detail": "Connect first.", "value": None}
+        try:
+            values = json.loads(str(text or "{}")[:20000])
+            if not isinstance(values, dict):
+                raise ValueError("not an object")
+        except ValueError:
+            return {"ok": False, "code": "bad_request",
+                    "detail": "The profile could not be read.", "value": None}
+        try:
+            published = transport.set_profile(values)
+        except Exception as exc:
+            code = getattr(exc, "code", None) or type(exc).__name__
+            _TRACE.record("profile", "set_failed", "warning", code=code)
+            return {"ok": False, "code": code,
+                    "detail": "The profile could not be saved.", "value": None}
+        _TRACE.record("profile", "published", "info", fields=len(published))
+        return {"ok": True, "code": "ok", "detail": "",
+                "value": json.dumps(published, ensure_ascii=False)}
 
     def welcome_directory(self) -> Dict[str, Any]:
         """The Welcome room's state and discoverable people. Local state
@@ -1005,7 +1604,60 @@ class ConnectionController:
         A private attribute read across a language boundary is a coupling that
         breaks without a compiler noticing.
         """
-        return self._prober(self._profile).as_dict()
+        return self._traced_probe().as_dict()
+
+    def _traced_probe(self) -> SamProbe:
+        """Run the router check and put its outcome in the diagnostic report.
+
+        Without this a report from a phone whose router check failed said
+        "(no events recorded)", which is the one case where the outcome is all
+        that matters. Only the stable code and the SAM version are traced: the
+        detail sentence names the local host and port, and those stay out.
+        """
+        probe = self._prober(self._profile)
+        try:
+            kind = self._profile.route.kind
+        except Exception:
+            kind = "invalid"
+        _TRACE.record("router", "probe",
+                      "info" if probe.reachable else "warning",
+                      route=kind, code=probe.code,
+                      version=getattr(probe, "version", "") or "")
+        return probe
+
+    def test_server(self) -> Dict[str, Any]:
+        """Reach the server and stop: DNS (SRV first on clearnet), TCP, TLS
+        with the certificate verified, the XMPP stream, and registration
+        discovery -- no sign-in and no account creation, and no password is
+        involved (the transport's probe carries an empty one). Returns the
+        probe's plain dict; never raises.
+
+        This is what separates "the server was not reached" from "reached,
+        but registration is refused / needs a CAPTCHA / not offered"."""
+        refused = self._gate_route()
+        if refused is not None:
+            return {"ok": False, "code": refused.code, "detail": refused.detail,
+                    "reached": [], "route": _route_summary(self._profile)}
+        transport = None
+        try:
+            factory = self._transport_factory or _default_transport_factory()
+            transport = factory(self._profile, "", on_payload=lambda *a: None)
+            result = transport.probe_server()
+        except Exception as exc:
+            result = {"ok": False, "code": "probe_failed",
+                      "detail": type(exc).__name__, "reached": []}
+        finally:
+            if transport is not None:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
+        result = {k: v for k, v in dict(result).items()
+                  if isinstance(v, (str, bool, int, type(None), list))}
+        result["reached"] = ",".join(result.get("reached") or [])
+        _TRACE.record("controller", "server_tested", "info",
+                      code=result.get("code", ""), reached=result["reached"])
+        return result
 
     def inputs(self, password: Optional[str] = None) -> Dict[str, Any]:
         """What actually arrived from Kotlin, minus the password itself.
@@ -1033,7 +1685,7 @@ class ConnectionController:
             "sam_host": self._profile.sam_host,
             "sam_port": self._profile.sam_port,
             "c2s_port": _c2s_port(),
-            "use_i2p": self._profile.use_i2p,
+            "route": _route_summary(self._profile),
             # STARTTLS on a normal c2s port at the far end of the tunnel;
             # direct TLS would be wrong and is explicitly turned off. Whether
             # the certificate is checked depends on whether the ADDRESS
@@ -1130,18 +1782,33 @@ def controller_for(app: Any, jid: str = "",
     object graph -- a PyObject held across the boundary is a lifetime question
     nobody wants to answer twice.
 
-    Empty arguments mean "use the default", so the common case on the handset
-    is `controller_for(app, jid)` and the server, SAM host and port come from
-    `settings.DEFAULT_SERVER` and the SAM defaults.
+    An empty `server` means "the JID's own domain" (`effective_server`), which
+    the router resolves by name. It used to mean `settings.DEFAULT_SERVER`,
+    which sent an account on ANY server to the default one whenever the
+    route was left blank. Empty SAM host and port mean the SAM defaults.
     """
-    from .settings import DEFAULT_SERVER
     profile = ConnectionProfile(
         jid=jid,
-        server=server or DEFAULT_SERVER,
+        server=server,
         **{k: v for k, v in (("sam_host", sam_host), ("sam_port", sam_port))
            if v}
     )
+    _follow_sam_udp_port(int(profile.sam_port))
     return ConnectionController(app, profile)
+
+
+def _follow_sam_udp_port(tcp_port: int) -> None:
+    """Point calls at the SAM datagram port of the bridge in use.
+
+    i2pd puts it one below the TCP port. On the default bridge (7656) that
+    is voice's own default, 7655; the router built into the APK listens on
+    a random port (say 23456), so its datagrams go to 23455. Calls read the port from the
+    environment (`otrv4plus_voice.sam_udp_port`), so this sets or clears it.
+    """
+    if tcp_port > 1 and tcp_port != _address.DEFAULT_SAM_PORT:
+        os.environ["OTRV4PLUS_SAM_UDP_PORT"] = str(tcp_port - 1)
+    else:
+        os.environ.pop("OTRV4PLUS_SAM_UDP_PORT", None)
 
 
 def probe_profile(profile: ConnectionProfile, **kw) -> SamProbe:
@@ -1151,9 +1818,61 @@ def probe_profile(profile: ConnectionProfile, **kw) -> SamProbe:
     and reporting one as unreachable would be a false alarm about a component
     that is not in use.
     """
-    if not profile.use_i2p:
-        return SamProbe(True, "ok", "Not using I2P; no SAM bridge needed.")
+    try:
+        route = profile.route
+    except _route.RouteError as exc:
+        return SamProbe(False, exc.code, exc.detail)
+    if route.kind == _route.CLEARNET_TLS:
+        return SamProbe(True, "ok", "Clearnet TLS: no SAM bridge needed "
+                                    "(no I2P router or Tor is used).")
+    if route.kind == _route.TOR:
+        return probe_tor(getattr(profile, "socks_host", "127.0.0.1"),
+                         getattr(profile, "socks_port", 9050), **kw)
     return probe_sam(profile.sam_host, profile.sam_port, **kw)
+
+
+def probe_tor(host: str, port: int, timeout: float = SAM_PROBE_TIMEOUT,
+              opener: Optional[Callable[..., Any]] = None) -> SamProbe:
+    """Whether a Tor SOCKS5 port is listening (Orbot: 127.0.0.1:9050).
+
+    Only the SOCKS5 greeting: no CONNECT, so no destination is named here.
+    Unreachable means FAIL -- a Tor route never falls back to clearnet.
+    """
+    connect = opener or socket.create_connection
+    try:
+        sock = connect((host, port), timeout)
+    except OSError as exc:
+        return SamProbe(
+            False, "tor_unavailable",
+            "Tor is not reachable on %s:%d (%s). Start Orbot (or another Tor "
+            "client with a SOCKS port) and try again. Nothing was sent "
+            "anywhere else." % (host, port, type(exc).__name__))
+    try:
+        sock.settimeout(timeout)
+        sock.sendall(b"\x05\x01\x00")
+        reply = sock.recv(2)
+    except OSError as exc:
+        return SamProbe(False, "tor_unavailable",
+                        "%s:%d did not complete a SOCKS5 greeting (%s)."
+                        % (host, port, type(exc).__name__))
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+    if reply != b"\x05\x00":
+        return SamProbe(False, "tor_unavailable",
+                        "%s:%d is not a SOCKS5 proxy without authentication."
+                        % (host, port))
+    return SamProbe(True, "ok", "Tor SOCKS5 reachable at %s:%d." % (host, port))
+
+
+def _route_summary(profile) -> str:
+    """The route kind, as plain data for the status snapshot ("" if none)."""
+    try:
+        return profile.route.kind
+    except _route.RouteError:
+        return ""
 
 
 def _as_dict(value):

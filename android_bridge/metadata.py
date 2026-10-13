@@ -62,6 +62,7 @@ import os
 import struct
 import tempfile
 from dataclasses import dataclass
+from typing import Optional
 
 __all__ = ["Finding", "examine", "scrub", "scrub_file", "kind_of"]
 
@@ -154,8 +155,12 @@ def examine_file(path: str) -> Finding:
         return Finding(UNKNOWN, False, 0)
 
 
-def scrub_file(path: str) -> str:
+def scrub_file(path: str, directory: Optional[str] = None) -> str:
     """A scrubbed copy of *path*, alongside it, or *path* itself.
+
+    *directory*: where to put the copy instead (Termux: the private staging
+    directory, because a file picked from shared storage would otherwise get
+    its plaintext copy written there too).
 
     ALONGSIDE, in the same directory: on Android that is the app's own cache,
     where the SAF copy was staged, so the cleaned copy never lands anywhere
@@ -177,7 +182,7 @@ def scrub_file(path: str) -> str:
     if cleaned is data or cleaned == data:
         return path
     directory = tempfile.mkdtemp(prefix="scrubbed-",
-                                 dir=os.path.dirname(os.path.abspath(path)))
+                                 dir=directory or os.path.dirname(os.path.abspath(path)))
     target = os.path.join(directory, os.path.basename(path))
     fd, tmp = tempfile.mkstemp(dir=directory)
     try:

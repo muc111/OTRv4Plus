@@ -28,7 +28,7 @@ import kotlin.test.assertTrue
  */
 class SecurityTransitionsTest {
 
-    private val termux = "termux@xmpp-elite.i2p"
+    private val termux = "termux@otrv4plus.i2p"
 
     private fun state(): ChatState = ChatState().apply {
         applyConnection(ConnectionStatus(stage = "connected", connected = true))

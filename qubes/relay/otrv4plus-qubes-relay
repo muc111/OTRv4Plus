@@ -1,0 +1,323 @@
+#!/usr/bin/python3 -I
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+"""The I2P SAM bridge of another qube, over qrexec -- streams AND datagrams.
+
+On Qubes the chat qube has no network (netvm = none) and the I2P router runs
+in sys-i2p. `qvm-connect-tcp 7656:sys-i2p:7656` carries the SAM control and
+stream connections, which is all chat, files and groups need. It cannot
+carry voice: calls use SAM *datagrams*, which are UDP in both directions --
+the client sends to the router's UDP port 7655, and the router forwards what
+arrives to the HOST:PORT the client named in SESSION CREATE. Neither leg is
+TCP, and qubes.ConnectTCP is TCP only.
+
+This relay is the missing half. Two roles, one file:
+
+  proxy    (in the chat qube; systemd unit otrv4plus-sam-proxy)
+           Listens on 127.0.0.1:7656 (TCP) and 127.0.0.1:7655 (UDP), where
+           the client already looks for SAM -- the client is not changed.
+           Each TCP connection becomes one `qubes.ConnectTCP+7656` call to
+           sys-i2p, byte for byte, except that a datagram SESSION CREATE
+           line is noticed on its way through: the proxy opens one
+           `otrv4plus.SamUdp` call for that session, which binds a UDP port
+           in sys-i2p, and rewrites PORT= to it. Datagrams the client sends
+           to 7655 go down the call of the session their header names;
+           datagrams the router forwards come back up it to the client's
+           own port. The session's calls end when its control connection
+           does.
+
+  service  (in sys-i2p; /etc/qubes-rpc/otrv4plus.SamUdp)
+           Binds 127.0.0.1:<any free port>, tells the caller which, then
+           copies framed datagrams from stdin to the router's 7655 and from
+           that port to stdout. Loopback only on both sides.
+
+What the relay sees is what qvm-connect-tcp sees: SAM commands and
+end-to-end encrypted media. It holds no key and decrypts nothing; a
+datagram it cannot attribute to a session it opened is dropped.
+
+Framing on a qrexec call: a 2-byte big-endian length, then the datagram.
+"""
+import asyncio
+import os
+import socket
+import struct
+import sys
+import threading
+
+QUBE = os.environ.get("OTRV4PLUS_I2P_QUBE", "sys-i2p")
+QREXEC = os.environ.get("OTRV4PLUS_QREXEC_CLIENT", "qrexec-client-vm").split()
+
+
+def _port(name, default):
+    raw = os.environ.get(name, "")
+    return int(raw) if raw.isdigit() and 0 < int(raw) < 65536 else default
+
+
+SAM_TCP = _port("OTRV4PLUS_RELAY_SAM_TCP", 7656)      # proxy listens (chat qube)
+SAM_UDP = _port("OTRV4PLUS_RELAY_SAM_UDP", 7655)      # proxy listens (chat qube)
+ROUTER_TCP = _port("OTRV4PLUS_RELAY_ROUTER_TCP", 7656)  # router, in sys-i2p
+ROUTER_UDP = _port("OTRV4PLUS_RELAY_ROUTER_UDP", 7655)  # router, in sys-i2p
+
+MAX_LINE = 64 * 1024       # a SAM command line; a destination is ~1 KiB
+MAX_DATAGRAM = 0xFFFF      # the frame length field
+MAX_QUEUED = 256 * 1024    # media is dropped, not queued, past this
+OPEN_TIMEOUT = 60          # qrexec call setup, including the policy prompt
+
+
+def log(msg):
+    print("otrv4plus-qubes-relay: %s" % msg, file=sys.stderr, flush=True)
+
+
+def frame(data):
+    return struct.pack(">H", len(data)) + data
+
+
+def _session_create(line):
+    """(session_id, port) for a datagram SESSION CREATE line, else None."""
+    words = line.decode("ascii", "replace").split()
+    if words[:2] != ["SESSION", "CREATE"]:
+        return None
+    opts = dict(w.split("=", 1) for w in words[2:] if "=" in w)
+    if opts.get("STYLE") not in ("DATAGRAM", "RAW"):
+        return None
+    if not opts.get("ID") or not opts.get("PORT", "").isdigit():
+        return None
+    if opts.get("HOST", "127.0.0.1") != "127.0.0.1":
+        return None             # forwarding off the qube is never relayed
+    return opts["ID"], int(opts["PORT"])
+
+
+def _rewrite_port(line, port):
+    words = line.rstrip(b"\r\n").split(b" ")
+    out = [b"PORT=%d" % port if w.startswith(b"PORT=") else w for w in words]
+    return b" ".join(out) + b"\n"
+
+
+# -- proxy: the chat qube -----------------------------------------------------
+
+class _Session:
+    """One datagram session: one otrv4plus.SamUdp call."""
+
+    def __init__(self, proc, client_port):
+        self.proc = proc
+        self.client_port = client_port
+        self.dropped = 0
+
+    def send(self, data):
+        stdin = self.proc.stdin
+        if stdin.is_closing() or len(data) > MAX_DATAGRAM:
+            return
+        if stdin.transport.get_write_buffer_size() > MAX_QUEUED:
+            self.dropped += 1   # late audio is worse than lost audio
+            return
+        stdin.write(frame(data))
+
+    def close(self):
+        try:
+            self.proc.stdin.close()
+        except Exception:
+            pass
+        if self.proc.returncode is None:
+            try:
+                self.proc.terminate()
+            except ProcessLookupError:
+                pass
+
+
+class Proxy:
+
+    def __init__(self):
+        self.sessions = {}
+        self.udp = None
+
+    async def start(self):
+        loop = asyncio.get_running_loop()
+        proxy = self
+
+        class _Up(asyncio.DatagramProtocol):
+            def datagram_received(self, data, addr):
+                proxy.outbound(data)
+
+        self.udp, _ = await loop.create_datagram_endpoint(
+            _Up, local_addr=("127.0.0.1", SAM_UDP))
+        server = await asyncio.start_server(
+            self.connection, "127.0.0.1", SAM_TCP, limit=MAX_LINE)
+        log("SAM on 127.0.0.1:%d/tcp and :%d/udp -> %s" % (SAM_TCP, SAM_UDP, QUBE))
+        return server
+
+    def outbound(self, data):
+        # A SAM v3 datagram: "3.0 <session id> <destination>[ opts]\n<payload>".
+        head = data[:data.find(b"\n", 0, 4096)] if b"\n" in data[:4096] else b""
+        words = head.split(b" ")
+        if len(words) < 3:
+            return
+        session = self.sessions.get(words[1].decode("ascii", "replace"))
+        if session is not None:
+            session.send(data)
+
+    async def _open_session(self, sid, client_port):
+        proc = await asyncio.create_subprocess_exec(
+            *QREXEC, QUBE, "otrv4plus.SamUdp",
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+        try:
+            far = struct.unpack(">H", await asyncio.wait_for(
+                proc.stdout.readexactly(2), OPEN_TIMEOUT))[0]
+        except Exception:
+            if proc.returncode is None:
+                proc.kill()
+            raise
+        session = _Session(proc, client_port)
+        self.sessions[sid] = session
+        asyncio.ensure_future(self._downlink(sid, session))
+        return session, far
+
+    async def _downlink(self, sid, session):
+        out = session.proc.stdout
+        try:
+            while True:
+                n = struct.unpack(">H", await out.readexactly(2))[0]
+                data = await out.readexactly(n)
+                self.udp.sendto(data, ("127.0.0.1", session.client_port))
+        except (asyncio.IncompleteReadError, ConnectionError):
+            pass
+        finally:
+            if self.sessions.get(sid) is session:
+                del self.sessions[sid]
+            session.close()
+
+    async def connection(self, reader, writer):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *QREXEC, QUBE, "qubes.ConnectTCP+%d" % ROUTER_TCP,
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+        except Exception as exc:
+            log("qrexec failed: %s" % exc)
+            writer.close()
+            return
+        mine = []
+
+        async def down():
+            try:
+                while True:
+                    data = await proc.stdout.read(65536)
+                    if not data:
+                        break
+                    writer.write(data)
+                    await writer.drain()
+            except ConnectionError:
+                pass
+
+        async def up():
+            raw = False
+            try:
+                while True:
+                    if raw:
+                        data = await reader.read(65536)
+                    else:
+                        try:
+                            data = await reader.readuntil(b"\n")
+                        except asyncio.IncompleteReadError as exc:
+                            data = exc.partial
+                        found = _session_create(data) if data.endswith(b"\n") else None
+                        if found:
+                            sid, port = found
+                            try:
+                                session, far = await self._open_session(sid, port)
+                                mine.append(sid)
+                                data = _rewrite_port(data, far)
+                            except Exception as exc:
+                                # Sent as it was: the router will forward to a
+                                # port nobody holds, and the call reports no
+                                # audio -- what it did before this relay.
+                                log("no datagram relay for %s: %s" % (sid, exc))
+                        elif data.lstrip().startswith(b"STREAM "):
+                            raw = True   # the socket carries data from here on
+                    if not data:
+                        break
+                    proc.stdin.write(data)
+                    await proc.stdin.drain()
+            except (asyncio.LimitOverrunError, ValueError):
+                log("a SAM line over %d bytes; connection closed" % MAX_LINE)
+            except ConnectionError:
+                pass
+            finally:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
+
+        tasks = [asyncio.ensure_future(up()), asyncio.ensure_future(down())]
+        try:
+            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+            for sid in mine:
+                session = self.sessions.pop(sid, None)
+                if session is not None:
+                    session.close()
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+            writer.close()
+
+
+def run_proxy():
+    async def main():
+        server = await Proxy().start()
+        async with server:
+            await server.serve_forever()
+    asyncio.run(main())
+
+
+# -- service: sys-i2p ---------------------------------------------------------
+
+def _read_exactly(stream, n):
+    buf = b""
+    while len(buf) < n:
+        chunk = stream.read(n - len(buf))
+        if not chunk:
+            return None
+        buf += chunk
+    return buf
+
+
+def run_service():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("127.0.0.1", 0))
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    lock = threading.Lock()
+    stdout.write(struct.pack(">H", sock.getsockname()[1]))
+    stdout.flush()
+
+    def up_from_router():
+        while True:
+            data, addr = sock.recvfrom(MAX_DATAGRAM)
+            if addr[0] != "127.0.0.1":
+                continue
+            with lock:
+                stdout.write(frame(data))
+                stdout.flush()
+
+    threading.Thread(target=up_from_router, daemon=True).start()
+    while True:
+        head = _read_exactly(stdin, 2)
+        if head is None:
+            break
+        data = _read_exactly(stdin, struct.unpack(">H", head)[0])
+        if data is None:
+            break
+        sock.sendto(data, ("127.0.0.1", ROUTER_UDP))
+    os._exit(0)
+
+
+if __name__ == "__main__":
+    role = sys.argv[1] if len(sys.argv) > 1 else ""
+    if role == "proxy":
+        run_proxy()
+    elif role == "service":
+        run_service()
+    else:
+        sys.exit("usage: otrv4plus-qubes-relay proxy|service")

@@ -1,0 +1,30 @@
+# Differential tests for the post-quantum primitives the core ships
+# (audit 2026-09). Not part of any build; nothing depends on it.
+#
+#   cd Rust/audit && cargo test --release
+#
+# The core uses PQClean via pqcrypto-mlkem / pqcrypto-mldsa. These tests
+# check them against an independent implementation (RustCrypto ml-kem /
+# ml-dsa): same keys, cross encapsulation and signing, and FIPS 203
+# implicit rejection on tampered ciphertexts, which a KAT file does not
+# exercise from the other side.
+[package]
+name = "otrv4-core-audit"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
+
+[dependencies]
+
+[dev-dependencies]
+pqcrypto-mlkem  = "=0.1.1"
+pqcrypto-mldsa  = "=0.1.2"
+pqcrypto-traits = "0.3"
+ml-kem = "=0.3.2"
+ml-dsa = "=0.1.1"
+rand   = "0.8"
+otrv4_core = { path = ".." }
+
+[workspace]
+members = ["."]

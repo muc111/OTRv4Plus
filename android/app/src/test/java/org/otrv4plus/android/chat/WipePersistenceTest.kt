@@ -37,9 +37,9 @@ class WipePersistenceTest {
         val chat = ChatState(store).apply { bindVault(vault) }
     }
 
-    private val owner = "owner@xmpp-elite.i2p"
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
+    private val owner = "owner@otrv4plus.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     private fun signIn(p: Process) = p.chat.bindAccount(AccountScope.of(owner))
 
@@ -54,11 +54,12 @@ class WipePersistenceTest {
     private fun wipe(p: Process, duringEngine: () -> Unit = {}): WipeAndExit.Report =
         WipeAndExit.Runner(mapOf(
             Step.STOP_BACKGROUND to { p.vault.latch() },
+            Step.DESTROY_CRYPTO to { },
             Step.CLEAR_NOTIFICATIONS to { },
             Step.CLEAR_MEMORY to { p.chat.bindAccount(AccountScope.NONE) },
             Step.DESTROY_VAULT to { p.vault.clear() },
-            Step.CLEAR_CACHE to { },
-            Step.WIPE_ENGINE to duringEngine,
+            Step.STOP_SUBSYSTEMS to duringEngine,
+            Step.WIPE_APP_DATA to { },
             Step.EXIT to { },
         )).run()
 

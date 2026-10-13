@@ -68,7 +68,7 @@ enum class LinkPhase {
          * screen rendered raw because nothing had declared it existed.
          */
         val STAGES: Set<String> = setOf(
-            "idle", "checking_router", "building_tunnels", "connecting",
+            "idle", "checking_router", "checking_tor", "building_tunnels", "connecting",
             "authenticating", "connected", "registered", "disconnected",
             "cancelled", "failed",
         )

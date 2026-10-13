@@ -1,0 +1,30 @@
+{#- SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+    Copyright (C) 2025-2026 muc111
+
+    Install one of OUR packages in a template: only if the signature made in
+    otr-sign verifies against the release key pinned in this formula. The
+    package arrives with qvm-copy from otr-build, into QubesIncoming. -#}
+{% macro install_signed(pkg, key=True) -%}
+{% if key %}
+otrv4plus-release-key:
+  file.managed:
+    - name: /usr/share/keyrings/otrv4plus-release.gpg
+    - source: salt://otrv4plus/files/otrv4plus-release.gpg
+    - mode: '0644'
+{% endif %}
+
+{{ pkg }}-verified-install:
+  cmd.run:
+    - name: |
+        set -eu
+        deb="$(ls -1 /home/user/QubesIncoming/otr-build/{{ pkg }}_*.deb | sort -V | tail -1)"
+        gpgv --keyring /usr/share/keyrings/otrv4plus-release.gpg "$deb.asc" "$deb"
+        ( cd "$(dirname "$deb")" && sha256sum --strict --check "$(basename "$deb").sha256" )
+        cp "$deb" /var/cache/apt/archives/
+        apt-get install -y --no-install-recommends "/var/cache/apt/archives/$(basename "$deb")"
+    - require:
+      - file: otrv4plus-release-key
+{%- if not key %}
+      - cmd: otrv4plus-verified-install
+{%- endif %}
+{%- endmacro %}

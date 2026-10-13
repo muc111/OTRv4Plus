@@ -135,6 +135,13 @@ COMMANDS:
 #  no md5/sha1, and no use of the `random` module for any security decision.
 # =============================================================================
 
+# Started as `python <client>`: run again with the project interpreter
+# (~/OTRv4Plus/.venv, where Rust/build.sh installs otrv4_core). Loaded by
+# name: the APK never runs a client as a script and does not ship it.
+if __name__ == "__main__":
+    import importlib as _importlib
+    _importlib.import_module("otrv4plus_venv").ensure(__file__)
+
 import argparse
 import asyncio
 import builtins
@@ -153,6 +160,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import otrv4plus_address as _address
+import otrv4plus_caps as _caps
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_fragment as _frag
 import otrv4plus_ping as _ping
@@ -217,7 +225,9 @@ def voice_available() -> "tuple[bool, str]":
     without a restart.
     """
     if not _load_opus():
-        return False, "opuslib not installed  (pip install opuslib --break-system-packages)"
+        return False, ("opuslib or libopus missing  (Linux: sudo apt install libopus0, "
+                       "Termux: pkg install libopus; then .venv/bin/pip install "
+                       "opuslib==3.0.1, or run Rust/build.sh again)")
     # Voice no longer requires PulseAudio: otrv4plus_audio prefers AAudio,
     # which talks to Android's audio framework directly. parec/pacat remain
     # a selectable fallback and back the /audiotest self-test, so their
@@ -467,15 +477,17 @@ def _import_failure_advice(exc):
 
     if missing == "otrv4_core":
         return [
-            "The Rust core is missing. Build it and copy the shared library "
-            "next to this script:",
-            "    cd Rust && cargo build --release --features extension-module",
-            "    cp target/release/libotrv4_core.so ../otrv4_core.so",
+            "The Rust core is missing from this Python. Build and install it "
+            "(this also removes any older copies):",
+            "    cd Rust && bash build.sh",
+            "then start the client with the project's Python, from the "
+            "repository root:",
+            "    .venv/bin/python otrv4plus_xmpp.py ...",
         ]
 
     return [
-        "Ensure otrv4+.py, the otrv4plus.py symlink, and otrv4_core.so are "
-        "in this directory.",
+        "Ensure otrv4+.py and the otrv4plus.py symlink are in this directory, "
+        "and that the core was installed with Rust/build.sh.",
     ]
 
 
@@ -903,6 +915,10 @@ except ImportError:
 # it at all.
 OTR_PREFIX = _frag.OTR_PREFIX
 OTR_PREFIX_B = OTR_PREFIX.encode("utf-8")
+#: Secure-group setup signals (android_bridge.groups.SIGNAL_PREFIX). Restated
+#: so this module still imports without the android_bridge package;
+#: tests/test_termux_groups.py holds the two equal.
+GROUP_SIGNAL_PREFIX = "?OTRv4-MLS:"
 
 # SMP passphrase length bounds enforced before passing to the Rust engine.
 # Defined in the engine (otrv4+.py) since v10.23.0 so both clients agree;
@@ -1070,7 +1086,8 @@ async def socks5_connect(dest_host: str, dest_port: int,
 
 async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
                                     socks_host: str = "127.0.0.1",
-                                    socks_port: int = TOR_SOCKS_PORT):
+                                    socks_port: int = TOR_SOCKS_PORT,
+                                    *, resources=None, log=None):
     """Tunnel to a .onion through Tor and expose it as a local TCP endpoint.
 
     Returns (local_host, local_port). Deliberately the same shape as
@@ -1084,11 +1101,15 @@ async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
     not fall back to a direct connection: doing so would send the user's
     address to a server they asked to reach anonymously.
     """
-    print("[tor] opening SOCKS5 tunnel to %s:%d via %s:%d ..."
-          % (_sanitise(onion_host, 80), dest_port, socks_host, socks_port))
+    # `log` and `resources` exist for the Android bridge, exactly as on the
+    # SAM forwarder: logcat must not name the destination, and the caller's
+    # list is what lets a failed or finished connection release the tunnel.
+    say = log if log is not None else print
+    say("[tor] opening SOCKS5 tunnel to %s:%d via %s:%d ..."
+        % (_sanitise(onion_host, 80), dest_port, socks_host, socks_port))
     tor_reader, tor_writer = await socks5_connect(
         onion_host, dest_port, socks_host=socks_host, socks_port=socks_port)
-    print("[tor] tunnel established.")
+    say("[tor] tunnel established.")
 
     async def _handle_local(local_reader, local_writer):
         async def pump(src, dst):
@@ -1113,10 +1134,14 @@ async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
 
     server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]
-    # Held on the loop so neither the server nor the tunnel is collected.
-    _TOR_FORWARDERS.append((server, tor_reader, tor_writer))
-    print("[tor] local bridge ready at %s:%d -> %s"
-          % (host, port, _sanitise(onion_host, 80)))
+    # Held so neither the server nor the tunnel is collected; the caller's
+    # list, when given, so it can also let go.
+    if resources is not None:
+        resources.extend([server, tor_writer])
+    else:
+        _TOR_FORWARDERS.append((server, tor_reader, tor_writer))
+    say("[tor] local bridge ready at %s:%d -> %s"
+        % (host, port, _sanitise(onion_host, 80)))
     return host, port
 
 
@@ -1124,9 +1149,23 @@ async def start_tor_socks_forwarder(onion_host: str, dest_port: int,
 _TOR_FORWARDERS = []
 
 
+def _first_byte_kind(byte: int) -> str:
+    """What the server's first byte says it is speaking, as one word.
+
+    "xml" is an XMPP server's stream header; "tls" a TLS record (handshake
+    0x16 or alert 0x15) -- a server expecting direct TLS, i.e. port 5223 --
+    and "other" anything else, such as an HTTP reply from a tunnel of the
+    wrong type."""
+    if byte == 0x3C:            # '<'
+        return "xml"
+    if byte in (0x15, 0x16):
+        return "tls"
+    return "other"
+
+
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656,
-    *, resources=None, log=None,
+    *, resources=None, log=None, aliases: bool = True, verify=None,
 ):
     """
     Open an I2P SAM stream to `dest_b32` and expose it as a local TCP endpoint.
@@ -1168,21 +1207,35 @@ async def start_i2p_sam_forwarder(
     sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
 
     def _do_sam():
-        s = sam.connect(dest_b32)
+        # `dest_b32` may be a .b32.i2p address or a short .i2p name: the
+        # router resolves either with NAMING LOOKUP (I2PSAMConnection.resolve).
+        # `aliases=False` (Android) means the local alias file is never read.
+        # `verify` (Android, X1): checked against the resolved destination
+        # before any stream to it exists. Omitted, the call is unchanged.
+        if verify is not None:
+            s = sam.connect(dest_b32, allow_aliases=aliases,
+                            verify_destination=verify)
+        else:
+            s = sam.connect(dest_b32, allow_aliases=aliases)
         s.setblocking(False)
         return s
 
-    # Resolve first, then announce, so the line names the destination the
-    # stream is actually opened to.  Printing the short name and only then
-    # the substitution read as though the alias had been ignored.
-    resolved, _alias_src = I2PSAMConnection._apply_i2p_alias(dest_b32)
-    if resolved != dest_b32:
-        say(f"[i2p] opening SAM stream to {dest_b32} -> {resolved} "
-            "(a cold tunnel can take 30-90s)...")
-    else:
-        say(f"[i2p] opening SAM stream to {dest_b32} "
-            "(a cold tunnel can take 30-90s)...")
-    sam_sock = await loop.run_in_executor(None, _do_sam)
+    say(f"[i2p] opening SAM stream to {dest_b32} "
+        "(the router resolves the name; a cold tunnel can take 30-90s)...")
+    try:
+        sam_sock = await loop.run_in_executor(None, _do_sam)
+    except BaseException:
+        # Cancelled (the Android connect timed out) or failed: the executor
+        # thread is not stopped by either, and a session it created would stay
+        # open in the router -- one more per retry. See I2PSAMConnection.abandon.
+        abandon = getattr(sam, "abandon", None)
+        if abandon is not None:
+            abandon()
+        raise
+    if getattr(sam, "used_shipped_address", False):
+        # The name, never the destination: on Android `say` reaches logcat.
+        say(f"[i2p] {dest_b32} was dialled at the address this version "
+            "ships for it.")
     say("[i2p] SAM stream established.")
 
     sam_reader, sam_writer = await asyncio.open_connection(sock=sam_sock)
@@ -1193,12 +1246,22 @@ async def start_i2p_sam_forwarder(
     SAM_CHUNK_DELAY = 0.02  # seconds between chunks on large messages
 
     async def _handle_local(local_reader, local_writer):
+        # Byte COUNTS, which side ended the stream, and what kind of byte the
+        # server sent first -- never content. A device report showed a tunnel
+        # that opened and then closed with nothing else known; these tell
+        # "the server never said a word" (its I2P tunnel points at nothing,
+        # or at the wrong port) from "it answered in TLS" (a direct-TLS port,
+        # 5223, where XMPP wants 5222) from an XMPP server that answered.
+        seen = {"sent": 0, "got": 0, "first": "", "ended_by": ""}
+
         async def pump_to_i2p(src, dst):
             try:
                 while True:
                     data = await src.read(65536)
                     if not data:
+                        seen["ended_by"] = seen["ended_by"] or "client"
                         break
+                    seen["sent"] += len(data)
                     if len(data) <= SAM_CHUNK:
                         dst.write(data)
                         await dst.drain()
@@ -1220,7 +1283,11 @@ async def start_i2p_sam_forwarder(
                 while True:
                     data = await src.read(65536)
                     if not data:
+                        seen["ended_by"] = seen["ended_by"] or "server"
                         break
+                    if not seen["got"]:
+                        seen["first"] = _first_byte_kind(data[0])
+                    seen["got"] += len(data)
                     dst.write(data)
                     await dst.drain()
             except Exception:
@@ -1235,6 +1302,9 @@ async def start_i2p_sam_forwarder(
             pump_to_i2p(local_reader, sam_writer),
             pump_from_i2p(sam_reader, local_writer),
         )
+        say(f"[i2p] I2P stream ended by the {seen['ended_by'] or 'client'}: "
+            f"sent={seen['sent']} received={seen['got']} "
+            f"first={seen['first'] or 'none'}")
 
     server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]
@@ -1543,6 +1613,15 @@ def _smp_query(manager, peer):
 # XMPP client
 # =============================================================================
 
+def _make_groups(host):
+    """The secure-groups adapter, or None if it cannot be loaded here."""
+    try:
+        import otrv4plus_groups as _og
+    except Exception:
+        return None
+    return _og.TermuxGroups(host, _xmpp_state_path("groups"), printer=print)
+
+
 class OTRv4PlusXMPP(ClientXMPP):
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
@@ -1571,6 +1650,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         # unresolved. Presence in this map refuses voice for that peer.
         self._fingerprint_changed = {}
         self._encrypted = set()    # peers whose DAKE has completed
+        # THE OUTBOX: lines typed before a conversation was ready, sent when
+        # it is (encrypted), or in the clear only to a contact seen online
+        # without OTRv4+. The engine's own queue dropped its lines when the
+        # handshake completed, so "[queued] will send" never sent.
+        self._outbox = {}
+        # Contacts whose presence advertises OTRv4Plus (XEP-0115 node).
+        self._otr_capable = set()
+        # Handshake timing, for the ETA: start times and past durations.
+        self._hs_started = {}
+        self._hs_hist = []
         # Which conversations have had OTR asked for -- by us with /otr,
         # or by the peer sending a protocol frame. NOT a security state:
         # it says whether OTR is wanted here, not whether it is working.
@@ -1642,6 +1731,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         # Peers seen to go offline, and when. A peer that never comes back
         # leaves a ratchet that its replacement session cannot use.
         self._peer_gone_at = {}
+        # bare JID -> set of resources currently available. A peer is gone
+        # only when the LAST one leaves (see _on_presence_unavailable).
+        self._peer_resources = {}
         self._peer_gone_task = None
 
         # Voice call manager (initialized lazily after event loop is available)
@@ -1807,6 +1899,18 @@ class OTRv4PlusXMPP(ClientXMPP):
             pass
         # XEP-0199: XMPP Ping (available for /ping command).
         self.register_plugin("xep_0199")
+        # XEP-0045 rooms, for OTRv4Plus secure groups (MLS) only. The room is
+        # transport: every body a secure group puts in it is MLS ciphertext.
+        self.register_plugin("xep_0045")
+        self.add_event_handler("groupchat_message", self._on_groupchat)
+        # Secure groups: the Android app's SecureGroups over the Rust core's
+        # OpenMLS, driven from this terminal (otrv4plus_groups). None when
+        # the android_bridge package is not beside this file.
+        self._groups = _make_groups(self)
+        #: A pending "remove hidden information?" question (confirm_metadata).
+        self._metadata_question = None
+        #: /wipe sets this: the exit then destroys group state too.
+        self._wipe_on_exit = False
 
         # Ephemeral encrypted per-session log: key zeroed and files deleted on exit,
         # matching the IRC client wipe behaviour. Within-session scrollback is backed
@@ -1829,9 +1933,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         # See otrv4plus_caps; the identifier must match on both clients.
         try:
             import otrv4plus_caps as _caps
-            self["xep_0030"].add_feature(_caps.FEATURE)
-            self["xep_0115"].caps_node = _caps.CAPS_NODE
-            await self["xep_0115"].update_caps(broadcast=False)
+            self.plugin["xep_0030"].add_feature(_caps.FEATURE)
+            self.plugin["xep_0115"].caps_node = _caps.CAPS_NODE
+            await self.plugin["xep_0115"].update_caps(broadcast=False)
         except Exception:
             print("[xmpp] could not advertise OTRv4Plus capability; peers "
                   "will not start OTRv4+ automatically")
@@ -1897,6 +2001,16 @@ class OTRv4PlusXMPP(ClientXMPP):
             "[ready] /identity shows what is pinned. Type /help for the full "
             "command list.\n"
         )
+        # Secure groups: open (or reopen after a restart) and rejoin the room
+        # of every group we hold, so its traffic reaches us again.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and not getattr(groups, "_opened", False):
+            groups.open(self.boundjid.bare)
+        if groups is not None and getattr(groups, "_opened", False):
+            try:
+                await groups.rejoin_all()
+            except Exception as exc:
+                print("[group] rejoin failed (%s)" % type(exc).__name__)
         # Reset reconnect backoff on successful connection.
         self._reconnect_delay = _RECONNECT_BASE
         # Whitespace keepalive to maintain I2P SAM streams during long SMP
@@ -2078,7 +2192,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         """
         try:
             return await _ping.round_trip(
-                self["xep_0199"], self.boundjid.host,
+                self.plugin["xep_0199"], self.boundjid.host,
                 self.KEEPALIVE_PING_TIMEOUT_S)
         except _ping.PingUnsupported:
             return True
@@ -2517,6 +2631,13 @@ class OTRv4PlusXMPP(ClientXMPP):
         peer = msg["from"].bare
         condition = msg["error"]["condition"]
         text = msg["error"]["text"] or condition
+        groups = getattr(self, "_groups", None)
+        if groups is not None:
+            try:
+                if groups.on_room_rejected(peer):
+                    return
+            except Exception:
+                pass
         print(f"\n[delivery rejected] to {_sanitise(peer, 128)}: {_sanitise(text)}")
         if condition == "forbidden":
             print(
@@ -2572,20 +2693,87 @@ class OTRv4PlusXMPP(ClientXMPP):
         print(f"[sub] {_sanitise(peer, 128)} approved our subscription")
         self.send_presence(pto=peer)
 
+    MUC_USER_NS = "http://jabber.org/protocol/muc#user"
+
+    def _is_room_presence(self, presence):
+        """A presence from a ROOM occupant (`room@service/nick`), not a
+        contact: never "online", never a peer to start OTRv4+ with. A device
+        saw the client start a handshake with the room itself, which the
+        server refused (service-unavailable). As on Android
+        (`XmppTransport._is_room_presence`)."""
+        try:
+            if presence.xml.find("{%s}x" % self.MUC_USER_NS) is not None:
+                return True
+        except Exception:
+            pass
+        groups = getattr(self, "_groups", None)
+        try:
+            return bool(groups is not None
+                        and groups.owns_room(str(presence["from"].bare)))
+        except Exception:
+            return False
+
     def _on_presence_available(self, presence):
         peer = presence["from"].bare
         if peer == self._own_bare:
+            return
+        if _room_presence(self, presence):
             return
         show = presence["show"] or "available"
         status = presence["status"] or ""
         status_s = f" ({_sanitise(status, 64)})" if status else ""
         print(f"[presence] {_sanitise(peer, 128)} is {show}{status_s}")
+        resources = self._peer_resources.setdefault(peer, set())
+        if len(resources) < 16:
+            resources.add(str(presence["from"].resource or ""))
         self._peer_is_alive(peer)
+        try:
+            node = str(presence["caps"]["node"] or "")
+        except Exception:
+            node = ""
+        ready = getattr(self, "_presence_ready", None)
+        if ready is None or not hasattr(self, "_otr_capable"):
+            return                       # a partial client (tests)
+        if node == _caps.CAPS_NODE:
+            self._otr_capable.add(str(peer))
+        ready(str(peer))
 
     def _on_presence_unavailable(self, presence):
+        """One RESOURCE went away; the peer is gone only when none is left.
+
+        Every app launch signs in as a new resource and, over I2P, the server
+        times the previous session out minutes later. Treating that late
+        `unavailable` as "the peer left" reported a live contact offline and
+        armed the abandoned-session teardown on a session in use (device
+        report, 2026-09-24).
+        """
         peer = presence["from"].bare
         if peer == self._own_bare:
             return
+        if _room_presence(self, presence):
+            # XEP-0045 §10.9: the owner destroyed the room. For a secure
+            # group that is its deletion.
+            try:
+                gone = presence.xml.find("{%s}x/{%s}destroy" % (
+                    self.MUC_USER_NS, self.MUC_USER_NS)) is not None
+            except Exception:
+                gone = False
+            groups = getattr(self, "_groups", None)
+            if gone and groups is not None:
+                try:
+                    groups.groups.on_room_destroyed(str(peer).lower())
+                except Exception:
+                    pass
+            return
+        resource = str(presence["from"].resource or "")
+        resources = self._peer_resources.get(peer, set())
+        if resource:
+            resources.discard(resource)
+        else:
+            resources.clear()
+        if resources:
+            return                       # another resource is still online
+        self._peer_resources.pop(peer, None)
         print(f"[presence] {_sanitise(peer, 128)} went offline")
         self._arm_peer_gone(peer)
 
@@ -2627,6 +2815,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         """
         if self._peer_gone_at:
             self._peer_gone_at.clear()
+        # What we knew about their resources went with our stream.
+        getattr(self, "_peer_resources", {}).clear()
 
     def _start_peer_gone_sweeper(self) -> None:
         task = self._peer_gone_task
@@ -2840,8 +3030,26 @@ class OTRv4PlusXMPP(ClientXMPP):
             print("[file] ignoring UNENCRYPTED file signal from %s — file "
                   "transfer is only accepted inside an OTR session"
                   % _sanitise(peer, 128))
+        elif body.startswith(GROUP_SIGNAL_PREFIX):
+            # Group setup is only accepted inside the OTR channel: in the clear
+            # it could let an off-session party steer a group join.
+            print("[group] ignoring UNENCRYPTED group setup message from %s — "
+                  "it is only accepted inside an OTR session"
+                  % _sanitise(peer, 128))
         else:
             print(f"[plain] {_sanitise(peer, 128)}: {_sanitise(body)}")
+
+    def _on_groupchat(self, msg):
+        """A room message. Only secure groups use rooms here; see
+        otrv4plus_groups.TermuxGroups.on_groupchat."""
+        groups = getattr(self, "_groups", None)
+        if groups is None:
+            return
+        try:
+            groups.on_groupchat(msg)
+        except Exception as exc:
+            self._dbg("[group] room message handling failed: %s"
+                      % type(exc).__name__)
 
     def _check_smp_secret_required(self, peer):
         """Show the consent prompt if the engine is holding a peer's SMP1.
@@ -2887,34 +3095,13 @@ class OTRv4PlusXMPP(ClientXMPP):
                 self._dbg(f"[otr-probe] inbound probe error: {e}")
 
         # --- DAKE glare resolution ---
-        # Over slow I2P both sides may send DAKE1 before either receives the
-        # other's. Tie-break by bare JID: lower JID keeps initiator role;
-        # higher JID yields and answers as responder. Both sides run identical
-        # code so exactly one yields.
-        if stage_in == "DAKE1":
-            sess = self.otr.get_session(peer)
-            st = getattr(getattr(sess, "session_state", None), "name", "")
-            is_init = bool(getattr(sess, "is_initiator", False))
-            if sess is not None and st == "DAKE_IN_PROGRESS" and is_init:
-                if self._own_bare < peer:
-                    print(
-                        f"[otr] simultaneous start with {peer}: keeping "
-                        f"initiator role; re-sending our DAKE1"
-                    )
-                    d1 = self._last_dake1.get(peer)
-                    if d1:
-                        self.send_otr_fragmented(peer, d1)
-                    return
-                print(
-                    f"[otr] simultaneous start with {peer}: yielding initiator "
-                    f"role, answering as responder"
-                )
-                try:
-                    self.otr.end_session(peer)
-                    self._last_dake1.pop(peer, None)
-                    self._encrypted.discard(peer)
-                except Exception as e:
-                    print(f"[otr] glare teardown error: {e}")
+        # Decided by the ENGINE (`EnhancedSessionManager._handle_dake1`), by
+        # comparing the two DAKE1s, so both clients apply one rule and exactly
+        # one side yields. This used to be a bare-JID rule applied here; the
+        # Android bridge cannot use it (it does not know its own JID), and a
+        # terminal keeping by JID while an Android peer kept by DAKE1 would
+        # have both resending forever. The engine's answer -- our DAKE1 to
+        # resend, or a DAKE2 -- goes out through the ordinary path below.
 
         heavy = (stage_in or "").startswith("DATA")
         if heavy:
@@ -2939,6 +3126,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._dbg(f"[otr-crypto] done processing DATA from {peer} ({_t.time() - t0:.1f}s).")
 
         self._check_dake_complete(peer)
+        self._recover_if_orphaned(peer)
 
         # Did the engine park an SMP1 because we have no passphrase for this
         # peer?  Asked here, on the event loop, after the executor has
@@ -2980,6 +3168,17 @@ class OTRv4PlusXMPP(ClientXMPP):
                     else:
                         print("[file] file signal received before the "
                               "transfer subsystem was ready — ignoring")
+                    return
+
+                # Secure-group setup (invitation, KeyPackage, Welcome) travels
+                # only inside an OTRv4+ session and is never shown as chat.
+                if text.startswith(GROUP_SIGNAL_PREFIX):
+                    groups = getattr(self, "_groups", None)
+                    if groups is not None:
+                        groups.on_signal(peer, text)
+                    else:
+                        print("[group] group setup message received, but "
+                              "secure groups are unavailable here — ignoring")
                     return
 
                 # Trade coordination, routed for the same reason: a multisig
@@ -3054,8 +3253,8 @@ class OTRv4PlusXMPP(ClientXMPP):
         session with X is that X is not the address the peer is actually on --
         in which case /otr will fail forever and the advice sends the user
         round the same loop. A device run hit exactly that: `--peer
-        bob@xmpp-elite` (missing `.i2p`) while a fully established, SMP-ready
-        session sat under `bob@xmpp-elite.i2p`.
+        bob@otrv4plus` (missing `.i2p`) while a fully established, SMP-ready
+        session sat under `bob@otrv4plus.i2p`.
         """
         try:
             live = sorted(p for p in self._encrypted if p != peer)
@@ -3076,6 +3275,28 @@ class OTRv4PlusXMPP(ClientXMPP):
         hint += ("\n[peer] Commands act on --peer, so restart with the "
                  "address that has the session.")
         return hint
+
+    #: At most one recovery handshake per contact in this many seconds.
+    ORPHAN_RECOVERY_INTERVAL = 60.0
+
+    def _recover_if_orphaned(self, peer):
+        """The peer encrypted to a session we no longer have (one side
+        restarted, or a DAKE3 was lost): nothing they send can be read and
+        neither side had a reason to start again. Start a new handshake --
+        a DAKE1, never plaintext -- as the Android app does. Bounded."""
+        take = getattr(getattr(self, "otr", None), "take_orphan_data", None)
+        if take is None or not take(peer):
+            return
+        now = time.monotonic()
+        seen = self.__dict__.setdefault("_orphan_at", {})
+        if now - seen.get(peer, -1e18) < self.ORPHAN_RECOVERY_INTERVAL:
+            return
+        seen[peer] = now
+        print(f"[otr] {peer} sent an encrypted message for a session this "
+              f"client no longer has (one of you restarted); it cannot be "
+              f"read. Starting a new encrypted session -- ask them to resend.")
+        self._encrypted.discard(peer)
+        self.start_otr(peer)
 
     def _check_dake_complete(self, peer):
         """When a peer's session first becomes encrypted, show fingerprints
@@ -3102,6 +3323,20 @@ class OTRv4PlusXMPP(ClientXMPP):
         print("-" * 60)
 
         self._apply_tofu(peer, remote_fp)
+
+        started = getattr(self, "_hs_started", {}).pop(peer, None)
+        if started is not None:
+            took = max(1.0, time.monotonic() - started)
+            self._hs_hist.append(took)
+            del self._hs_hist[:-20]
+            print(f"[secure] handshake took {int(took)} s")
+        self._flush_outbox(peer)
+        groups = getattr(self, "_groups", None)
+        if groups is not None:
+            try:
+                groups.on_otr_ready(peer)
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # TOFU (XMPP only)
@@ -3736,6 +3971,14 @@ class OTRv4PlusXMPP(ClientXMPP):
                         "\n" + _SMP + f" *** IDENTITY VERIFIED with {peer} - "
                         "shared secret matched (SMP complete). ***\n"
                     )
+                    # The secure groups we share with them: verified there
+                    # too (group calls need it), keys sent both ways.
+                    groups = getattr(self, "_groups", None)
+                    if groups is not None and getattr(groups, "_opened", False):
+                        try:
+                            groups.groups.on_peer_verified(peer)
+                        except Exception:
+                            pass
                 return
             if not name:
                 return
@@ -4179,44 +4422,28 @@ class OTRv4PlusXMPP(ClientXMPP):
             return None
 
     def _cmd_sendfile(self, peer, path: str) -> None:
-        """/sendfile [path] — a path, or nothing to open the Android picker."""
-        if self._file_manager is None:
+        """/sendfile [path] — a path, or nothing to open the Android picker.
+
+        To a contact over OTRv4+, or -- while talking to a secure group -- to
+        the whole group over MLS (android_bridge.group_files). Either way the
+        file is examined first and, if it carries hidden information (where
+        and when a photo was taken, the camera), the user answers y/n: remove
+        it, or send the original (owner request, 2026-10-11)."""
+        groups = getattr(self, "_groups", None)
+        group = bool(peer and groups is not None and groups.owns_room(peer))
+        if not group and self._file_manager is None:
             print("[file] the transfer subsystem is not ready yet")
             return
         if not peer:
             print("[file] open a chat with a peer first")
             return
-        ratchet = self._file_transfer_ratchet(peer)
-        if ratchet is None:
+        if not group and self._file_transfer_ratchet(peer) is None:
             print("[file] no OTR session with %s that can key a transfer — "
                   "run /otr first" % _sanitise(peer, 128))
             return
         if not path and not IS_TERMUX:
             print("usage: /sendfile <path>")
             return
-
-        def _pick_and_seal():
-            # Both halves are blocking and both belong off the event loop.
-            # The picker waits for a human scrolling a gallery, which is far
-            # longer than anything else in this client is allowed to block
-            # for, and sealing reads the whole file through the AEAD.
-            staged = None
-            chosen = path
-            if not chosen:
-                staged = _filetransfer.pick_file(which=_which,
-                                                 on_wait=_waiting)
-                chosen = staged
-            try:
-                return self._file_manager.offer_file(peer, chosen, ratchet)
-            finally:
-                # The staged copy is PLAINTEXT.  It has served its purpose the
-                # moment offer_file returns, whether that was by sealing the
-                # file or by raising, so it goes either way.
-                if staged:
-                    try:
-                        os.unlink(staged)
-                    except OSError:
-                        pass
 
         def _waiting():
             # termux-storage-get returns the moment it has handed the intent
@@ -4229,40 +4456,180 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         async def _run():
             loop = asyncio.get_event_loop()
+            staged = None
+            chosen = os.path.expanduser(path) if path else ""
             if not path:
                 print("[file] opening the Android file picker — choose a file "
                       "on the phone")
-            try:
-                transfer = await loop.run_in_executor(None, _pick_and_seal)
-            except TransferError as exc:
-                print("[file] %s" % exc)
-                return
-            except Exception as exc:
-                print("[file] could not send: %s" % _sanitise(str(exc), 160))
-                return
-            note = ""
-            if not path:
-                # The picker cannot report the original name, so say what the
-                # peer will actually see rather than letting them find out.
-                note = "  (the picker does not report the original name)"
-            print("[file] offered %s (%s) to %s — waiting for them to accept%s"
-                  % (transfer.offer.filename, transfer.offer.human_size(),
-                     _sanitise(peer, 128), note))
+                # Blocking, and it waits for a human scrolling a gallery:
+                # off the event loop.
+                try:
+                    staged = await loop.run_in_executor(
+                        None, lambda: _filetransfer.pick_file(which=_which,
+                                                              on_wait=_waiting))
+                except TransferError as exc:
+                    print("[file] %s" % exc)
+                    return
+                except Exception as exc:
+                    print("[file] could not pick a file: %s"
+                          % _sanitise(str(exc), 160))
+                    return
+                chosen = staged
+
+            def discard():
+                # The staged copy is PLAINTEXT.  It goes as soon as it has
+                # been sealed, refused, or the user said cancel.
+                if staged:
+                    try:
+                        os.unlink(staged)
+                    except OSError:
+                        pass
+
+            def go(strip: bool):
+                asyncio.ensure_future(self._offer_file(
+                    peer, chosen, strip, group=group, picked=not path,
+                    discard=discard))
+
+            self.confirm_metadata(chosen, go, on_cancel=discard)
 
         asyncio.ensure_future(_run())
 
+    async def _offer_file(self, peer, chosen: str, strip: bool, *, group: bool,
+                          picked: bool, discard) -> None:
+        """Seal and offer, off the event loop (sealing reads the whole file
+        through the AEAD; a scrubbed copy is written to the private staging
+        directory and removed straight after)."""
+        loop = asyncio.get_event_loop()
+        if group:
+            try:
+                await loop.run_in_executor(
+                    None, lambda: self._groups.send_file(peer, chosen, strip))
+            finally:
+                discard()
+            return
+        ratchet = self._file_transfer_ratchet(peer)
+        if ratchet is None:
+            print("[file] the OTR session with %s is gone; nothing was sent"
+                  % _sanitise(peer, 128))
+            discard()
+            return
+
+        def seal():
+            sent = chosen
+            if strip:
+                from android_bridge import metadata as _metadata
+                sent = _metadata.scrub_file(chosen, _filetransfer.staging_dir())
+            try:
+                return self._file_manager.offer_file(peer, sent, ratchet)
+            finally:
+                if sent != chosen:
+                    try:
+                        os.unlink(sent)
+                        os.rmdir(os.path.dirname(sent))
+                    except OSError:
+                        pass
+                discard()
+
+        try:
+            transfer = await loop.run_in_executor(None, seal)
+        except TransferError as exc:
+            print("[file] %s" % exc)
+            return
+        except Exception as exc:
+            print("[file] could not send: %s" % _sanitise(str(exc), 160))
+            return
+        note = ""
+        if picked:
+            # The picker cannot report the original name, so say what the
+            # peer will actually see rather than letting them find out.
+            note = "  (the picker does not report the original name)"
+        print("[file] offered %s (%s) to %s%s — waiting for them to accept%s"
+              % (transfer.offer.filename, transfer.offer.human_size(),
+                 _sanitise(peer, 128),
+                 " (hidden information removed)" if strip else "", note))
+
+    #: How long a "remove hidden information?" question stays answerable.
+    METADATA_QUESTION_SECONDS = 600.0
+
+    def confirm_metadata(self, path: str, on_choice, on_cancel=None) -> None:
+        """Ask whether to remove a file's hidden information, then call
+        `on_choice(strip)`. Asked only when there is something to remove --
+        the app's rule (MetadataChoice.kt), word for word in effect:
+
+          * nothing found: sent as it is, nothing asked;
+          * a kind of file that cannot be checked: sent as it is, and said;
+          * metadata found: y = remove it and send, n = keep it and send the
+            original (the user may want it kept), c = cancel.
+
+        Armed only by the user's own /sendfile, so a peer can never put this
+        question on screen to catch a y meant for something else."""
+        from android_bridge import metadata as _metadata
+        finding = _metadata.examine_file(path)
+        if not finding.can_scrub:
+            print("[file] this kind of file cannot be checked for hidden "
+                  "information; it is sent exactly as it is")
+            on_choice(False)
+            return
+        if not finding.carries_metadata:
+            on_choice(False)
+            return
+        self._metadata_question = (on_choice, on_cancel, time.monotonic())
+        print("[file] %s carries %d bytes of hidden information -- typically "
+              "where and when it was taken, and on what device."
+              % (_sanitise(os.path.basename(path), 120), finding.metadata_bytes))
+        print("[file] Remove it before sending? [y/n/c]   y = remove and send,  "
+              "n = keep it and send the original,  c = cancel")
+
+    def _answer_metadata(self, line: str) -> bool:
+        """A bare y/n/c answers a pending metadata question. True if it did."""
+        pending = getattr(self, "_metadata_question", None)
+        if pending is None:
+            return False
+        on_choice, on_cancel, at = pending
+        if time.monotonic() - at > self.METADATA_QUESTION_SECONDS:
+            self._metadata_question = None
+            if on_cancel is not None:
+                on_cancel()
+            return False
+        word = line.strip().lower()
+        if word not in ("y", "yes", "n", "no", "c", "cancel"):
+            return False
+        self._metadata_question = None
+        if word in ("c", "cancel"):
+            print("[file] not sent")
+            if on_cancel is not None:
+                on_cancel()
+            return True
+        on_choice(word in ("y", "yes"))
+        return True
+
     def _cmd_transfer(self, rest: str) -> None:
+        parts = rest.split(None, 1)
+        action = parts[0].lower() if parts else ""
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        # Group files (android_bridge.group_files) answer to the same verbs.
+        group_files = getattr(getattr(self, "_groups", None), "files", None)
+        if group_files is not None:
+            rows = group_files.transfers()
+            if not action and rows:
+                self._groups.print_files()
+            if action in ("accept", "decline", "cancel") and argument:
+                hit = [r["id"] for r in rows if r["id"].startswith(argument.lower())]
+                if len(hit) == 1:
+                    done = getattr(group_files, action)(hit[0])
+                    if not done:
+                        print("[file] that group file can no longer be %sed"
+                              % action.rstrip("e"))
+                    return
         if self._file_manager is None:
             print("[file] the transfer subsystem is not ready yet")
             return
         mgr = self._file_manager
-        parts = rest.split(None, 1)
-        action = parts[0].lower() if parts else ""
-        argument = parts[1].strip() if len(parts) > 1 else ""
 
         if not action:
             if not mgr.incoming and not mgr.outgoing:
-                print("[file] no transfers")
+                if not (group_files is not None and group_files.transfers()):
+                    print("[file] no transfers")
                 return
             for key, t in mgr.incoming.items():
                 state = "receiving" if t.accepted else "offered to you"
@@ -4423,6 +4790,158 @@ class OTRv4PlusXMPP(ClientXMPP):
     def send_plain(self, peer, text):
         self.send_message(mto=peer, mbody=text, mtype="chat")
 
+    # -- the conversation what is typed goes to ----------------------------------
+
+    def expand_jid(self, name):
+        """`bob` -> `bob@<our server>`; a full address is kept as it is."""
+        name = (name or "").strip()
+        if not name or "@" in name or "/" in name or " " in name:
+            return name
+        try:
+            domain = str(self.boundjid.domain or "")
+        except Exception:
+            domain = ""
+        return "%s@%s" % (name.lower(), domain) if domain else name
+
+    def set_conversation(self, target):
+        """What is typed (no /command) now goes to `target`: a contact, or a
+        secure group's room (MLS, never plaintext)."""
+        self.peer = target
+        groups = getattr(self, "_groups", None)
+        is_group = groups is not None and groups.owns_room(target)
+        pm = getattr(self, "panel_manager", None)
+        if pm is not None and getattr(self, "_tui_enabled", False):
+            try:
+                label = self._tui_label_for(target)
+                pm.get_or_create_panel(label, "private")
+                pm.switch_to_panel(label)
+            except Exception:
+                pass
+        if is_group:
+            print("[to] now talking in the secure group %s: just type, it goes "
+                  "MLS-encrypted to the group. /to <name> to switch."
+                  % _sanitise(target, 96))
+        else:
+            print("[to] now talking to %s: just type. /to <name> to switch."
+                  % _sanitise(target, 96))
+
+    def _cmd_to(self, arg):
+        """`/to mls3`, `/to bob`, `/to bob@server`: switch the conversation.
+        `/to mls3 hello`: switch, and send "hello" there."""
+        arg = arg.strip()
+        if not arg:
+            print("[to] talking to: %s" % (_sanitise(self.peer, 96) if self.peer
+                                          else "nobody (use /to <name>)"))
+            return
+        # The name is one word; the rest is a message. "/to secure yes" made
+        # a contact called "secure yes" the conversation (device test).
+        arg, _, text = arg.partition(" ")
+        text = text.strip()
+        if self._switch_to(arg) and text:
+            self.send_user_text(self.peer, text)
+
+    def _switch_to(self, arg):
+        """Make `arg` the conversation. False if it is no contact or group."""
+        groups = getattr(self, "_groups", None)
+        if groups is not None and "@" not in arg:
+            try:
+                room = groups.room(arg)
+            except Exception as exc:
+                print("[to] %s matches more than one group (%s): give more of "
+                      "the name" % (_sanitise(arg, 64),
+                                    _sanitise(getattr(exc, "detail", ""), 200)))
+                return False
+            if groups.owns_room(room):
+                self.set_conversation(room)
+                return True
+            if room in groups.known_rooms():
+                print("[to] %s is an invitation: /group accept %s first"
+                      % (_sanitise(room, 96), _sanitise(arg, 64)))
+                return False
+        target = self.expand_jid(arg)
+        local, _, domain = target.partition("@")
+        if not local or not domain or "." not in domain:
+            print("[to] %s is not a contact or one of your secure groups "
+                  "(/group list, /roster)" % _sanitise(arg, 64))
+            return False
+        if groups is not None and not groups.owns_room(target) and (
+                domain.startswith("conference.") or any(
+                    r.endswith("@" + domain) for r in groups.known_rooms())):
+            # A room we hold no group for: typing there would not be MLS.
+            print("[to] %s is a room, not one of your secure groups "
+                  "(/group list)" % _sanitise(target, 96))
+            return False
+        self.set_conversation(target)
+        return True
+
+    # -- the outbox, and OTRv4+ as soon as a contact is there -------------------
+
+    #: Lines held per contact; the ETA before any handshake was measured.
+    OUTBOX_MAX = 100
+    HANDSHAKE_TYPICAL_SECONDS = 75
+
+    def _hold(self, peer, text):
+        box = self._outbox.setdefault(peer, [])
+        if len(box) >= self.OUTBOX_MAX:
+            print(f"[queued] too many waiting for {peer}; not queued")
+            return False
+        box.append(text)
+        return True
+
+    def _handshake_eta(self):
+        hist = self._hs_hist
+        return int(sorted(hist)[len(hist) // 2]) if hist else self.HANDSHAKE_TYPICAL_SECONDS
+
+    def _presence_ready(self, peer):
+        """A contact came online. OTRv4+ with a capable one starts now (one
+        side only: the lower JID, unless we have something waiting), and a
+        line held for a contact without OTRv4+ goes in the clear."""
+        if peer in self._encrypted:
+            return
+        waiting = bool(self._outbox.get(peer))
+        if peer in self._otr_capable:
+            try:
+                mine = str(self.boundjid.bare)
+            except Exception:
+                mine = ""
+            in_flight = peer in self._hs_started
+            if (waiting or (mine and mine < peer)) and not in_flight:
+                print(f"[otr] {peer} is online with OTRv4+: starting the "
+                      f"encrypted session (about {self._handshake_eta()} s over I2P)")
+                self.start_otr(peer)
+            return
+        _mode = getattr(self, "_otr_mode", None)
+        if waiting and _mode is not None and not _mode.is_otr(peer):
+            box = self._outbox.pop(peer, [])
+            for text in box:
+                try:
+                    self.send_otr_fragmented(peer, text)
+                    self._echo_plain_sent(peer, text)
+                except Exception as e:
+                    print(f"[send error] to {peer}: {e}")
+            print(f"[plain] {len(box)} waiting message(s) sent UNENCRYPTED: "
+                  f"{peer}'s app does not support OTRv4+")
+
+    def _flush_outbox(self, peer):
+        box = self._outbox.get(peer)
+        if not box:
+            return
+        sent = 0
+        while box:
+            try:
+                msg, ok = self.otr.handle_outgoing_message(peer, box[0])
+            except Exception:
+                break
+            if not (ok and msg):
+                break
+            self.send_otr_fragmented(peer, msg if isinstance(msg, str) else msg.decode())
+            self._echo_sent(peer, box.pop(0))
+            sent += 1
+        if not box:
+            self._outbox.pop(peer, None)
+        if sent:
+            print(f"[queued] {sent} waiting message(s) sent, encrypted")
+
     def start_otr(self, peer):
         # Recorded BEFORE anything can fail. From here on this conversation
         # does not send in the clear, and a handshake that goes wrong must not
@@ -4430,6 +4949,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         _m = getattr(self, "_otr_mode", None)
         if _m is not None:
             _m.request(peer)
+        getattr(self, "_hs_started", {}).setdefault(peer, time.monotonic())
         try:
             msg, should_send = self.otr.handle_outgoing_message(peer, "")
         except Exception as e:
@@ -4496,6 +5016,12 @@ class OTRv4PlusXMPP(ClientXMPP):
         path uses, and a padlock on a message that never left would be a
         false claim about the one thing this client exists to be right about.
         """
+        # A SECURE GROUP'S ROOM, typed into as the active conversation: MLS or
+        # nothing. Never the 1:1 path, never plaintext to the room.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and groups.owns_room(peer):
+            groups.say(peer, text)
+            return
         # PLAINTEXT BEFORE OTR.
         #
         # `handle_outgoing_message` is opportunistic: for a peer with no
@@ -4514,6 +5040,27 @@ class OTRv4PlusXMPP(ClientXMPP):
         # branch: fall through to the engine, which is the old behaviour and
         # cannot leak. An `_OtrMode()` default would have done the opposite.
         _mode = getattr(self, "_otr_mode", None)
+        # NO PLAINTEXT TO AN OTRv4+ CONTACT (owner, 2026-10-04): until the
+        # session is up a line waits in the outbox, and the handshake is
+        # started. A contact not online, whose app we cannot know, waits too.
+        if (_mode is not None and peer not in getattr(self, "_encrypted", ())
+                and hasattr(self, "_outbox")):
+            capable = peer in self._otr_capable
+            online = bool(getattr(self, "_peer_resources", {}).get(peer))
+            if capable or _mode.is_otr(peer) or not online:
+                if not self._hold(peer, text):
+                    return
+                if capable and peer not in self._hs_started:
+                    self.start_otr(peer)
+                if not online:
+                    print(f"[queued] no presence from {peer} yet: will send when "
+                          f"they are online (encrypted if their app supports "
+                          f"OTRv4+). /otr starts encryption now; /msg sends "
+                          f"plaintext on purpose.")
+                else:
+                    print(f"[queued] will send once OTRv4+ with {peer} is ready "
+                          f"(about {self._handshake_eta()} s)")
+                return
         if _mode is not None and _mode.may_send_plaintext(
                 peer, peer in getattr(self, "_encrypted", ())):
             try:
@@ -4535,7 +5082,9 @@ class OTRv4PlusXMPP(ClientXMPP):
             )
             self._echo_sent(peer, text)
         elif not should_send:
-            print(f"[queued] will send once OTR with {peer} is ready")
+            hold = getattr(self, "_hold", None)
+            if hold is None or hold(peer, text):
+                print(f"[queued] will send once OTR with {peer} is ready")
 
     def _echo_plain_sent(self, peer, text):
         """Echo a message that went in the CLEAR.
@@ -4655,7 +5204,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         which the client knows the name/destination pair is good.  The next
         run needs neither --server nor the 52 characters:
 
-            --jid bob@xmpp-elite.i2p --peer alice@xmpp-elite.i2p
+            --jid bob@otrv4plus.i2p --peer alice@otrv4plus.i2p
 
         This writes only to the client's own file.  It deliberately does NOT
         touch i2pd's address book: that format varies between versions, the
@@ -4866,7 +5415,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         """Send an XMPP ping to a peer and print the round-trip time."""
         async def _do():
             try:
-                rtt = await self["xep_0199"].async_ping(jid, timeout=30)
+                rtt = await self.plugin["xep_0199"].async_ping(jid, timeout=30)
                 print(f"[ping] {_sanitise(jid, 128)}: {rtt * 1000:.0f}ms")
             except IqError as e:
                 print(f"[ping] {_sanitise(jid, 128)}: error ({e.condition})")
@@ -4914,7 +5463,10 @@ class OTRv4PlusXMPP(ClientXMPP):
     def show_help():
         print(
             "[help] OTRv4+ XMPP commands:\n"
-            "  /otr [jid]           start OTR session (DAKE)\n"
+            "  /to <name>           talk to a contact or secure group, then\n"
+            "                       just type (/to alice, /to mls3)\n"
+            "  /otr [jid]           start OTR session (DAKE); a user name\n"
+            "                       alone is enough (/otr bob)\n"
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
             "  /smp                 verify this session — prompts (hidden) for\n"
@@ -4924,6 +5476,10 @@ class OTRv4PlusXMPP(ClientXMPP):
             "                       (prompts, hidden; advanced/compat)\n"
             "  /smp-secret <s>      store it inline (ECHOED — prefer the above)\n"
             "  /trust-reset <jid>   clear a pinned fingerprint (deliberate)\n"
+            "  /group help          secure groups (MLS): create, invite,\n"
+            "                       accept, say, members, remove, leave\n"
+            "  /wipe                destroy ALL local state (secure groups\n"
+            "                       too) and exit; /quit keeps your groups\n"
             "  /identity            your identity and every pinned fingerprint\n"
             "  /trust               re-show fingerprint trust prompt\n"
             "  /msg <jid> <text>    send plaintext message\n"
@@ -4944,10 +5500,12 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /hangup              end active call\n"
             "  /mute                toggle microphone mute\n"
             "  /calls               show voice call state and frame counters\n"
-            "  /audiotest           verify the microphone captures audio\n"
+            "  /audiotest           test the speaker (a tone) and the microphone\n"
             "  /audioprobe          test each audio backend on this device\n"
-            "  /sendfile [path]     send a file (encrypted, verified peer)\n"
-            "  /transfer            show file transfer state\n"
+            "  /sendfile [path]     send a file (encrypted, verified peer; in a\n"
+            "                       group, to the group). Asks y/n to remove\n"
+            "                       hidden information (location, camera) first\n"
+            "  /transfer            show file transfer state (group files too)\n"
             "  /trade               list open trades\n"
             "  /trade init <terms>  propose a trade to the verified peer\n"
             "  /trade accept        agree to a proposal\n"
@@ -5284,8 +5842,20 @@ class OTRv4PlusXMPP(ClientXMPP):
         secret_for = self.take_secret_request()
         if secret_for is not None:
             self._mask_next_input(False)
-            self._handle_smp_secret_answer(secret_for, line)
-            return True
+            groups = getattr(self, "_groups", None)
+            tag = getattr(groups, "PASSPHRASE_TAG", None)
+            if tag and isinstance(secret_for, str) and secret_for.startswith(tag):
+                # A group passphrase the user asked to type (/group verify,
+                # their own y, or /group create). At /group create's optional
+                # prompt a command means "skip it" and runs as typed.
+                creating = secret_for[len(tag):].startswith("new:")
+                if not (creating and line.lstrip().startswith("/")):
+                    groups.passphrase_entered(secret_for, line)
+                    return True
+                print("[group] no passphrase set (/group verify sets one later)")
+            else:
+                self._handle_smp_secret_answer(secret_for, line)
+                return True
 
         # An admin form THIS USER opened with /admin consumes the next line.
         # Checked here, before command parsing, for the same reason as the
@@ -5302,15 +5872,32 @@ class OTRv4PlusXMPP(ClientXMPP):
         # a command, or a message that gets sent.  That asymmetry is the
         # point.  A remote peer can put a question on the screen; it cannot
         # make the answer to some other question become a passphrase.
+        # Remove a file's hidden information? Asked only by the user's own
+        # /sendfile, so it is answered first.
+        answer_metadata = getattr(self, "_answer_metadata", None)
+        if answer_metadata is not None and answer_metadata(line):
+            return True
         consent_for = self._pending_consent_peer()
         if consent_for is not None and line.strip().lower() in (
                 "y", "yes", "n", "no"):
             self._handle_smp_consent(consent_for, line.strip().lower())
             return True
+        # A group invitation asks the same way: only an exact y/n answers it.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and getattr(groups, "answer_prompt", None) is not None:
+            if groups.answer_prompt(line):
+                return True
 
         if not line:
             return True
 
+        # Invisible characters a copy from a chat window brings along (zero-
+        # width spaces, a byte-order mark, a non-breaking space) made
+        # "/otr alice@..." fail to match and go out as a chat message instead
+        # (device test, 2026-10-02).
+        line = (line.replace("\u200b", "").replace("\u200c", "")
+                .replace("\u200d", "").replace("\u2060", "")
+                .replace("\ufeff", "").replace("\u00a0", " "))
         lstrip = line.strip()
 
         # --- TUI toggle ---
@@ -5335,6 +5922,23 @@ class OTRv4PlusXMPP(ClientXMPP):
             self._clear_trades("/quit")
             return False
 
+        # --- Wipe: /quit that destroys EVERYTHING, secure groups included ---
+        if lstrip == "/wipe":
+            self._clear_trades("/wipe")
+            self._wipe_on_exit = True
+            print("[wipe] destroying all local state, secure groups included, "
+                  "and exiting")
+            return False
+
+        # --- Secure groups (MLS) ---
+        if lstrip == "/group" or lstrip.startswith("/group "):
+            groups = getattr(self, "_groups", None)
+            if groups is None:
+                print("[group] secure groups are unavailable in this install")
+            else:
+                asyncio.ensure_future(groups.command(lstrip[len("/group"):].strip()))
+            return True
+
         # --- OTR ---
         elif lstrip == "/otr":
             if peer:
@@ -5342,14 +5946,22 @@ class OTRv4PlusXMPP(ClientXMPP):
             else:
                 print("no --peer set; use /otr <jid>")
         elif lstrip.startswith("/otr "):
-            self.start_otr(lstrip[5:].strip())
+            self.start_otr(_expand(self, lstrip[5:].strip()))
+
+        # --- The conversation what is typed goes to ---
+        elif lstrip in ("/to", "/talk") or lstrip.startswith(("/to ", "/talk ")):
+            self._cmd_to(lstrip.split(None, 1)[1] if " " in lstrip else "")
 
         # --- SMP ---
         # `/smp` is the normal verb: verify this session, asking for whatever
         # is missing.  `/smp start` still works and is documented as the
         # explicit form for anyone who already has a passphrase stored.
         elif lstrip == "/smp":
-            if peer:
+            groups = getattr(self, "_groups", None)
+            if peer and groups is not None and groups.owns_room(peer):
+                # In a secure group: verify the whole group with its passphrase.
+                groups.start_verify(peer)
+            elif peer:
                 self.smp_verify(peer)
             else:
                 print("no --peer set")
@@ -5412,6 +6024,21 @@ class OTRv4PlusXMPP(ClientXMPP):
             rest = lstrip[5:].strip()
             if " " in rest:
                 t, txt = rest.split(" ", 1)
+                groups = getattr(self, "_groups", None)
+                if groups is not None and groups.owns_room(t):
+                    # A room this client is in for a secure group. /msg is
+                    # PLAINTEXT to one address: it went to the room's JID
+                    # unencrypted (device test, 2026-10-02; the server
+                    # refused it). Group text is MLS or nothing.
+                    print("[group] %s is a secure group room; /msg would "
+                          "send plaintext. Use  /group say %s <text>"
+                          % (_sanitise(t, 80), _sanitise(t, 80)))
+                    return True
+                if t in getattr(self, "_otr_capable", ()) or t in self._encrypted:
+                    print("[otr] %s uses OTRv4+: /msg would send plaintext. "
+                          "Type to them normally; it goes encrypted."
+                          % _sanitise(t, 80))
+                    return True
                 self.send_plain(t, txt)
                 print(f"[sent plain] -> {t}")
             else:
@@ -5515,7 +6142,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             else:
                 print("usage: /call (set --peer first) or /call <jid>")
         elif lstrip.startswith("/call "):
-            jid = lstrip[6:].strip()
+            jid = _expand(self, lstrip[6:].strip())
             if jid and self._voice_manager:
                 if self._voice_blocked_by_tofu(jid):
                     return True
@@ -5532,6 +6159,17 @@ class OTRv4PlusXMPP(ClientXMPP):
         elif lstrip == "/reject":
             if peer and self._voice_manager:
                 asyncio.ensure_future(self._voice_manager.reject_call(peer))
+        elif lstrip == "/hangup" and getattr(getattr(self, "_groups", None),
+                                             "in_call", lambda: False)():
+            self._groups._hangup()
+        elif lstrip == "/pause":
+            groups = getattr(self, "_groups", None)
+            if groups is not None and groups.in_call():
+                groups.pause_call()
+            elif self._voice_manager and self._voice_manager.any_active_peer():
+                self._voice_manager.toggle_mute(self._voice_manager.any_active_peer())
+            else:
+                print("[call] no call to pause")
         elif lstrip == "/hangup":
             if self._voice_manager:
                 target = peer if self._voice_manager.has_active_call(peer) \
@@ -5657,11 +6295,18 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.show_help()
 
         # --- Outbound chat ---
+        elif lstrip.startswith("/"):
+            # A command this client does not have. Never sent as a chat
+            # message: a mistyped "/otr" went to the peer as text, and with
+            # no --peer it was answered with a message about --peer.
+            print("unknown command: %s  (type /help for the list)"
+                  % _sanitise(lstrip.split()[0], 40))
         else:
             if peer:
                 self.send_user_text(peer, line)
             else:
-                print("no --peer set; use /msg <jid> <text> or set --peer")
+                print("not talking to anyone yet: /to <name> picks a contact "
+                      "or a secure group (e.g. /to alice, /to mls3)")
 
         return True
 
@@ -6100,18 +6745,45 @@ class OTRv4PlusXMPP(ClientXMPP):
         except Exception:
             pass
 
+        # 3b. Secure groups. /quit keeps them: the state is sealed to disk by
+        #     Rust and every group secret is zeroized in memory. /wipe destroys
+        #     them: Rust wipes the secrets and the state files are removed.
+        groups = getattr(self, "_groups", None)
+        wiping = bool(getattr(self, "_wipe_on_exit", False))
+        keep_dir = None
+        if groups is not None:
+            try:
+                if wiping:
+                    groups.wipe()
+                else:
+                    groups.close()
+                    keep_dir = os.path.realpath(_xmpp_state_path("groups"))
+            except Exception:
+                pass
+
         # 4. Overwrite and remove ~/.otrv4plus (fingerprints, trust DB, SMP).
         #    File-level only: on flash the old blocks are beyond our reach.
         #    Uses the same _secure_file_destroy function the IRC client uses.
+        #    The ONE exception on /quit is the sealed secure-group state (3b).
         try:
             secure_destroy = getattr(_otr, "_secure_file_destroy", None)
             if secure_destroy:
                 import glob as _glob
                 otr_dir = os.path.expanduser("~/.otrv4plus")
                 if os.path.isdir(otr_dir):
-                    for fpath in _glob.glob(
-                        os.path.join(otr_dir, "**", "*"), recursive=True
-                    ):
+                    if wiping:
+                        # /wipe means everything, dot-files included (the
+                        # identity DEK, the SMP seed), which the glob below
+                        # does not match. /quit keeps its old behaviour.
+                        paths = [os.path.join(d, f) for d, _s, fs
+                                 in os.walk(otr_dir) for f in fs]
+                    else:
+                        paths = _glob.glob(
+                            os.path.join(otr_dir, "**", "*"), recursive=True)
+                    for fpath in paths:
+                        if keep_dir is not None and os.path.realpath(
+                                fpath).startswith(keep_dir + os.sep):
+                            continue
                         if os.path.isfile(fpath):
                             try:
                                 secure_destroy(fpath)
@@ -6273,6 +6945,17 @@ class OTRv4PlusXMPP(ClientXMPP):
                 p.clear_history()
             return True
         return False
+
+
+def _expand(client, name):
+    """`client.expand_jid`, for partial clients (tests) without it too."""
+    fn = getattr(client, "expand_jid", None)
+    return fn(name) if fn is not None else name
+
+
+def _room_presence(client, presence):
+    fn = getattr(client, "_is_room_presence", None)
+    return bool(fn(presence)) if fn is not None else False
 
 
 # =============================================================================
@@ -6981,28 +7664,88 @@ def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
     return issues
 
 
+def _playback_selftest(seconds=1.0):
+    """Play a quiet 440 Hz tone through the backend calls will use.
+
+    Returns (ok, backend_name, error). Linux and Termux alike: the backends
+    (AAudio, parec/pacat) are the ones voice and group calls open."""
+    try:
+        import math
+        import otrv4plus_audio as _aud
+    except Exception as exc:
+        return False, "none", type(exc).__name__
+    stream, backend = None, "none"
+    try:
+        stream, _notes = _aud.open_playback(which=_which, env=_termux_env())
+        backend = stream.name
+        rate, frame = _aud.SAMPLE_RATE, _aud.FRAME_SAMPLES
+        n = 0
+        for _ in range(int(seconds * rate / frame)):
+            samples = [int(6000 * math.sin(2 * math.pi * 440 * (n + i) / rate))
+                       for i in range(frame)]
+            n += frame
+            stream.write_frame(struct.pack("<%dh" % frame, *samples))
+        return True, backend, ""
+    except Exception as exc:
+        return False, backend, str(exc)[:160]
+    finally:
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+
+
 async def _audio_selftest_async():
-    """/audiotest — re-run the capture probe from inside a live session."""
+    """/audiotest — the microphone (3 s) and the speaker (a 1 s tone), through
+    the same audio backend calls use. Termux and Linux (parec/pacat)."""
     loop = asyncio.get_event_loop()
-    if not IS_TERMUX:
-        print("[audio] self-test is Termux-only")
-        return
+    print("[audio] playing a 1 s tone through the speaker…")
+    played, out_backend, err = await loop.run_in_executor(None, _playback_selftest)
+    if played:
+        print("[audio] speaker: tone sent via %s — if you heard nothing, check "
+              "the output device and volume%s"
+              % (out_backend, "" if IS_TERMUX else " (pavucontrol, or: pactl info)"))
+    else:
+        print("[audio] speaker FAILED via %s: %s%s"
+              % (out_backend, err or "no playback backend",
+                 "" if IS_TERMUX else
+                 "  (Linux: sudo apt install pulseaudio-utils)"))
     print("[audio] capturing ~3 s from the microphone…")
     ok, total, peak, backend = await loop.run_in_executor(
         None, _capture_selftest)
     if not ok or total == 0:
-        print("[audio] FAILED — no samples via %s. Run /audioprobe for the "
-              "per-backend error." % backend)
+        print("[audio] microphone FAILED — no samples via %s. Run /audioprobe "
+              "for the per-backend error.%s" % (backend, "" if IS_TERMUX else
+              "  (Linux: sudo apt install pulseaudio-utils)"))
         return
     if peak == 0:
-        print("[audio] captured %d bytes via %s but pure silence — check "
-              "Settings > Apps > Termux > Permissions > Microphone (the "
-              "Termux app itself, not Termux:API)" % (total, backend))
+        if IS_TERMUX:
+            print("[audio] captured %d bytes via %s but pure silence — check "
+                  "Settings > Apps > Termux > Permissions > Microphone (the "
+                  "Termux app itself, not Termux:API)" % (total, backend))
+        else:
+            print("[audio] captured %d bytes via %s but pure silence — the "
+                  "input may be muted or the wrong one (pavucontrol > Input "
+                  "Devices, or: pactl list short sources)" % (total, backend))
         return
     print("[audio] OK — %d bytes via %s, peak amplitude %d"
           % (total, backend, peak))
     voice_ok, reason = voice_available()
     print("[audio] voice subsystem: %s" % ("ready" if voice_ok else reason))
+    if not IS_TERMUX and backend == "pulseaudio":
+        import otrv4plus_audio as _aud
+        try:
+            ec = _aud.pulse_device("source", which=_which, env=_termux_env())
+        except Exception:
+            ec = ""
+        if "echo-cancel" in ec:
+            print("[audio] echo cancellation: ON (%s)" % ec)
+        else:
+            print("[audio] echo cancellation: OFF -- on speakers the other "
+                  "side hears themselves. Turn it on (until next login):\n"
+                  "        %s\n        then restart this client, or use "
+                  "headphones." % _aud.ECHO_CANCEL_COMMAND)
 
 def main():
     # Device provisioning deliberately runs AFTER argument parsing, so that
@@ -7171,7 +7914,7 @@ def main():
     def _warn_if_domains_differ(jid, peer):
         """A --peer on a different server than --jid is almost always a typo.
 
-        `_check_jid` accepts `bob@xmpp-elite` -- one `@`, a non-empty local
+        `_check_jid` accepts `bob@otrv4plus` -- one `@`, a non-empty local
         part, a non-empty domain, no doubled dots. Nothing about it is
         malformed. It is simply the wrong server, and a device run lost
         `.i2p` off the end of `--peer` and spent the whole session looking
@@ -7216,6 +7959,16 @@ def main():
     _check_jid(args.jid, "--jid")
     _check_jid(args.peer, "--peer")
     _warn_if_domains_differ(args.jid, args.peer)
+
+    # An account on the project server's b32 is an account on its NAME: the
+    # server hosts otrv4plus.i2p and answers host-unknown to a stream
+    # addressed to the b32. Same rule as the Android app
+    # (android_bridge.settings.ConnectionProfile).
+    _canonical = _address.canonical_jid(args.jid)
+    if _canonical != args.jid:
+        args.jid = _canonical
+        print(f"[i2p] signing in as {args.jid} (the server's accounts live "
+              "on its name, not on its .b32.i2p address)")
 
     password = getpass.getpass(f"Password for {args.jid}: ")
     try:

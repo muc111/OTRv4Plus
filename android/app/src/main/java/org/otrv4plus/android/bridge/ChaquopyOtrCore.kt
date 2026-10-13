@@ -272,10 +272,41 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         samHost: String = "",
         samPort: Int = 0,
     ): ConnectionStatus {
+        // The active network's DNS servers, for the clearnet SRV lookup
+        // (android_bridge.dns_srv): Android has no /etc/resolv.conf, and
+        // without SRV an account on yax.im is dialled at the wrong machine.
+        // IP literals only; nothing about the account goes with them.
+        runCatching {
+            python.getModule("android_bridge.dns_srv")
+                .callAttr("set_system_resolvers", activeDnsServers().toTypedArray())
+        }
         val module = python.getModule("android_bridge.connection")
         controller = module.callAttr(
             "controller_for", requireApp(), jid, server, samHost, samPort)
         return connectionStatus()
+    }
+
+    private fun activeDnsServers(): List<String> = runCatching {
+        val cm = appContext.getSystemService(android.net.ConnectivityManager::class.java)
+        val lp = cm?.getLinkProperties(cm.activeNetwork)
+        lp?.dnsServers?.mapNotNull { it.hostAddress } ?: emptyList()
+    }.getOrDefault(emptyList())
+
+    /**
+     * Reach the prepared server and stop: DNS (SRV first), TCP, TLS with the
+     * certificate verified, the XMPP stream, and registration discovery. No
+     * sign-in, no account creation, no password. Never throws.
+     */
+    fun testServer(): ServerCheck {
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        val r = ctl.callAttr("test_server")
+        fun str(k: String) = r?.callAttr("get", k)?.toString() ?: ""
+        return ServerCheck(
+            ok = r?.callAttr("get", "ok")?.toBoolean() ?: false,
+            code = str("code").ifBlank { "unknown" },
+            detail = str("detail"),
+            reached = str("reached"),
+        )
     }
 
     /**
@@ -358,6 +389,33 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         )
     }
 
+    /**
+     * The refused I2P destination change for the prepared server, if any
+     * (SECURITY_ISSUES X1). Null when there is none, or nothing prepared.
+     */
+    fun destinationChange(): ServerIdentityChange? {
+        val ctl = controller ?: return null
+        val d = ctl.callAttr("destination_change")
+        fun str(k: String) = d?.callAttr("get", k)?.toString() ?: ""
+        if (str("seen").isBlank()) return null
+        return ServerIdentityChange(str("server"), str("trusted"), str("seen"))
+    }
+
+    /**
+     * The user, shown both addresses, explicitly trusts [seen] for the
+     * prepared server. Nothing connects here; the next Log in or Create
+     * account uses it, and it becomes the pin only if that succeeds. Only the
+     * destination that was actually refused can be approved (Python checks).
+     * Returns null on success, or a sentence saying why not.
+     */
+    fun approveServerDestination(seen: String): String? {
+        val ctl = controller ?: return "not_prepared"
+        val r = ctl.callAttr("approve_server_destination", seen)
+        val ok = r?.callAttr("get", "ok")?.toBoolean() ?: false
+        return if (ok) null
+               else r?.callAttr("get", "detail")?.toString() ?: "unknown"
+    }
+
     fun connectionStatus(): ConnectionStatus {
         val ctl = controller ?: return ConnectionStatus()
         return statusFrom(ctl, null)
@@ -398,7 +456,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         val rooms = mutableListOf<RoomSummary>()
         listValue(result)?.let { items ->
             for (item in items.asList()) {
-                rooms += RoomSummary(entry(item, "jid"), entry(item, "name"))
+                rooms += RoomSummary(entry(item, "jid"), entry(item, "name"),
+                                     entry(item, "occupants").toIntOrNull(),
+                                     secure = flag(item, "secure"),
+                                     claimsSecure = flag(item, "claims_secure"),
+                                     password = flag(item, "password"))
             }
         }
         return outcomeOf(result) to rooms
@@ -427,6 +489,140 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     fun leaveRoom(room: String, nick: String): RoomOutcome {
         val result = call("leave_room", room, nick) ?: return notPrepared()
         return outcomeOf(result)
+    }
+
+    // -- secure groups (MLS; android_bridge.groups) ---------------------------
+
+    /** A new room that is an OTRv4Plus secure group from its first message. */
+    fun createSecureGroup(room: String, password: String = "",
+                          passphrase: String = ""): RoomOutcome {
+        val result = call("create_secure_group", room, password, passphrase)
+            ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    /** Verify every member with the group passphrase ("" = the one set at creation). */
+    fun startGroupVerify(room: String, passphrase: String): RoomOutcome {
+        val result = call("start_group_verify", room, passphrase) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    /** Who is verified in [room], and a verification someone started. */
+    fun groupVerifyState(room: String): GroupVerifyState {
+        val result = call("group_verify_state", room) ?: return GroupVerifyState()
+        val value = listValue(result) ?: return GroupVerifyState()
+        val members = mutableMapOf<String, String>()
+        runCatching {
+            value.callAttr("get", "members")?.asMap()?.forEach { (k, v) ->
+                members[k.toString()] = v.toString()
+            }
+        }
+        fun int(key: String): Int =
+            runCatching { value.callAttr("get", key)?.toInt() }.getOrNull() ?: 0
+        val excluded = runCatching {
+            value.callAttr("get", "excluded")?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
+        return GroupVerifyState(
+            members = members,
+            allVerified = flag(value, "all_verified"),
+            startedBy = entry(value, "started_by"),
+            active = flag(value, "active"),
+            done = int("done"),
+            total = int("total"),
+            etaSeconds = int("eta"),
+            excluded = excluded,
+        )
+    }
+
+    /** Verified members' calls are joined by themselves only with the microphone allowed. */
+    fun setGroupCallAutoJoin(allowed: Boolean) {
+        call("set_group_call_auto_join", allowed)
+    }
+
+    fun startGroupCall(room: String): RoomOutcome =
+        call("start_group_call", room)?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun joinGroupCall(room: String): RoomOutcome =
+        call("join_group_call", room)?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun pauseGroupCall(): RoomOutcome =
+        call("pause_group_call")?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun hangupGroupCall(): RoomOutcome =
+        call("hangup_group_call")?.let { outcomeOf(it) } ?: notPrepared()
+
+    fun groupCallState(room: String): GroupCallState {
+        val result = call("group_call_state", room) ?: return GroupCallState()
+        val value = listValue(result) ?: return GroupCallState()
+        val people = runCatching {
+            value.callAttr("get", "participants")?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
+        return GroupCallState(
+            inCall = flag(value, "in_call"),
+            paused = flag(value, "paused"),
+            participants = people,
+            ringingFrom = entry(value, "ringing_from"),
+        )
+    }
+
+    /** Invite [peer] over our encrypted OTRv4+ session with them. */
+    fun inviteToGroup(room: String, peer: String): RoomOutcome {
+        val result = call("invite_to_group", room, peer) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun acceptGroupInvite(room: String): RoomOutcome {
+        val result = call("accept_group_invite", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun declineGroupInvite(room: String): RoomOutcome {
+        val result = call("decline_group_invite", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun removeGroupMember(room: String, member: String): RoomOutcome {
+        val result = call("remove_group_member", room, member) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    /** Send this phone's group key to each member; the detail says who needs SMP. */
+    fun verifyGroupMembers(room: String): RoomOutcome {
+        val result = call("verify_group_members", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    /** Delete a secure group for everyone (its creator only; the server checks). */
+    fun deleteSecureGroup(room: String): RoomOutcome {
+        val result = call("delete_secure_group", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun leaveSecureGroup(room: String): RoomOutcome {
+        val result = call("leave_secure_group", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun groupMembers(room: String): Pair<RoomOutcome, List<GroupMember>> {
+        val result = call("group_members", room) ?: return notPrepared() to emptyList()
+        val members = mutableListOf<GroupMember>()
+        listValue(result)?.let { items ->
+            for (item in items.asList()) {
+                members += GroupMember(
+                    jid = entry(item, "jid"),
+                    fingerprint = entry(item, "fingerprint"),
+                    me = entry(item, "me") == "True",
+                    verified = entry(item, "verified") == "True",
+                    bound = entry(item, "bound") == "True",
+                )
+            }
+        }
+        return outcomeOf(result) to members
+    }
+
+    fun secureGroups(): List<String> {
+        val result = call("secure_groups") ?: return emptyList()
+        return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
     }
 
     fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
@@ -460,6 +656,88 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             listValue(result)?.callAttr("get", "missing")?.asList()?.map { it.toString() }
         }.getOrNull() ?: emptyList()
         return outcome to missing
+    }
+
+    // ── avatars ──────────────────────────────────────────────────────────
+
+    /**
+     * Bare JID -> avatar id for every avatar the bridge holds. Cheap: no
+     * network. Lines of "jid<TAB>id", parsed by [AvatarPixels.index].
+     */
+    fun avatarIndex(): Map<String, String> {
+        val v = call("avatar_index") ?: return emptyMap()
+        return runCatching {
+            org.otrv4plus.android.chat.AvatarPixels.index(
+                v.asList().map { it.toString() })
+        }.getOrDefault(emptyMap())
+    }
+
+    /**
+     * A contact's avatar as decoded PIXELS (RGBA), never the file they sent:
+     * `android_bridge/avatar.py` validated and decoded it in bounded Python.
+     * The base64 here is text decoding, not image decoding.
+     */
+    fun avatarImage(jid: String): AvatarImage? {
+        val v = call("avatar_pixels", jid) ?: return null
+        return runCatching {
+            val rgba = android.util.Base64.decode(
+                entry(v, "rgba_b64"), android.util.Base64.DEFAULT)
+            AvatarImage(
+                id = entry(v, "id"),
+                width = v.callAttr("get", "width")?.toInt() ?: 0,
+                height = v.callAttr("get", "height")?.toInt() ?: 0,
+                rgba = rgba,
+            )
+        }.getOrNull()
+    }
+
+    /**
+     * Publish our avatar: PNG bytes the app made by scaling and re-encoding
+     * the user's own picture. The bridge checks it like anybody's.
+     */
+    fun setAvatar(png: ByteArray): RoomOutcome {
+        val b64 = android.util.Base64.encodeToString(png, android.util.Base64.NO_WRAP)
+        val result = call("set_avatar_b64", b64) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    // ── the XMPP profile (vcard-temp) ────────────────────────────────────
+
+    /** The editable fields, defined once, in `android_bridge/profile.py`. */
+    fun profileFields(): List<ProfileField> {
+        val v = call("profile_fields") ?: return emptyList()
+        return runCatching {
+            v.asList().mapNotNull { item ->
+                val parts = item.toString().split('\t')
+                if (parts.size != 4) null
+                else ProfileField(parts[0], parts[1], parts[2].toIntOrNull() ?: 0,
+                                  parts[3] == "1")
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    /** A profile (ours when [jid] is blank), already sanitised by the bridge. */
+    fun profileGet(jid: String = ""): Pair<RoomOutcome, Map<String, String>> {
+        val result = call("profile_get_json", jid) ?: return notPrepared() to emptyMap()
+        return outcomeOf(result) to jsonMap(entry(result, "value"))
+    }
+
+    /** Publish our profile. Returns what was actually published. */
+    fun profileSet(values: Map<String, String>): Pair<RoomOutcome, Map<String, String>> {
+        val json = org.json.JSONObject(values as Map<*, *>).toString()
+        val result = call("profile_set_json", json) ?: return notPrepared() to emptyMap()
+        return outcomeOf(result) to jsonMap(entry(result, "value"))
+    }
+
+    private fun jsonMap(text: String): Map<String, String> = runCatching {
+        if (text.isBlank() || text == "None") return emptyMap()
+        val obj = org.json.JSONObject(text)
+        obj.keys().asSequence().associateWith { obj.optString(it, "") }
+    }.getOrDefault(emptyMap())
+
+    fun removeAvatar(): RoomOutcome {
+        val result = call("remove_avatar") ?: return notPrepared()
+        return outcomeOf(result)
     }
 
     /** The Welcome room's state and discoverable people. No network. */
@@ -710,6 +988,19 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * Every reference is dropped afterwards, `initResult` included, so the
      * core cannot answer as though a wiped engine were alive.
      */
+    override fun wipeCrypto(): Boolean = try {
+        val ctl = controller
+        val a = app
+        val report: PyObject? = when {
+            ctl != null -> ctl.callAttr("wipe_crypto")
+            a != null -> a.callAttr("wipe_crypto")
+            else -> null
+        }
+        report == null || (report.callAttr("get", "errors")?.asList()?.isEmpty() ?: true)
+    } catch (_: Throwable) {
+        false
+    }
+
     override fun wipe(): WipeReport {
         val report: PyObject? = try {
             val ctl = controller
@@ -844,6 +1135,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 stage = v.callAttr("get", "stage")?.toString() ?: "idle",
                 step = int("step"), steps = int("steps").takeIf { it > 0 } ?: 3,
                 have = int("have"), of = int("of"), elapsed = int("elapsed"),
+                eta = int("eta"), queued = int("queued"),
             )
         }.getOrDefault(org.otrv4plus.android.crypto.HandshakeUi.Status.IDLE)
 
@@ -1008,10 +1300,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         runCatching {
             val d = requireApp().callAttr("inspect_file", path)
             MetadataFinding(
-                kind = d.get("kind")?.toString() ?: "unknown",
-                carriesMetadata = d.get("carries_metadata")?.toBoolean() ?: false,
-                metadataBytes = d.get("metadata_bytes")?.toInt() ?: 0,
-                canScrub = d.get("can_scrub")?.toBoolean() ?: false,
+                kind = d.callAttr("get", "kind")?.toString() ?: "unknown",
+                carriesMetadata = d.callAttr("get", "carries_metadata")?.toBoolean() ?: false,
+                metadataBytes = d.callAttr("get", "metadata_bytes")?.toInt() ?: 0,
+                canScrub = d.callAttr("get", "can_scrub")?.toBoolean() ?: false,
             )
         }.getOrDefault(MetadataFinding.UNKNOWN)
 
@@ -1042,21 +1334,32 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * `sanitise_filename`, which matters because it was chosen by somebody
      * else and is about to be rendered.
      */
+    // `callAttr("get", key)`, NOT `row.get(key)`. Chaquopy's PyObject is a
+    // Map over the object's ATTRIBUTES, so on a Python dict `get("path")`
+    // looked up an attribute called `path` and returned null. Every field of
+    // every row decoded as empty: `state` was never RECEIVED and `path` was
+    // blank, so `canOpen` was false and a received file could never be
+    // opened -- the Android-to-Android "cannot open" report. The Python side
+    // was right all along (tests/test_android_files.py), which is why no
+    // Python test saw it; tests/test_chaquopy_dict_access.py now pins it.
     fun transfers(): List<FileTransferView> =
         runCatching {
             requireApp().callAttr("transfers").asList().map { row ->
                 FileTransferView(
-                    id = row.get("id")?.toString().orEmpty(),
-                    peer = row.get("peer")?.toString().orEmpty(),
-                    filename = row.get("filename")?.toString().orEmpty(),
-                    sizeBytes = row.get("size")?.toLong() ?: 0L,
-                    outgoing = row.get("outgoing")?.toBoolean() ?: false,
-                    accepted = row.get("accepted")?.toBoolean() ?: false,
-                    cancelled = row.get("cancelled")?.toBoolean() ?: false,
-                    progress = row.get("progress")?.toFloat() ?: 0f,
-                    state = row.get("state")?.toString().orEmpty(),
-                    reason = row.get("reason")?.toString().orEmpty(),
-                    path = row.get("path")?.toString().orEmpty(),
+                    id = row.callAttr("get", "id")?.toString().orEmpty(),
+                    peer = row.callAttr("get", "peer")?.toString().orEmpty(),
+                    filename = row.callAttr("get", "filename")?.toString().orEmpty(),
+                    sizeBytes = row.callAttr("get", "size")?.toLong() ?: 0L,
+                    outgoing = row.callAttr("get", "outgoing")?.toBoolean() ?: false,
+                    accepted = row.callAttr("get", "accepted")?.toBoolean() ?: false,
+                    cancelled = row.callAttr("get", "cancelled")?.toBoolean() ?: false,
+                    progress = row.callAttr("get", "progress")?.toFloat() ?: 0f,
+                    state = row.callAttr("get", "state")?.toString().orEmpty(),
+                    reason = row.callAttr("get", "reason")?.toString().orEmpty(),
+                    path = row.callAttr("get", "path")?.toString().orEmpty(),
+                    group = row.callAttr("get", "group")?.toBoolean() ?: false,
+                    sender = row.callAttr("get", "from")?.toString().orEmpty(),
+                    deliveredTo = row.callAttr("get", "delivered_to")?.toInt() ?: 0,
                 )
             }
         }.getOrDefault(emptyList())
@@ -1069,6 +1372,22 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * the user at that one would point them at the files that are not
      * theirs yet.
      */
+    /**
+     * Decrypt a received `.otrv` container into [directory] (the viewer's
+     * transient copy). Null when it does not open; the reason stays in
+     * Python, as a code.
+     */
+    fun openReceivedTo(container: String, directory: String): String? =
+        runCatching {
+            requireApp().callAttr("open_received_to", container, directory).toString()
+        }.getOrNull()
+
+    /** Explicit Save of a received file's plaintext to [destination]. */
+    fun saveReceived(container: String, destination: String): String =
+        runCatching {
+            requireApp().callAttr("save_received", container, destination).toString()
+        }.getOrDefault("save_failed")
+
     fun receivedFileDir(): String =
         runCatching {
             requireApp().callAttr("received_file_dir").toString()
@@ -1226,6 +1545,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         fun str(k: String) = item.callAttr("get", k)?.toString() ?: ""
         fun num(k: String) = item.callAttr("get", k)?.toDouble() ?: 0.0
         fun int(k: String) = item.callAttr("get", k)?.toInt() ?: 0
+        fun flag(k: String) = item.callAttr("get", k)?.toBoolean() ?: false
         return when (str("type")) {
             "ConnectionStateChanged" ->
                 OtrEvent.ConnectionChanged(
@@ -1243,7 +1563,17 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
             "RoomMessageReceived" ->
                 OtrEvent.RoomMessageReceived(
-                    str("peer"), str("sender"), str("body"), num("timestamp"))
+                    str("peer"), str("sender"), str("body"), num("timestamp"),
+                    encrypted = flag("encrypted"),
+                    senderIdentity = str("sender_identity"),
+                    verified = flag("verified"))
+
+            "GroupInvite" ->
+                OtrEvent.GroupInvited(str("peer"), str("room"), flag("verified"))
+
+            "GroupChanged" ->
+                OtrEvent.GroupChanged(
+                    str("peer"), str("change"), num("epoch").toLong(), str("detail"))
 
             // The Python class is SmpProgress, the Kotlin event is
             // SmpProgressed. The names differ and that is a trap: these
@@ -1287,6 +1617,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             "OtrCapabilityChanged" ->
                 OtrEvent.CapabilityChanged(str("peer"), str("state"))
 
+            "QueuedSent" ->
+                OtrEvent.QueuedSent(
+                    str("peer"), int("count"),
+                    item.callAttr("get", "encrypted")?.toBoolean() ?: false)
+
             "FileTransferChanged" ->
                 OtrEvent.FileTransferChanged(
                     str("peer"), str("transfer_id"), str("filename"),
@@ -1319,6 +1654,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         }
 
     private fun codeFrom(t: Throwable): String {
+        OtrBridgeException.codeFromMessage(t.message)?.let { return it }
         val name = t.javaClass.simpleName
         return if (name.isBlank()) "bridge_error" else name
     }

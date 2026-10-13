@@ -30,6 +30,13 @@ import os
 import socket
 import threading
 
+# Started as `python <client>`: run again with the project interpreter
+# (~/OTRv4Plus/.venv, where Rust/build.sh installs otrv4_core). Loaded by
+# name: the APK never runs a client as a script and does not ship it.
+if __name__ == "__main__":
+    import importlib as _importlib
+    _importlib.import_module("otrv4plus_venv").ensure(__file__)
+
 # `socks` comes from the **PySocks** distribution.  Naming it here matters:
 # there is also a PyPI project literally called `socks`, and it is an empty
 # placeholder ("automatically generated with 'register_pypi' and should be
@@ -63,6 +70,9 @@ if not all(hasattr(socks, _attr) for _attr in
 # from a remote transition into AWAITING_SECRET.  A second copy of the logic
 # here would be a second chance to get it wrong.
 import otrv4plus_smpflow as _smpflow
+# Address rules shared with the Android app, including the project server's
+# shipped address (SHIPPED_SERVERS). Standard library only.
+import otrv4plus_address as _address
 
 try:
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
@@ -90,37 +100,49 @@ except ImportError:
 
 
 try:
-    from otrv4_core import py_ring_sign as _rust_ring_sign
+    # Verification only. Signing is `Ed448KeyHandle.ring_sign` (the seed
+    # stays in Rust); the raw-seed `py_ring_sign` exists only in test builds
+    # (Cargo feature `raw-key-test-api`).
     from otrv4_core import py_ring_verify as _rust_ring_verify
 
     RUST_RING_SIG_AVAILABLE = True
 except ImportError:
-    _rust_ring_sign = None
     _rust_ring_verify = None
     RUST_RING_SIG_AVAILABLE = False
 
 
 def _check_rust_requirements():
+    try:
+        import otrv4_core as _probe  # noqa: F401
+    except ImportError:
+        # Not a build without the DAKE: no core at all for THIS Python.
+        # build.sh installs it into ~/OTRv4Plus/.venv only.
+        raise ImportError(
+            "otrv4_core is not installed for this Python (%s).  Start the "
+            "client with the project interpreter:  .venv/bin/python otrv4+.py "
+            "...  -- or build it first:  bash Rust/build.sh" % sys.executable
+        )
     if not RUST_DAKE_AVAILABLE or _RustDAKE is None:
         raise ImportError(
             "OTRv4+ v10.6.11+ requires otrv4_core.RustDAKE.  "
             "The .so was not built with the dake module.  "
             "Rebuild Rust/ with: cargo build --release --features pq-rust"
         )
-    if not RUST_RING_SIG_AVAILABLE or _rust_ring_sign is None or _rust_ring_verify is None:
+    if not RUST_RING_SIG_AVAILABLE or _rust_ring_verify is None:
         raise ImportError(
-            "OTRv4+ v10.6.11+ requires otrv4_core.py_ring_sign and "
+            "OTRv4+ v10.6.11+ requires "
             "otrv4_core.py_ring_verify.  The .so was not built with the "
             "ring_sig module.  Rebuild Rust/ with the latest src/ring_sig.rs "
             "and src/lib.rs that registers it."
         )
+    # Only the handle-based surface the live path uses. The raw-key
+    # constructors are compiled into test builds only (R3).
     _required_methods = [
-        "new_from_bytearrays",
-        "sign_profile_body_and_construct",
         "sign_profile_body_and_construct_with_handles",
-        "ed448_sign_test",
         "generate_dake2_output",
         "process_dake2_output",
+        "generate_dake3",
+        "process_dake3",
     ]
     _missing = [m for m in _required_methods if not hasattr(_RustDAKE, m)]
     if _missing:
@@ -136,14 +158,10 @@ def _check_rust_requirements():
         "generate_ed448_keypair",
         "generate_x448_keypair",
         "verify_ed448_sig",
-        "mldsa87_keygen",
-        "mldsa87_sign",
         "mldsa87_verify",
-        "aes256gcm_encrypt",
-        "aes256gcm_decrypt",
-        "mlkem1024_keygen",
-        "mlkem1024_encaps",
-        "mlkem1024_decaps",
+        "MlDsa87KeyHandle",
+        "MlKem1024Keypair",
+        "MessageMacKey",
     ]
     _missing_mod = [s for s in _required_module_symbols if not hasattr(_RustDAKE_module, s)]
     if _missing_mod:
@@ -770,7 +788,7 @@ class NetworkConstants:
 #
 # `.i2p` names are NOT DNS.  There is no global resolver: a router only knows
 # the names in its own address book, which it builds from subscriptions.  A
-# private server is in nobody's subscription, so `xmpp-elite.i2p` resolves on
+# private server is in nobody's subscription, so `otrv4plus.i2p` resolves on
 # the machine that created it and nowhere else, while the 52-character
 # `.b32.i2p` form works everywhere because it IS the destination hash.
 #
@@ -779,7 +797,7 @@ class NetworkConstants:
 #
 # This file is the local answer.  One line per name:
 #
-#     xmpp-elite.i2p = hq4t24b7…q.b32.i2p
+#     otrv4plus.i2p = <52 characters>.b32.i2p
 #
 # WHAT AN ALIAS IS AND IS NOT.  It is a note to yourself about what a name
 # means on this device.  It is not authenticated, it is not published, and it
@@ -793,6 +811,20 @@ class NetworkConstants:
 # full.
 
 I2P_HOSTS_FILENAME = "i2p_hosts"
+
+#: What a router answers NAMING LOOKUP with for a well-formed short name its
+#: address book does not have. Java I2P says KEY_NOT_FOUND; i2pd says
+#: INVALID_KEY (it keeps KEY_NOT_FOUND for a b32 whose LeaseSet it cannot
+#: find). The name is validated before it is sent, so for a short name both
+#: mean "unknown here" -- the case the alias file and the fallback below are
+#: for. Device report 2026-10-01: i2pd answered INVALID_KEY for otrv4plus.i2p
+#: and the fallback, which accepted only KEY_NOT_FOUND, never ran.
+I2P_NAME_UNKNOWN_RESULTS = ("KEY_NOT_FOUND", "INVALID_KEY")
+
+#: The project's own server name and the b32 it is dialled at, without asking
+#: the router (otrv4plus_address.SHIPPED_SERVERS says why). Re-exported here
+#: for the terminal client's callers.
+SHIPPED_SERVERS = _address.SHIPPED_SERVERS
 
 
 def remember_i2p_alias(name: str, destination: str, path: str = None,
@@ -975,6 +1007,50 @@ def resolve_i2p_aliases(user_path: str = None,
     return merged
 
 
+class SamError(ConnectionError):
+    """A SAM failure, classified by the layer that failed.
+
+    `stage` is one of:
+      * "bridge"  -- the LOCAL SAM bridge: unreachable, closed, refused HELLO,
+                     or sent a malformed / oversized / mismatched reply;
+      * "naming"  -- the router could not resolve the name (RESULT= says why);
+      * "session" -- SESSION CREATE failed;
+      * "stream"  -- STREAM CONNECT failed: the destination is not reachable;
+      * "cancelled" -- the caller gave up (I2PSAMConnection.abandon).
+    `result` is the SAM RESULT= value when there was one. These are different
+    problems with different remedies, and callers report which one it was.
+    """
+
+    def __init__(self, stage: str, message: str, result: str = ""):
+        super().__init__(message)
+        self.stage = stage
+        self.result = result
+
+
+#: A short I2P name: dot-separated labels of letters, digits and hyphens,
+#: ending in `.i2p`. Checked BEFORE anything is sent, so a malformed name can
+#: never inject text (a space, a newline) into a SAM command.
+_I2P_NAME_RE = re.compile(r"^(?=.{5,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+i2p$")
+_B32_RE = re.compile(r"^[a-z2-7]{52}\.b32\.i2p$")
+#: A full destination in I2P's base64 alphabet (at least 387 characters).
+_I2P_DEST_RE = re.compile(r"^[A-Za-z0-9~-]{387,}={0,2}$")
+#: A SAM reply line is a few hundred bytes (a destination is under 1 KB).
+#: Anything far larger is not a SAM reply and is refused unread.
+SAM_MAX_REPLY = 16384
+
+
+def i2p_target_error(target: str) -> Optional[str]:
+    """Why `target` is not an I2P address this client will look up, or None."""
+    t = (target or "").strip().lower()
+    if not t.endswith(".i2p"):
+        return "not an .i2p address"
+    if t.endswith(".b32.i2p"):
+        return None if _B32_RE.match(t) else (
+            "a .b32.i2p address is 52 characters of a-z and 2-7 before "
+            "'.b32.i2p'")
+    return None if _I2P_NAME_RE.match(t) else (
+        "an .i2p name is letters, digits, hyphens and dots, ending in .i2p")
+
 class I2PSAMConnection:
     """Connect to I2P via the SAM bridge instead of SOCKS5.
 
@@ -992,36 +1068,63 @@ class I2PSAMConnection:
             # sock is a raw TCP stream to the IRC server
     """
 
+    #: Longest wait for one SAM reply line. NAMING LOOKUP and SESSION CREATE
+    #: on a cold router legitimately take 60-90 s.
+    reply_timeout = 90
+
     def __init__(self, sam_host: str = None, sam_port: int = None):
         self.sam_host = sam_host or NetworkConstants.I2P_SAM_HOST
         self.sam_port = sam_port or NetworkConstants.I2P_SAM_PORT
         self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
         self._control_sock = None
         self._our_destination = None
+        #: Set by `resolve`: the name is the project's server and was dialled
+        #: at the address shipped for it (SHIPPED_SERVERS).
+        self.used_shipped_address = False
+        #: Set by `abandon`; see there.
+        self._abandoned = False
+        self._pending_stream = None
 
     def _send_cmd(self, sock, cmd: str) -> str:
-        """Send a SAM command and read the response line.
+        """Send a SAM command and read ONE reply line.
 
         Deadline is 90s - I2P NAMING LOOKUP and SESSION CREATE on a cold tunnel
-        can legitimately take 60-90 seconds.  A shorter deadline causes
-        spurious timeouts and forces a SOCKS5 fallback (loses the unique
-        per-session destination security property)."""
-        sock.sendall((cmd + "\n").encode("utf-8"))
-        buf = b""
-        deadline = time.time() + 90
-        while not buf.endswith(b"\n"):
-            if time.time() > deadline:
-                raise ConnectionError("SAM bridge timeout")
-            chunk = sock.recv(4096)
-            if not chunk:
-                raise ConnectionError("SAM bridge closed connection")
-            buf += chunk
-        return buf.decode("utf-8").strip()
+        can legitimately take 60-90 seconds.  The reply is bounded
+        (SAM_MAX_REPLY): a peer that streams without a newline is not a SAM
+        bridge and must not be able to grow this buffer without limit.  Every
+        failure is a SamError("bridge"), never a bare socket error."""
+        if "\n" in cmd or "\r" in cmd:
+            raise SamError("bridge", "refusing to send a multi-line SAM command")
+        try:
+            sock.sendall((cmd + "\n").encode("utf-8"))
+            buf = b""
+            deadline = time.time() + self.reply_timeout
+            while b"\n" not in buf:
+                if time.time() > deadline:
+                    raise SamError("bridge", "SAM bridge timeout")
+                if len(buf) > SAM_MAX_REPLY:
+                    raise SamError("bridge", "SAM reply too long")
+                chunk = sock.recv(4096)
+                if not chunk:
+                    raise SamError("bridge", "SAM bridge closed connection")
+                buf += chunk
+        except SamError:
+            raise
+        except socket.timeout:
+            raise SamError("bridge", "SAM bridge timeout") from None
+        except OSError as exc:
+            raise SamError("bridge", "SAM bridge I/O error (%s)"
+                           % type(exc).__name__) from None
+        line = buf.split(b"\n", 1)[0]
+        try:
+            return line.decode("ascii").strip()
+        except UnicodeDecodeError:
+            raise SamError("bridge", "SAM reply is not ASCII") from None
 
     def _parse_reply(self, reply: str, prefix: str) -> dict:
         """Parse SAM key=value reply."""
         if not reply.startswith(prefix):
-            raise ConnectionError(f"SAM unexpected: {reply }")
+            raise SamError("bridge", f"SAM unexpected reply: {reply[:120] }")
         parts = reply[len(prefix) :].strip().split(" ")
         result = {}
         for part in parts:
@@ -1035,7 +1138,8 @@ class I2PSAMConnection:
         reply = self._send_cmd(sock, "HELLO VERSION MIN=3.1 MAX=3.1")
         parsed = self._parse_reply(reply, "HELLO REPLY ")
         if parsed.get("RESULT") != "OK":
-            raise ConnectionError(f"SAM handshake failed: {reply }")
+            raise SamError("bridge", f"SAM handshake failed: {reply[:120] }",
+                           parsed.get("RESULT", ""))
 
     @staticmethod
     def _explain_stream_failure(target_host, parsed, reply) -> str:
@@ -1148,38 +1252,153 @@ class I2PSAMConnection:
             f"{i2p_hosts_path ()}:\n"
             f"    {target_host } = <52 chars>.b32.i2p")
 
-    def connect(self, target_host: str, target_port: int = 0) -> "socket.socket":
+    def _bridge_socket(self, timeout: float) -> "socket.socket":
+        """A connected, HELLO'd socket to the LOCAL SAM bridge.
+
+        `sam_host` is the bridge's own address (normally 127.0.0.1). The I2P
+        destination never reaches this call or any resolver: it only ever
+        travels inside a SAM command on this socket.
+        """
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(min(timeout, self.reply_timeout))
+        try:
+            sock.connect((self.sam_host, self.sam_port))
+        except OSError as exc:
+            sock.close()
+            raise SamError("bridge", "no SAM bridge at %s:%s (%s)"
+                           % (self.sam_host, self.sam_port,
+                              type(exc).__name__)) from None
+        try:
+            self._handshake(sock)
+        except Exception:
+            sock.close()
+            raise
+        return sock
+
+    def naming_lookup(self, name: str) -> str:
+        """`NAMING LOOKUP NAME=<name>` on the router.
+
+        Returns the full base64 destination, or raises SamError("naming",
+        ..., RESULT). The reply must name what was asked and carry a
+        well-formed destination; anything else is a bridge fault, never a
+        destination to connect to."""
+        sock = self._bridge_socket(90)
+        try:
+            reply = self._send_cmd(sock, f"NAMING LOOKUP NAME={name }")
+        finally:
+            sock.close()
+        parsed = self._parse_reply(reply, "NAMING REPLY ")
+        result = parsed.get("RESULT", "")
+        if result != "OK":
+            raise SamError("naming", reply[:200], result or "MISSING")
+        if parsed.get("NAME", "").lower() != name.lower():
+            raise SamError("bridge", "SAM answered for a different NAME")
+        value = parsed.get("VALUE", "")
+        if not _I2P_DEST_RE.match(value):
+            raise SamError("bridge", "SAM NAMING REPLY carried no valid destination")
+        return value
+
+    def _naming_failure(self, target, exc, alias_source=None):
+        if exc.stage != "naming":
+            return exc
+        return SamError("naming", self._explain_resolve_failure(
+            target, str(exc), alias_source), exc.result)
+
+    def resolve(self, target_host: str, allow_aliases: bool = True) -> str:
+        """The full destination for an .i2p address, from the ROUTER.
+
+        THE NAMING MODEL, and why it is this way round
+        ----------------------------------------------
+        * `x.b32.i2p` is the hash of the destination and the router resolves
+          it from the hash. No address book and no local file is consulted,
+          so nothing can redirect an address typed in full.
+        * A short `x.i2p` is asked of the router first -- NAMING LOOKUP,
+          always. The router's address book is the authority for what a name
+          means NOW. The local alias file (Termux) is consulted only when the
+          router does not know the name (I2P_NAME_UNKNOWN_RESULTS:
+          KEY_NOT_FOUND from Java I2P, INVALID_KEY from i2pd), and its use is
+          announced.
+          It used to be consulted FIRST, together with a shipped defaults file
+          that mapped the project's server name to its old b32. A server
+          recreated under that name was therefore never looked up: the name
+          was quietly rewritten to the retired destination (Android, device
+          report 2026-09-28).
+        * The project's own server name (SHIPPED_SERVERS) is the exception:
+          it is dialled at its shipped b32 and the router is not asked what
+          the name means. An address book that mapped it elsewhere sent the
+          app's server list entry to another destination; the b32 can only
+          reach the server's own key. The alias file is not consulted for it.
+        * A malformed name (refused before anything is sent), a bridge
+          fault, or any other result is a clean naming failure. There is no
+          fallback to DNS or to anything else: no path in this class hands
+          an .i2p name to a system resolver.
+        """
+        target = (target_host or "").strip().lower()
+        problem = i2p_target_error(target)
+        if problem:
+            raise SamError("naming", f"{target_host !r}: {problem }", "INVALID_NAME")
+        if target.endswith(".b32.i2p"):
+            moved_to = I2PSAMConnection._retired_destinations().get(target)
+            if moved_to:
+                print(f"[i2p] {target } is a retired address for {moved_to }; "
+                      "trying it as given.")
+            try:
+                return self.naming_lookup(target)
+            except SamError as exc:
+                raise self._naming_failure(target, exc) from None
+        self.used_shipped_address = False
+        shipped = _address.shipped_server_address(target)
+        if shipped:
+            # Reported by the caller (`used_shipped_address`), which knows
+            # whether its log may name the address.
+            try:
+                dest = self.naming_lookup(shipped)
+            except SamError as exc:
+                raise self._naming_failure(shipped, exc) from None
+            self.used_shipped_address = True
+            return dest
+        try:
+            return self.naming_lookup(target)
+        except SamError as exc:
+            if not (exc.stage == "naming"
+                    and exc.result in I2P_NAME_UNKNOWN_RESULTS):
+                raise self._naming_failure(target, exc) from None
+            router_reply = exc
+        if allow_aliases:
+            alias, alias_source = self._apply_i2p_alias(target)
+            if alias_source:
+                if _I2P_DEST_RE.match(alias):
+                    return alias
+                try:
+                    return self.naming_lookup(alias)
+                except SamError as exc:
+                    raise self._naming_failure(alias, exc, alias_source) from None
+        raise self._naming_failure(target, router_reply) from None
+
+    def connect(self, target_host: str, target_port: int = 0,
+                allow_aliases: bool = True,
+                verify_destination=None) -> "socket.socket":
         """Connect to an I2P destination via SAM. Returns a raw socket.
 
         Creates a transient destination (fresh identity, not saved).
         The port arg is ignored - I2P destinations don't use ports.
+        `target_host` is a 52-character .b32.i2p address or a short .i2p
+        name; `resolve` says how each becomes a destination. Every failure
+        is a SamError naming the stage that failed.
 
-        `target_host` may be a 52-character .b32.i2p address, a short name the
-        router's address book knows, or a short name in the local alias file
-        (see i2p_aliases()).  The alias file is consulted first.
+        `verify_destination(dest_b64)`, when given, is called with the
+        resolved destination BEFORE any session or stream exists; whatever it
+        raises propagates and nothing is sent to that destination. This is
+        where the Android bridge enforces its destination pin (X1).
         """
+        dest_b64 = self.resolve(target_host, allow_aliases=allow_aliases)
+        if verify_destination is not None:
+            verify_destination(dest_b64)
 
-        target_host, alias_source = self._apply_i2p_alias(target_host)
-
-        resolve_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        resolve_sock.settimeout(90)
-        try:
-            resolve_sock.connect((self.sam_host, self.sam_port))
-            self._handshake(resolve_sock)
-            reply = self._send_cmd(resolve_sock, f"NAMING LOOKUP NAME={target_host }")
-            parsed = self._parse_reply(reply, "NAMING REPLY ")
-            if parsed.get("RESULT") != "OK":
-                raise ConnectionError(
-                    self._explain_resolve_failure(target_host, reply, alias_source))
-            dest_b64 = parsed["VALUE"]
-        finally:
-            resolve_sock.close()
-
-        self._control_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._control_sock.settimeout(90)
-        self._control_sock.connect((self.sam_host, self.sam_port))
-        self._handshake(self._control_sock)
-
+        self._control_sock = self._bridge_socket(90)
+        if self._abandoned:
+            self.close()
+            raise SamError("cancelled", "the SAM connection was abandoned")
         reply = self._send_cmd(
             self._control_sock,
             f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
@@ -1188,27 +1407,60 @@ class I2PSAMConnection:
         parsed = self._parse_reply(reply, "SESSION STATUS ")
         if parsed.get("RESULT") != "OK":
             self._control_sock.close()
-            raise ConnectionError(f"SAM session failed: {reply }")
+            raise SamError("session", f"SAM session failed: {reply[:200] }",
+                           parsed.get("RESULT", ""))
         self._our_destination = parsed.get("DESTINATION", "")
 
-        stream_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        stream_sock.settimeout(NetworkConstants.TIMEOUT_I2P)
-        stream_sock.connect((self.sam_host, self.sam_port))
-        self._handshake(stream_sock)
-
-        reply = self._send_cmd(
-            stream_sock,
-            f"STREAM CONNECT ID={self ._session_id } " f"DESTINATION={dest_b64 } SILENT=false",
-        )
+        stream_sock = self._bridge_socket(NetworkConstants.TIMEOUT_I2P)
+        self._pending_stream = stream_sock
+        try:
+            reply = self._send_cmd(
+                stream_sock,
+                f"STREAM CONNECT ID={self ._session_id } " f"DESTINATION={dest_b64 } SILENT=false",
+            )
+        finally:
+            self._pending_stream = None
+        if self._abandoned:
+            stream_sock.close()
+            self.close()
+            raise SamError("cancelled", "the SAM connection was abandoned")
         parsed = self._parse_reply(reply, "STREAM STATUS ")
         if parsed.get("RESULT") != "OK":
             stream_sock.close()
             self._control_sock.close()
-            raise ConnectionError(
-                self._explain_stream_failure(target_host, parsed, reply))
+            raise SamError("stream",
+                           self._explain_stream_failure(target_host, parsed, reply),
+                           parsed.get("RESULT", ""))
 
         stream_sock.settimeout(1.0)
         return stream_sock
+
+    def abandon(self):
+        """Give up on a `connect` that another thread is still inside.
+
+        A connect that times out on Android is cancelled, but the thread
+        doing the SAM work is not: it went on to finish SESSION CREATE and
+        sat in STREAM CONNECT, and the session -- a transient destination
+        with its own tunnels -- stayed open in the router for the life of the
+        app. Every retry added another. Closing the sockets here ends the
+        session in the router and wakes the blocked thread; the flag stops a
+        step that was already past its socket from opening a new one.
+        """
+        self._abandoned = True
+        # shutdown before close: on Linux, close() from another thread does
+        # not wake a recv() blocked on the same socket; shutdown() does.
+        for sock in (self._pending_stream, self._control_sock):
+            if sock is None:
+                continue
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
+        self.close()
 
     def close(self):
         """Close the SAM control session."""
@@ -1677,23 +1929,30 @@ class OTRv4DataMessage:
         except (struct.error, TypeError, ValueError) as e:
             raise ValueError(f"Failed to build auth header: {e }")
 
-    def compute_mac(self, mac_key: bytes) -> bytes:
-        """SHA3-512(mac_key ‖ auth_header ‖ uint32(len(ciphertext)) ‖ ciphertext)."""
+    def auth_region(self) -> bytes:
+        """The public bytes the outer MAC covers:
+        auth_header || uint32(len(ciphertext)) || ciphertext."""
         try:
             ah = self._auth_header()
-            ct = struct.pack("!I", len(self.ciphertext)) + self.ciphertext
-            return hashlib.sha3_512(mac_key + ah + ct).digest()
+            return ah + struct.pack("!I", len(self.ciphertext)) + self.ciphertext
         except (TypeError, ValueError, struct.error) as e:
-            raise ValueError(f"Failed to compute MAC: {e }")
+            raise ValueError(f"Failed to build MAC region: {e }")
 
-    def verify_mac(self, mac_key: bytes) -> bool:
-        """Constant-time MAC verification."""
+    def compute_mac(self, mac_key) -> bytes:
+        """SHA3-512(MKmac || auth_region), computed in Rust.
+
+        `mac_key` is the ratchet's `MessageMacKey` handle: the key stays in
+        Rust, and this only frames the public region it covers.
+        """
+        return bytes(mac_key.seal(self.auth_region()))
+
+    def verify_mac(self, mac_key) -> bool:
+        """Constant-time MAC check, in Rust, against the `MessageMacKey`."""
         try:
             if len(self.mac) != self.MAC_LEN:
                 return False
-            computed = self.compute_mac(mac_key)
-            return hmac.compare_digest(self.mac, computed)
-        except (TypeError, ValueError) as e:
+            return bool(mac_key.verify(self.auth_region(), self.mac))
+        except (TypeError, ValueError, AttributeError) as e:
             if DEBUG_MODE:
                 print("[OTRv4DataMessage] MAC verification failed")
             return False
@@ -3969,10 +4228,10 @@ class RustBackedDoubleRatchet:
     def decrypt_message(self, header_bytes, ciphertext, nonce, tag):
         """Decrypt a message (OTRv4 §4.4.4).
 
-        Returns ``(plaintext, mkmac)``. The MAC key is returned so the
-        caller can verify the outer OTRv4 MAC with the key that actually
-        keyed it; the engine has already queued its own copy for later
-        revelation.
+        Returns ``(plaintext, mac_key)`` where ``mac_key`` is a Rust
+        ``MessageMacKey`` handle, not bytes: the caller verifies the outer
+        OTRv4 MAC through it and the key never becomes a Python object. The
+        engine has already queued its own copy for later revelation.
         """
         with self.lock:
 
@@ -4050,7 +4309,9 @@ class RustBackedDoubleRatchet:
 
         Only public values cross the boundary: a revealed key in, one bit out.
         """
-        return bool(self._rust.knows_revealed_mac_key(bytes(key)))
+        if isinstance(key, (bytes, bytearray, memoryview)):
+            return bool(self._rust.knows_revealed_mac_key(bytes(key)))
+        return bool(self._rust.knows_mac_key_handle(key))
 
     def _decrypt_new_dh(self, header_bytes, ciphertext, nonce, tag):
         """Handle decrypt with DH ratchet step.
@@ -4418,7 +4679,7 @@ class RustDAKEAdapter:
       - DH exchanges (dh1/dh2/dh3) done in Rust, result never returned to Python
       - ML-KEM-1024 encaps/decaps done in Rust
       - KDF_1 session key derivation done in Rust
-      - ring signature still generated in Python, embedded as opaque bytes
+      - DAKE3 signed and verified in Rust over its own transcript
 
     Rust DAKE is the only DAKE implementation; there is no fallback.
     """
@@ -4779,9 +5040,11 @@ class RustDAKEAdapter:
             # ── Audit PY1/H3: never establish on an unverified responder
             # profile.  ClientProfile.decode (above) verifies the Ed448
             # self-signature, which covers the prekey, AND the expiry.  If it
-            # raised, remote_profile is None and we MUST abort rather than
-            # trust the Rust-extracted identity bytes (the Rust DAKE extracts
-            # the identity without checking the signature/expiry).
+            # raised, remote_profile is None and we MUST abort. The Rust DAKE
+            # now enforces the same three things itself -- the signature
+            # (H3), the expiry and a non-degenerate identity key (audit
+            # 2026-09, dake.rs extract_identity_from_profile) -- so this is a
+            # second, independent check, not the only one.
             if self.remote_profile is None:
                 return self._fail(
                     "DAKE2: responder ClientProfile verification failed "
@@ -4816,142 +5079,44 @@ class RustDAKEAdapter:
             return self._fail(f"process_dake2 exception: {e }")
 
     def generate_dake3(self) -> Optional[str]:
-        """
-        Generate DAKE3 as initiator.
-        Ring signature is built on the Python side (no ring-sign in Rust yet),
-        then the sigma + optional ML-DSA sig bytes are passed to Rust for
-        canonical wire assembly - or assembled here if Rust doesn't support it.
-        """
+        """Generate DAKE3 as initiator -- signed inside Rust.
 
+        `RustDAKE.generate_dake3` computes the Auth-I message from the
+        transcript it recorded itself (KDF_1(0x05, DAKE1 || DAKE2)), ring-signs
+        it with the identity key it holds, adds the ML-DSA-87 signature
+        through the handle when the responder committed an ML-DSA key, and
+        assembles the wire bytes. Nothing here computes or signs anything, and
+        there is no fallback: a DAKE3 Rust will not produce is not sent.
+        """
         try:
-            if self._raw_dake1_bytes is None or self._raw_dake2_bytes is None:
-                raise ValueError("Transcript bytes missing")
-
-            transcript_msg = kdf_1(
-                KDFUsage.AUTH_I_MSG, self._raw_dake1_bytes + self._raw_dake2_bytes, 64
-            )
-
-            identity_key = self.client_profile.identity_key
-            if identity_key is None:
-                raise ValueError("Local Ed448 identity key not available")
-
-            A1_bytes = self.client_profile.identity_pub_bytes or bytes(identity_key.public_bytes())
-
-            if self.remote_profile is None:
-                raise ValueError("Remote profile not stored")
-            A2_bytes = self.remote_profile.identity_pub_bytes
-            if A2_bytes is None:
-                raise ValueError("Remote identity_pub_bytes not available")
-
-            sigma = RingSignature.sign(identity_key, A1_bytes, A2_bytes, transcript_msg)
-
-            assembled = None
-            if hasattr(self._rust, "assemble_dake3"):
-                try:
-                    mldsa_sig = None
-                    if self._mldsa_auth is not None and self._remote_mldsa_pub is not None:
-                        mldsa_sig = self._mldsa_auth.sign(transcript_msg)
-                    assembled = bytes(
-                        self._rust.assemble_dake3(
-                            sigma_bytes=sigma,
-                            mldsa_sig_bytes=mldsa_sig,
-                        )
-                    )
-                except Exception:
-                    assembled = None
-
-            if assembled is None:
-
-                msg = bytearray([OTRConstants.MESSAGE_TYPE_DAKE3])
-                msg.extend(sigma)
-                if self._mldsa_auth is not None and self._remote_mldsa_pub is not None:
-                    mldsa_sig = self._mldsa_auth.sign(transcript_msg)
-                    msg.append(0x01)
-                    msg.extend(mldsa_sig)
-                    self._log_debug(f"DAKE3 hybrid: ring-sig + ML-DSA-87")
-                else:
-                    msg.append(0x00)
-                    self._log_debug("DAKE3 classical only: ring-sig")
-                assembled = bytes(msg)
-
+            handle = self._mldsa_auth._priv if self._mldsa_auth is not None else None
+            assembled = bytes(self._rust.generate_dake3(mldsa_handle=handle))
             encoded = base64.urlsafe_b64encode(assembled).decode("ascii").rstrip("=")
             self._log_debug(f"DAKE3 (Auth-I) generated: {len (assembled )}B total")
             return f"?OTRv4 {encoded }"
-
         except Exception as e:
             self._log_error(f"DAKE3 (Auth-I) generation failed: {e }")
             return None
 
     def process_dake3(self, dake3_msg: str) -> bool:
-        """
-        Process DAKE3 as responder.
-        Ring-sig verification done in Python (constant-time C ext),
-        ML-DSA-87 verification also in Python, then state transitions.
-        This matches the DAKE3 wire format - keeping verification
-        on the Python/C side where we have OpenSSL 3.5+ EVP access.
-        """
+        """Process DAKE3 as responder -- verified inside Rust.
 
+        `RustDAKE.process_dake3` checks the ring signature and, when the
+        initiator committed an ML-DSA-87 key, the mandatory ML-DSA signature
+        (refusing a stripped flag), both over its own transcript, and only
+        then moves to established. This method decodes the frame and mirrors
+        the outcome; it makes no security decision of its own.
+        """
         try:
             if not dake3_msg.startswith("?OTRv4 "):
                 return self._fail("process_dake3: not an OTRv4 message")
             decoded = _safe_b64decode(dake3_msg[7:].strip())
-
-            SIG_LEN = RingSignature.TOTAL_BYTES
-            if len(decoded) < 1 + SIG_LEN:
-                return self._fail(f"DAKE3 too short: {len (decoded )}")
-
-            if decoded[0] != OTRConstants.MESSAGE_TYPE_DAKE3:
-                return self._fail(f"Not a DAKE3: 0x{decoded [0 ]:02x}")
-
-            sigma = decoded[1 : 1 + SIG_LEN]
-
-            if self._raw_dake1_bytes is None or self._raw_dake2_bytes is None:
-                return self._fail("Transcript bytes missing - cannot verify DAKE3")
-
-            transcript_msg = kdf_1(
-                KDFUsage.AUTH_I_MSG, self._raw_dake1_bytes + self._raw_dake2_bytes, 64
-            )
-
-            if self.remote_profile is None:
-                return self._fail("Remote profile not stored")
-            A1_bytes = self.remote_profile.identity_pub_bytes
-            A2_bytes = self.client_profile.identity_pub_bytes or bytes(
-                self.client_profile.identity_key.public_bytes()
-            )
-            if A1_bytes is None:
-                return self._fail("Remote identity_pub_bytes not available")
-
-            if not RingSignature.verify(A1_bytes, A2_bytes, transcript_msg, sigma):
-                return self._fail("DAKE3 ring signature verification failed")
-
-            _mldsa_off = 1 + SIG_LEN
-            _has_mldsa = _mldsa_off < len(decoded) and decoded[_mldsa_off] == 0x01
-            _pq_auth = "classical only (ring-sig ✓)"
-
-            # ── Audit H2: ML-DSA-87 downgrade protection ──
-            # If the peer committed an ML-DSA-87 key (sent in DAKE1/DAKE2 and
-            # bound in the transcript), its DAKE3 signature is MANDATORY.  The
-            # ring signature covers the transcript but NOT this flag byte, so
-            # without this check a MITM strips post-quantum authentication
-            # with a single 0x01 -> 0x00 flip.
-            _mldsa_committed = self._remote_mldsa_pub is not None
-            if _mldsa_committed and MLDSA87_AVAILABLE and not _has_mldsa:
-                return self._fail(
-                    "DAKE3 ML-DSA-87 signature stripped: peer committed a PQ key "
-                    "but the DAKE3 flag is 0x00 - refusing PQ downgrade"
-                )
-
-            if _has_mldsa and _mldsa_committed and MLDSA87_AVAILABLE:
-                _available = len(decoded) - (_mldsa_off + 1)
-                if _available < MLDSA87Auth.SIG_BYTES:
-                    return self._fail(
-                        f"DAKE3 ML-DSA-87 flag 0x01 but only {_available } bytes remain"
-                    )
-                _mldsa_sig = decoded[_mldsa_off + 1 : _mldsa_off + 1 + MLDSA87Auth.SIG_BYTES]
-                if not MLDSA87Auth.verify(self._remote_mldsa_pub, transcript_msg, _mldsa_sig):
-                    return self._fail("DAKE3 ML-DSA-87 signature verification failed")
-                _pq_auth = "hybrid (ring-sig ✓ + ML-DSA-87 ✓)"
-
+            try:
+                hybrid = bool(self._rust.process_dake3(decoded))
+            except Exception as e:
+                return self._fail(f"DAKE3 refused: {e }")
+            _pq_auth = ("hybrid (ring-sig ✓ + ML-DSA-87 ✓)" if hybrid
+                        else "classical only (ring-sig ✓)")
             self._state = DAKEState.ESTABLISHED
             self._session_created_at = time.time()
             self._trace(
@@ -4959,7 +5124,6 @@ class RustDAKEAdapter:
             )
             self._log_debug(f"DAKE3 (Auth-I) verified - {_pq_auth }")
             return True
-
         except Exception as e:
             return self._fail(f"process_dake3 exception: {e }")
 
@@ -6509,10 +6673,8 @@ class EnhancedOTRSession:
             # so it authenticated nothing an attacker holding session_id could
             # not reproduce — and it was not the key that got revealed, which
             # is why revelation proved nothing.
-            if len(mac_key) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
-                raise ValueError(
-                    f"MKmac must be {OTRv4DataMessage .REVEALED_MAC_KEY_LEN } "
-                    f"bytes, got {len (mac_key )}")
+            # MKmac stays in Rust: `mac_key` is a MessageMacKey handle with no
+            # getter. It seals the public region below and is then destroyed.
 
             dmsg = OTRv4DataMessage()
             dmsg.sender_tag = self._sender_tag
@@ -6530,7 +6692,10 @@ class EnhancedOTRSession:
             dmsg.kem_ct = _kem_ct
             dmsg.kem_ek = _kem_ek
 
-            dmsg.mac = dmsg.compute_mac(mac_key)
+            try:
+                dmsg.mac = dmsg.compute_mac(mac_key)
+            finally:
+                mac_key.zeroize()
             # L1: no length filter. The old `if len(k) == 32` silently dropped
             # every spec-sized key; a key the engine queued for revelation must
             # either be revealed or raise, never vanish.
@@ -6670,8 +6835,7 @@ class EnhancedOTRSession:
                     "Peer revealed an all-zero MAC key - revelation is "
                     "supposed to publish the key that authenticated a real "
                     "message")
-            if this_message_mac_key is not None and hmac.compare_digest(
-                    bytes(k), bytes(this_message_mac_key)):
+            if this_message_mac_key is not None and this_message_mac_key.matches(bytes(k)):
                 raise ValueError(
                     "Peer revealed the MAC key of the message carrying the "
                     "revelation - a key is only ever revealed once the "
@@ -6724,15 +6888,18 @@ class EnhancedOTRSession:
             rh_bytes, ct, dmsg.nonce, tag)
         _did_dh_ratchet = self.ratchet.ratchet_id != _rid_before
 
-        if not dmsg.verify_mac(mac_key):
-            raise ValueError("MAC verification failed - message may be forged or replayed")
+        try:
+            if not dmsg.verify_mac(mac_key):
+                raise ValueError("MAC verification failed - message may be forged or replayed")
 
-        # Keys the peer revealed for previously-authenticated messages. They
-        # are public by design; record them so the deniability property is
-        # observable rather than nominal, and bound the store.
-        if dmsg.revealed_mac_keys:
-            self._record_revealed_mac_keys(dmsg.revealed_mac_keys,
-                                           this_message_mac_key=mac_key)
+            # Keys the peer revealed for previously-authenticated messages. They
+            # are public by design; record them so the deniability property is
+            # observable rather than nominal, and bound the store.
+            if dmsg.revealed_mac_keys:
+                self._record_revealed_mac_keys(dmsg.revealed_mac_keys,
+                                               this_message_mac_key=mac_key)
+        finally:
+            mac_key.zeroize()
 
         if dmsg.kem_ct is not None:
             self.ratchet.process_incoming_kem_ct(dmsg.kem_ct)
@@ -6816,6 +6983,35 @@ class EnhancedOTRSession:
             if tlv.type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
 
                 phase = self.rust_smp.get_phase()
+                # A FAILED run is over, not in progress. Treating it as a race
+                # made every retry after one wrong passphrase either refused
+                # ("SMP not Idle for SMP1") or, on the side with the lower
+                # fingerprint, silently ignored -- the peer then waited out
+                # its timeout. Rust leaves Failed for Idle and keeps the
+                # attempt count and cooldown, which its guard still enforces.
+                if phase in ("FAILED", "ABORTED"):
+                    try:
+                        self.rust_smp.restart_after_failure()
+                    except Exception:
+                        # The attempt limit is spent: this engine stays shut.
+                        self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
+                                          f"phase={phase }", "attempt limit reached - refused")
+                        self._queued_smp_response = self.encrypt_with_tlvs(
+                            "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
+                        )
+                        return
+                    phase = self.rust_smp.get_phase()
+                # Already verified this session: a second run is not started
+                # by the peer. Refuse it with an abort and keep the result;
+                # the old race path either ignored it or threw the
+                # verification away, depending on whose fingerprint was lower.
+                if phase == "VERIFIED":
+                    self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
+                                      "phase=VERIFIED", "already verified - refused")
+                    self._queued_smp_response = self.encrypt_with_tlvs(
+                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
+                    )
+                    return
                 if phase != "IDLE":
 
                     local_fp = b""
@@ -7077,6 +7273,11 @@ class EnhancedOTRSession:
                     )
                 return
 
+            elif tlv.type == OTRv4TLV.SMP_ABORT and self.rust_smp.get_phase() == "VERIFIED":
+                # A finished run cannot be aborted. A stale or refused-run
+                # abort must not throw away a verification both sides reached.
+                self.tracer.trace(self.peer, "SMP", "ABORTED", "IGNORED",
+                                  "abort after verification ignored")
             elif tlv.type == OTRv4TLV.SMP_ABORT:
                 self.rust_smp.abort()
                 self.auto_smp_started = False
@@ -7377,8 +7578,14 @@ class EnhancedOTRSession:
             if self.rust_smp is None:
                 raise RuntimeError("start_smp: RustSMP is None after initialize_smp")
             phase = self.rust_smp.get_phase()
-            if phase not in ("IDLE", "FAILED"):
+            if phase == "VERIFIED":
+                raise RuntimeError("start_smp: this session is already verified")
+            if phase not in ("IDLE", "FAILED", "ABORTED"):
                 raise RuntimeError(f"start_smp: SMP already in progress (phase={phase })")
+            if phase in ("FAILED", "ABORTED"):
+                # A new run after a failed or cancelled one. Rust keeps the
+                # cooldown and refuses once the attempt limit is spent.
+                self.rust_smp.restart_after_failure()
 
             if secret:
                 self.set_smp_secret(secret)
@@ -7529,6 +7736,8 @@ class EnhancedOTRSession:
             out_type = None
             resp = None
             if tlv_type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
+                if self.rust_smp.get_phase() in ("FAILED", "ABORTED"):
+                    self.rust_smp.restart_after_failure()
                 resp = self.rust_smp.process_smp1_generate_smp2(tlv_val)
                 out_type = OTRv4TLV.SMP_MSG_2
             elif tlv_type == OTRv4TLV.SMP_MSG_2:
@@ -7583,7 +7792,8 @@ class EnhancedOTRSession:
                     )
                 return None
             elif tlv_type == OTRv4TLV.SMP_ABORT:
-                self.rust_smp.abort()
+                if self.rust_smp.get_phase() != "VERIFIED":
+                    self.rust_smp.abort()
                 return None
             if resp is not None and out_type is not None:
                 return self.encrypt_with_tlvs("", [OTRv4TLV(out_type, bytes(resp))])
@@ -8408,6 +8618,17 @@ class EnhancedSessionManager:
 
         self.sessions: Dict[str, EnhancedOTRSession] = {}
         self.dake_engines: Dict[str, RustDAKEAdapter] = {}
+        # A handshake answering a DAKE1 that arrived on an ENCRYPTED session.
+        # The live session keeps working until this one completes; see
+        # `_handle_dake1`.
+        self._pending_sessions: Dict[str, "EnhancedOTRSession"] = {}
+        # The DAKE1 we last sent each peer, for glare resolution.
+        self._sent_dake1: Dict[str, str] = {}
+        # Peers whose DATA frame arrived with no encrypted session here.
+        self._orphan_data: set = set()
+        # The DAKE1 each in-flight responder run is answering: a duplicate of
+        # it (a glare resend, a re-delivered stanza) is not a new handshake.
+        self._answering_dake1: Dict[str, bytes] = {}
 
         self.lock = threading.RLock()
 
@@ -8490,20 +8711,7 @@ class EnhancedSessionManager:
 
                 return session
 
-            session = EnhancedOTRSession(
-                peer=peer, is_initiator=is_initiator, tracer=self.tracer, logger=self.logger
-            )
-
-            if self.smp_notify_factory is not None:
-                try:
-                    session._smp_notify_cb = self.smp_notify_factory(peer)
-                except Exception:
-                    pass
-            if getattr(self, "ping_refresh_cb", None):
-                session._ping_refresh_cb = self.ping_refresh_cb
-
-            session.smp_guided_prompt = getattr(
-                self, "smp_guided_prompt", False)
+            session = self._new_session(peer, is_initiator)
             self.sessions[peer] = session
 
             self.tracer.trace(
@@ -8600,6 +8808,7 @@ class EnhancedSessionManager:
 
                     dake1 = session.start_dake()
                     if dake1:
+                        self._sent_dake1[peer] = dake1
                         session.queue_outgoing_message(message)
 
                         self.tracer.trace(
@@ -8705,32 +8914,147 @@ class EnhancedSessionManager:
                 self.tracer.trace(peer, "ERROR", "PARSE", "FAILED", str(e))
                 return None
 
+    def take_orphan_data(self, peer: str) -> bool:
+        """Whether `peer` sent a DATA frame we had no session for, since asked.
+
+        The peer holds a session this side does not: we restarted (every
+        launch is a new identity), or their DAKE3 never arrived. Nothing can
+        be decrypted until a new handshake runs, and the peer has no reason to
+        start one. The caller decides whether to; this only reports it.
+        """
+        with self.lock:
+            if peer in self._orphan_data:
+                self._orphan_data.discard(peer)
+                return True
+            return False
+
+    def _new_session(self, peer: str, is_initiator: bool) -> "EnhancedOTRSession":
+        """A session object configured like `get_or_create_session` makes one,
+        NOT entered in `self.sessions`."""
+        session = EnhancedOTRSession(
+            peer=peer, is_initiator=is_initiator, tracer=self.tracer, logger=self.logger
+        )
+        if self.smp_notify_factory is not None:
+            try:
+                session._smp_notify_cb = self.smp_notify_factory(peer)
+            except Exception:
+                pass
+        if getattr(self, "ping_refresh_cb", None):
+            session._ping_refresh_cb = self.ping_refresh_cb
+        session.smp_guided_prompt = getattr(
+            self, "smp_guided_prompt", False)
+        return session
+
+    @staticmethod
+    def _dake1_key(dake1_msg: str) -> bytes:
+        """What glare is decided on: the decoded DAKE1, compared as bytes."""
+        try:
+            return _safe_b64decode(dake1_msg[7:].strip())
+        except Exception:
+            return b""
+
+    def _reset_handshake(self, peer: str, session: "EnhancedOTRSession") -> None:
+        """Forget a half-finished handshake on `session`, zeroizing its engine."""
+        engine = self.dake_engines.pop(peer, None)
+        if engine is not None:
+            try:
+                engine.zeroize()
+            except Exception:
+                pass
+        self._answering_dake1.pop(peer, None)
+        session.session_state = SessionState.PLAINTEXT
+        if hasattr(session, "dake_state"):
+            session.dake_state = DAKEState.IDLE
+        session.dake_engine = None
+        self._sent_dake1.pop(peer, None)
+
     def _handle_dake1(self, peer: str, dake1_msg: str) -> Optional[bytes]:
-        if len(self.sessions) >= getattr(self, "MAX_SESSIONS", 50):
+        """Answer a DAKE1 -- in every state, which is what makes recovery work.
+
+        THE DEFECT THIS FIXES
+        ---------------------
+        A DAKE1 was answered only from PLAINTEXT, FAILED or FINISHED. In any
+        other state it was dropped, and each of those states is one a real
+        network produces (measured through two bridges, and reported from
+        handsets after a VPN switch):
+
+          * DAKE2 lost: the responder sat in DAKE_IN_PROGRESS waiting for a
+            DAKE3 that could never come, and refused the initiator's retry.
+          * DAKE3 lost: the initiator was ENCRYPTED, the responder waiting.
+            Neither side's retry was accepted by the other.
+          * Peer restarted: every launch is a new identity, so the restarted
+            peer starts from PLAINTEXT and sends DAKE1 -- to a side still
+            ENCRYPTED with the old keys, which refused it for good.
+
+        WHAT HAPPENS NOW, BY STATE
+        --------------------------
+          * Waiting for DAKE3 (responder): the new DAKE1 supersedes the old
+            run. That run's keys are zeroized and this one is answered.
+          * Waiting for DAKE2 (initiator), i.e. GLARE -- both sent DAKE1: the
+            two DAKE1s are compared as bytes. The side whose own DAKE1 is
+            greater keeps the initiator role and resends it; the other yields
+            and answers. Both run the same comparison on the same two values,
+            so exactly one yields. No JID is needed, which is why this lives
+            here and not in each client.
+          * ENCRYPTED: answered by a PENDING session. The live one keeps
+            encrypting and decrypting until DAKE3 verifies; only then is it
+            replaced, and its keys destroyed. There is no plaintext gap and a
+            DAKE1 that goes nowhere changes nothing. The replacement is a new
+            session: its SMP state starts unverified, so a verification never
+            carries over to keys it did not check.
+
+        The per-peer DAKE1 rate limit in `process_dake1` still applies in
+        every case, so none of this makes a DAKE1 flood any cheaper to send.
+        """
+        if len(self.sessions) >= getattr(self, "MAX_SESSIONS", 50) and peer not in self.sessions:
             self.debug("session limit reached - dropping DAKE1")
             return None
         with self.lock:
-            session = self.get_or_create_session(peer, is_initiator=False)
-            if session.session_state not in (
-                SessionState.PLAINTEXT,
-            ) and session.session_state.name not in ("PLAINTEXT", "FAILED", "FINISHED"):
-                self.tracer.trace(
-                    peer,
-                    "ERROR",
-                    "DAKE1",
-                    "REJECTED",
-                    f"session in state: {session .session_state .name }",
-                )
+            # Looked at before anything is changed: `get_or_create_session`
+            # rewrites the role flag, and a live ENCRYPTED session's role must
+            # not move because somebody sent a DAKE1.
+            existing = self.sessions.get(peer)
+            if existing is not None and existing.session_state.name == "ENCRYPTED":
+                return self._answer_dake1_pending(peer, dake1_msg)
+            if existing is not None and existing.session_state.name == "DAKE_IN_PROGRESS":
+                session = existing
+            else:
+                session = self.get_or_create_session(peer, is_initiator=False)
+            state = session.session_state.name
+
+            if state == "DAKE_IN_PROGRESS":
+                ours = self._sent_dake1.get(peer)
+                if session.is_initiator and ours and peer not in self._pending_sessions:
+                    if self._dake1_key(ours) > self._dake1_key(dake1_msg):
+                        self.tracer.trace(peer, "DAKE", "DAKE1", "GLARE_KEEP",
+                                          "keeping initiator role; resending DAKE1")
+                        return ours.encode("utf-8")
+                    self.tracer.trace(peer, "DAKE", "DAKE1", "GLARE_YIELD",
+                                      "yielding initiator role")
+                else:
+                    self.tracer.trace(peer, "DAKE", "DAKE1", "RESTART",
+                                      "new DAKE1 supersedes the handshake in progress")
+                self._reset_handshake(peer, session)
+                session.is_initiator = False
+            elif state not in ("PLAINTEXT", "FAILED", "FINISHED"):
+                self.tracer.trace(peer, "ERROR", "DAKE1", "REJECTED",
+                                  f"session in state: {state }")
+                return None
+
+            if (
+                session.dake_engine is not None
+                and self._answering_dake1.get(peer) == self._dake1_key(dake1_msg)
+            ):
+                # Already answered. Restarting on a duplicate is what made a
+                # glare resend cross two runs and leave one side stranded.
+                self.tracer.trace(peer, "DAKE", "DAKE1", "DUPLICATE", "already answered")
                 return None
             if (
                 session.session_state.name in ("FAILED", "FINISHED")
                 or session.dake_engine is not None
             ):
-                session.session_state = SessionState.PLAINTEXT
-                if hasattr(session, "dake_state"):
-                    session.dake_state = DAKEState.IDLE
-                session.dake_engine = None
-                self.dake_engines.pop(peer, None)
+                self._reset_handshake(peer, session)
+            self._answering_dake1[peer] = self._dake1_key(dake1_msg)
             dake_engine = session.initialize_dake(self.client_profile, explicit_initiator=False)
             self.dake_engines[peer] = dake_engine
 
@@ -8748,6 +9072,37 @@ class EnhancedSessionManager:
                 return dake2.encode("utf-8")
 
             return None
+
+    def _answer_dake1_pending(self, peer: str, dake1_msg: str) -> Optional[bytes]:
+        """Answer a DAKE1 on an ENCRYPTED session without touching it."""
+        previous = self._pending_sessions.pop(peer, None)
+        if previous is not None:
+            try:
+                previous.terminate("superseded by a newer DAKE1")
+            except Exception:
+                pass
+        engine = self.dake_engines.pop(peer, None)
+        if engine is not None:
+            try:
+                engine.zeroize()
+            except Exception:
+                pass
+        pending = self._new_session(peer, is_initiator=False)
+        dake_engine = pending.initialize_dake(self.client_profile, explicit_initiator=False)
+        if not dake_engine.process_dake1(dake1_msg, peer):
+            try:
+                pending.terminate("DAKE1 rejected")
+            except Exception:
+                pass
+            return None
+        dake2 = dake_engine.generate_dake2()
+        if not dake2:
+            return None
+        self._pending_sessions[peer] = pending
+        self.dake_engines[peer] = dake_engine
+        self.tracer.trace(peer, "DAKE", "DAKE1_PROCESSED", "PENDING_DAKE2_READY",
+                          "live session kept until the new handshake completes")
+        return dake2.encode("utf-8")
 
     def _handle_dake2(self, peer: str, dake2_msg: str) -> Optional[bytes]:
         """
@@ -8805,6 +9160,7 @@ class EnhancedSessionManager:
                 self._establish_session(session, peer, "DAKE2→DAKE3 initiator")
 
                 self.dake_engines.pop(peer, None)
+                self._sent_dake1.pop(peer, None)
                 self.tracer.trace(peer, "DAKE", "COMPLETE", "INITIATOR_ENCRYPTED", "")
                 return dake3_msg.encode("utf-8")
 
@@ -8818,10 +9174,11 @@ class EnhancedSessionManager:
         Handle incoming DAKE3 (responder side).
         """
         with self.lock:
-            if peer not in self.sessions:
+            pending = self._pending_sessions.get(peer)
+            if peer not in self.sessions and pending is None:
                 self.tracer.trace(peer, "ERROR", "DAKE3", "NO_SESSION", "")
                 return None
-            session = self.sessions[peer]
+            session = pending if pending is not None else self.sessions[peer]
             dake_engine = self.dake_engines.get(peer)
             if dake_engine is None:
                 self.tracer.trace(peer, "ERROR", "DAKE3", "NO_ENGINE", "")
@@ -8862,6 +9219,20 @@ class EnhancedSessionManager:
                         session._remote_long_term_pub_bytes = None
 
                 self._establish_session(session, peer, "DAKE3 responder")
+                self._answering_dake1.pop(peer, None)
+
+                if pending is not None:
+                    # The new handshake is complete and authenticated: only
+                    # now does it replace the live session, whose keys go.
+                    self._pending_sessions.pop(peer, None)
+                    old = self.sessions.get(peer)
+                    self.sessions[peer] = pending
+                    if old is not None and old is not pending:
+                        try:
+                            old.terminate("replaced by a completed DAKE")
+                        except Exception:
+                            pass
+                    self.tracer.trace(peer, "DAKE", "COMPLETE", "SESSION_REPLACED", "")
 
                 self.dake_engines.pop(peer, None)
                 self.tracer.trace(peer, "DAKE", "COMPLETE", "RESPONDER_ENCRYPTED", "")
@@ -8915,12 +9286,14 @@ class EnhancedSessionManager:
         with self.lock:
             if peer not in self.sessions:
                 self.tracer.trace(peer, "ERROR", "DATA", "NO_SESSION", "")
+                self._orphan_data.add(peer)
                 return None
             session = self.sessions[peer]
             if not session.is_encrypted():
                 self.tracer.trace(
                     peer, "ERROR", "DATA", "NOT_ENCRYPTED", session.session_state.name
                 )
+                self._orphan_data.add(peer)
                 return None
 
             try:
@@ -9065,7 +9438,20 @@ class EnhancedSessionManager:
         with self.lock:
             session = self.sessions.pop(peer, None)
             engine = self.dake_engines.pop(peer, None)
-            if session is None and engine is None:
+            pending = self._pending_sessions.pop(peer, None)
+            self._sent_dake1.pop(peer, None)
+            self._answering_dake1.pop(peer, None)
+            if pending is not None:
+                try:
+                    pending.terminate(reason)
+                except Exception:
+                    pass
+            if engine is not None:
+                try:
+                    engine.zeroize()
+                except Exception:
+                    pass
+            if session is None and engine is None and pending is None:
                 return False
             if session is not None:
                 try:
@@ -9136,7 +9522,8 @@ class EnhancedSessionManager:
                     report["handshakes"] += 1
                 except Exception:
                     pass
-            for peer, session in list(self.sessions.items()):
+            for peer, session in (list(self.sessions.items())
+                                  + list(self._pending_sessions.items())):
                 try:
                     session.terminate(reason)
                     report["sessions"] += 1
@@ -9147,6 +9534,10 @@ class EnhancedSessionManager:
                         pass
             self.sessions.clear()
             self.dake_engines.clear()
+            self._pending_sessions.clear()
+            self._sent_dake1.clear()
+            self._orphan_data.clear()
+            self._answering_dake1.clear()
 
             profile = getattr(self, "client_profile", None)
             for name in ("identity_key", "prekey"):

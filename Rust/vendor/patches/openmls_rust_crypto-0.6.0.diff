@@ -1,0 +1,15 @@
+diff -ru /root/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/openmls_rust_crypto-0.6.0/src/provider.rs openmls_rust_crypto/src/provider.rs
+--- a/src/provider.rs	2006-07-24 01:21:28.000000000 +0000
++++ b/src/provider.rs	2026-10-03 16:21:15.621423548 +0000
+@@ -66,6 +66,11 @@
+         HpkeKemType::MlKem768 => hpke_types::KemAlgorithm::MlKem768,
+         #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
+         HpkeKemType::MlKem1024 => hpke_types::KemAlgorithm::MlKem1024,
++        // OTRv4Plus PATCH (test-only crate): the private hybrid KEM is not
++        // offered by this provider; `supports` refuses its ciphersuite
++        // before any HPKE call can reach here.
++        #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
++        HpkeKemType::X448MlKem1024 => unreachable!("not supported by the reference provider"),
+     }
+ }
+ 

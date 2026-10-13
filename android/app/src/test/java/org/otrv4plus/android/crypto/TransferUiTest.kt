@@ -160,4 +160,46 @@ class TransferUiTest {
     fun `an unknown outcome is still explained`() {
         assertTrue(TransferUi.refusal("something_new")?.isNotBlank() == true)
     }
+
+    // ── secure groups ───────────────────────────────────────────────────────
+
+    private fun member(jid: String, verified: Boolean, me: Boolean = false) =
+        org.otrv4plus.android.bridge.GroupMember(jid, "fp", me, verified, true)
+
+    @Test
+    fun `a group file is offered only when every other member is verified`() {
+        val me = member("alice@x.i2p", false, me = true)
+        assertEquals(TransferUi.Offer.Available, TransferUi.groupOffer(
+            listOf(me, member("bob@x.i2p", true), member("carol@x.i2p", true))))
+        assertEquals(TransferUi.Offer.NeedsVerification, TransferUi.groupOffer(
+            listOf(me, member("bob@x.i2p", true), member("carol@x.i2p", false))))
+        assertNull(TransferUi.groupOffer(listOf(me)))
+    }
+
+    @Test
+    fun `a group file row names the member who sent it`() {
+        val row = TransferUi.row(FileTransferView(
+            "id", "room@conference.x.i2p", "cat.jpg", 2048, false, false, false, 0f,
+            state = TransferUi.State.OFFERED, group = true, sender = "bob@x.i2p"))
+        assertTrue(row.label.startsWith("bob@x.i2p: cat.jpg"))
+        assertTrue(row.canAccept)
+    }
+
+    @Test
+    fun `a group file sent stays stoppable and counts who has it`() {
+        val row = TransferUi.row(FileTransferView(
+            "id", "room@conference.x.i2p", "cat.jpg", 2048, true, true, false, 1f,
+            state = TransferUi.State.SENT, group = true, deliveredTo = 2))
+        assertTrue(row.label.contains("2 received it"))
+        assertTrue(row.canDecline)
+        assertFalse(row.finished)
+    }
+
+    @Test
+    fun `group refusals say what to do in a group`() {
+        assertTrue(TransferUi.groupRefusal("unverified")!!.contains("Every member"))
+        assertTrue(TransferUi.groupRefusal("no_members")!!.isNotBlank())
+        assertNull(TransferUi.groupRefusal("started"))
+        assertTrue(TransferUi.refusal("cannot_scrub")!!.contains("hidden information"))
+    }
 }

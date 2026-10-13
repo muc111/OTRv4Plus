@@ -181,6 +181,26 @@ class OtrConnectionService : Service() {
     var failure: String? = null
         private set
 
+    /** Failed attempts in a row since the last success or the user's tap. */
+    val failuresInARow: Int get() = reconnect.attempts
+
+    /**
+     * The I2P router the APK carries. Started by [chooseRouter] when an I2P
+     * sign-in needs it; stopped with the connection, on sign-out and by
+     * Wipe & Exit.
+     */
+    val router: BundledRouter by lazy { BundledRouter(applicationContext) }
+
+    /** What the router is doing, for the connection screen. */
+    @Volatile
+    var routerState: RouterChoice.State = RouterChoice.State.NOT_USED
+        private set
+
+    /** One line about the router for the connection screen, or null. */
+    fun routerLabel(): String? = RouterChoice.label(
+        routerState, System.currentTimeMillis() - router.startedAt, router.fresh,
+        router.lastFailure)
+
     private var worker: Job? = null
     private var watcher: Job? = null
     private var drainer: Job? = null
@@ -201,7 +221,7 @@ class OtrConnectionService : Service() {
     private var password: String = ""
 
     /**
-     * The route, or "" for the compiled-in default.
+     * The route, or "" for the JID's own domain (resolved by the router).
      *
      * Not a secret and not in the vault beside the credentials: it is
      * derivable from the JID's domain for every custom server, and for the
@@ -354,10 +374,9 @@ class OtrConnectionService : Service() {
                 server = if (explicit) {
                     intent.getStringExtra(EXTRA_SERVER).orEmpty()
                 } else {
-                    // A remembered account on anything but the default server
-                    // routes to its own domain. The default is the blank
-                    // case, which is what the bridge already means by "use
-                    // the compiled-in destination".
+                    // A remembered account routes to its own domain; for the
+                    // default server that is the blank route, which the
+                    // bridge also resolves as the JID's domain, by name.
                     if (SignIn.choiceFor(chosen.jid) == SignIn.Choice.CUSTOM)
                         SignIn.domainOf(chosen.jid) else ""
                 }
@@ -396,6 +415,11 @@ class OtrConnectionService : Service() {
 
     private val wipeStarted = AtomicBoolean(false)
 
+    /** Before/after storage measurement of the last wipe (sizes, no names shown). */
+    @Volatile
+    var lastStorage: org.otrv4plus.android.security.AppDataWipe.Result? = null
+        private set
+
     /** The last wipe's engine report, for the diagnostics that outlive it. */
     @Volatile
     var lastWipe: org.otrv4plus.android.bridge.WipeReport? = null
@@ -430,10 +454,8 @@ class OtrConnectionService : Service() {
                 watcher?.cancel(); watcher = null
                 drainer?.cancel(); drainer = null
             },
-            WipeAndExit.Step.WIPE_ENGINE to {
-                val report = core.wipe()
-                lastWipe = report
-                if (!report.ok) error("engine wipe reported ${report.errors}")
+            WipeAndExit.Step.DESTROY_CRYPTO to {
+                if (!core.wipeCrypto()) error("the engine reported an error destroying keys")
             },
             WipeAndExit.Step.CLEAR_NOTIFICATIONS to {
                 alerts.clear()
@@ -453,8 +475,30 @@ class OtrConnectionService : Service() {
                     error("the vault key could not be confirmed deleted")
                 }
             },
-            WipeAndExit.Step.CLEAR_CACHE to {
-                context.cacheDir.listFiles()?.forEach { it.deleteRecursively() }
+            WipeAndExit.Step.STOP_SUBSYSTEMS to {
+                val report = core.wipe()
+                lastWipe = report
+                // The bundled router, after the engine closed its sessions
+                // and before its directory is deleted with the rest.
+                runCatching { router.stop() }
+                if (!report.ok) error("engine teardown reported ${report.errors}")
+            },
+            WipeAndExit.Step.WIPE_APP_DATA to {
+                // Every entry the app owns on disk, not a list of known files
+                // (AppDataWipe). The data directory holds files/, cache/,
+                // code_cache/, databases/, shared_prefs/, no_backup/ and any
+                // app_* directory; the external ones hold app-specific
+                // storage. The system's `lib` link is preserved.
+                val roots = buildList {
+                    add(context.dataDir.toPath())
+                    context.getExternalFilesDirs(null).filterNotNull()
+                        .forEach { add(it.parentFile?.toPath() ?: it.toPath()) }
+                    context.externalCacheDirs.filterNotNull()
+                        .forEach { add(it.parentFile?.toPath() ?: it.toPath()) }
+                }.distinct()
+                val result = org.otrv4plus.android.security.AppDataWipe.wipe(roots)
+                lastStorage = result
+                if (!result.complete) error("storage left: ${result.failed.size} failed")
             },
             WipeAndExit.Step.EXIT to {
                 enter(LinkPhase.STOPPED, "wiped")
@@ -466,7 +510,23 @@ class OtrConnectionService : Service() {
                 // that merely stopped would leave them all in memory until
                 // Android got round to reclaiming it. Stopped first, so the
                 // system does not restart a sticky service into the void.
-                android.os.Process.killProcess(android.os.Process.myPid())
+                //
+                // Then the SYSTEM clears what is left, exactly as Settings'
+                // "Clear storage" does: it kills this process and removes the
+                // whole data directory, cache and code_cache included, plus
+                // this app's Keystore entries. The sweep above cannot finish
+                // that job by itself: while this process is still alive, the
+                // renderer and ART keep writing (a GPU shader cache into
+                // code_cache, directory entries), which is the ~8 kB user data
+                // and ~119 kB cache a handset showed after rc.5's wipe.
+                // Killing the process stays as the fallback if it is refused.
+                val cleared = runCatching {
+                    getSystemService(android.app.ActivityManager::class.java)
+                        ?.clearApplicationUserData() == true
+                }.getOrDefault(false)
+                if (!cleared) {
+                    android.os.Process.killProcess(android.os.Process.myPid())
+                }
             },
         ))
         teardown.launch {
@@ -556,6 +616,13 @@ class OtrConnectionService : Service() {
             withContext(Dispatchers.IO) {
                 runCatching { core.cancelConnect() }
                 runCatching { core.disconnect() }
+                // After the engine has closed its SAM sessions. Only on a
+                // stop the user asked for: a dropped stream reconnects, and
+                // through the same router.
+                if (explicit) {
+                    runCatching { router.stop() }
+                    routerState = RouterChoice.State.NOT_USED
+                }
             }
             enter(LinkPhase.STOPPED, "teardown finished")
         }
@@ -583,7 +650,8 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
-                    core.prepareConnection(jid.trim(), server.trim())
+                    val samPort = chooseRouter()
+                    core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
                     core.connect(password)
                 }
             }
@@ -604,6 +672,10 @@ class OtrConnectionService : Service() {
                 failure = result.exceptionOrNull()?.let { codeOf(it) }
                     ?: result.getOrNull()?.code.orEmpty().ifBlank { "connect_failed" }
                 status = result.getOrNull() ?: status
+                if (reconnect.onFailure(failure)) {
+                    enter(LinkPhase.FAILED, "needs the user: $failure")
+                    return
+                }
             }
 
             val wait = reconnect.nextDelayMs() ?: return
@@ -664,6 +736,73 @@ class OtrConnectionService : Service() {
                 delay(DRAIN_INTERVAL_MS)
             }
         }
+    }
+
+    /**
+     * Pick the I2P router for this attempt, starting ours if it is the one,
+     * and return the SAM port to use (0: the default, a router on the phone).
+     *
+     * The rules are [RouterChoice.decide]; this is the platform half. Blocking:
+     * called on the IO dispatcher.
+     */
+    private suspend fun chooseRouter(): Int {
+        if (!RouterChoice.needsI2p(jid, server)) {
+            routerState = RouterChoice.State.NOT_USED
+            return 0
+        }
+        val mode = RouterStore.load(applicationContext)
+        val external = mode != RouterChoice.Mode.BUILT_IN &&
+            BundledRouter.samAnswers(RouterChoice.EXTERNAL_SAM_PORT)
+        val use = RouterChoice.decide(mode, external, router.available)
+        runCatching {
+            core.note("service", "i2p_router", "info",
+                      "mode=${mode.stored} external=$external " +
+                          "bundled=${router.available} use=$use")
+        }
+        if (use == RouterChoice.Use.EXTERNAL) {
+            // Ours is not needed while the phone's own router answers.
+            router.stop()
+            routerState = if (external) RouterChoice.State.EXTERNAL
+                          else RouterChoice.State.UNAVAILABLE
+            return 0
+        }
+        routerState = RouterChoice.State.STARTING
+        if (!router.launch()) return routerFailed()
+        // Wait for SAM, however long the first start's download takes, as
+        // long as the router is alive. It only gives up on the router when
+        // the router itself has exited -- never on a timer, which is what
+        // made rc.45 kill it mid-download. Cancelling the attempt (Cancel,
+        // Disconnect) ends this wait at the next delay.
+        val giveUp = System.currentTimeMillis() + ROUTER_START_BUDGET_MS
+        while (true) {
+            when (router.status()) {
+                BundledRouter.Status.READY -> {
+                    routerState = RouterChoice.State.RUNNING
+                    return router.samPort
+                }
+                BundledRouter.Status.STARTING ->
+                    routerState = RouterChoice.State.JOINING
+                BundledRouter.Status.STOPPED -> {
+                    router.noteExit()
+                    return routerFailed()
+                }
+            }
+            // Still alive after this long: let the connection try (it fails
+            // and the backoff comes back here, to the same router).
+            if (System.currentTimeMillis() > giveUp) return router.samPort
+            delay(1_000)
+        }
+    }
+
+    private fun routerFailed(): Int {
+        routerState = RouterChoice.State.FAILED
+        runCatching {
+            core.note("service", "i2p_router_failed", "error",
+                      router.lastFailure ?: "unknown")
+        }
+        // Never 0 (the default, 7656): with our router down, the attempt must
+        // fail, not reach whatever listens there.
+        return router.samPort.takeIf { it != 0 } ?: RouterChoice.NO_SAM_PORT
     }
 
     private suspend fun watchUntilDropped() {
@@ -988,8 +1127,15 @@ class OtrConnectionService : Service() {
         const val EXTRA_JID = "jid"
         const val EXTRA_PASSWORD = "password"
 
-        /** The route, or absent for the compiled-in default. Not a secret. */
+        /** The route, or absent for the JID's own domain. Not a secret. */
         const val EXTRA_SERVER = "server"
+
+        /**
+         * How long one attempt waits for the built-in router's SAM bridge.
+         * Not a verdict: the router keeps running, and the next attempt
+         * waits for the same one.
+         */
+        const val ROUTER_START_BUDGET_MS = 10 * 60_000L
 
         /** How often to ask the transport whether it is still up. */
         const val WATCH_INTERVAL_MS = 5_000L

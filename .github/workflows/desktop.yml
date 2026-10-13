@@ -1,0 +1,111 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# The desktop GUI (desktop/): compile it with the Android files it shares,
+# drive it against a scripted engine, and render every screen to PNG
+# (uploaded as the `desktop-screens` artifact) -- no display needed.
+name: Desktop
+
+on:
+  push:
+    paths:
+      - "desktop/**"
+      - "desktop_bridge/**"
+      # The plain-Kotlin files the desktop compiles from the Android tree.
+      - "android/app/src/main/java/org/otrv4plus/android/bridge/**"
+      - "android/app/src/main/java/org/otrv4plus/android/chat/**"
+      - "android/app/src/main/java/org/otrv4plus/android/connection/**"
+      - "android/app/src/main/java/org/otrv4plus/android/crypto/**"
+      - "android/app/src/main/java/org/otrv4plus/android/security/**"
+      - "android/app/src/main/java/org/otrv4plus/android/theme/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+    inputs:
+      dump:
+        description: "Also publish the screens and checksums as annotations (readable through the API where artifact downloads are not)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  desktop:
+    name: Compose desktop build, flow test and screens
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.14.3"
+
+      - name: Build and test
+        working-directory: desktop
+        # Verified against gradle/verification-metadata.xml once it is
+        # committed; until then this run WRITES it (SHA-256 of every jar it
+        # downloaded), for review and commit -- the offline Qubes build
+        # (qubes/packaging/build-desktop.sh) refuses to run without it.
+        run: |
+          set -o pipefail
+          if [ -f gradle/verification-metadata.xml ]; then
+            gradle --no-daemon --dependency-verification strict test desktopLib 2>&1 | tee build.log
+          else
+            gradle --no-daemon --write-verification-metadata sha256 test desktopLib 2>&1 | tee build.log
+          fi
+
+      - name: Failures as annotations
+        if: failure()
+        run: python3 .github/scripts/report-failures.py desktop/build.log
+
+      - name: Dependency checksums
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-verification-metadata
+          path: desktop/gradle/verification-metadata.xml
+          if-no-files-found: ignore
+
+      - name: Screens
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-screens
+          path: desktop/build/screens/*.png
+          if-no-files-found: warn
+
+      # For environments that reach api.github.com but not artifact storage
+      # (.github/scripts/dump-annotations.sh): one file per step.
+      - name: Dump 2-chat.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/2-chat.jpg
+      - name: Dump 1-connect.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/1-connect.jpg
+      - name: Dump 3-unverified.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/3-unverified.jpg
+      - name: Dump 5-settings.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/5-settings.jpg
+      - name: Dump 6-group.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/6-group.jpg
+      - name: Dump 7-profile.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/7-profile.jpg
+      - name: Dump 4-people.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/4-people.jpg
+
+      - name: Test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-test-report
+          path: desktop/build/reports/tests/

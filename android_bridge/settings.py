@@ -39,6 +39,8 @@ from typing import Any, Dict, List, Optional
 
 import otrv4plus_address as _address
 
+from . import route as _route
+
 __all__ = [
     "ConnectionProfile", "DEFAULT_SERVER", "default_profile",
     "ProfileError",
@@ -53,19 +55,24 @@ __all__ = [
 #: that could reach a user as if it were a real address.
 #:
 #: Set it to the c2s destination of the server the app should use, for example
-#: "xmpp-elite.i2p" or a full "<52 chars>.b32.i2p". The JID domain a user types
+#: "otrv4plus.i2p" or a full "<52 chars>.b32.i2p". The JID domain a user types
 #: does not have to match it: `server` is the host the SAM stream is opened to,
 #: `jid`'s domain is the XMPP virtual host, and a server can front several --
 #: which is why a profile carries both and why `effective_server` exists.
 #:
-#: This is a destination hash, not a name: nothing resolves it, the label *is*
-#: the address (`TRANSPORT_POLICY.md`). It is therefore not a trust anchor
-#: either, and does not become one by being compiled in. The server is a relay
-#: the DAKE authenticates *through*: the peer's identity key is pinned by TOFU
-#: end to end, so a substituted or hostile server at this address costs
-#: availability and metadata, and cannot read a message or impersonate a
-#: contact.
-DEFAULT_SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
+#: Shown as a name; dialled at the b32 shipped for it in
+#: `otrv4plus_address.SHIPPED_SERVERS`, without asking the router's address
+#: book (which can map the name anywhere). Any other server, typed as a name,
+#: is still resolved by the router.
+#:
+#: Not a trust anchor either way. The server is a relay the DAKE
+#: authenticates *through*: the peer's identity key is pinned by TOFU end to
+#: end, so a substituted or hostile server costs availability and metadata,
+#: and cannot read a message or impersonate a contact. It CAN capture the
+#: account password: certificate checks are off over I2P, so a server that
+#: the address book substituted for this name may offer only SASL PLAIN
+#: (SECURITY_ISSUES X1). A full `.b32.i2p` address avoids that.
+DEFAULT_SERVER = "otrv4plus.i2p"
 
 
 class ProfileError(ValueError):
@@ -100,11 +107,47 @@ class ConnectionProfile:
     server: str = ""
     sam_host: str = _address.DEFAULT_SAM_HOST
     sam_port: int = _address.DEFAULT_SAM_PORT
-    #: False only for a clearnet server. The app is an I2P messenger; this
-    #: exists because the transport has to know, not as an invitation.
-    use_i2p: bool = True
+    #: LEGACY, and no longer decides anything. It used to be the route, with
+    #: a default of True that Kotlin never overrode -- so a clearnet server
+    #: such as 07f.de was probed for an I2P router and failed before any DNS
+    #: or TCP (device report). The route now comes from the server NAME
+    #: (`route`, android_bridge.route); this field is kept only so older
+    #: stored profiles and callers still construct.
+    use_i2p: Optional[bool] = None
+    #: Explicit transport: "auto" (from the name), "clearnet_tls",
+    #: "i2p_sam" or "tor". Refused where it would leak a name (route.py).
+    transport: str = "auto"
+    #: Tor's SOCKS5 port (Orbot's default). Used only for a Tor route.
+    socks_host: str = "127.0.0.1"
+    socks_port: int = 9050
+
+    def __post_init__(self) -> None:
+        # An account on the project server's b32 is an account on its NAME.
+        # Device report, 2026-10-02: picking "Custom" and typing the b32 (the
+        # only way to reach the server before rc.15) made the JID
+        # alice@<b32>.b32.i2p. The stream then said to='<b32>', the server --
+        # which hosts otrv4plus.i2p -- answered host-unknown, and nothing
+        # connected. A remembered account carries the same JID, so this is
+        # corrected where every profile is built, not only at sign-in.
+        canonical = _address.canonical_jid(self.jid)
+        if canonical != self.jid:
+            object.__setattr__(self, "jid", canonical)
 
     # -- derived --------------------------------------------------------------
+
+    @property
+    def route(self) -> "_route.Route":
+        """The one transport decision for this profile. Raises RouteError."""
+        return _route.classify(self.effective_server, self.transport)
+
+    @property
+    def uses_i2p(self) -> bool:
+        """Whether this profile goes through the SAM bridge. False when the
+        route cannot be decided -- such a profile never reaches the network."""
+        try:
+            return self.route.kind == _route.I2P_SAM
+        except _route.RouteError:
+            return False
 
     @property
     def effective_server(self) -> str:
@@ -152,6 +195,13 @@ class ConnectionProfile:
             found.append(
                 "No server to connect to: %r has no domain and no server was "
                 "given." % (self.jid,))
+        elif self.effective_server and not found:
+            # Only when the fields themselves are fine: a server the field
+            # check already refused needs no second sentence saying so.
+            try:
+                self.route
+            except _route.RouteError as exc:
+                found.append(exc.detail)
         return found
 
     def validate(self) -> "ConnectionProfile":
@@ -181,7 +231,9 @@ class ConnectionProfile:
             "server": self.server,
             "sam_host": self.sam_host,
             "sam_port": self.sam_port,
-            "use_i2p": self.use_i2p,
+            "transport": self.transport,
+            "socks_host": self.socks_host,
+            "socks_port": self.socks_port,
         }
 
     @classmethod
@@ -204,7 +256,10 @@ class ConnectionProfile:
             server=str(data.get("server", "") or ""),
             sam_host=str(data.get("sam_host", _address.DEFAULT_SAM_HOST) or ""),
             sam_port=port,
-            use_i2p=bool(data.get("use_i2p", True)),
+            # A stored "use_i2p" is read and ignored: the name decides.
+            transport=str(data.get("transport", _route.AUTO) or _route.AUTO),
+            socks_host=str(data.get("socks_host", "127.0.0.1") or "127.0.0.1"),
+            socks_port=_stored_port(data.get("socks_port"), 9050),
         )
 
 
@@ -219,3 +274,12 @@ def default_profile(jid: str = "") -> Optional[ConnectionProfile]:
     if not DEFAULT_SERVER:
         return None
     return ConnectionProfile(jid=jid, server=DEFAULT_SERVER)
+
+
+def _stored_port(value: Any, default: int) -> int:
+    """A stored port, or `default` if it is missing or not a number. A bad
+    stored value must not stop the app opening its settings."""
+    try:
+        return int(value) if value not in (None, "") else default
+    except (TypeError, ValueError):
+        return default

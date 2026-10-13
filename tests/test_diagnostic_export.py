@@ -36,7 +36,7 @@ from android_bridge.trace import (BANNED_KEYS, DEFAULT_CAPACITY, REDACTED,
                                   TraceLog)
 
 PASSWORD = "correct horse battery staple"
-JID = "bob@xmpp-elite.i2p"
+JID = "bob@otrv4plus.i2p"
 
 
 @pytest.fixture
@@ -220,7 +220,7 @@ class TestMessageContentCannotBeRecorded:
 
 STATUS = {
     "stage": "failed", "connected": False, "jid": JID,
-    "server": "xmpp-elite.i2p", "sam": "127.0.0.1:7656",
+    "server": "otrv4plus.i2p", "sam": "127.0.0.1:7656",
     "worker_alive": True,
     "last": {"code": "auth_failed", "detail": "The server rejected the "
                                              "password.", "stage": "authenticating"},
@@ -285,7 +285,7 @@ class TestTheReportIsUseful:
         timeline, so "we asked for user-A's presence and user-A never
         answered" reads exactly as it did."""
         assert JID not in exported
-        assert "xmpp-elite.i2p" not in exported
+        assert "otrv4plus.i2p" not in exported
         assert "user-" in exported
 
     def test_the_same_account_gets_the_same_label_throughout(self, exported):

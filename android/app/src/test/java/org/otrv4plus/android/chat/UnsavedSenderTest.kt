@@ -31,7 +31,7 @@ import kotlin.test.assertTrue
  */
 class UnsavedSenderTest {
 
-    private val alice = "alice@xmpp-elite.i2p"
+    private val alice = "alice@otrv4plus.i2p"
     private val stranger = "carol@elsewhere.i2p"
 
     private fun state(vararg roster: Contact): ChatState {

@@ -34,11 +34,12 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from android_bridge.settings import ConnectionProfile
+from tests.fake_sasl import sasl_plugins
 from android_bridge.transport import (
     CONNECT_TIMEOUT, DEFAULT_C2S_PORT, TransportError, XmppTransport,
 )
 
-JID = "alice@xmpp-elite.i2p"
+JID = "alice@otrv4plus.i2p"
 SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
 PASSWORD = "correct-horse-battery-staple"
 
@@ -57,6 +58,7 @@ class FakeClient:
     """A slixmpp ClientXMPP that never opens a socket."""
 
     def __init__(self, jid, password, *, fail_auth=False):
+        self.plugin = sasl_plugins()
         self.jid = jid
         self.password = password
         self.fail_auth = fail_auth
@@ -109,7 +111,9 @@ def build(*, fail_auth=False, forwarder=None, **kw):
         made["client"] = FakeClient(jid, password, fail_auth=fail_auth)
         return made["client"]
 
-    async def default_forwarder(dest, port, sam_host, sam_port):
+    # `verify`: the X1 destination check, which the transport requires every
+    # I2P forwarder to accept (tests/test_x1_destination_pinning.py).
+    async def default_forwarder(dest, port, sam_host, sam_port, *, verify=None):
         made["forward"] = (dest, port, sam_host, sam_port)
         return ("127.0.0.1", 41234)
 
@@ -154,7 +158,7 @@ class TestItConnectsThroughTheTunnel:
             t.close()
 
     def test_a_router_that_is_not_there_says_so(self):
-        async def broken(*_a):
+        async def broken(*_a, **_kw):
             raise OSError("connection refused")
 
         t, made = build(forwarder=broken)
@@ -277,11 +281,11 @@ class TestItCarriesPayloadsBothWays:
             # OTR frames go to a resource confirmed OTRv4Plus-capable, and to
             # that FULL JID -- never the bare JID (otrv4plus_caps).
             import otrv4plus_caps
-            t._caps.presence_available("bob@xmpp-elite.i2p/phone")
-            t._caps.disco_result("bob@xmpp-elite.i2p/phone", [otrv4plus_caps.FEATURE])
-            t.send("bob@xmpp-elite.i2p", "?OTRv4+ ...frame...")
+            t._caps.presence_available("bob@otrv4plus.i2p/phone")
+            t._caps.disco_result("bob@otrv4plus.i2p/phone", [otrv4plus_caps.FEATURE])
+            t.send("bob@otrv4plus.i2p", "?OTRv4+ ...frame...")
             assert made["client"].sent == [
-                ("bob@xmpp-elite.i2p/phone", "?OTRv4+ ...frame...", "chat")]
+                ("bob@otrv4plus.i2p/phone", "?OTRv4+ ...frame...", "chat")]
         finally:
             t.close()
 
@@ -289,7 +293,7 @@ class TestItCarriesPayloadsBothWays:
         t, _ = build()
         try:
             with pytest.raises(TransportError) as caught:
-                t.send("bob@xmpp-elite.i2p", "x")
+                t.send("bob@otrv4plus.i2p", "x")
             assert caught.value.code == "not_connected"
         finally:
             t.close()
@@ -300,8 +304,8 @@ class TestItCarriesPayloadsBothWays:
         try:
             t.connect()
             made["client"].fire("message", FakeStanza(
-                "bob@xmpp-elite.i2p/phone-a1b2", "?OTRv4+ frame"))
-            assert got == [("bob@xmpp-elite.i2p", "?OTRv4+ frame")]
+                "bob@otrv4plus.i2p/phone-a1b2", "?OTRv4+ frame"))
+            assert got == [("bob@otrv4plus.i2p", "?OTRv4+ frame")]
         finally:
             t.close()
 
@@ -313,7 +317,7 @@ class TestItCarriesPayloadsBothWays:
         try:
             t.connect()
             made["client"].fire("message", FakeStanza(
-                "bob@xmpp-elite.i2p", "hello, this is not an OTR frame"))
+                "bob@otrv4plus.i2p", "hello, this is not an OTR frame"))
             assert got == ["hello, this is not an OTR frame"]
         finally:
             t.close()
@@ -405,7 +409,7 @@ class TestTheCredentialDoesNotLeak:
 
     def test_a_failure_carries_a_type_not_a_message(self):
         """An exception raised inside SASL can quote what it was given."""
-        async def leaky(*_a):
+        async def leaky(*_a, **_kw):
             raise OSError("auth failed for password=%s" % PASSWORD)
 
         t, _ = build(forwarder=leaky)
@@ -472,7 +476,10 @@ class TestLifecycle:
         try:
             t.connect()
             t.disconnect()
-            assert seen == ["building_tunnels", "connected", "disconnected"]
+            # "connecting": the tunnel is open and the XMPP handshake runs
+            # over it -- a stage of its own, so a stall there is attributable.
+            assert seen == ["building_tunnels", "connecting", "connected",
+                            "disconnected"]
         finally:
             t.close()
 
@@ -482,7 +489,7 @@ class TestLifecycle:
         where = []
         t, _ = build(on_payload=lambda *a: None)
 
-        async def watching_forwarder(*_a):
+        async def watching_forwarder(*_a, **_kw):
             where.append(threading.current_thread().name)
             return ("127.0.0.1", 41234)
 
@@ -506,10 +513,10 @@ class TestTheRoster:
         try:
             t.connect()
             made["client"].client_roster = {
-                "carol@xmpp-elite.i2p": {"name": "",
+                "carol@otrv4plus.i2p": {"name": "",
                                          "subscription": "none",
                                          "pending_out": True}}
-            assert t.roster() == [{"jid": "carol@xmpp-elite.i2p",
+            assert t.roster() == [{"jid": "carol@otrv4plus.i2p",
                                    "name": "",
                                    "subscription": "none",
                                    "pending": True}]
@@ -521,9 +528,9 @@ class TestTheRoster:
         try:
             t.connect()
             made["client"].client_roster = {
-                "bob@xmpp-elite.i2p": {"name": "Bob",
+                "bob@otrv4plus.i2p": {"name": "Bob",
                                        "subscription": "both"}}
-            assert t.roster() == [{"jid": "bob@xmpp-elite.i2p",
+            assert t.roster() == [{"jid": "bob@otrv4plus.i2p",
                                    "name": "Bob",
                                    "subscription": "both",
                                    "pending": False}]
@@ -751,7 +758,7 @@ class TestItDoesNotHangOnAStreamThatWillNotOpen:
             made["client"] = NeverOpens(jid, password)
             return made["client"]
 
-        async def forwarder(*_a):
+        async def forwarder(*_a, **_kw):
             return ("127.0.0.1", 41234)
 
         t = XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,
@@ -779,7 +786,7 @@ class TestItDoesNotHangOnAStreamThatWillNotOpen:
             made["client"] = Leaky(jid, password)
             return made["client"]
 
-        async def forwarder(*_a):
+        async def forwarder(*_a, **_kw):
             return ("127.0.0.1", 41234)
 
         t = XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,
@@ -896,9 +903,9 @@ class TestAddingAndRemovingContacts:
                 ("roster", str(j), kw))
             made["client"].send_presence_subscription = lambda **kw: calls.append(
                 ("sub", kw.get("pto"), kw.get("ptype")))
-            t.add_contact("bob@xmpp-elite.i2p", "Bob")
-            assert ("roster", "bob@xmpp-elite.i2p", {"name": "Bob"}) in calls
-            assert ("sub", "bob@xmpp-elite.i2p", "subscribe") in calls
+            t.add_contact("bob@otrv4plus.i2p", "Bob")
+            assert ("roster", "bob@otrv4plus.i2p", {"name": "Bob"}) in calls
+            assert ("sub", "bob@otrv4plus.i2p", "subscribe") in calls
         finally:
             t.close()
 
@@ -910,7 +917,7 @@ class TestAddingAndRemovingContacts:
             made["client"].update_roster = lambda j, **kw: calls.append(kw)
             made["client"].send_presence_subscription = lambda **kw: calls.append(
                 kw.get("ptype"))
-            t.remove_contact("bob@xmpp-elite.i2p")
+            t.remove_contact("bob@otrv4plus.i2p")
             assert "unsubscribe" in calls
             assert {"subscription": "remove"} in calls
         finally:
@@ -923,7 +930,7 @@ class TestAddingAndRemovingContacts:
             t.connect()
             made["client"].send_presence_subscription = lambda **kw: calls.append(
                 kw.get("ptype"))
-            t.answer_subscription("bob@xmpp-elite.i2p", True)
+            t.answer_subscription("bob@otrv4plus.i2p", True)
             t.answer_subscription("mallory@elsewhere.i2p", False)
             assert calls == ["subscribed", "unsubscribed"]
         finally:
@@ -991,7 +998,7 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         full.update(state)
 
         class _Xmpp:
-            boundjid = JID("alice@xmpp-elite.i2p")
+            boundjid = JID("alice@otrv4plus.i2p")
 
         return RosterItem(_Xmpp(), JID(jid), state=full)
 
@@ -1013,12 +1020,12 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "bob@xmpp-elite.i2p": self._real_item(
-                    "bob@xmpp-elite.i2p", name="Bob",
+                "bob@otrv4plus.i2p": self._real_item(
+                    "bob@otrv4plus.i2p", name="Bob",
                     subscription="both", **{"from": True, "to": True}),
             }
             assert t.roster() == [{
-                "jid": "bob@xmpp-elite.i2p",
+                "jid": "bob@otrv4plus.i2p",
                 "name": "Bob",
                 "subscription": "both",
                 "pending": False,
@@ -1031,8 +1038,8 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "carol@xmpp-elite.i2p": self._real_item(
-                    "carol@xmpp-elite.i2p", pending_out=True),
+                "carol@otrv4plus.i2p": self._real_item(
+                    "carol@otrv4plus.i2p", pending_out=True),
             }
             got = t.roster()
             assert got[0]["pending"] is True
@@ -1051,13 +1058,13 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "bob@xmpp-elite.i2p": self._real_item(
-                    "bob@xmpp-elite.i2p", name="Bob",
+                "bob@otrv4plus.i2p": self._real_item(
+                    "bob@otrv4plus.i2p", name="Bob",
                     subscription="both", **{"from": True, "to": True}),
-                "broken@xmpp-elite.i2p": Hostile(),
+                "broken@otrv4plus.i2p": Hostile(),
             }
             jids = [entry["jid"] for entry in t.roster()]
-            assert "bob@xmpp-elite.i2p" in jids, (
+            assert "bob@otrv4plus.i2p" in jids, (
                 "one unreadable entry discarded the whole roster")
         finally:
             t.close()
@@ -1070,10 +1077,10 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         try:
             t.connect()
             made["client"].client_roster = {
-                "dave@xmpp-elite.i2p": {},          # no keys at all
+                "dave@otrv4plus.i2p": {},          # no keys at all
             }
             got = t.roster()
-            assert got == [{"jid": "dave@xmpp-elite.i2p", "name": "",
+            assert got == [{"jid": "dave@otrv4plus.i2p", "name": "",
                             "subscription": "", "pending": False}]
         finally:
             t.close()
@@ -1101,3 +1108,119 @@ class TestTheRosterIsReadWithSlixmppsOwnApi:
         source = inspect.getsource(XmppTransport._roster)
         assert ".get(" not in source, (
             "_roster calls .get() on something again; RosterItem has no .get")
+
+
+class TestEveryStepOfAnI2PConnectIsRecorded:
+    """Device report 2026-10-02: a connect ended in "did not finish within
+    300s" with nothing recorded between "building tunnels" and the timeout,
+    and roster polling had pushed everything else out of the ring. Each step
+    is now recorded, and the timeout names the last one reached."""
+
+    @pytest.fixture
+    def short_timeout(self, monkeypatch):
+        import android_bridge.transport as transport_module
+        monkeypatch.setattr(transport_module, "CONNECT_TIMEOUT", 1.0)
+
+    @staticmethod
+    def _steps():
+        from android_bridge.trace import TRACE
+        return [e["event"] for e in TRACE.events() if e["component"] == "connection"]
+
+    @staticmethod
+    def _transport(forwarder, client_factory):
+        return XmppTransport(profile(), PASSWORD, on_payload=lambda *a: None,
+                             client_factory=client_factory, forwarder=forwarder)
+
+    class _SilentClient(FakeClient):
+        """The tunnel opens; the server never answers."""
+
+        def connect(self, host=None, port=None):
+            self.connected_to = (host, port)
+
+    def test_a_tunnel_that_never_opens_is_named(self, short_timeout):
+        import asyncio
+
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            log("[i2p] opening SAM stream to %s (...)" % dest)
+            await asyncio.sleep(30)
+
+        t = self._transport(fwd, lambda j, p: FakeClient(j, p))
+        try:
+            with pytest.raises(TransportError) as exc:
+                t.connect()
+            assert exc.value.code == "timeout"
+            assert "Last step reached: sam_opening" in exc.value.detail
+            assert "tunnel to the server was never built" in exc.value.detail
+            assert SERVER not in exc.value.detail
+            assert self._steps()[-2:] == ["sam_opening", "timed_out"]
+        finally:
+            t.close()
+
+    def test_a_server_that_never_answers_over_an_open_tunnel_is_named(self, short_timeout):
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            log("[i2p] opening SAM stream to %s (...)" % dest)
+            log("[i2p] SAM stream established.")
+            return ("127.0.0.1", 41234)
+
+        t = self._transport(fwd, lambda j, p: self._SilentClient(j, p))
+        try:
+            with pytest.raises(TransportError) as exc:
+                t.connect()
+            assert "Last step reached: tunnel_open" in exc.value.detail
+            assert "XMPP server never answered" in exc.value.detail
+            assert self._steps()[-4:] == ["sam_opening", "sam_established",
+                                          "tunnel_open", "timed_out"]
+        finally:
+            t.close()
+
+    def test_the_shipped_address_is_recorded_without_the_address(self):
+        from android_bridge.trace import TRACE
+        shipped = "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p"
+
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            log("[i2p] opening SAM stream to %s (...)" % dest)
+            log("[i2p] %s was dialled at the address this version "
+                "ships for it." % dest)
+            log("[i2p] SAM stream established.")
+            return ("127.0.0.1", 41234)
+
+        t = self._transport(fwd, lambda j, p: FakeClient(j, p))
+        try:
+            t.connect()
+            assert "shipped_address_used" in self._steps()
+            dump = repr(TRACE.events())
+            assert shipped not in dump and SERVER not in dump
+        finally:
+            t.close()
+
+    def test_the_handshake_steps_follow_the_tunnel(self):
+        class Handshaking(FakeClient):
+            def connect(self, host=None, port=None):
+                self.connected_to = (host, port)
+                for name in ("tls_success", "auth_success", "session_start"):
+                    self.fire(name, None)
+
+        async def fwd(dest, port, sh, sp, *, verify=None, log=None):
+            return ("127.0.0.1", 41234)
+
+        t = self._transport(fwd, lambda j, p: Handshaking(j, p))
+        try:
+            t.connect()
+            assert self._steps()[-3:] == ["tunnel_open", "tls", "signed_in"]
+        finally:
+            t.close()
+
+    def test_polling_the_roster_does_not_flood_the_record(self):
+        from android_bridge.trace import TRACE
+        t, _ = build()
+        try:
+            t.connect()
+            # Cleared rather than sliced: the ring is bounded, and in a full
+            # run it may already be full, so a position proves nothing.
+            TRACE.clear()
+            for _ in range(200):
+                t.roster()
+            roster = [e for e in TRACE.events() if e["component"] == "roster"]
+            assert len(roster) <= 2, "each poll was recorded: %d events" % len(roster)
+        finally:
+            t.close()

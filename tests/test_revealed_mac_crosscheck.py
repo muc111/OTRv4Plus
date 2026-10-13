@@ -45,6 +45,17 @@ def _ratchet_pair():
     return alice, bob
 
 
+def _published_pair(alice, bob, text=b"m1"):
+    """Alice sends; Bob receives and publishes. Returns (Alice's handle on
+    the message's MKmac, the bytes Bob published for it) -- the first point
+    at which those bytes are public."""
+    ct, h, n, t, _e, _r, handle = alice.encrypt_message(text)
+    bob.decrypt_message(h, ct, n, t)
+    *_x, published, _y = bob.encrypt_message(b"reply")
+    key = next(bytes(k) for k in published if handle.matches(bytes(k)))
+    return handle, key
+
+
 def _needs_crosscheck(ratchet):
     if not hasattr(ratchet, "knows_revealed_mac_key"):
         pytest.skip("extension build predates the C2 cross-check")
@@ -58,19 +69,20 @@ class TestKeysAreIndependentlyDerivable:
     def test_a_sent_messages_key_is_known_to_the_sender(self):
         """The peer reveals the keys of messages it RECEIVES from us, so our
         own send-side keys must be in the set."""
-        alice, _bob = _ratchet_pair()
+        alice, bob = _ratchet_pair()
         _needs_crosscheck(alice)
-        *_r, mkmac = alice.encrypt_message(b"m1")
-        assert alice.knows_revealed_mac_key(bytes(mkmac))
+        handle, key = _published_pair(alice, bob)
+        assert alice.knows_revealed_mac_key(key)
+        assert alice.knows_revealed_mac_key(handle)
 
     def test_a_received_messages_key_is_known_to_the_receiver(self):
         """And the peer reveals the keys of messages it SENDS, which we derive
         on receipt."""
         alice, bob = _ratchet_pair()
         _needs_crosscheck(bob)
-        ct, h, n, t, _e, _r, mkmac = alice.encrypt_message(b"m1")
-        bob.decrypt_message(h, ct, n, t)
-        assert bob.knows_revealed_mac_key(bytes(mkmac))
+        handle, key = _published_pair(alice, bob)
+        assert bob.knows_revealed_mac_key(key)
+        assert bob.knows_revealed_mac_key(handle)
 
     def test_the_key_a_peer_actually_publishes_is_verifiable(self):
         """End to end through the real reveal queue, both directions."""
@@ -97,9 +109,10 @@ class TestKeysAreIndependentlyDerivable:
 
     def test_a_near_miss_is_not_known(self):
         """One flipped bit must not verify -- no truncated comparison."""
-        alice, _bob = _ratchet_pair()
+        alice, bob = _ratchet_pair()
         _needs_crosscheck(alice)
-        *_r, mkmac = alice.encrypt_message(b"m1")
+        _handle, mkmac = _published_pair(alice, bob)
+        assert alice.knows_revealed_mac_key(mkmac)
         for i in (0, 31, 63):
             bad = bytearray(mkmac)
             bad[i] ^= 0x01
@@ -117,7 +130,7 @@ class TestKeysAreIndependentlyDerivable:
         _needs_crosscheck(bob)
 
         _dropped = alice.encrypt_message(b"never arrives")
-        lost_mkmac = bytes(_dropped[6])
+        lost_mkmac = _dropped[6]      # a MessageMacKey: its bytes stay in Rust
 
         ct2, h2, n2, t2, _e, _r, _mk = alice.encrypt_message(b"arrives")
         bob.decrypt_message(h2, ct2, n2, t2)
@@ -132,10 +145,10 @@ class TestKeysAreIndependentlyDerivable:
         Checked from the outside: the engine exposes one bit, and no accessor
         that returns anything derived from the stored value.
         """
-        alice, _bob = _ratchet_pair()
+        alice, bob = _ratchet_pair()
         _needs_crosscheck(alice)
-        *_r, mkmac = alice.encrypt_message(b"m1")
-        assert alice.knows_revealed_mac_key(bytes(mkmac)) is True
+        _handle, mkmac = _published_pair(alice, bob)
+        assert alice.knows_revealed_mac_key(mkmac) is True
         rust = alice._rust
         for name in dir(rust):
             if name.startswith("_"):
@@ -196,10 +209,10 @@ class TestFatalCases:
         Publishing the current message's MKmac would make that message
         forgeable at the instant it is accepted.
         """
-        alice, _bob = _ratchet_pair()
-        *_r, mkmac = alice.encrypt_message(b"m1")
+        alice, bob = _ratchet_pair()
+        handle, key = _published_pair(alice, bob)
         with pytest.raises(ValueError) as exc:
-            _record(alice, [bytes(mkmac)], this_message_mac_key=bytes(mkmac))
+            _record(alice, [key], this_message_mac_key=handle)
         assert "carrying" in str(exc.value)
 
     def test_the_engine_never_does_that(self):
@@ -208,11 +221,11 @@ class TestFatalCases:
         alice, bob = _ratchet_pair()
         for i in range(6):
             ct, h, n, t, _e, revealed, mkmac = alice.encrypt_message(b"m%d" % i)
-            assert bytes(mkmac) not in [bytes(k) for k in revealed], \
+            assert not any(mkmac.matches(bytes(k)) for k in revealed), \
                 "a message revealed its own authenticating key"
             bob.decrypt_message(h, ct, n, t)
             *_x, rev_b, mk_b = bob.encrypt_message(b"r%d" % i)
-            assert bytes(mk_b) not in [bytes(k) for k in rev_b]
+            assert not any(mk_b.matches(bytes(k)) for k in rev_b)
 
 
 # ── Unaccounted keys are recorded, not fatal ─────────────────────────────────
@@ -238,18 +251,18 @@ class TestUnaccountedIsNotFatal:
         assert len(rec.peer_revealed_mac_keys) == 1
 
     def test_a_known_key_is_counted_as_verified(self):
-        alice, _bob = _ratchet_pair()
+        alice, bob = _ratchet_pair()
         _needs_crosscheck(alice)
-        *_r, mkmac = alice.encrypt_message(b"m1")
-        rec = _record(alice, [bytes(mkmac)])
+        _handle, mkmac = _published_pair(alice, bob)
+        rec = _record(alice, [mkmac])
         assert rec.revealed_mac_keys_verified == 1
         assert rec.revealed_mac_keys_unaccounted == 0
 
     def test_the_two_counts_are_kept_separately(self):
-        alice, _bob = _ratchet_pair()
+        alice, bob = _ratchet_pair()
         _needs_crosscheck(alice)
-        *_r, mkmac = alice.encrypt_message(b"m1")
-        rec = _record(alice, [bytes(mkmac), os.urandom(MKMAC_LEN),
+        _handle, mkmac = _published_pair(alice, bob)
+        rec = _record(alice, [mkmac, os.urandom(MKMAC_LEN),
                               os.urandom(MKMAC_LEN)])
         assert (rec.revealed_mac_keys_verified,
                 rec.revealed_mac_keys_unaccounted) == (1, 2)
@@ -270,7 +283,8 @@ class _FakeRatchet:
     """Just enough ratchet for _enh_dec_v6, with the reveal answer under test."""
 
     def __init__(self, mac_key, plaintext, known=True):
-        self._mac_key = mac_key
+        # The real ratchet hands out a Rust MessageMacKey, never bytes.
+        self._mac_key = otrv4_core.MessageMacKey.from_revealed(mac_key)
         self._plaintext = plaintext
         self._known = known
         self.ratchet_id = 1
@@ -323,7 +337,7 @@ def _wire(mac_key, revealed, text=b"hello", break_mac=False):
     msg.ecdh_pub, msg.nonce = bytes(56), bytes(12)
     msg.ciphertext = b"\x00" * 32
     msg.revealed_mac_keys = [bytes(k) for k in revealed]
-    msg.mac = msg.compute_mac(mac_key)
+    msg.mac = msg.compute_mac(otrv4_core.MessageMacKey.from_revealed(mac_key))
     if break_mac:
         bad = bytearray(msg.mac)
         bad[0] ^= 0x01

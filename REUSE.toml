@@ -10,7 +10,7 @@ version = 1
 [[annotations]]
 path = ["**/*.py", "**/*.rs", "**/*.kt", "**/*.kts", "**/*.toml", "**/*.yml",
         "**/*.sh", "**/*.xml", "**/*.json", "**/*.cfg", "**/*.ini",
-        "**/*.pro", "**/*.properties", "tests/data/**"]
+        "**/*.pro", "**/*.properties", "tests/data/**", "qubes/**"]
 precedence = "closest"
 SPDX-FileCopyrightText = "2025-2026 muc111"
 SPDX-License-Identifier = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
@@ -31,7 +31,13 @@ path = [
     "ANDROID_CHAT_DELETION.md",
     "OTRV4PLUS_CAPABILITY.md",
     "PROSODY_USER_DISCOVERY.md",
+    "qubes/README.md",
+    "desktop/README.md",
+    "qubes/salt/otrv4plus/files/README.md",
     "MLS_FEASIBILITY.md",
+    "MLS_SECURITY_HARDENING.md",
+    "Rust/vendor/VENDORED.md",
+    "RUST_AUTHORITY_AUDIT.md",
     "ANDROID_PHASE2_REPORT.md",
     "ANDROID_STORAGE_AUDIT.md",
     "ANDROID_WIPE_AND_EXIT.md",
@@ -42,8 +48,12 @@ path = [
     "CHANGELOG.md",
     "CHANGES.md",
     "CONTRIBUTING.md",
+    "CRYPTO_AUDIT_2026-09.md",
+    "SECURITY_AUDIT_2026-10-11.md",
+    "PHYSICAL_TEST_PLAN.md",
     "CRYPTO_SOURCE_OF_TRUTH.md",
     "DEVELOPMENT.md",
+    "FEASIBILITY_REPORT.md",
     "FEATURES.md",
     "FILE_TRANSFER_TEST_PLAN.md",
     "GROUP_CRYPTO_AUDIT.md",
@@ -60,6 +70,7 @@ path = [
     "ROADMAP.md",
     "RUST_SECURITY_PATCHES.md",
     "Rust/VOICE_TUNING.md",
+    "Rust/fuzz/FUZZING.md",
     "SECURITY.md",
     "SECURITY_INVARIANTS.md",
     "SECURITY_ISSUES.md",
@@ -89,6 +100,11 @@ path = [
     "example.png",
     "xmpp-verify.png",
     "xmpp-call-sendfile.png",
+    "desktop/docs/chat.jpg",
+    "desktop/docs/connect.jpg",
+    "desktop/docs/unverified.jpg",
+    "desktop/docs/group.jpg",
+    "desktop/docs/profile.jpg",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"
@@ -108,6 +124,15 @@ path = ["LICENSE", "LICENSE-COMMERCIAL.md", "CLA.md", "CONTRACTOR-IP.md", "NOTIC
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"
 SPDX-License-Identifier = "LicenseRef-OTRv4Plus-Legal"
+
+# Vendored OpenMLS crates (MIT), patched for the hybrid suite: see
+# Rust/vendor/VENDORED.md for every change.
+[[annotations]]
+path = ["Rust/vendor/openmls_traits/**", "Rust/vendor/openmls_rust_crypto/**",
+        "Rust/vendor/patches/**"]
+precedence = "override"
+SPDX-FileCopyrightText = "OpenMLS Authors"
+SPDX-License-Identifier = "MIT"
 
 # Third-party material: its own terms.
 [[annotations]]

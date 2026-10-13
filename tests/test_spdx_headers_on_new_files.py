@@ -63,6 +63,10 @@ SPDX = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 
 SOURCE_SUFFIXES = (".py", ".rs", ".kt", ".kts")
 
+#: Third-party code kept under its own licence (declared in REUSE.toml),
+#: which must keep its authors' headers rather than gain ours.
+THIRD_PARTY_PREFIXES = ("Rust/vendor/openmls_traits/", "Rust/vendor/openmls_rust_crypto/")
+
 #: How far into the file the header may be. A shebang, an encoding line and a
 #: couple of blank lines is the realistic worst case; a "header" on line 40 is
 #: not a header.
@@ -138,6 +142,7 @@ def _files_added_since_baseline():
     return sorted(
         p for p in added
         if p.endswith(SOURCE_SUFFIXES)
+        and not p.startswith(THIRD_PARTY_PREFIXES)
         and os.path.isfile(os.path.join(ROOT, p))
     )
 

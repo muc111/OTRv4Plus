@@ -1,0 +1,8 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# qrexec service, in sys-i2p: the UDP leg of one SAM datagram session, for a
+# chat qube with no network. dom0's /etc/qubes/policy.d/30-otrv4plus.policy
+# allows it from otr-chat only.
+exec /usr/lib/otrv4plus/otrv4plus-qubes-relay service

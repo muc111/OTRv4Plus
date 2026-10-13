@@ -34,8 +34,8 @@ import pytest
 import otrv4plus_presence as presence
 from otrv4plus_presence import OFFLINE, ONLINE, UNKNOWN, PresenceBook
 
-ALICE = "alice@xmpp-elite.i2p"
-BOB = "bob@xmpp-elite.i2p"
+ALICE = "alice@otrv4plus.i2p"
+BOB = "bob@otrv4plus.i2p"
 
 
 @pytest.fixture
@@ -250,9 +250,9 @@ class TestTheCaseHalfOfTheDocumentedRule:
     """
 
     #: The same account as the server, as the user types it, and per device.
-    SPELLINGS = ("alice@xmpp-elite.i2p", "Alice@XMPP-Elite.i2p",
-                 "ALICE@XMPP-ELITE.I2P", "alice@xmpp-elite.i2p/phone",
-                 "Alice@XMPP-Elite.i2p/Desktop", "  alice@xmpp-elite.i2p  ")
+    SPELLINGS = ("alice@otrv4plus.i2p", "Alice@OTRv4Plus.i2p",
+                 "ALICE@OTRV4PLUS.I2P", "alice@otrv4plus.i2p/phone",
+                 "Alice@OTRv4Plus.i2p/Desktop", "  alice@otrv4plus.i2p  ")
 
     @pytest.mark.parametrize("spelling", SPELLINGS)
     def test_every_spelling_reads_the_same_state(self, book, spelling):
@@ -281,7 +281,13 @@ class TestTheCaseHalfOfTheDocumentedRule:
         book.note("%s/phone" % ALICE, online=True)
         book.note("%s/Desktop" % ALICE, online=False)
         assert len(book) == 1
-        assert book.state(ALICE) == OFFLINE, "the later stanza did not win"
+        # One peer -- and online while any resource is (RFC 6121): the
+        # desktop leaving does not take the phone offline. This used to assert
+        # "the later stanza wins", which is the bug that showed a live
+        # contact as offline on two handsets (test_presence_per_resource.py).
+        assert book.state(ALICE) == ONLINE
+        book.note("%s/phone" % ALICE, online=False)
+        assert book.state(ALICE) == OFFLINE, "the later stanza for a resource did not win"
 
     def test_two_different_accounts_are_still_two(self, book):
         """Folding is one-way safe: it may merge spellings of one account and

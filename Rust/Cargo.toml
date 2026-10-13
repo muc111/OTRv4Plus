@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.11.0"
+version     = "0.13.1"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -18,7 +18,9 @@ license     = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 # Measured, not guessed: cargo 1.75 cannot even resolve the graph.  Declaring
 # 1.80 here would let a 1.80-1.84 toolchain start a build that fails much
 # later with an unrelated-looking error.
-rust-version = "1.85"
+#   * openmls 0.9.1 (secure groups; stricter parsing of MLS extensions from
+#     the wire) declares rust-version 1.91.
+rust-version = "1.91"
 
 [lib]
 name = "otrv4_core"
@@ -53,6 +55,10 @@ extension-module = ["pyo3/extension-module"]
 # enable it: Termux gets Opus from `opuslib` over Termux's libopus.so.
 # Not cryptography -- a codec. It holds no key.
 android-opus = ["dep:otrv4-opus-codec"]
+# OTRv4Plus group chat: MLS (RFC 9420) on the core's PQ crypto. A separate
+# crate for the same reason as opus-codec: one PQClean FFI call needs
+# `unsafe`, and this crate keeps #![forbid(unsafe_code)].
+mls = ["dep:otrv4-mls"]
 
 pq-rust = [
     "num-bigint",
@@ -118,6 +124,25 @@ test-only-kdf = []
 # does not expose the surface.
 legacy-dake-keys = []
 
+# R3: Python entry points that take or return RAW key material, compiled in
+# only for the test suite. Production never calls them: it uses the handle
+# APIs (key handles, DakeOutput, MessageMacKey, RustVoiceKex/Agreement,
+# FileDek). They exist for known-answer and cross-implementation tests and for
+# tests that build a ratchet or voice root from fixed keys:
+#
+#   RustDoubleRatchet(root, cks, ckr, brace, ...)   RustDoubleRatchet.from_dakeresult
+#   RustDAKE(ik, prekey, mldsa_priv, ...)           RustDAKE.new_from_bytearrays
+#   RustDAKE.sign_profile_body_and_construct        RustDAKE.ed448_sign_test
+#   RustVoiceRoot.from_initial_agreement / derive_rekey / from_bytes
+#   py_ring_sign  mldsa87_keygen  mldsa87_sign  aes256gcm_encrypt/decrypt
+#   mlkem1024_keygen/encaps/decaps  seal_identity  unseal_identity
+#   create_sealed_identity
+#
+# OFF by default: the APK and the Termux build do not contain them at all.
+# build.rs refuses the feature unless OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1, and
+# tests/test_release_guard.py asserts a release wheel exposes none of them.
+raw-key-test-api = []
+
 [dependencies]
 pyo3         = { version = "0.29", features = ["abi3-py39"] }
 zeroize      = { version = "1.8",  features = ["derive", "alloc"] }
@@ -136,6 +161,7 @@ dashmap      = { version = "5.5"  }
 thiserror    = { version = "1.0"  }
 libc         = { version = "0.2"  }
 otrv4-opus-codec = { path = "opus-codec", optional = true }
+otrv4-mls        = { path = "mls", optional = true }
 
 # Optional, gated by the pq-rust feature.
 # v10.6.14: lazy_static (1.5) removed; SMP constants migrated to
@@ -207,3 +233,18 @@ overflow-checks = true
 # until a test uses it.
 proptest = "1"
 hex      = "0.4"
+
+# `cfg(fuzzing)` is set only by cargo-fuzz (see fuzz/). Declared so a normal
+# build does not warn about the fuzz-only helper in smp.rs.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
+
+# OTRv4Plus PATCH (MLS_SECURITY_HARDENING.md §2, decision C1): OpenMLS's
+# ciphersuite, KEM and signature-scheme lists are closed enums. The vendored
+# openmls_traits adds private-use code points for the hybrid suite
+# MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 (0xF0A1), its KEM
+# X448+ML-KEM-1024 (0xF0A1) and composite signature Ed448+ML-DSA-87 (0xFEA1),
+# and nothing else; vendor/VENDORED.md lists every change. The crypto itself
+# is ours (mls/src/hpke.rs, mls/src/provider.rs).
+[patch.crates-io]
+openmls_traits = { path = "vendor/openmls_traits" }

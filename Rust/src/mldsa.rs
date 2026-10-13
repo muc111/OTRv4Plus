@@ -142,6 +142,17 @@ impl MlDsa87KeyHandle {
     }
 }
 
+impl MlDsa87KeyHandle {
+    /// A detached signature, for Rust callers (the DAKE3 signer). The
+    /// secret never becomes a Python object.
+    pub(crate) fn sign_internal(&self, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
+        let secret = self.secret.as_ref().ok_or("ML-DSA-87 signing key has been destroyed")?;
+        let sk = mldsa87::SecretKey::from_bytes(secret.expose())
+            .map_err(|_| "invalid ML-DSA-87 secret key")?;
+        Ok(mldsa87::detached_sign(msg, &sk).as_bytes().to_vec())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

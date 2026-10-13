@@ -28,8 +28,9 @@ from android_bridge.connection import ConnectionController, SamProbe
 from android_bridge.settings import ConnectionProfile
 from android_bridge.transport import TransportError
 
-JID = "alice@xmpp-elite.i2p"
-SERVER = "hq4t24b7vkllfbk55e5xfocqhfi7hxprwc47zyuilbg6wgzikidq.b32.i2p"
+JID = "alice@otrv4plus.i2p"
+# The default is a NAME the router resolves, and the JID's own domain.
+SERVER = "otrv4plus.i2p"
 
 
 class FakeApp:
@@ -74,7 +75,8 @@ class FakeTransport:
     def __init__(self, profile, password, *, on_payload, on_state=None,
                  on_presence=None, on_subscription_request=None,
                  subscription_policy=None, client_factory=None,
-                 forwarder=None, fail=None):
+                 forwarder=None, tor_forwarder=None, server_pins=None,
+                 fail=None):
         self.profile = profile
         self.password = password
         self.on_payload = on_payload
@@ -350,15 +352,21 @@ class TestWhatCrossedTheBoundary:
         got = ctl.inputs()
         assert got["jid"] == JID
         assert got["jid_localpart_present"] is True
-        assert got["jid_domain"] == "xmpp-elite.i2p"
+        assert got["jid_domain"] == "otrv4plus.i2p"
 
     def test_the_tunnel_target_is_the_server_not_the_jid_domain(self):
         """These differ on purpose: the SAM stream goes to the c2s
         destination, the JID domain is the XMPP virtual host."""
-        ctl, _ = build()
+        ctl, _ = build(profile=ConnectionProfile(jid=JID, server="relay.i2p"))
         got = ctl.inputs()
-        assert got["tunnel_target"] == SERVER
+        assert got["tunnel_target"] == "relay.i2p"
         assert got["jid_domain"] != got["tunnel_target"]
+
+    def test_a_blank_route_tunnels_to_the_jid_domain(self):
+        """No compiled-in destination stands in for a blank route: the JID's
+        own domain is the target, and the router resolves it."""
+        ctl, _ = build(profile=ConnectionProfile(jid="bob@elsewhere.i2p"))
+        assert ctl.inputs()["tunnel_target"] == "elsewhere.i2p"
 
     def test_it_reports_ports_and_tls_mode(self):
         ctl, _ = build()
@@ -517,17 +525,17 @@ class TestASubscriptionRequestReachesTheUser:
     def test_a_request_is_queued_rather_than_logged(self):
         ctl, made = build()
         ctl.connect("pw")
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         got = self._requests(ctl)
         assert len(got) == 1, "the request never reached the event queue"
-        assert got[0]["peer"] == "bob@xmpp-elite.i2p"
+        assert got[0]["peer"] == "bob@otrv4plus.i2p"
 
     def test_it_crosses_as_flat_primitives(self):
         """What the old comment was about: a nested or non-dataclass value
         arrives in Kotlin with no fields and the mapper drops it."""
         ctl, made = build()
         ctl.connect("pw")
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         item = self._requests(ctl)[0]
         for key, value in item.items():
             assert isinstance(value, (str, int, float, bool)) or value is None, (
@@ -540,7 +548,7 @@ class TestASubscriptionRequestReachesTheUser:
         ctl, made = build()
         ctl.connect("pw")
         made["transport"].subscription_policy = "ask"
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         assert self._requests(ctl)[0]["policy"] == "ask"
 
     def test_the_policy_is_read_from_the_transport_not_the_request(self):
@@ -549,7 +557,7 @@ class TestASubscriptionRequestReachesTheUser:
         ctl, made = build()
         ctl.connect("pw")
         made["transport"].subscription_policy = "accept"
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
         assert self._requests(ctl)[0]["policy"] == "accept"
         assert ctl.subscription_policy() == "accept"
 
@@ -588,7 +596,7 @@ class TestASubscriptionRequestReachesTheUser:
             raise RuntimeError("sink is broken")
 
         ctl._events.on_event = boom
-        made["transport"].on_subscription_request("bob@xmpp-elite.i2p")
+        made["transport"].on_subscription_request("bob@otrv4plus.i2p")
 
     def test_answering_reaches_the_transport(self):
         ctl, made = build()
@@ -596,12 +604,12 @@ class TestASubscriptionRequestReachesTheUser:
         seen = []
         made["transport"].answer_subscription = (
             lambda jid, approve: seen.append((jid, approve)))
-        assert ctl.answer_subscription("bob@xmpp-elite.i2p", True)["ok"]
-        assert seen == [("bob@xmpp-elite.i2p", True)]
+        assert ctl.answer_subscription("bob@otrv4plus.i2p", True)["ok"]
+        assert seen == [("bob@otrv4plus.i2p", True)]
 
     def test_answering_without_a_connection_says_so(self):
         ctl, _ = build()
-        got = ctl.answer_subscription("bob@xmpp-elite.i2p", True)
+        got = ctl.answer_subscription("bob@otrv4plus.i2p", True)
         assert got["ok"] is False
         assert got["code"] == "not_connected"
 
@@ -703,3 +711,80 @@ class TestAFailedAttemptDoesNotSurviveALaterSuccess:
             assert ctl.connect("pw")["code"] == "transport_failed"
         assert ctl.status()["last"]["code"] == "transport_failed"
         assert ctl.status()["connected"] is False
+
+
+class TestTheRouterCheckIsInTheReport:
+    """A report from a phone whose router check failed said "(no events
+    recorded)": the one outcome that mattered was the one not written down.
+    Only the stable code and SAM version go in -- the detail sentence names
+    the local host and port, and those stay out of a report a user pastes."""
+
+    def _events(self):
+        from android_bridge.trace import TRACE
+        return [e for e in TRACE.events(4000)
+                if e.get("component") == "router" and e.get("event") == "probe"]
+
+    def setup_method(self):
+        from android_bridge.trace import TRACE
+        TRACE.clear()
+
+    def test_the_screen_check_is_recorded(self):
+        ctl, _ = build(probe=SamProbe(False, "timeout",
+                                      "127.0.0.1:7656 did not answer"))
+        assert ctl.probe()["code"] == "timeout"
+        (ev,) = self._events()
+        assert ev["severity"] == "warning"
+        assert ev["fields"]["code"] == "timeout"
+        assert "7656" not in repr(ev) and "127.0.0.1" not in repr(ev)
+
+    def test_the_connect_check_is_recorded(self):
+        ctl, _ = build()
+        ctl.connect("pw")
+        (ev,) = self._events()
+        assert ev["severity"] == "info"
+        assert ev["fields"]["code"] == "ok"
+        assert ev["fields"]["version"] == "3.1"
+
+    def test_a_refused_port_says_android_may_have_stopped_the_router(self):
+        from android_bridge.connection import probe_sam
+
+        def refuse(*_a, **_k):
+            raise ConnectionRefusedError()
+        got = probe_sam("127.0.0.1", 7656, opener=refuse)
+        assert got.code == "refused" and "Unrestricted" in got.detail
+
+
+class TestSecureGroupRoomsAreRejoined:
+    """Device test, 2026-10-02: after the app's stream came back, only the
+    Welcome room was joined again. The secure group's room dropped
+    everything: sends failed ("message not sent"), the commit adding a member
+    never came back, and the member never got a Welcome."""
+
+    def test_every_secure_room_is_joined_again_on_connect(self):
+        import time
+
+        class Groups:
+            def rooms(self):
+                return ["mls@conference.otrv4plus.i2p",
+                        "other@conference.otrv4plus.i2p"]
+
+        ctl, made = build()
+        made["app"].groups = Groups()
+        joined = []
+        ctl.join_room = lambda room, nick, password="": (
+            joined.append((room, nick)) or {"ok": True})
+        assert ctl.connect("pw")["ok"]
+        for _ in range(100):
+            if len(joined) == 2:
+                break
+            time.sleep(0.01)
+        assert sorted(joined) == [
+            ("mls@conference.otrv4plus.i2p", "alice"),
+            ("other@conference.otrv4plus.i2p", "alice")]
+
+    def test_no_groups_joins_nothing(self):
+        ctl, made = build()
+        joined = []
+        ctl.join_room = lambda *a, **k: joined.append(a) or {"ok": True}
+        assert ctl.connect("pw")["ok"]
+        assert joined == []

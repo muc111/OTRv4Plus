@@ -20,8 +20,8 @@ import kotlin.test.assertTrue
  */
 class PersistentMessageStoreTest {
 
-    private val alice = "alice@xmpp-elite.i2p"
-    private val bob = "bob@xmpp-elite.i2p"
+    private val alice = "alice@otrv4plus.i2p"
+    private val bob = "bob@otrv4plus.i2p"
 
     /**
      * A store bound to an account.
@@ -32,7 +32,7 @@ class PersistentMessageStoreTest {
      * account and stay there; the boundary itself is covered by
      * `AccountIsolationTest`.
      */
-    private val owner = "owner@xmpp-elite.i2p"
+    private val owner = "owner@otrv4plus.i2p"
 
     private fun opened(
         vault: Vault,
@@ -299,7 +299,7 @@ class PersistentMessageStoreTest {
  */
 class MessageCodecTest {
 
-    private val alice = "alice@xmpp-elite.i2p"
+    private val alice = "alice@otrv4plus.i2p"
 
     private fun sample(body: String) =
         Message("m1", alice, body, false, 1_000L, SendState.NONE,

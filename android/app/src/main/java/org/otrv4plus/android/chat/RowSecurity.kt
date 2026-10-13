@@ -61,6 +61,18 @@ object RowSecurity {
     }
 
     /**
+     * A secure group's row. Its room address has no one-to-one session, so
+     * [badge] would call it "Not encrypted" -- what a restored group showed
+     * after a sign-in (device test, 2026-10-05). It is MLS-encrypted; while
+     * it catches up, it says so.
+     */
+    @JvmStatic
+    fun group(syncing: Boolean): Badge =
+        if (syncing) Badge("Encrypted group, syncing…", Tone.NEUTRAL, "\u27F3")
+        else Badge("Encrypted group", Tone.NEUTRAL,
+                   SecurityLevel.Level.ENCRYPTED_UNVERIFIED.mark)
+
+    /**
      * The badge for a row, or null when there is nothing honest to say.
      *
      * Null for the row of somebody never spoken to: `PLAINTEXT` there is not

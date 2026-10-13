@@ -7,10 +7,12 @@ package org.otrv4plus.android.crypto
  *
  * WHAT IS PRESENT AND WHAT IS NOT
  * -------------------------------
- * The XMPP half is implemented and tested: `otrv4plus_omemo` derives the
- * recipient device set from room MEMBERSHIP rather than presence, decides
- * which bundles must be fetched, detects a room whose anonymity makes OMEMO
- * impossible, and classifies every failure into a code this class renders.
+ * Nothing OMEMO is shipped. The Python module that held the XMPP half
+ * (`otrv4plus_omemo`: device lists, bundles, recipient derivation) was
+ * retired on 2026-09-28 -- nothing imported it, and encrypted groups are
+ * OTRv4Plus secure groups over MLS. This class is kept as a named
+ * placeholder: it is how `EncryptionArchitectureTest` pins that an
+ * unavailable protocol is never silently replaced.
  *
  * The cryptographic half is NOT present, and this class does not pretend
  * otherwise: [availability] reports [Availability.NOT_IMPLEMENTED] whenever

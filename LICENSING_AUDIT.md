@@ -27,10 +27,13 @@ different things, and the graph has also changed over time. Stated once, here:
 | **104** | **Shipped crates** — reachable from `otrv4_core` through *normal* dependency edges only, so build-script helpers and dev/test-only crates are excluded. This is what is compiled into the artifact, and therefore exactly the set `NOTICE` §1 must attribute. | `tools/generate_notice.py` → `shipped_packages()` |
 | **133** | Third-party crates in the **full resolved graph**, including build and dev dependencies. Larger than 104 because a `cc` or a `criterion` is resolved but not shipped. | `cargo metadata --all-features`, minus `otrv4_core` |
 | **134** | The same full resolved graph **including `otrv4_core` itself**. This is the raw package count, and the figure the Method paragraph above quotes. | `grep -c '^name = ' Rust/Cargo.lock` |
+| **117** | **Shipped crates today** (2026-09-28), with the `mls` feature linked: the same definition as 104, measured by `tools/generate_notice.py` over `SHIPPED_FEATURES` for both shipped targets. This is the figure NOTICE §1 states, and a test pins the heading to the generator. | `tools/generate_notice.py` |
+| **333** | Raw `Cargo.lock` entries today. Much larger than the shipped set because `Cargo.lock` is feature-independent: openmls's optional reference providers (hpke-rs, libcrux, the RustCrypto provider) are locked though no shipped build enables them. | `grep -c '^name = ' Rust/Cargo.lock` |
 | **137** | The third-party full-graph count **at v10.17.0**, when the dual-licence decision was taken. The graph has since lost four packages, so the equivalent figure today is 133. | `git show 080a60d:Rust/Cargo.lock \| grep -c '^name = '` → 138, minus `otrv4_core` |
 
-The number that matters for attribution is **104**: those are the crates whose
-notices must travel with a binary. The number that mattered for the licensing
+The number that matters for attribution is the **shipped** count -- **104**
+before MLS, **117** since the `mls` feature was linked: those are the crates
+whose notices must travel with a binary. The number that mattered for the licensing
 decision is the full-graph one, because a copyleft build dependency would still
 have been a problem to think about — and, as §2–§5 record, there were none in
 either set.
@@ -144,6 +147,36 @@ that licence — attribution naming the wrong holder is worse than none — and 
 split `(MIT OR Apache-2.0) AND Unicode-3.0` on `OR` first, producing `(MIT` as
 an identifier. Both are pinned by tests.
 
+### MLS, HPKE and MPL-2.0 (2026-09-28)
+
+Linking `otrv4-mls` (OpenMLS 0.9, MIT) brought the question of HPKE. The
+obvious crate, `hpke-rs`, is **MPL-2.0**: file-level copyleft, which in a
+product that is also sold under a commercial licence would have meant
+publishing any modified MPL files and carrying their notices -- manageable,
+but an obligation the project had until then avoided entirely.
+
+What was done instead, and what is true now:
+
+* `Rust/mls/src/hpke.rs` implements the one HPKE mode MLS uses (RFC 9180
+  base mode, single-shot seal/open and export) on the primitives the core
+  already ships. It is written from the RFC; it is cross-checked against
+  `hpke-rs` byte for byte by `Rust/mls/tests/hpke_cross.rs`.
+* `hpke-rs` and `hpke-rs-crypto` are **dev-dependencies of `otrv4-mls`
+  only**. `cargo tree -e normal --features pyo3/extension-module,android-opus,mls`
+  for both shipped targets (`aarch64-linux-android`,
+  `x86_64-unknown-linux-gnu`) contains no `hpke-rs` and **no MPL, GPL, LGPL
+  or EPL crate at all**; every third-party crate is MIT, Apache-2.0, BSD,
+  Unlicense or Unicode-3.0, alone or as an OR choice. They appear in
+  `Cargo.lock` because the lockfile is feature-independent.
+* `Rust/mls/src/storage.rs` is ported from `openmls_memory_storage` 0.6.0
+  (MIT) and attributed as derived code in NOTICE §1.
+
+**For legal review, not settled here:** whether a test that links an MPL-2.0
+crate and compares outputs creates any obligation for the tested file. On the
+MPL's terms it should not -- nothing of `hpke-rs` is copied into
+`hpke.rs` or distributed -- but that is the one place MPL code touches the
+build, so it is recorded.
+
 ### Still open
 
 * ~~**Attribution/NOTICE file.**~~ Done at v10.17.2 — see above.
@@ -153,9 +186,8 @@ an identifier. Both are pinned by tests.
   reachable from both the connection screen and the contact list. The same
   screen carries the AGPL §5(d) Appropriate Legal Notices — copyright line,
   warranty disclaimer, which licence applies, and where the source is.
-  i2pd's own dependencies (Boost, OpenSSL 3.x) remain the obligation of
-  whoever bundles them; i2pd is **not** currently bundled, so `NOTICE` §4 is
-  forward-looking rather than a live obligation.
+  i2pd and the OpenSSL and Boost linked into it are bundled since
+  2026-10-10 and attributed in `NOTICE` §4; see §5 below.
 * ~~**No copyleft guard on the Android dependency graph.**~~ Done 2026-09-14.
   `:app:checkRuntimeDependencyLicences` resolves the debug and release runtime
   classpaths, reads each module's POM (following `<parent>` where licences are
@@ -390,8 +422,26 @@ distribution of the app. Keep it out of `implementation` configurations.
 
 ## 5. Bundled i2pd (decision 3)
 
-| Component | Licence | Relationship | Compatible? |
-|---|---|---|---|
+| Component | Version | Licence | Relationship | Compatible? |
+|---|---|---|---|---|
+| i2pd | 2.61.0 | **BSD-3-Clause** | separate executable in the APK (`lib/<abi>/libi2pd.so`), run as a child process | Yes |
+| OpenSSL | 3.5.9 | **Apache-2.0** | statically linked into i2pd | Yes |
+| Boost (filesystem, program_options, atomic, headers) | 1.88.0 | **BSL-1.0** | statically linked into i2pd | Yes |
+| zlib | Android's own | — | system library, not bundled | — |
+
+Bundled since 2026-10-10, built in CI from source by
+`.github/scripts/build-i2pd-android.sh`, each source checked against a pinned
+commit. The OpenSSL question this section used to leave open is settled:
+the build links OpenSSL **3.x**, which is Apache-2.0, not the 1.x
+OpenSSL/SSLeay licence. All three are permissive and attribution-only, so
+**the router does not constrain the project's licensing** in either
+direction. Their notices and full licence texts (`LICENSES/BSL-1.0.txt` is
+new) are in `NOTICE` §4, which the APK carries and the licences screen shows.
+
+i2pd runs as its own process and talks to the app only over the SAM socket on
+loopback; it is not linked into any of this project's code.
+
+---|---|---|---|
 | i2pd | **BSD 3-Clause** | to be bundled as a native library | Yes |
 
 Verified from the upstream repository. i2pd exposes `libi2pd_wrapper` for
@@ -410,7 +460,16 @@ That check is a Phase 3 task, gated behind building `libi2pd` for arm64-v8a.
 
 ---
 
-## 6. Attribution obligations
+## 6. Attribution obligations (pre-v10.17.2 -- historical)
+
+*Superseded.* Written before NOTICE existed; kept for the reasoning. What
+happened: `tools/generate_notice.py` generates NOTICE from the shipped graph
+(v10.17.2), the APK carries it as an asset and renders it with the AGPL §5(d)
+notices (2026-09-14), and the Android runtime classpath has a copyleft gate.
+The crate figure below is the one of its time; today's is in "Counting the
+dependencies". The licence it calls "the project's" (GPL-3.0) is the one
+replaced at v10.17.0 by AGPL-3.0-only OR the commercial licence (§0).
+
 
 Regardless of the licensing route chosen, the shipped app must reproduce notices
 for every bundled component. Concretely:
@@ -435,7 +494,12 @@ the generator should be wired earlier so the list is never wrong.
 
 ---
 
-## 7. Summary
+## 7. Summary (pre-v10.17.0 -- historical)
+
+*Superseded by §0.* The table answers the questions as they stood when the
+project was GPL-3.0; the licence decision it calls "the actual blocker" was
+taken at v10.17.0.
+
 
 | Question | Answer |
 |---|---|

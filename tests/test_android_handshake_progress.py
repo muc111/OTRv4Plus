@@ -108,7 +108,8 @@ class TestEveryStepIsReported:
         alice, bob, aw, bw, A, B = pair
         alice.start_session(B)
         s = alice.handshake_status(B)
-        assert set(s) == {"stage", "step", "steps", "have", "of", "elapsed"}
+        assert set(s) == {"stage", "step", "steps", "have", "of", "elapsed",
+                          "eta", "capability", "queued"}
         assert all(isinstance(v, (int, str)) for v in s.values())
 
 

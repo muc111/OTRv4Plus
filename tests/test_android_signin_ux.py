@@ -49,9 +49,13 @@ def signin():
 
 class TestTheUserNeverTypesAB32:
 
-    def test_the_destination_lives_in_python_only(self):
+    def test_no_destination_is_compiled_in_at_all(self):
+        """The default is a name the router resolves. The old b32 was
+        compiled in here and kept every install pointed at a server that had
+        been recreated (test_i2p_naming_no_dns.py)."""
         settings = _read(ROOT, "android_bridge", "settings.py")
-        assert B32 in settings, "the default destination moved or was lost"
+        assert B32 not in settings
+        assert 'DEFAULT_SERVER = "otrv4plus.i2p"' in settings
 
     def test_it_is_not_duplicated_into_kotlin(self):
         """Two copies is two places to change when the server moves, and the
@@ -71,7 +75,7 @@ class TestTheUserNeverTypesAB32:
                     "%s hard-codes the default destination" % name)
 
     def test_the_sign_in_layer_holds_a_name_not_a_route(self, signin):
-        assert 'DEFAULT_DOMAIN = "xmpp-elite.i2p"' in signin
+        assert 'DEFAULT_DOMAIN = "otrv4plus.i2p"' in signin
         assert ".b32." not in _code_only(signin)
 
     def test_the_default_leaves_the_route_to_the_bridge(self, signin):
@@ -194,4 +198,5 @@ class TestTheChoiceReachesTheConnection:
     def test_the_prepared_connection_gets_the_server(self):
         service = _code_only(_read(JAVA, "connection",
                                    "OtrConnectionService.kt"))
-        assert "core.prepareConnection(jid.trim(), server.trim())" in service
+        # The SAM port follows: the built-in I2P router listens on its own.
+        assert "core.prepareConnection(jid.trim(), server.trim()," in service

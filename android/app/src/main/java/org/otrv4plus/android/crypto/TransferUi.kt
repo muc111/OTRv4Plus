@@ -36,6 +36,18 @@ object TransferUi {
         data object NeedsEncryption : Offer
     }
 
+    /**
+     * A secure group's attach control: available when every other member is
+     * verified (the group passphrase or 1:1 SMP) -- the bridge refuses
+     * otherwise, as for 1:1. Null with nobody else in the group.
+     */
+    @JvmStatic
+    fun groupOffer(members: List<org.otrv4plus.android.bridge.GroupMember>): Offer? {
+        val others = members.filter { !it.me }
+        if (others.isEmpty()) return null
+        return if (others.all { it.verified }) Offer.Available else Offer.NeedsVerification
+    }
+
     @JvmStatic
     fun offer(security: SecurityState): Offer = when (security) {
         SecurityState.SMP_VERIFIED -> Offer.Available
@@ -162,8 +174,23 @@ object TransferUi {
                 else -> State.OFFERED
             }
         }
+        if (transfer.group && transfer.outgoing && state == State.SENT) {
+            // Sent to the whole group: it stays available (to a member who
+            // accepts late) until the offer ends, and can be stopped.
+            return Row("Sent $name to the group — ${transfer.deliveredTo} " +
+                           "received it (hashes verified)",
+                       false, true, 1f, false, size, finished = false)
+        }
+        if (transfer.group && transfer.outgoing && state == State.WAITING) {
+            return Row("Offered $name to the group — waiting for a member to accept",
+                       false, true, 0f, false, size)
+        }
+        if (transfer.group && transfer.outgoing && state == State.DELIVERED) {
+            return ended("Sent $name to the group — ${transfer.deliveredTo} received it")
+        }
+        val from = if (transfer.sender.isNotBlank()) "${transfer.sender}: " else ""
         return when (state) {
-            State.OFFERED -> Row("$name — $size", canAccept = !transfer.outgoing,
+            State.OFFERED -> Row("$from$name — $size", canAccept = !transfer.outgoing,
                                  canDecline = true, progress = 0f,
                                  showsProgress = false, detail = size)
             State.WAITING -> Row("Offered $name — waiting for them to accept",
@@ -274,6 +301,9 @@ object TransferUi {
         "transport" -> "the connection failed while sending"
         "by_peer" -> "cancelled by the other side"
         "by_us" -> "cancelled"
+        "expired" -> "nobody accepted it in time"
+        "unverified_member" ->
+            "a member who is not verified joined the group, so it was stopped"
         else -> "it did not complete"
     }
 
@@ -323,6 +353,18 @@ object TransferUi {
         return "%.1f MB".format(mb)
     }
 
+    /** [refusal] for a secure group's file (android_bridge.group_files). */
+    @JvmStatic
+    fun groupRefusal(outcome: String): String? = when (outcome) {
+        "unverified" ->
+            "Every member must be verified before you send the group a file. " +
+                "Use Verify in this group."
+        "no_members" -> "Nobody else is in this group yet."
+        "not_a_group" -> "Files can only be sent in an encrypted group."
+        "bad_file" -> "That file could not be read, or is too large for a group (16 MB)."
+        else -> refusal(outcome)
+    }
+
     /**
      * What to tell the user when a transfer request came back refused.
      *
@@ -341,6 +383,9 @@ object TransferUi {
         "no_transfer" -> "That transfer is no longer available."
         "not_connected" -> "Connect before sending a file."
         "unavailable" -> "File transfer is not available on this device."
+        "cannot_scrub" ->
+            "This kind of file cannot be checked for hidden information, so " +
+                "nothing was sent. Send it again and choose to keep it, or pick another file."
         // An outcome this build has not been taught is still a refusal.
         else -> "The file could not be sent."
     }

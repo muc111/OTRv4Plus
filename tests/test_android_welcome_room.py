@@ -27,8 +27,8 @@ from tests.test_android_rooms import (FakeClient, FakeDisco, FakeMuc, IqError,
 slixmpp = pytest.importorskip("slixmpp")
 from slixmpp.xmlstream import ET  # noqa: E402
 
-ME = "me@xmpp-elite.i2p"
-DOMAIN = "xmpp-elite.i2p"
+ME = "me@otrv4plus.i2p"
+DOMAIN = "otrv4plus.i2p"
 MUC = "muc.fixture.i2p"            # a fixture; discovered, never assumed
 ROOM = "lobby@" + MUC
 OTHER_SERVICE = "upload.fixture.i2p"
@@ -134,6 +134,13 @@ def room_presence(nick, real_jid="", available=True, self_presence=False):
 # ── finding the room ────────────────────────────────────────────────────────
 
 class TestTheRoomIsDiscoveredNeverGuessed:
+    """How the room is FOUND. Run as on another server than the project's
+    own, where a missing room is reported rather than created."""
+
+    @pytest.fixture(autouse=True)
+    def _not_the_project_server(self, monkeypatch):
+        import otrv4plus_address as A
+        monkeypatch.delitem(A.SHIPPED_SERVERS, DOMAIN)
 
     def test_found_by_exact_name_on_a_muc_service_and_joined(self):
         t, made = build()
@@ -401,12 +408,17 @@ class TestAddingAndPending:
 
     def test_add_on_a_discovered_row_is_the_normal_roster_subscription(self):
         """The row's Add calls addContact with the row's bare JID -- the one
-        the MUC service revealed -- which is roster add + subscribe."""
+        the MUC service revealed -- which is roster add + subscribe.
+
+        The list moved to its own screen (PeopleScreen.kt, opened beside the
+        connection state); the chat list must not grow a second copy."""
         screen = self._src("android", "app", "src", "main", "java", "org",
-                           "otrv4plus", "android", "ui", "ConversationsScreen.kt")
-        assert "onAdd = { model.addContact(it) }" in screen
+                           "otrv4plus", "android", "ui", "PeopleScreen.kt")
+        assert "onAdd = { model.addContact(entry.jid) }" in screen
         assert "OnlineUsers.Relation.ONLINE_ADD ->" in screen
-        assert "onAdd(entry.jid)" in screen
+        chats = self._src("android", "app", "src", "main", "java", "org",
+                          "otrv4plus", "android", "ui", "ConversationsScreen.kt")
+        assert "PeopleSection" not in chats and "onOpenPeople" in chats
         transport = self._src("android_bridge", "transport.py")
         body = transport[transport.index("async def _add_contact"):]
         body = body[:body.index("\n    def ", 5)]
@@ -529,8 +541,12 @@ class TestCreatingTheWelcomeRoom:
         assert code == "welcome_address_taken"
         assert muc.joined == [] and muc.configured == []
 
-    def test_signing_in_never_creates_it(self):
-        """Only the explicit button creates; the automatic flow only looks."""
+    def test_signing_in_never_creates_it_on_another_server(self, monkeypatch):
+        """Anywhere but the project's own server only the explicit button
+        creates (the room shows every occupant's address); the automatic
+        flow only looks."""
+        import otrv4plus_address as A
+        monkeypatch.delitem(A.SHIPPED_SERVERS, DOMAIN)
         d, state, created = created_disco()
         t, made, muc, joined = self._build(d, state)
         try:
@@ -539,3 +555,45 @@ class TestCreatingTheWelcomeRoom:
             t.close()
         assert view["state"] == W.NOT_FOUND
         assert muc.configured == [] and muc.joined == []
+
+
+class TestTheProjectServerGetsItsWelcomeRoom:
+    """Owner's request, 2026-10-02: "we should be auto creating the welcome
+    room like the old app had". On otrv4plus.i2p -- the project's own server,
+    whose operator wants the room there -- the first account to sign in
+    creates it, with the same settings as the button. Other servers still
+    ask first."""
+
+    def test_the_first_sign_in_creates_and_joins_it(self):
+        d, state, created = created_disco()
+        t, made, muc, joined = TestCreatingTheWelcomeRoom()._build(d, state)
+        try:
+            view = run_flow(t)
+        finally:
+            t.close()
+        assert view["state"] == W.JOINED and view["room"] == created
+        fields = muc.configured[0][1].get_fields()
+        assert fields["muc#roomconfig_roomname"]["value"] == W.ROOM_NAME
+        assert fields["muc#roomconfig_publicroom"]["value"] is True
+        assert joined == [created]
+
+    def test_an_existing_room_is_joined_not_recreated(self):
+        t, made = build()                    # the default disco lists it
+        _forms(made)
+        try:
+            view = run_flow(t)
+        finally:
+            t.close()
+        assert view["state"] == W.JOINED
+        assert made["client"]["xep_0045"].configured == []
+
+    def test_a_room_another_client_just_made_is_joined(self):
+        d, state, created = created_disco()
+        state["made"] = True      # answers at the address, not yet listed
+        t, made, muc, joined = TestCreatingTheWelcomeRoom()._build(d, state)
+        try:
+            view = run_flow(t)
+        finally:
+            t.close()
+        assert muc.configured == []
+        assert view["state"] == W.NOT_FOUND   # still unlisted: not guessed

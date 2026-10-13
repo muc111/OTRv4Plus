@@ -65,6 +65,57 @@ class RoomsViewModel : ViewModel() {
     /** The rooms this session is in, and what we are in each. */
     val joined = mutableStateMapOf<String, RoomStanding>()
 
+    /** This account's end-to-end encrypted groups (MLS), from the engine. */
+    val secureGroups = mutableStateListOf<String>()
+
+    /** Ask the engine which secure groups this account holds. Cheap: no network. */
+    fun refreshSecureGroups() {
+        val c = core ?: return
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.IO) {
+                runCatching { c.secureGroups() }.getOrDefault(emptyList())
+            }
+            secureGroups.clear()
+            secureGroups.addAll(found.sorted())
+        }
+    }
+
+    /**
+     * Delete a secure group for everyone: its room is destroyed on the server
+     * (only its owner -- the group's creator -- may) and every member's copy
+     * ends. Anyone else gets the service's refusal, said plainly.
+     */
+    fun deleteSecureGroup(room: String) {
+        groupOp("Deleting $room...", room) { it.deleteSecureGroup(room) }
+    }
+
+    /** Forget a secure group on this phone and leave its room. */
+    fun leaveSecureGroup(room: String) {
+        groupOp("Leaving $room...", room) { it.leaveSecureGroup(room) }
+    }
+
+    private fun groupOp(label: String, room: String,
+                        op: (ChaquopyOtrCore) -> RoomOutcome) {
+        val c = core ?: return
+        if (busy != null) return
+        busy = label
+        viewModelScope.launch {
+            try {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching { op(c) }.getOrElse { RoomOutcome(false, "unknown", "That did not work.") }
+                }
+                if (outcome.ok) {
+                    joined.remove(room)
+                    secureGroups.remove(room)
+                }
+                last = outcome
+            } finally {
+                busy = null
+            }
+            refreshSecureGroups()
+        }
+    }
+
     /** Non-null while something long-running is in flight; the UI's label. */
     var busy by mutableStateOf<String?>(null)
         private set
@@ -108,6 +159,7 @@ class RoomsViewModel : ViewModel() {
                 busy = null
             }
             roomService?.let { refreshRooms(it) }
+            refreshSecureGroups()
         }
     }
 
@@ -178,6 +230,33 @@ class RoomsViewModel : ViewModel() {
         }
         val jid = resolve(typed) ?: return
         enter("Creating the room...", jid) { c -> c.createRoom(jid, nick, password) }
+    }
+
+    /**
+     * Create a room that is an OTRv4Plus SECURE GROUP (MLS) from its first
+     * message. The bridge creates the room, then the group, and leaves the
+     * room again if the group could not be made -- so a failure never leaves
+     * a plaintext room the user believes is encrypted.
+     */
+    fun createSecure(typed: String, nick: String, password: String = "",
+                     passphrase: String = "") {
+        if (password.isNotEmpty()) {
+            RoomPassword.problem(password)?.let {
+                last = RoomOutcome(false, "bad_request", it)
+                return
+            }
+        }
+        if (passphrase.isNotEmpty() && passphrase.length < 8) {
+            last = RoomOutcome(false, "bad_request",
+                "The group passphrase must be 8 characters or more.")
+            return
+        }
+        val jid = resolve(typed) ?: return
+        enter("Creating the secure group...", jid) { c ->
+            val made = c.createSecureGroup(jid, password, passphrase)
+            val standing = if (made.ok) c.roomStanding(jid, nick).second else RoomStanding()
+            made to standing
+        }
     }
 
     /** The password question for a room that refused us, or null. */
@@ -291,6 +370,40 @@ class RoomsViewModel : ViewModel() {
                     c.destroyRoom(room, reason)
                 }
                 if (outcome.ok) joined.remove(room)
+                last = outcome
+            } finally {
+                busy = null
+            }
+        }
+    }
+
+    /**
+     * Delete any room, by name or address, for everyone -- whether or not we
+     * are in it, and whether or not this phone holds its keys.
+     *
+     * The SERVER decides who may: a room's owner (whoever created it), and
+     * the server's admins, whom Prosody treats as owners of every room --
+     * which is how an admin removes rooms as moderation, including secure
+     * groups whose keys are on nobody's phone any more. Anybody else gets the
+     * service's refusal, said plainly. A group this phone holds goes through
+     * [deleteSecureGroup] so its keys are destroyed here too.
+     */
+    fun deleteRoom(typed: String) {
+        val jid = resolve(typed.trim()) ?: return
+        if (secureGroups.any { it.equals(jid, ignoreCase = true) }) {
+            deleteSecureGroup(jid)
+            return
+        }
+        val c = core ?: return
+        if (busy != null) return
+        busy = "Deleting the room..."
+        viewModelScope.launch {
+            try {
+                val outcome = withContext(Dispatchers.IO) { c.destroyRoom(jid, "") }
+                if (outcome.ok) {
+                    joined.remove(jid)
+                    rooms.removeAll { it.jid.equals(jid, ignoreCase = true) }
+                }
                 last = outcome
             } finally {
                 busy = null

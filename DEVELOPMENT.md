@@ -159,10 +159,16 @@ Expected: **65 tests pass, 0 failures.** The suite includes:
   against an independent Python implementation
 
 Python suite — run from the repository root, not from `tests/`, or the root-level
-voice and audio suites are silently skipped:
+voice and audio suites are silently skipped. The suite needs the TEST build of
+the core, which adds the raw-key entry points that known-answer and fixed-key
+tests use (Cargo feature `raw-key-test-api`, never in a release artifact):
 
 ```bash
-python3.12 -m pytest -q
+cd Rust && OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 cargo build --release \
+    --features extension-module,raw-key-test-api
+cp target/release/libotrv4_core.so ../otrv4_core.so && cd ..
+OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 python3.12 -m pytest -q
+# Rebuild without the feature before running the client for real.
 # As above: CHANGELOG.md records the count per release (3360 passed,
 # 44 skipped, 1 xfailed at v10.30.0). Skips are environment-gated,
 # never failures.

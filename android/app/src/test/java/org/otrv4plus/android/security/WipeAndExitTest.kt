@@ -41,19 +41,39 @@ class WipeAndExitTest {
     }
 
     @Test
-    fun `local state is destroyed before the network-bound engine step, and exit is last`() {
-        // The engine step closes calls, the stream and the I2P tunnel, each
+    fun `rust secrets are destroyed first, before anything that waits on the network`() {
+        // Stage B right after the writers stop: nothing -- not a notification,
+        // not a network timeout -- stands between the wipe and the keys.
+        val order = WipeAndExit.ORDER
+        assertEquals(Step.DESTROY_CRYPTO, order[1])
+        assertTrue(order.indexOf(Step.DESTROY_CRYPTO) < order.indexOf(Step.STOP_SUBSYSTEMS))
+    }
+
+    @Test
+    fun `local state is destroyed before the network-bound step, storage after it, and exit is last`() {
+        // STOP_SUBSYSTEMS closes calls, the stream and the I2P tunnel, each
         // bounded by a network timeout. Memory and the vault used to come
         // after it, and that window is where "wiped" conversations were
-        // still on screen and on disk (WipePersistenceTest).
+        // still on screen and on disk (WipePersistenceTest). The storage
+        // sweep comes after it so no subsystem can write behind it.
         val order = WipeAndExit.ORDER
         for (local in listOf(Step.CLEAR_NOTIFICATIONS, Step.CLEAR_MEMORY,
-                             Step.DESTROY_VAULT, Step.CLEAR_CACHE)) {
-            assertTrue(order.indexOf(local) < order.indexOf(Step.WIPE_ENGINE), "$local")
+                             Step.DESTROY_VAULT)) {
+            assertTrue(order.indexOf(local) < order.indexOf(Step.STOP_SUBSYSTEMS), "$local")
         }
+        assertTrue(order.indexOf(Step.STOP_SUBSYSTEMS) < order.indexOf(Step.WIPE_APP_DATA))
         assertTrue(order.indexOf(Step.CLEAR_MEMORY) < order.indexOf(Step.DESTROY_VAULT))
         assertTrue(order.indexOf(Step.CLEAR_NOTIFICATIONS) < order.indexOf(Step.DESTROY_VAULT))
+        assertEquals(Step.WIPE_APP_DATA, order[order.size - 2])
         assertEquals(Step.EXIT, order.last())
+    }
+
+    @Test
+    fun `only system-managed state is kept`() {
+        for (store in WipeAndExit.STORES.filter { it.step == null }) {
+            assertTrue(store.where.startsWith("system") || store.where.startsWith("package manager"),
+                       "${store.what} is app data but kept")
+        }
     }
 
     @Test
@@ -74,9 +94,9 @@ class WipeAndExitTest {
     fun `a failing step does not stop the rest, and exit still runs`() {
         val log = mutableListOf<Step>()
         val report = WipeAndExit.Runner(
-            recording(log, failing = setOf(Step.WIPE_ENGINE, Step.DESTROY_VAULT))).run()
+            recording(log, failing = setOf(Step.DESTROY_CRYPTO, Step.DESTROY_VAULT))).run()
         assertEquals(WipeAndExit.ORDER, log, "a failure skipped later steps")
-        assertEquals(WipeAndExit.ORDER.filter { it == Step.WIPE_ENGINE || it == Step.DESTROY_VAULT },
+        assertEquals(WipeAndExit.ORDER.filter { it == Step.DESTROY_CRYPTO || it == Step.DESTROY_VAULT },
                      report.failed)
         assertFalse(report.ok)
         assertTrue(Step.EXIT in report.completed)
@@ -115,7 +135,9 @@ class WipeAndExitTest {
         val where = WipeAndExit.STORES.joinToString("\n") { it.where }
         for (needle in listOf("account.credentials", "chat.", "contacts.",
                               "otrv4plus.vault.v1", "~/.otrv4plus", "outbox",
-                              "diagnostics", "NotificationManager")) {
+                              "diagnostics", "NotificationManager", "chaquopy",
+                              "shared_prefs", "code_cache", "databases", "no_backup",
+                              "Android/data")) {
             assertTrue(needle in where, "no policy for $needle")
         }
     }

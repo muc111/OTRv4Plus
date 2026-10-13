@@ -69,10 +69,11 @@ object EncryptionSelector {
      * with SMP and a verified fingerprint, and it is what the rest of the app
      * has been built around. OMEMO is offered second for interoperability.
      *
-     * Group prefers OMEMO 2.0, because it is the one that actually works with
-     * other XMPP clients. MLS sorts last while it is a prototype — see
-     * `MlsProvider`, which reports [Availability.NOT_IMPLEMENTED] until it is
-     * more than an interface, so in practice it is not in this list at all.
+     * For groups the order is inert in this build: both OMEMO 2.0 (a retired
+     * placeholder, see `Omemo2Provider`) and `MlsProvider` report
+     * [Availability.NOT_IMPLEMENTED], so neither is ever offered here.
+     * Encrypted groups are created from the Rooms screen (secure groups over
+     * MLS), not through this selector.
      */
     fun preference(kind: EncryptionKind, conversation: ConversationRef): Int =
         if (conversation.isGroup) {

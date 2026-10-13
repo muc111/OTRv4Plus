@@ -350,7 +350,11 @@ class TestTheFigures:
         # It is not loss: the frames arrived and we discarded them. The
         # delivery figure must stay honest about what the network did.
         line = self._line(oneway=50.0, queued=1000, gaps=0, drift=330)
-        assert "1000 played" in line
+        # 1000 frames were ACCEPTED and 330 of them shed, so 670 were played.
+        # This used to assert "1000 played": `played` was read from `queued`,
+        # which counted each shed frame twice (as played and as shed).
+        assert "670 played" in line
+        assert "1000 played" not in line
         # Shedding is reported, separately, because it IS audio the user did
         # not hear -- it is simply not the network's doing.
         assert "330 shed locally" in line

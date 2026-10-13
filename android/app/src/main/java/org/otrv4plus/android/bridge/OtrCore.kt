@@ -31,6 +31,14 @@ interface OtrCore {
      */
     fun wipe(): WipeReport
 
+    /**
+     * Wipe & Exit, stage B: destroy every secret in Rust NOW -- sessions,
+     * DAKE and SMP state, identity, call and file keys -- without waiting on
+     * the network (`OtrApp.wipe_crypto`). [wipe] follows with the teardown.
+     * Idempotent; never throws; true when the engine reported no error.
+     */
+    fun wipeCrypto(): Boolean
+
     fun localFingerprint(): String
 
     fun securityState(peer: String): SecurityState
@@ -310,6 +318,12 @@ data class FileTransferView(
      * empty for a file this device sent.
      */
     val path: String = "",
+    /** A secure group's file (android_bridge.group_files): [peer] is the room. */
+    val group: Boolean = false,
+    /** The member who sent a group file to us; empty for ours and for 1:1. */
+    val sender: String = "",
+    /** Ours, to a group: how many members said they have it, verified. */
+    val deliveredTo: Int = 0,
 )
 
 data class SmpProgress(val step: Int, val total: Int, val state: SmpState)
@@ -515,8 +529,9 @@ data class Contact(
  * comes from [OtrCore.securityState], which asks the engine.
  *
  * [stage] is one of the Python controller's stages, in order: idle,
- * checking_router, building_tunnels, connecting, authenticating, connected,
- * failed. They are distinct because their remedies are, and because they are
+ * checking_router (.i2p only) or checking_tor (Tor only), building_tunnels,
+ * connecting, authenticating, connected, failed. A clearnet server skips the
+ * first two. They are distinct because their remedies are, and because they are
  * three orders of magnitude apart in duration -- a refused SAM port answers in
  * milliseconds, a cold I2P tunnel can take four minutes.
  */
@@ -559,6 +574,32 @@ data class ConnectionStatus(
  * still building" look identical for four minutes, and the user restarts the
  * app during the one case where waiting was the right thing to do.
  */
+/**
+ * SECURITY_ISSUES X1: an `.i2p` server name now resolves to a different I2P
+ * destination than the one this device trusted. The attempt was refused
+ * before a single byte reached [seen]; no password was sent to it. Public
+ * values only -- the name and two `.b32.i2p` hashes.
+ */
+data class ServerIdentityChange(
+    val server: String,
+    val trusted: String,
+    val seen: String,
+)
+
+/**
+ * What "Test server" found: how far the connection got (`reached`:
+ * tcp_connected, tls_established, xmpp_stream, registration_form) and a
+ * code -- registration_available, registration_captcha_required,
+ * registration_not_offered, dns_failure, tcp_failure, certificate_failure,
+ * tls_failure, server_closed_connection, tls_required, ... Nothing secret.
+ */
+data class ServerCheck(
+    val ok: Boolean,
+    val code: String,
+    val detail: String,
+    val reached: String,
+)
+
 data class RouterProbe(
     val reachable: Boolean,
     val code: String,
@@ -623,9 +664,40 @@ data class DiscoveredService(
 }
 
 /** A room a service advertises. Hidden rooms are absent by design. */
-data class RoomSummary(val jid: String, val name: String) {
+/**
+ * [occupants] is the service's own count (XEP-0045 muc#roominfo_occupants),
+ * or null when it gave none -- which is not the same as zero.
+ */
+data class RoomSummary(
+    val jid: String,
+    val name: String,
+    val occupants: Int? = null,
+    /**
+     * An end-to-end encrypted (MLS) group whose keys are ON THIS PHONE. Only
+     * this earns the group icon: it is the one thing a room cannot fake.
+     */
+    val secure: Boolean = false,
+    /**
+     * The room's own description says it is an encrypted group. Anybody can
+     * write that, so it is shown as a claim, never with the group icon
+     * (security audit, 2026-10-11).
+     */
+    val claimsSecure: Boolean = false,
+    /** The room needs a password to enter. */
+    val password: Boolean = false,
+) {
     /** The part before the `@`, for a service that advertises no name. */
     val label: String get() = name.ifBlank { jid.substringBefore('@') }
+
+    /** The symbol in front of the name: 🔐 your encrypted group, # anything else. */
+    val kindIcon: String get() = if (secure) "\uD83D\uDD10" else "#"
+
+    /** What the symbols say, for a screen reader and the line under the name. */
+    val kindText: String get() = when {
+        secure -> "Encrypted group"
+        claimsSecure -> "Says it is an encrypted group (you hold no keys for it)"
+        else -> "Channel"
+    } + (if (password) ", password needed" else "")
 }
 
 /**
@@ -730,6 +802,54 @@ data class OnlineDiscovery(
     }
 }
 
+/**
+ * A contact's avatar as raw RGBA pixels (see `chat.AvatarPixels`). Equality
+ * by id: two images with the same SHA-1 id are the same picture.
+ */
+class AvatarImage(
+    val id: String,
+    val width: Int,
+    val height: Int,
+    val rgba: ByteArray,
+) {
+    override fun equals(other: Any?): Boolean = other is AvatarImage && other.id == id
+    override fun hashCode(): Int = id.hashCode()
+}
+
+/** One editable XMPP profile field, as the bridge defines it. */
+data class ProfileField(
+    val key: String,
+    val label: String,
+    val maxLength: Int,
+    val multiline: Boolean,
+)
+
+/** A secure group's verification (the group passphrase), as the engine has it. */
+data class GroupVerifyState(
+    /** member -> verified / failed / running / waiting / not_verified */
+    val members: Map<String, String> = emptyMap(),
+    val allVerified: Boolean = false,
+    /** Who started a verification we have not joined yet, or "". */
+    val startedBy: String = "",
+    /** A verification is running: [done] of [total] members settled. */
+    val active: Boolean = false,
+    val done: Int = 0,
+    val total: Int = 0,
+    /** Estimated seconds left for the members who joined. */
+    val etaSeconds: Int = 0,
+    /** Members whose passphrase did not match: not in group calls. */
+    val excluded: List<String> = emptyList(),
+)
+
+/** A secure group's call, as the engine has it. */
+data class GroupCallState(
+    val inCall: Boolean = false,
+    val paused: Boolean = false,
+    val participants: List<String> = emptyList(),
+    /** Who is ringing the group, or "". */
+    val ringingFrom: String = "",
+)
+
 data class RoomOutcome(
     val ok: Boolean,
     val code: String,
@@ -765,13 +885,29 @@ sealed interface OtrEvent {
     data class MessageReceived(val peer: String, val body: String, val timestamp: Double) : OtrEvent
 
     /**
-     * Plaintext group chat. [room] is the room's JID; [sender] is the
-     * nickname the ROOM assigned, which is not an identity claim. Kept a
-     * separate type from [MessageReceived] so nothing can mistake a room's
-     * plaintext for a peer's decrypted text.
+     * Group chat. [room] is the room's JID; [sender] is the nickname the ROOM
+     * assigned, which is not an identity claim. Kept a separate type from
+     * [MessageReceived] so nothing can mistake a room's text for a peer's
+     * decrypted text.
+     *
+     * [encrypted] is true only in an OTRv4Plus secure group, where MLS
+     * decrypted it; [senderIdentity] is then the MLS credential that signed
+     * it, and [verified] says that member's key arrived over an SMP-verified
+     * OTRv4+ session. Every other room is plaintext.
      */
     data class RoomMessageReceived(
         val room: String, val sender: String, val body: String, val timestamp: Double,
+        val encrypted: Boolean = false,
+        val senderIdentity: String = "",
+        val verified: Boolean = false,
+    ) : OtrEvent
+
+    /** [peer] invited us to the secure group [room], over OTRv4+. Never auto-accepted. */
+    data class GroupInvited(val peer: String, val room: String, val verified: Boolean) : OtrEvent
+
+    /** A secure group moved: see `android_bridge.events.GroupChanged` for [change]. */
+    data class GroupChanged(
+        val room: String, val change: String, val epoch: Long, val detail: String,
     ) : OtrEvent
     /**
      * A file transfer moved. [state] and [reason] are the engine's
@@ -789,6 +925,10 @@ sealed interface OtrEvent {
     ) : OtrEvent
     /** Whether this contact has a resource that speaks OTRv4Plus. See `OtrAvailability`. */
     data class CapabilityChanged(val peer: String, val state: String) : OtrEvent
+    /** [count] lines the user typed before the conversation was ready have
+     *  now gone: encrypted, or ([encrypted] false) in the clear because the
+     *  contact's app turned out not to support OTRv4+. */
+    data class QueuedSent(val peer: String, val count: Int, val encrypted: Boolean) : OtrEvent
     data class SmpProgressed(val peer: String, val progress: SmpProgress) : OtrEvent
     data class SmpFinished(val peer: String, val state: SmpState) : OtrEvent
 
@@ -875,5 +1015,31 @@ fun interface OtrEventSink {
     fun onEvent(event: OtrEvent)
 }
 
+/**
+ * A member of a secure group. [fingerprint] is public (SHA-384 of the MLS
+ * signature key). [verified] only when that key arrived over an SMP-verified
+ * OTRv4+ session with [jid]; [bound] when it arrived over any OTRv4+ session.
+ */
+data class GroupMember(
+    val jid: String,
+    val fingerprint: String,
+    val me: Boolean,
+    val verified: Boolean,
+    val bound: Boolean,
+)
+
 /** A bridge failure. Carries a code, never engine exception text. */
-class OtrBridgeException(val code: String) : RuntimeException(code)
+class OtrBridgeException(val code: String) : RuntimeException(code) {
+    companion object {
+        // `BridgeError(code)` stringifies to its code by construction, so its
+        // first line is "<module>.BridgeError: <code>". Nothing else is taken
+        // from a Python exception: any other type's text may carry the data
+        // it was handling, and is dropped.
+        private val BRIDGE_ERROR = Regex("""^(?:[\w.]+\.)?BridgeError: ([a-z][a-z0-9_]{0,63})$""")
+
+        /** The bridge's code from an exception's first line, or null. */
+        fun codeFromMessage(message: String?): String? =
+            message?.lineSequence()?.firstOrNull()?.trim()
+                ?.let { BRIDGE_ERROR.find(it)?.groupValues?.get(1) }
+    }
+}

@@ -136,7 +136,20 @@ def is_otr_protocol(body) -> bool:
     return False
 
 
-def fragment(payload: str, seq: int) -> Tuple[List[str], int]:
+#: Fragment size for a MUC room. Prosody's mod_muc_limits refuses a room
+#: message over `muc_max_char_count`, 5664 characters by default, and every
+#: MLS frame is bigger than that (an ML-DSA-87 signature alone is ~4.6 KB;
+#: "hi" is 6311 characters on the wire). At MAX_FRAGMENT each piece was 6021
+#: characters, so a stock server refused every one -- the commit adding a
+#: member never landed, the sender's group sat on a pending commit that
+#: refuses every send, and the new member never got its Welcome (device test,
+#: 2026-10-02). 4000 plus the "?OTRv4F|id|n|k|" header stays well under it.
+#: The receiver is unchanged: a Reassembler takes any piece size.
+ROOM_FRAGMENT = 4000
+
+
+def fragment(payload: str, seq: int,
+             size: int = MAX_FRAGMENT) -> Tuple[List[str], int]:
     """Split *payload* for the wire. Returns `(parts, new_seq)`.
 
     `parts` is the list of `<body>` strings to send, in order. For a payload of
@@ -154,12 +167,13 @@ def fragment(payload: str, seq: int) -> Tuple[List[str], int]:
     allocation lives in here, with the threshold it depends on, so a caller
     cannot get the order wrong.
     """
-    if len(payload) <= MAX_FRAGMENT:
+    size = max(1, min(int(size), MAX_FRAGMENT))
+    if len(payload) <= size:
         return [payload], seq
 
     chunks = [
-        payload[i:i + MAX_FRAGMENT]
-        for i in range(0, len(payload), MAX_FRAGMENT)
+        payload[i:i + size]
+        for i in range(0, len(payload), size)
     ]
     total = len(chunks)
     seq = (seq + 1) & 0xFFFFFFFF

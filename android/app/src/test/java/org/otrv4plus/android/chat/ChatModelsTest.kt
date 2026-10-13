@@ -18,7 +18,7 @@ import kotlin.test.assertTrue
  */
 class ChatModelsTest {
 
-    private val alice = "alice@xmpp-elite.i2p"
+    private val alice = "alice@otrv4plus.i2p"
 
     // -- message identity ----------------------------------------------------
 
@@ -34,7 +34,7 @@ class ChatModelsTest {
     fun `outgoing ids are per conversation`() {
         assertNotEquals(
             MessageId.outgoing(alice, 1),
-            MessageId.outgoing("bob@xmpp-elite.i2p", 1),
+            MessageId.outgoing("bob@otrv4plus.i2p", 1),
         )
     }
 
@@ -66,7 +66,7 @@ class ChatModelsTest {
     fun `inbound ids differ by sender`() {
         assertNotEquals(
             MessageId.inbound(alice, 1_000L, "hello"),
-            MessageId.inbound("carol@xmpp-elite.i2p", 1_000L, "hello"),
+            MessageId.inbound("carol@otrv4plus.i2p", 1_000L, "hello"),
         )
     }
 

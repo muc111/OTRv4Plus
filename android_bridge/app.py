@@ -24,6 +24,7 @@ thread.
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -40,13 +41,14 @@ import otrv4plus_fragment as _fragment
 from .trace import TRACE as _TRACE
 from .files import FileBridge, FileOutcome, is_file_signal
 from .voice import CallBridge, CallOutcome, is_call_signal
+from .groups import GroupError, SecureGroups, is_group_signal
 import otrv4plus_presence as _presence
 from otrv4plus_mode import OtrMode
 
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ErrorOccurred, Event, EventSink, FingerprintChanged, MessageReceived,
-    OtrCapabilityChanged, RoomMessageReceived,
+    OtrCapabilityChanged, QueuedSent, RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
     call_state_from_engine, security_state_from_level, smp_state_from_status,
 )
@@ -230,6 +232,13 @@ class OtrApp:
         self._transport = transport
         self._sink = event_sink
         self._clock = clock
+        #: When each peer last got an automatic recovery handshake.
+        self._recovered_at: Dict[str, float] = {}
+        #: Secure groups (MLS), created on first use; see `groups`.
+        self._groups: Optional[SecureGroups] = None
+        self._group_verify = None
+        self._group_calls = None
+        self._group_files = None
         self._connection = ConnectionState.DISCONNECTED
         #: What we know about each peer's availability, and when we know
         #: nothing. A PresenceBook rather than a dict of bools because
@@ -255,6 +264,21 @@ class OtrApp:
         self._rooms: set = set()
         #: peer -> monotonic time a handshake was first seen, for "elapsed".
         self._handshake_seen: dict = {}
+        #: THE OUTBOX. peer -> lines typed before the conversation was ready
+        #: (no session yet, or the contact's capability not known yet).
+        #: Sent by `_flush_outbox` when it is: encrypted, or in the clear only
+        #: once the contact is confirmed not to speak OTRv4+. This used to be
+        #: the engine's own queue, which dropped its contents when the
+        #: handshake completed: a line typed during a DAKE never arrived.
+        self._outbox: Dict[str, List[str]] = {}
+        #: Rooms carrying MLS frames that this device holds no group for.
+        self._keyless_groups: set = set()
+        #: peer -> rooms to invite them to once OTRv4+ with them is up.
+        self._invite_after_otr: Dict[str, List[str]] = {}
+        #: Handshake durations (seconds): per peer and overall, for the ETA.
+        self._hs_started: Dict[str, float] = {}
+        self._hs_history: Dict[str, List[float]] = {}
+        self._hs_all: List[float] = []
         #: Set by `wipe` and never cleared. See `wipe` for what it refuses.
         self._wiped = False
         self._wipe_lock = threading.Lock()
@@ -395,6 +419,14 @@ class OtrApp:
         after the sessions would mean the END the peer is owed can no longer
         be encrypted, and they would sit on a call nobody is on.
         """
+        if self._group_calls is not None:
+            try:
+                self._group_calls.shutdown()
+            except Exception:
+                _log.warning("group call teardown reported a problem")
+        if self._group_files is not None:
+            self._group_files.close()
+            self._group_files = None
         if self._calls_bridge is not None:
             try:
                 self._calls_bridge.shutdown()
@@ -407,6 +439,15 @@ class OtrApp:
             except Exception:
                 _log.warning("transfer teardown reported a problem")
             self._files_bridge = None
+        # The secure groups: sealed to disk and let go, lock included, so the
+        # next sign-in on this phone can open them again. Sign-out used to
+        # leave them open, and the account's next sign-in found its group
+        # state "in use" by the app that had just signed out.
+        if self._groups is not None:
+            try:
+                self._groups.close()
+            except Exception:
+                _log.warning("group teardown reported a problem")
         try:
             self._engine.clear_all_sessions("shutdown")
         except Exception:
@@ -420,8 +461,39 @@ class OtrApp:
     # -- rooms -----------------------------------------------------------------
 
     def note_room_joined(self, room: str) -> None:
-        """We are in [room]: its text is group chat from now on."""
-        self._rooms.add(self.canonical_peer(room))
+        """We are in [room]: its text is group chat from now on. A join
+        completing on the loop thread after a wipe began records nothing."""
+        if self._wiped:
+            return
+        room = self.canonical_peer(room)
+        self._rooms.add(room)
+        # A secure group whose own commit was lost with the old stream: post
+        # it again now we are back in the room. Off this thread -- it is the
+        # transport's loop thread, and a room send from it would wait on
+        # itself.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and getattr(groups, "on_room_rejoined", None):
+            threading.Thread(target=self._quietly, args=(groups.on_room_rejoined, room),
+                             name="group-rejoin", daemon=True).start()
+
+    def note_room_rejected(self, room: str, condition: str = "") -> None:
+        """The server bounced a message we sent to `room`. For a secure group
+        that may be our commit, which is posted again (off the loop thread,
+        as above)."""
+        if self._wiped:
+            return
+        room = self.canonical_peer(room)
+        groups = getattr(self, "_groups", None)
+        if groups is not None and room in self._rooms:
+            threading.Thread(target=self._quietly, args=(groups.on_room_rejected, room),
+                             name="group-rejected", daemon=True).start()
+
+    @staticmethod
+    def _quietly(fn, *args) -> None:
+        try:
+            fn(*args)
+        except Exception:
+            pass
 
     def note_room_left(self, room: str) -> None:
         self._rooms.discard(self.canonical_peer(room))
@@ -447,15 +519,124 @@ class OtrApp:
             raise BridgeError(code, "rooms are not end-to-end encrypted")
 
     def receive_room_message(self, room: str, nick: str, body: str,
-                             timestamp: float = 0.0) -> None:
+                             timestamp: float = 0.0, own: bool = False) -> None:
         """A room message from the transport. Emitted as its own event type,
         never as `MessageReceived`: nothing downstream may confuse a room's
-        plaintext with a peer's decrypted text."""
+        plaintext with a peer's decrypted text.
+
+        A SECURE GROUP's room goes to `SecureGroups` and nowhere else: what
+        comes out is MLS-decrypted text or nothing, never the raw body. `own`
+        marks the room reflecting our own message back, which MLS needs (it
+        is how a commit learns it won) and a plain room does not show."""
         room = self.canonical_peer(room)
         if room not in self._rooms:
             return
+        groups = self._groups
+        if groups is not None:
+            try:
+                if groups.on_room_body(room, nick, body, timestamp, own=own):
+                    return
+            except GroupError:
+                return
+        if body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
+            # An ENCRYPTED GROUP whose keys this device does not hold (never
+            # joined, or its saved state was lost). Its ciphertext is never
+            # shown as a message, and the room is never treated as plain:
+            # sending into it is refused (`send_user_text`).
+            if room not in self._keyless_groups:
+                self._keyless_groups.add(room)
+                self._emit(ErrorOccurred(peer=room, code="group_keys_missing"))
+            return
+        if own:
+            return
         self._emit(RoomMessageReceived(peer=room, sender=nick, body=body,
                                        timestamp=timestamp))
+
+    # -- secure groups (MLS) ---------------------------------------------------
+
+    #: Where the sealed group state lives: the Python home, which on Android
+    #: is app-private storage and is removed by Wipe & Exit's storage stage.
+    GROUP_STATE_DIR = "~/.otrv4plus/groups"
+
+    @property
+    def groups(self) -> SecureGroups:
+        if self._groups is None:
+            self._groups = SecureGroups(
+                send_room=self._send_room_body,
+                send_room_volatile=self._send_room_body_volatile,
+                send_private=self._send_group_signal,
+                emit=self._emit,
+                peer_security=self.security_state,
+                state_dir=os.path.expanduser(self.GROUP_STATE_DIR),
+                clock=self._clock)
+        return self._groups
+
+    def open_groups(self, account: str) -> bool:
+        """Open this account's secure groups. False when this build has no
+        group encryption, which the UI reports rather than hiding."""
+        try:
+            self.groups.open(self.canonical_peer(account))
+        except GroupError as exc:
+            _TRACE.record("groups", "open_failed", "warning", code=exc.code)
+            return False
+        # Group verification (the group passphrase) and group calls: built
+        # now, so a verification or a ring that arrives first is not lost.
+        if self._group_verify is None:
+            from .group_verify import GroupVerify
+            self._group_verify = GroupVerify(self._groups, emit=self._emit,
+                                             clock=self._clock)
+        if self._group_calls is None:
+            try:
+                from .group_call_bridge import GroupCallBridge
+                self._group_calls = GroupCallBridge(
+                    self, sam=lambda: self.sam_endpoint, emit=self._emit)
+            except Exception:
+                _TRACE.record("groups", "group_calls_unavailable", "warning")
+        if self._group_files is None:
+            from .group_files import GroupFiles
+            # Sealed at rest like a 1:1 file: the same viewer opens both.
+            self._group_files = GroupFiles(self._groups, emit=self._emit,
+                                           seal_at_rest=True, clock=self._clock)
+        return True
+
+    #: Where the I2P SAM bridge is; set by the controller from the profile.
+    sam_endpoint = ("127.0.0.1", 7656)
+
+    @property
+    def group_verify(self):
+        if self._group_verify is None:
+            raise GroupError("not_ready")
+        return self._group_verify
+
+    @property
+    def group_calls(self):
+        if self._group_calls is None:
+            raise GroupError("group_calls_unavailable")
+        return self._group_calls
+
+    def _send_room_body(self, room: str, body: str) -> None:
+        sender = getattr(self._transport, "send_room_message", None)
+        if sender is None:
+            raise GroupError("no_transport")
+        sender(room, body)
+
+    def _send_room_body_volatile(self, room: str, body: str) -> None:
+        """A group file's piece: with the room's no-store hint (XEP-0334)."""
+        sender = getattr(self._transport, "send_room_message", None)
+        if sender is None:
+            raise GroupError("no_transport")
+        sender(room, body, volatile=True)
+
+    def _send_group_signal(self, peer: str, text: str) -> None:
+        """Group setup goes inside an encrypted OTRv4+ session or not at all:
+        never plaintext, and never a handshake started on its behalf."""
+        has = getattr(self._engine, "has_encrypted_session", None)
+        if has is None or not has(peer):
+            raise GroupError("otr_required")
+        frame, should_send = self._engine.handle_outgoing_message(peer, text)
+        if not (should_send and frame):
+            raise GroupError("otr_required")
+        self._send_protocol_or_raise(peer, frame, "group_send_failed")
 
     def wipe(self) -> Dict[str, Any]:
         """Wipe & Exit, Python side. Idempotent; the app is spent afterwards.
@@ -500,18 +681,127 @@ class OtrApp:
             self._wiped = True
         report: Dict[str, Any] = {"already_wiped": already, "errors": []}
 
+        # STAGE B FIRST: every secret destroyed in Rust before anything that
+        # can wait on the network. See `wipe_crypto`.
+        crypto = self.wipe_crypto()
+        report["errors"].extend(crypto.get("errors", []))
+        report.update({k: v for k, v in crypto.items()
+                       if k not in ("errors", "already_wiped")})
+
+        # STAGE C: stop the subsystems. The calls' keys are already gone, so
+        # no END is attempted -- it could not be encrypted -- and the peer's
+        # side times out; what remains is releasing audio, SAM and the loop.
         calls, self._calls_bridge = self._calls_bridge, None
         if calls is not None:
             try:
+                calls.shutdown(graceful=False)
+            except TypeError:
                 calls.shutdown()
             except Exception:
                 report["errors"].append("calls")
+
+        transport = self._transport
+        self._transport = None
+        if transport is not None:
+            closer = getattr(transport, "close", None) or transport.disconnect
+            try:
+                closer()
+            except Exception:
+                report["errors"].append("transport")
+        self._connection = ConnectionState.DISCONNECTED
+
+        self._presence.forget_all()
+        self._last_activity.clear()
+        self._mode = OtrMode()
+        self._call_states.clear()
+        # Room memberships (addresses: who this account talks to in groups)
+        # and the diagnostics trace (aliased, but still a record of activity).
+        try:
+            self.forget_rooms()
+        except Exception:
+            report["errors"].append("rooms")
+        try:
+            from .trace import TRACE as _trace
+            _trace.clear()
+        except Exception:
+            report["errors"].append("trace")
+        try:
+            from . import server_pins as _pins
+            _pins.default_store().forget()
+        except Exception:
+            report["errors"].append("server_pins")
+
+        from . import wipe as _disk
+        destroyed = failed = 0
+        for root in _disk.python_state_roots():
+            d, f = _disk.destroy_tree(root)
+            destroyed += d
+            failed += f
+        report["files_destroyed"] = destroyed
+        report["files_unlinked_only"] = failed
+        self._sink = None
+        return report
+
+    def wipe_crypto(self) -> Dict[str, Any]:
+        """Wipe & Exit, STAGE B: destroy every secret in Rust. Local only.
+
+        Runs before anything that can wait on a network timeout, so that the
+        cryptographic state is gone first whatever happens after:
+
+          * each call's key schedule, key exchange and media ciphers,
+            force-closed (`CallBridge.destroy_keys`) -- no END is sent;
+          * each transfer's FileKey, zeroized, and partial files unlinked;
+          * the engine (`EnhancedSessionManager.wipe`): every ratchet, DAKE,
+            SMP state and vault, and the identity and prekey handles -- on
+            the transport's loop thread, because a `DakeOutput` is unsendable
+            and would leak un-zeroized if dropped elsewhere.
+
+        Sets `_wiped` first, so nothing can recreate state meanwhile.
+        Idempotent; never raises. `wipe()` calls it before its own teardown.
+        """
+        with self._wipe_lock:
+            already = getattr(self, "_crypto_wiped", False)
+            self._crypto_wiped = True
+            self._wiped = True
+        report: Dict[str, Any] = {"already_wiped": already, "errors": []}
+        if already:
+            return report
+        # Lines waiting to be sent are plaintext the user typed: gone too.
+        for box in getattr(self, "_outbox", {}).values():
+            box.clear()
+        getattr(self, "_outbox", {}).clear()
+        getattr(self, "_invite_after_otr", {}).clear()
+
+        calls = self._calls_bridge
+        if calls is not None:
+            destroy = getattr(calls, "destroy_keys", None)
+            try:
+                if destroy is not None:
+                    destroy()
+                else:
+                    calls.shutdown()
+                    self._calls_bridge = None
+            except Exception:
+                report["errors"].append("call_keys")
         files, self._files_bridge = self._files_bridge, None
         if files is not None:
             try:
                 files.shutdown()
             except Exception:
                 report["errors"].append("transfers")
+        group_files, self._group_files = self._group_files, None
+        if group_files is not None:
+            try:
+                group_files.close()
+            except Exception:
+                report["errors"].append("group_transfers")
+        # Every MLS group secret, pending commit and the signing key, in
+        # Rust, and the sealed state file. Constructed here if it was never
+        # used, so a state file from a previous run is removed too.
+        try:
+            self.groups.wipe()
+        except Exception:
+            report["errors"].append("groups")
 
         engine_wipe = getattr(self._engine, "wipe", None)
 
@@ -521,8 +811,7 @@ class OtrApp:
             self._engine.clear_all_sessions("wipe and exit")
             return {}
 
-        transport = self._transport
-        runner = getattr(transport, "run_on_loop_thread", None)
+        runner = getattr(self._transport, "run_on_loop_thread", None)
         try:
             counts = runner(_wipe_engine) if runner is not None else _wipe_engine()
         except Exception:
@@ -538,30 +827,6 @@ class OtrApp:
                 counts = {}
         report.update({k: v for k, v in (counts or {}).items()
                        if k != "already_wiped"})
-
-        self._transport = None
-        if transport is not None:
-            closer = getattr(transport, "close", None) or transport.disconnect
-            try:
-                closer()
-            except Exception:
-                report["errors"].append("transport")
-        self._connection = ConnectionState.DISCONNECTED
-
-        self._presence.forget_all()
-        self._last_activity.clear()
-        self._mode = OtrMode()
-        self._call_states.clear()
-
-        from . import wipe as _disk
-        destroyed = failed = 0
-        for root in _disk.python_state_roots():
-            d, f = _disk.destroy_tree(root)
-            destroyed += d
-            failed += f
-        report["files_destroyed"] = destroyed
-        report["files_unlinked_only"] = failed
-        self._sink = None
         return report
 
     @staticmethod
@@ -615,8 +880,12 @@ class OtrApp:
 
     def note_presence(self, peer: str, online: bool, show: str = "") -> None:
         """A presence stanza arrived. Called from the transport's loop thread."""
-        peer = self.canonical_peer(peer)
-        self._presence.note(peer, online, show)
+        # Keep the resource: availability is tracked per resource so that an
+        # old session timing out cannot mark a live contact offline.
+        text = str(peer or "").strip()
+        resource = text.split("/", 1)[1] if "/" in text else ""
+        key = self.canonical_peer(text)
+        self._presence.note(key + "/" + resource if resource else key, online, show)
 
     def note_presence_lost(self) -> None:
         """The stream went. Everything we knew about availability goes too.
@@ -880,6 +1149,145 @@ class OtrApp:
         except Exception:
             return "unknown"
 
+    #: Bounds on the outbox: lines per contact, and characters per line.
+    OUTBOX_MAX = 100
+    #: The handshake ETA before any has been measured (I2P, two tunnels).
+    HANDSHAKE_TYPICAL_SECONDS = 75
+
+    def _hold(self, peer: str, body: str) -> bool:
+        box = self._outbox.setdefault(peer, [])
+        if len(box) >= self.OUTBOX_MAX:
+            return False
+        box.append(body)
+        return True
+
+    def outbox_count(self, peer: str) -> int:
+        return len(self._outbox.get(self.canonical_peer(peer), ()))
+
+    def _flush_outbox(self, peer: str) -> None:
+        """Send what waited for `peer`, if the conversation is ready now."""
+        box = self._outbox.get(peer)
+        invites = self._invite_after_otr.get(peer)
+        secure = self.security_state(peer) is not SecurityState.PLAINTEXT
+        if secure and invites:
+            self._invite_after_otr.pop(peer, None)
+            groups = self._groups
+            for room in invites:
+                try:
+                    groups.invite(room, peer)
+                except Exception:
+                    self._emit(ErrorOccurred(peer=peer, code="group_invite_failed"))
+        if not box:
+            return
+        if secure:
+            sent = 0
+            while box:
+                body = box[0]
+                try:
+                    payload, ok = self._engine.handle_outgoing_message(peer, body)
+                    if not (ok and payload):
+                        break
+                    text = (payload.decode("utf-8", errors="replace")
+                            if isinstance(payload, (bytes, bytearray)) else str(payload))
+                    self._transport.send(peer, text)
+                except Exception:
+                    break
+                box.pop(0)
+                sent += 1
+            if sent:
+                self._touch(peer)
+                self._emit(QueuedSent(peer=peer, count=sent, encrypted=True))
+        elif (self._capability_enforced()
+              and self.otr_capability(peer) == "unavailable"
+              and not self._mode.is_otr(peer)):
+            # Online, and confirmed not to speak OTRv4+: the user's choice
+            # (2026-10-04) is that such a contact is written to in the
+            # clear, labelled as such. Never a contact that ever asked for
+            # OTR (`is_otr`).
+            sent = 0
+            while box:
+                try:
+                    self._transport.send(peer, box[0])
+                except Exception:
+                    break
+                box.pop(0)
+                sent += 1
+            if sent:
+                self._touch(peer)
+                self._emit(QueuedSent(peer=peer, count=sent, encrypted=False))
+        if not box:
+            self._outbox.pop(peer, None)
+
+    def _own_bare(self) -> str:
+        profile = getattr(self._transport, "_profile", None)
+        return str(getattr(profile, "jid", "") or "").split("/", 1)[0].lower()
+
+    def _auto_start(self, peer: str) -> None:
+        """OTRv4+ as soon as a capable contact is online, so the
+        conversation is ready before anyone types. Only ONE side starts it
+        (the lower JID), unless something is waiting on our side: two DAKEs
+        crossing would cost a round of restarts over I2P."""
+        if self.security_state(peer) is not SecurityState.PLAINTEXT:
+            return
+        waiting = bool(self._outbox.get(peer) or self._invite_after_otr.get(peer))
+        me = self._own_bare()
+        if not waiting and not (me and me < peer):
+            return
+        try:
+            if self._engine.has_session(peer):
+                return
+        except Exception:
+            pass
+        try:
+            self.start_session(peer)
+            _TRACE.record("otr", "auto_started", "info", jid=peer)
+        except BridgeError:
+            pass
+
+    def invite_when_ready(self, room: str, peer: str) -> str:
+        """Invite `peer` to a secure group, starting OTRv4+ with them first if
+        need be (the invite needs it). "sent", or "waiting_for_otr"."""
+        peer = self.canonical_peer(peer)
+        if self.security_state(peer) is not SecurityState.PLAINTEXT:
+            self.groups.invite(room, peer)
+            return "sent"
+        rooms = self._invite_after_otr.setdefault(peer, [])
+        if room not in rooms:
+            rooms.append(room)
+        state = self.ensure_otr(peer)
+        if state in ("offline", "checking", "unknown"):
+            return "waiting_for_otr"
+        if state == "unavailable":
+            self._invite_after_otr.pop(peer, None)
+            raise BridgeError("otrv4plus_unavailable",
+                              "this contact's app does not support OTRv4+")
+        return "waiting_for_otr"
+
+    def _session_settled(self, peer: str, before, after) -> None:
+        """A session came up (or went): record the handshake time and send
+        whatever waited for it."""
+        if after is not SecurityState.PLAINTEXT and before is SecurityState.PLAINTEXT:
+            started = self._hs_started.pop(peer, None) or self._handshake_seen.get(peer)
+            if started:
+                took = max(1.0, time.monotonic() - started)
+                hist = self._hs_history.setdefault(peer, [])
+                hist.append(took)
+                del hist[:-5]
+                self._hs_all.append(took)
+                del self._hs_all[:-20]
+            self._flush_outbox(peer)
+
+    def handshake_eta(self, peer: str, elapsed: int) -> int:
+        """Seconds still expected, from how long handshakes have taken
+        (this contact first, then anyone, then a default). A guide only:
+        I2P routes vary; never below 5 while one is still running."""
+        hist = self._hs_history.get(peer) or self._hs_all
+        if hist:
+            typical = sorted(hist)[len(hist) // 2]
+        else:
+            typical = float(self.HANDSHAKE_TYPICAL_SECONDS)
+        return int(max(5.0, typical - elapsed))
+
     def note_capability(self, peer: str, pinned_left: bool = False) -> None:
         """The transport's capability changed for *peer*. Called on its loop.
 
@@ -903,7 +1311,14 @@ class OtrApp:
                         peer=peer, security=self.security_state(peer)))
             except Exception:
                 _log.warning("could not end the session of a departed resource")
-        self._emit(OtrCapabilityChanged(peer=peer, state=self.otr_capability(peer)))
+        state = self.otr_capability(peer)
+        self._emit(OtrCapabilityChanged(peer=peer, state=state))
+        if peer in self._rooms:
+            return
+        if state == "available":
+            self._auto_start(peer)
+        if state in ("available", "unavailable"):
+            self._flush_outbox(peer)
 
     #: What `ensure_otr` found or did. Stable codes for Kotlin.
     ENSURE_ESTABLISHED = "established"
@@ -965,7 +1380,9 @@ class OtrApp:
         """
         peer = self.canonical_peer(peer)
         out = {"stage": self.HS_IDLE, "step": 0, "steps": 3,
-               "have": 0, "of": 0, "elapsed": 0}
+               "have": 0, "of": 0, "elapsed": 0, "eta": 0,
+               "capability": self.otr_capability(peer),
+               "queued": len(self._outbox.get(peer, ()))}
         if peer in self._rooms:
             return out
         if self.security_state(peer) is not SecurityState.PLAINTEXT:
@@ -1016,6 +1433,7 @@ class OtrApp:
         else:
             started = self._handshake_seen.setdefault(peer, time.monotonic())
             out["elapsed"] = int(time.monotonic() - started)
+            out["eta"] = self.handshake_eta(peer, out["elapsed"])
         out["stage"], out["step"] = stage, step
         return out
 
@@ -1081,6 +1499,30 @@ class OtrApp:
         # to continue without one.
         self._mode.request(peer)
         _TRACE.record("otr", "dake_requested", "info", jid=peer)
+        self._hs_started.setdefault(peer, time.monotonic())
+
+        # AN EXPLICIT REQUEST RESTARTS A HANDSHAKE THAT IS NOT FINISHING.
+        # The engine declines to build a DAKE1 while one is in flight, and a
+        # handshake whose DAKE2 or DAKE3 was lost -- a VPN switch, a dropped
+        # I2P tunnel -- is in flight forever. The terminal's `/otr` resets in
+        # that case; this facade sent a bare query the peer ignores, so the
+        # user could tap Start as often as they liked and nothing recovered.
+        # A fresh DAKE1 is always safe to send: the peer's engine lets it
+        # supersede a stale run, and settles glare if both sides retry.
+        # "In flight" is either state the engine uses for it: an initiator
+        # waiting for DAKE2 is DAKE_IN_PROGRESS, and a responder waiting for
+        # DAKE3 is still PLAINTEXT with a DAKE engine attached.
+        live = getattr(self._engine, "sessions", {}).get(peer)
+        live_state = getattr(getattr(live, "session_state", None), "name", "")
+        half_done = (live_state == "DAKE_IN_PROGRESS"
+                     or (live_state == "PLAINTEXT"
+                         and getattr(live, "dake_engine", None) is not None))
+        if half_done and hasattr(self._engine, "end_session"):
+            try:
+                self._engine.end_session(peer, "handshake restarted by the user")
+                _TRACE.record("otr", "dake_restarted", "info", jid=peer)
+            except Exception as exc:
+                _TRACE.record_exception("otr", "dake_restart_failed", exc, jid=peer)
 
         # NOT `self._safe`. An engine that RAISES here and an engine that
         # DECLINES to produce DAKE1 are different answers, and swallowing the
@@ -1218,7 +1660,21 @@ class OtrApp:
         # message; sending it as type="chat" to the room's JID -- what this
         # method did before rooms were routed -- is rejected by the server
         # while the UI reported it sent.
+        # A SECURE GROUP is MLS or nothing: a failure is SEND_FAILED, never a
+        # plaintext retry. Checked before room membership: after a re-login
+        # the group is known before its room is joined again, and what is
+        # typed then is held until the group is in sync (QUEUED).
+        if self._groups is not None and self._groups.is_secure(peer):
+            try:
+                outcome = self._groups.send(peer, body)
+            except (GroupError, Exception):
+                return self.SEND_FAILED
+            return self.SEND_QUEUED if outcome == "held" else self.SEND_ENCRYPTED
         if peer in self._rooms:
+            if peer in self._keyless_groups:
+                # An encrypted group we have no keys for: never plaintext.
+                self._emit(ErrorOccurred(peer=peer, code="group_keys_missing"))
+                return self.SEND_FAILED
             sender = getattr(self._transport, "send_room_message", None)
             if sender is None:
                 return self.SEND_FAILED
@@ -1228,16 +1684,33 @@ class OtrApp:
                 return self.SEND_FAILED
             return self.SEND_PLAINTEXT
 
-        # A contact whose client speaks OTRv4Plus is never sent plaintext:
-        # the first message starts OTRv4+ and waits for it (QUEUED).
-        if (self._capability_enforced()
-                and self.otr_capability(peer) == "available"
-                and not self._mode.is_otr(peer)
-                and self.security_state(peer) is SecurityState.PLAINTEXT):
-            try:
-                self.start_session(peer)
-            except BridgeError:
+        # NO PLAINTEXT TO ANYONE WHO MIGHT SPEAK OTRv4+ (owner, 2026-10-04).
+        # Until the conversation is encrypted, a line waits in the outbox
+        # (QUEUED) when the contact's app speaks OTRv4+ -- and a handshake is
+        # made sure of -- or when that is not known yet (offline, still
+        # checking). Only a contact confirmed online without OTRv4+, who never
+        # asked for OTR, is written to in the clear (PLAINTEXT, labelled).
+        secure = self.security_state(peer) is not SecurityState.PLAINTEXT
+        if secure and self._outbox.get(peer):
+            # Behind what is already waiting, in order.
+            if not self._hold(peer, body):
                 return self.SEND_FAILED
+            self._flush_outbox(peer)
+            return self.SEND_QUEUED if self._outbox.get(peer) else self.SEND_ENCRYPTED
+        if not secure and self._capability_enforced():
+            capability = self.otr_capability(peer)
+            if capability == "available" or self._mode.is_otr(peer):
+                if not self._hold(peer, body):
+                    return self.SEND_FAILED
+                if capability == "available":
+                    try:
+                        if not self._engine.has_session(peer):
+                            self.start_session(peer)
+                    except (BridgeError, Exception):
+                        pass
+                return self.SEND_QUEUED
+            if capability in ("checking", "unknown", "offline"):
+                return self.SEND_QUEUED if self._hold(peer, body) else self.SEND_FAILED
 
         if self._mode.may_send_plaintext(
                 peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
@@ -1255,8 +1728,9 @@ class OtrApp:
             return self.SEND_FAILED
 
         if not should_send:
-            # The engine is holding it until there is a session. Not an error.
-            return self.SEND_QUEUED
+            # No session yet. The OUTBOX holds it (the engine's own queue is
+            # dropped when its handshake completes) and sends it then.
+            return self.SEND_QUEUED if self._hold(peer, body) else self.SEND_FAILED
         if not payload:
             return self.SEND_FAILED
 
@@ -1300,7 +1774,9 @@ class OtrApp:
             after = self.security_state(peer)
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
+                self._session_settled(peer, before, after)
             self._announce_smp_change(peer, before_smp)
+            self._recover_if_orphaned(peer)
             return None
 
         # THE ENGINE'S OUTPUT IS NOT NECESSARILY SOMETHING TO DISPLAY.
@@ -1321,6 +1797,7 @@ class OtrApp:
             after = self.security_state(peer)
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
+                self._session_settled(peer, before, after)
             self._announce_smp_change(peer, before_smp)
             return None
 
@@ -1362,6 +1839,17 @@ class OtrApp:
             self._announce_smp_change(peer, before_smp)
             return None
 
+        # GROUP SETUP: an invitation, a KeyPackage or a Welcome for a secure
+        # group, which only ever travel inside this OTRv4+ session.
+        if is_group_signal(body):
+            self._touch(peer)
+            if not self._wiped:
+                try:
+                    self.groups.on_signal(peer, body)
+                except GroupError:
+                    pass
+            return None
+
         # AND THE THIRD ONE. `otrv4plus_trade` carries `?OTRv4-TRADE:` in a
         # body exactly as voice and file transfer do, and Android has no
         # trade support at all -- so without this branch a peer's trade
@@ -1376,6 +1864,22 @@ class OtrApp:
             self._touch(peer)
             return None
 
+        # AN EMPTY BODY IS A CARRIER, NOT A MESSAGE. SMP travels as TLVs on a
+        # data message whose text is empty, and OTRv4 heartbeats are empty
+        # data messages too. Before this branch every SMP step reached the
+        # screen as a blank bubble from the contact, on both sides, which is
+        # what a handset showed when SMP was started after ordinary chat.
+        # Measured through two real bridges: after four ordinary messages,
+        # smp_start produced MessageReceived(body='') on the responder, and
+        # each later SMP step produced another.
+        if body == "":
+            self._touch(peer)
+            after = self.security_state(peer)
+            if after != before:
+                self._emit(SessionStateChanged(peer=peer, security=after))
+            self._announce_smp_change(peer, before_smp)
+            return None
+
         self._touch(peer)
         self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock()))
         # A decrypted message means a session exists; the level may have moved
@@ -1385,6 +1889,44 @@ class OtrApp:
             self._emit(SessionStateChanged(peer=peer, security=after))
         self._announce_smp_change(peer, before_smp)
         return body
+
+    #: At most one automatic handshake per peer in this many seconds.
+    RECOVERY_INTERVAL = 30.0
+
+    def _recover_if_orphaned(self, peer: str) -> None:
+        """Start a handshake when the peer is encrypting to a session we lack.
+
+        After this device restarts (a new identity every launch) or when a
+        DAKE3 is lost, the peer keeps sending DATA frames this side cannot
+        read, and nothing ever changes: the peer has a session and no reason
+        to start another, and this side had no reason either. The frames are
+        now the reason. A DAKE1 is sent -- never plaintext, never a reply to
+        the frame's contents -- and the peer's engine answers it from a
+        pending session, so their side is not disturbed unless the handshake
+        completes.
+
+        Bounded: once per `RECOVERY_INTERVAL` per peer, never for a room, and
+        only to a contact whose OTRv4Plus capability is confirmed where the
+        transport tracks it, so a stream of junk frames cannot make this
+        device send handshakes to anybody.
+        """
+        take = getattr(self._engine, "take_orphan_data", None)
+        if take is None or not take(peer):
+            return
+        if self.is_room(peer):
+            return
+        if self._capability_enforced() and self.otr_capability(peer) != "available":
+            return
+        now = self._clock()
+        last = self._recovered_at.get(peer)
+        if last is not None and now - last < self.RECOVERY_INTERVAL:
+            return
+        self._recovered_at[peer] = now
+        _TRACE.record("otr", "orphan_data_recovery", "info", jid=peer)
+        try:
+            self.start_session(peer)
+        except BridgeError:
+            pass
 
     def _announce_smp_change(self, peer: str, before: SmpState) -> None:
         """Emit when an inbound frame moved this peer's verification state.
@@ -1420,6 +1962,13 @@ class OtrApp:
             return
         if after in (SmpState.VERIFIED, SmpState.FAILED, SmpState.CANCELLED):
             self._emit(SmpResult(peer=peer, state=after))
+            if after is SmpState.VERIFIED and self._groups is not None:
+                # Verified now: the groups we share with them learn it, and
+                # each side sends its group key (calls need verified members).
+                try:
+                    self._groups.on_peer_verified(peer)
+                except Exception:
+                    _log.warning("group verification update failed")
         else:
             self._emit(self.smp_progress(peer))
 
@@ -1484,9 +2033,10 @@ class OtrApp:
         self._require_encrypted(peer, "smp_not_encrypted")
         try:
             payload = self._engine.start_smp(peer, secret, question)
-        except Exception:
-            self._emit(ErrorOccurred(peer=peer, code="smp_start_failed"))
-            raise BridgeError("smp_start_failed")
+        except Exception as exc:
+            code = self._smp_start_refusal(exc)
+            self._emit(ErrorOccurred(peer=peer, code=code))
+            raise BridgeError(code)
         finally:
             del secret
         if not payload:
@@ -1502,6 +2052,27 @@ class OtrApp:
             self._emit(self.smp_progress(peer))
             raise
         self._emit(self.smp_progress(peer))
+
+    @staticmethod
+    def _smp_start_refusal(exc: BaseException) -> str:
+        """Name why the engine would not start a run.
+
+        Every refusal used to be `smp_start_failed`, so a user who retried
+        after a wrong passphrase was told only that verification "could not
+        be started" -- and the reason, a 30-second cooldown in the Rust
+        engine, was the one thing that would have told them to wait. The
+        engine's text is matched here and never shown: only the code leaves.
+        """
+        text = str(exc)
+        if "cooldown" in text:
+            return "smp_cooldown"
+        if "max attempt limit" in text:
+            return "smp_attempts_exhausted"
+        if "already verified" in text:
+            return "smp_already_verified"
+        if "already in progress" in text:
+            return "smp_in_progress"
+        return "smp_start_failed"
 
     def smp_respond(self, peer: str, secret: str) -> None:
         """Answer a peer's verification challenge.
@@ -1828,8 +2399,15 @@ class OtrApp:
         before it arrives. The engine takes a path and does not care who
         chose it, which is why the Termux picker is never reached here.
         """
-        if self._wiped or self.is_room(peer):
+        if self._wiped:
             return FileOutcome.UNAVAILABLE
+        if self.is_room(peer):
+            # A secure group's file goes to the whole group, over MLS
+            # (android_bridge.group_files); an ordinary room has none.
+            room = self.canonical_peer(peer)
+            if self._group_files is None or not self.groups.is_secure(room):
+                return FileOutcome.UNAVAILABLE
+            return self._group_files.send(room, path, bool(strip_metadata))
         return self.files.send_file(self.canonical_peer(peer), path,
                                     bool(strip_metadata))
 
@@ -1845,25 +2423,35 @@ class OtrApp:
         """Accept an offered transfer. Returns a `FileOutcome` code."""
         if self._wiped:
             return FileOutcome.UNAVAILABLE
+        if self._group_files is not None and self._group_files.knows(transfer_id):
+            return (FileOutcome.STARTED if self._group_files.accept(transfer_id)
+                    else FileOutcome.NO_TRANSFER)
         return self.files.accept(transfer_id)
 
     def decline_file(self, transfer_id: str) -> str:
         """Decline an offered transfer. Returns a `FileOutcome` code."""
         if self._wiped:
             return FileOutcome.NO_TRANSFER
+        if self._group_files is not None and self._group_files.knows(transfer_id):
+            return (FileOutcome.STARTED if self._group_files.decline(transfer_id)
+                    else FileOutcome.NO_TRANSFER)
         return self.files.decline(transfer_id)
 
     def cancel_file(self, transfer_id: str) -> str:
         """Stop a transfer that is under way, either direction. A `FileOutcome`."""
         if self._wiped:
             return FileOutcome.NO_TRANSFER
+        if self._group_files is not None and self._group_files.knows(transfer_id):
+            return (FileOutcome.STARTED if self._group_files.cancel(transfer_id)
+                    else FileOutcome.NO_TRANSFER)
         return self.files.cancel(transfer_id)
 
     def transfers(self) -> List[Dict[str, Any]]:
         """Every live transfer, structured. Never the engine's own sentences."""
         if self._wiped:
             return []
-        return self.files.transfers()
+        group = self._group_files.transfers() if self._group_files is not None else []
+        return self.files.transfers() + group
 
     def received_file_dir(self) -> str:
         """Where a FINISHED file lands, as the engine decides it.
@@ -1872,6 +2460,44 @@ class OtrApp:
         partial file can never be mistaken for a complete one.
         """
         return self.files.received_dir()
+
+    # A received file rests as a `.otrv` container (Rust-sealed). These open
+    # it without leaving plaintext behind, or save it on an explicit request.
+    # Failures are codes: a container that does not open says so, and never
+    # why in engine words.
+
+    def open_received(self, path: str) -> bytes:
+        """Decrypt into memory for the in-app viewer."""
+        try:
+            return self.files.open_received(path)
+        except Exception:
+            raise BridgeError("open_failed", "the file could not be opened")
+
+    def open_received_to(self, path: str, directory: str) -> str:
+        """Decrypt to a transient file for a viewer that needs one (PDF,
+        video). The caller deletes it when the viewer closes."""
+        try:
+            return self.files.open_received_to(path, directory)
+        except Exception:
+            raise BridgeError("open_failed", "the file could not be opened")
+
+    def save_received(self, path: str, destination: str) -> str:
+        """Explicit Save to `destination`, replacing a file already there."""
+        try:
+            self.files.save_received(path, destination)
+            return "ok"
+        except Exception:
+            return "save_failed"
+
+    def export_received(self, path: str, destination: str, passphrase: str) -> str:
+        """A passphrase-sealed `.otrv` any OTRv4Plus build can import."""
+        if len(passphrase or "") < 8:
+            return "passphrase_too_short"
+        try:
+            self.files.export_received(path, destination, passphrase)
+            return "ok"
+        except Exception:
+            return "export_failed"
 
     def poll_calls(self) -> None:
         """Emit an event for any call whose state moved.

@@ -8,7 +8,7 @@
 # pqcrypto-mldsa, the same crates and versions otrv4_core uses), AES-256-GCM
 # from aes-gcm, HKDF/HMAC/SHA-384 from hkdf/hmac/sha2 -- no second
 # implementation of any primitive the core already has. The MLS protocol is
-# OpenMLS; HPKE composition is hpke-rs over our backend.
+# OpenMLS; HPKE (RFC 9180) is src/hpke.rs on the same primitives.
 #
 # SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec: one small FFI call
 # (PQClean's seeded ML-KEM key generation, which pqcrypto-mlkem compiles but
@@ -26,13 +26,13 @@ license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 publish = false
 
 [dependencies]
-openmls = { version = "=0.9.0", default-features = false, features = ["draft-ietf-mls-pq-ciphersuites"] }
+openmls = { version = "=0.9.1", default-features = false, features = ["draft-ietf-mls-pq-ciphersuites"] }
 openmls_traits = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuites"] }
-openmls_memory_storage = "=0.6.0"
-# "hazmat" only exposes the derived private key bytes so they can be handed
-# to OpenMLS, as the reference provider does; they stay inside Rust.
-hpke-rs = { version = "=0.7.0", default-features = false, features = ["hazmat"] }
-hpke-rs-crypto = { version = "=0.7.0" }
+# The storage traits only; the store itself is src/storage.rs (zeroizing,
+# CBOR), derived from openmls_memory_storage, which is not a dependency.
+ciborium = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
 tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
 # The core's versions, so no second copy of a primitive enters the build.
 pqcrypto-mlkem  = { version = "0.1.1", default-features = false, features = ["std"] }
@@ -42,12 +42,34 @@ aes-gcm = { version = "0.10", features = ["aes"] }
 hkdf = "0.12"
 hmac = "0.12"
 sha2 = "0.10"
+# SHAKE256 for HPKE DeriveKeyPair (src/hpke.rs): the core's sha3.
+sha3 = "0.10"
+# The classical halves of the hybrid suite (MLS_SECURITY_HARDENING.md §2):
+# the core's X448 (DAKE, voice) and Ed448 (identity keys) crates.
+x448 = "0.6"
+ed448-goldilocks-plus = { version = "0.16", default-features = false, features = ["alloc", "signing", "pkcs8"] }
 getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
 thiserror = "1.0"
-rand_core_hpke = { package = "rand_core", version = "0.10" }
 
 [dev-dependencies]
 # TEST ONLY, never shipped: the reference provider, so our provider is
 # checked against an independent implementation of the same suite.
 openmls_rust_crypto = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuites"] }
+# TEST ONLY, never shipped: src/hpke.rs replaced hpke-rs (MPL-2.0) in the
+# build; tests/hpke_cross.rs checks it against hpke-rs byte for byte.
+hpke-rs = { version = "=0.7.0", default-features = false, features = ["hazmat"] }
+hpke-rs-crypto = { version = "=0.7.0" }
+rand_core_hpke = { package = "rand_core", version = "0.10" }
+
+# OTRv4Plus PATCH (MLS_SECURITY_HARDENING.md §2, decision C1): OpenMLS's
+# ciphersuite, KEM and signature-scheme lists are closed enums. The vendored
+# openmls_traits adds private-use code points for the hybrid suite
+# MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 (0xF0A1), its KEM
+# X448+ML-KEM-1024 (0xF0A1) and composite signature Ed448+ML-DSA-87 (0xFEA1),
+# and nothing else; vendor/VENDORED.md lists every change. The crypto itself
+# is ours (mls/src/hpke.rs, mls/src/provider.rs).
+[patch.crates-io]
+openmls_traits = { path = "../vendor/openmls_traits" }
+# Test-only (dev-dependency): one exhaustive match taught the new KEM.
+openmls_rust_crypto = { path = "../vendor/openmls_rust_crypto" }

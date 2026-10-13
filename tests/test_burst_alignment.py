@@ -27,6 +27,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 audio = pytest.importorskip("otrv4plus_audio")
 
+#: These tests replay a device measured when the pipeline ran at 16 kHz
+#: (60 ms = 960 frames). The pipeline is 24 kHz since rc.61; the alignment
+#: rule is rate-independent, so it is checked at the rate the measurement was
+#: taken at, restored after each test.
+RATE16, FRAMES16 = 16000, 960
+
+
+@pytest.fixture(autouse=True)
+def _the_measured_16k_pipeline(monkeypatch):
+    monkeypatch.setattr(audio, "SAMPLE_RATE", RATE16)
+    monkeypatch.setattr(audio, "FRAME_SAMPLES", FRAMES16)
+    monkeypatch.setattr(audio, "FRAME_BYTES", FRAMES16 * 2)
+
 
 class FakeLib:
     """Records every write. Accepts everything offered, in one go."""
@@ -66,7 +79,7 @@ def make_playback(burst, device_rate=16000, channels=1, align=True):
     return p
 
 
-FRAME = b"\x01\x02" * audio.FRAME_SAMPLES        # one 60 ms packet, 16-bit mono
+FRAME = b"\x01\x02" * FRAMES16                  # one 60 ms packet at 16 kHz
 
 
 class TestTheDeviceThatCausedThis:
@@ -88,7 +101,10 @@ class TestTheDeviceThatCausedThis:
         p = make_playback(1920)
         assert p.write_frame(FRAME) is True
         assert p._lib.writes == [], "wrote a half burst"
-        assert len(p._pending_pcm) == len(FRAME), "the held frame vanished"
+        # Held in DEVICE samples: our frame resampled to the device's rate
+        # (the same length only when the two rates match).
+        assert len(p._pending_pcm) == p._device_frames_per_packet * 2, \
+            "the held frame vanished"
 
     def test_no_audio_is_lost_across_the_boundary(self):
         p = make_playback(1920)
@@ -117,8 +133,8 @@ class TestTheDeviceThatCausedThis:
 class TestTheAlignmentRule:
     """Drives alignment_frames directly, so the rule itself is under test."""
 
-    PKT16 = audio.FRAME_SAMPLES                 # 960 device frames at 16 kHz
-    PKT48 = audio.FRAME_SAMPLES * 3             # 2880 device frames at 48 kHz
+    PKT16 = FRAMES16                            # 960 device frames at 16 kHz
+    PKT48 = FRAMES16 * 3                        # 2880 device frames at 48 kHz
 
     def test_the_handsets_burst(self):
         assert audio.alignment_frames(1920, self.PKT16, enabled=True) == 1920

@@ -326,9 +326,10 @@ The DAKE authenticates, TOFU pins identity, SMP authorises voice. Wiring a
 marker into any of those would make a self-asserted string a security decision.
 
 **A file transfer keys from the session, not from a new handshake** (INV-21).
-The double ratchet's brace key already folds ML-KEM-1024, so a transfer key
-derived from session state is already post-quantum and already
-DAKE-authenticated. Running a second KEM to reach a level the session has
+The transfer key derives from the DAKE extra symmetric key, which comes from
+the DAKE mixed secret and so already includes the DAKE's ML-KEM-1024 secret:
+it is already post-quantum and already DAKE-authenticated. (Not because of
+the ratchet's brace key -- that is not folded into any key; SPEC §5.2.) Running a second KEM to reach a level the session has
 would be the second cryptographic system this project keeps refusing to build.
 
 **Fail closed.** A failure to determine SMP state does not authorise a call

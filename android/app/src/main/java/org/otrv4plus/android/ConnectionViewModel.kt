@@ -24,10 +24,15 @@ import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.InitResult
 import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.RouterProbe
+import org.otrv4plus.android.bridge.ServerIdentityChange
+import org.otrv4plus.android.bridge.ServerCheck
 import org.otrv4plus.android.chat.ChatState
+import org.otrv4plus.android.connection.BundledRouter
 import org.otrv4plus.android.connection.LinkPhase
 import org.otrv4plus.android.connection.LoginProgress
 import org.otrv4plus.android.connection.OtrConnectionService
+import org.otrv4plus.android.connection.RouterChoice
+import org.otrv4plus.android.connection.RouterStore
 
 /**
  * The UI's view of the connection. It does NOT own it.
@@ -83,6 +88,20 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     var registration by mutableStateOf<RegistrationOutcome?>(null)
         private set
 
+    /**
+     * SECURITY_ISSUES X1: the server's I2P name now points at a different
+     * destination. Set after a login or registration refused for that reason;
+     * the screen shows both addresses and offers an explicit, confirmed
+     * "Trust new address". Nothing retries on its own meanwhile (see
+     * ReconnectPolicy.NEEDS_THE_USER).
+     */
+    var identityChange by mutableStateOf<ServerIdentityChange?>(null)
+        private set
+
+    /** The last "Test server" result, or null. */
+    var serverTest by mutableStateOf<ServerCheck?>(null)
+        private set
+
     /** The service's authoritative phase. */
     var phase by mutableStateOf(LinkPhase.STOPPED)
         private set
@@ -104,6 +123,18 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      * answer is that we are connected.
      */
     var connectionFailure by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * The code ConnectProblem classifies: the service's last failure, or the
+     * transport's when it reported "failed" itself. Never shown as such.
+     */
+    val failureCode: String?
+        get() = connectionFailure
+            ?: status.code.takeIf { status.stage == "failed" && it.isNotBlank() }
+
+    /** Failed attempts in a row (the service's backoff count). */
+    var failuresInARow by mutableStateOf(0)
         private set
 
     /**
@@ -135,6 +166,25 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
 
     /** What to say next to the progress bar while [connecting]. */
     val connectingLabel: String get() = login.label(phase)
+
+    /** The I2P router's line for the connection screen, or null. */
+    var routerLabel by mutableStateOf<String?>(null)
+        private set
+
+    /** Which I2P router to use; see [RouterChoice]. */
+    var routerMode by mutableStateOf(RouterStore.load(getApplication()))
+        private set
+
+    /** Whether this APK carries its own router (a local build may not). */
+    val routerBundled: Boolean by lazy {
+        java.io.File(getApplication<Application>().applicationInfo.nativeLibraryDir,
+                     BundledRouter.BINARY).isFile
+    }
+
+    fun chooseRouter(mode: RouterChoice.Mode) {
+        routerMode = mode
+        RouterStore.save(getApplication(), mode)
+    }
 
     /**
      * Bumped by the poll so the derived properties above recompose.
@@ -224,8 +274,15 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     // from a one-shot action (probe, register). Mirroring the
                     // service into `error` would have wiped a probe failure on
                     // the next tick.
+                    // Looked up once per refusal, on the tick it first appears.
+                    if (it.failure == DESTINATION_CHANGED &&
+                        connectionFailure != DESTINATION_CHANGED) {
+                        loadIdentityChange()
+                    }
                     connectionFailure = it.failure
+                    failuresInARow = it.failuresInARow
                     login.observe(it.phase)
+                    routerLabel = it.routerLabel()
                 }
                 // Even with no service bound: the handover deadline in
                 // LoginProgress expires on the clock, and nothing would
@@ -298,7 +355,69 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     c.register(password)
                 }
             }
-            got.onSuccess { registration = it }
+            got.onSuccess {
+                registration = it
+                if (it.code == "server_identity_changed") loadIdentityChange()
+            }.onFailure { error = it.javaClass.simpleName }
+            busy = null
+        }
+    }
+
+    private fun loadIdentityChange() {
+        val c = core ?: return
+        viewModelScope.launch {
+            identityChange = withContext(Dispatchers.IO) {
+                runCatching { c.destinationChange() }.getOrNull()
+            }
+        }
+    }
+
+    /**
+     * The user confirmed trusting the new destination shown in
+     * [identityChange]. Does NOT connect or sign in: the user presses Log in
+     * (or Create account) again themselves.
+     */
+    fun trustNewServerAddress() {
+        val c = core ?: return
+        val change = identityChange ?: return
+        viewModelScope.launch {
+            val why = withContext(Dispatchers.IO) {
+                runCatching { c.approveServerDestination(change.seen) }
+                    .getOrElse { it.javaClass.simpleName }
+            }
+            if (why == null) {
+                identityChange = null
+                connectionFailure = null
+            } else {
+                error = why
+            }
+        }
+    }
+
+    /** Leave the change refused. The old destination stays trusted. */
+    fun dismissIdentityChange() {
+        identityChange = null
+    }
+
+    /**
+     * Reach the server without signing in or creating anything: separates
+     * "not reached" from "reached, but registration refused / needs a
+     * CAPTCHA / not offered". Refused while connected, like register.
+     */
+    fun testServer(jid: String, server: String = "") {
+        val c = core ?: return
+        if (busy != null || status.connected) return
+        error = null
+        serverTest = null
+        busy = "Testing the server..."
+        viewModelScope.launch {
+            val got = withContext(Dispatchers.IO) {
+                runCatching {
+                    c.prepareConnection(jid.trim(), server.trim())
+                    c.testServer()
+                }
+            }
+            got.onSuccess { serverTest = it }
                 .onFailure { error = it.javaClass.simpleName }
             busy = null
         }
@@ -393,5 +512,8 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     companion object {
         /** How often to read the service's state. Cheap: it is in-process. */
         const val POLL_MS = 500L
+
+        /** The transport's code for an X1 refusal (android_bridge.transport). */
+        const val DESTINATION_CHANGED = "i2p_destination_changed"
     }
 }

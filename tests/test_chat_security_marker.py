@@ -1,7 +1,7 @@
 """The prefix on an incoming chat line is a security claim.
 
 Reported from a handset: an SMP-verified session showed
-`[otr] <bob@xmpp-elite.i2p> ohhh lala` with `[otr]` in green, and nothing else
+`[otr] <bob@otrv4plus.i2p> ohhh lala` with `[otr]` in green, and nothing else
 said the line was encrypted or that the peer's identity had been proved. The
 reassurance was a colour, and only a colour.
 
@@ -120,7 +120,7 @@ class TestRedactionSurvivesThePrefix:
 
     @pytest.mark.parametrize("marker", ["", LOCK_WITH_KEY + " ", PLAIN_LOCK + " "])
     def test_a_message_body_is_still_redacted(self, marker):
-        line = marker + "[otr] <bob@xmpp-elite.i2p> ohhh lala"
+        line = marker + "[otr] <bob@otrv4plus.i2p> ohhh lala"
         written = xmpp._log_line_for_file(line)
         assert "ohhh lala" not in written, "the message body reached the log"
         assert "redacted" in written
@@ -138,7 +138,7 @@ class TestRedactionSurvivesThePrefix:
         before the markers, and both have to happen for the pattern to
         match."""
         line = (xmpp._otr_prefix(True) + " "
-                + xmpp._colorize("<bob@xmpp-elite.i2p>", "yellow")
+                + xmpp._colorize("<bob@otrv4plus.i2p>", "yellow")
                 + " " + xmpp._colorize("ohhh lala", "dark_blue"))
         written = xmpp._log_line_for_file(line)
         assert "ohhh lala" not in written

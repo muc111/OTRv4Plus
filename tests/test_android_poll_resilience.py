@@ -31,8 +31,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANDROID = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
                        "otrv4plus", "android")
 
-ALICE = "alice@xmpp-elite.i2p"
-BOB = "bob@xmpp-elite.i2p"
+ALICE = "alice@otrv4plus.i2p"
+BOB = "bob@otrv4plus.i2p"
 
 
 def _read(*parts):

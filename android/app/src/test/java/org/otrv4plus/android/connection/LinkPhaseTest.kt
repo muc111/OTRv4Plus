@@ -88,7 +88,7 @@ class LinkPhaseTest {
 
     @Test
     fun `the tunnel stages are all progress`() {
-        for (stage in listOf("checking_router", "building_tunnels",
+        for (stage in listOf("checking_router", "checking_tor", "building_tunnels",
                              "connecting", "authenticating")) {
             val phase = LinkPhase.fromStage(stage, connected = false)
             assertEquals(LinkPhase.CONNECTING, phase, stage)

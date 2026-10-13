@@ -73,7 +73,9 @@ established fails closed rather than falling back to a less private one. See
 | `/fingerprint` shows yours and theirs | Yes |
 | `/names` channel user list | Yes — total count, privilege groups, OTRv4+ clients in blue and selectable with 1-9 to start `/otr`. Detection reads the realname the peer's client sent at IRC registration and relayed in `RPL_WHOREPLY`; it is **self-asserted client identification, never authentication** (INV-20) |
 | `/sendfile [path]` encrypted file transfer | **XMPP only.** Fresh AES-256-GCM FileKey per transfer, Rust-owned with no getter, wrapped under a key derived from the session's DAKE extra symmetric key. 64 KiB chunks; index and final flag in the AAD. Six verification steps before an atomic rename. With no path on Termux it opens the Android file picker (needs the Termux:API app, not just the package); the picker reports no filename, so the file is renamed from its magic number. The IRC client has no file transfer |
-| `/transfer [accept\|decline\|cancel <id>]` | XMPP only. Lists transfers, or acts on one |
+| Remove hidden information before sending | Both clients, 1:1 and groups. A JPEG, PNG or WebP that carries metadata (location, time, camera) is not sent until the user answers: remove it, or keep it and send the original. A kind that cannot be checked is sent as it is, and said |
+| Files in a secure group (`/sendfile` while in it, `/group sendfile`; the app's "Send a file to the group") | XMPP only, app and Termux interoperate. Pieces are MLS application messages (the group's hybrid suite), with the room's no-store hint so they never push commits out of its history. Sent only when every other member is verified; an offer from an unverified member is refused. SHA-256 and size checked on arrival; a member that missed pieces, or accepts late, asks for them again. Up to 16 MB |
+| `/transfer [accept\|decline\|cancel <id>]` | XMPP only. Lists transfers (group files too), or acts on one |
 | `/list` channel list, `/whois`, `/who` | Yes — `/whois` shows `Client:`, `User:` (b32 destination) and `Name:` |
 | OTRv4 message fragmentation | Yes (380 B per fragment on I2P, 450 B on TLS/Tor; SMP2 is ~49 fragments on I2P) |
 | Out-of-order message handling | Yes (up to 1000 skipped keys cached) |
@@ -159,10 +161,12 @@ Desktop Linux works the same way. macOS not tested. Windows not supported.
 
 ## Out of scope
 
-- File transfer
 - **Video** (voice is implemented — see above)
 - Voice over any transport other than I2P
-- Group chat (OMEMO, MLS, Signal groups)
+- OMEMO and Signal-protocol groups (encrypted groups are OTRv4Plus secure
+  groups over MLS, X448 + ML-KEM-1024 / Ed448 + ML-DSA-87, in the app and the
+  Termux XMPP client -- see [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls);
+  file transfer is implemented -- see `/sendfile` above)
 - Mobile push notifications
 - Cross-device sync
 - Identity recovery

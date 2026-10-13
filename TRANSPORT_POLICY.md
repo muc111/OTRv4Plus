@@ -246,7 +246,8 @@ forbids.
 | I2P XMPP control plane | implemented, live-verified |
 | I2P voice media (SAM datagram) | implemented, live-verified — 4-hour soak, authenticated recovery across a network transition |
 | Tor XMPP control plane | implemented via a hand-rolled SOCKS5 CONNECT to a loopback forwarder; **LIVE-UNVERIFIED** |
-| Clearnet TLS XMPP control plane | implemented; no reconnect |
+| Clearnet TLS XMPP control plane | implemented (terminal: no reconnect; Android: §8.2, **LIVE-UNVERIFIED**) |
+| Tor XMPP control plane (Android) | implemented, §8.2; **LIVE-UNVERIFIED** |
 | Tor voice media | **not implemented** — §7 |
 | Clearnet TLS voice media | **not implemented** |
 | Proxy route (mode 4) | **not implemented** |
@@ -266,21 +267,42 @@ this project has previously been wrong about itself.
 Added when short `.i2p` names were made usable (v10.15.2), because "how does a
 name become a destination" is a routing question and belongs here.
 
-A name reaches a destination by one of three paths, and **none of them is
-system DNS**:
+A name reaches a destination through the local I2P router's SAM bridge, and
+**never through system DNS**:
 
 | Given | Resolved by | Who sees the name |
 |---|---|---|
-| `<52 chars>.b32.i2p` | nothing — the label *is* the destination hash | nobody |
-| a short `.i2p` name in `~/.otrv4plus/i2p_hosts` | a local file read | nobody |
-| any other short `.i2p` name | `NAMING LOOKUP` over the SAM socket | the local router only |
+| `<52 chars>.b32.i2p` | `NAMING LOOKUP` of the b32; the router resolves it from the hash. No alias file is read | the local router only |
+| any short `.i2p` name | `NAMING LOOKUP` over the SAM socket, **first and always** | the local router only |
+| a short name the router answers `KEY_NOT_FOUND` for (Termux only) | the user's `~/.otrv4plus/i2p_hosts`, announced when used | nobody |
 | `.onion` | Tor, inside the SOCKS5 request | the local Tor daemon only |
+
+`INVALID_KEY`, any other `NAMING REPLY` result, a malformed name, a malformed
+or oversized reply, a reply for a different name, or a timeout is a classified
+failure (`SamError` stage `naming` or `bridge`). There is no fallback: not to
+DNS, not to a shipped or remembered destination. A name is validated before it
+is sent, so it cannot inject a second SAM command.
 
 `getaddrinfo` is never called on a `.i2p` or `.onion` name. The SAM lookup
 travels the same loopback socket as the stream, so an operating-system
 resolver, a DHCP-supplied nameserver and a captive portal all learn nothing —
 which is the point, and is why the client refuses an `.onion` address when
 `--no-tor` is given rather than falling back to a resolver.
+`tests/test_i2p_naming_no_dns.py` fails if any hostname resolution happens.
+
+**Why the router is asked first (changed 2026-09-28).** The alias file, and a
+shipped defaults file that mapped the project's server name to its b32, used to
+be consulted *before* the router. When the server was recreated under the same
+name, every client rewrote the name to the old destination and never asked the
+router; the Android app also had that b32 compiled in as its default. A server
+entered by name was unreachable. Now no destination is shipped or compiled in
+(`i2p_hosts.defaults` maps no name; `android_bridge/settings.DEFAULT_SERVER` is
+the name `otrv4plus.i2p`), a blank route means the JID's own domain, and the
+Android app reads no alias file at all.
+
+Failures reach the app by layer: `sam_unavailable` (the local bridge),
+`i2p_name_invalid` / `i2p_name_not_found` (naming), `i2p_session_failed`
+(our tunnels), `i2p_destination_unreachable` (resolved, but not reachable).
 
 The alias file is a **local naming convenience with no authority**. It is not
 signed, not published, and not consulted for an address already given in full
@@ -289,6 +311,39 @@ alias wrong costs a failed connection, not a silent redirection: the server is
 not a trust anchor in this design — the DAKE authenticates the peer and TOFU
 pins the identity key, both end to end through whatever server is in the
 middle.
+
+## 8.2 Android: one decision, from the name (2026-09-28)
+
+A handset registering on `07f.de`, an ordinary clearnet server, got
+`checking_router -> failed` in 3 ms with no DNS, TCP or TLS: the Android
+profile's `use_i2p` defaulted to True and nothing looked at the name.
+`android_bridge/route.py` is now the single authority, pure and tested:
+
+| Server | Route | Resolver | Certificate |
+|---|---|---|---|
+| `*.b32.i2p` | `i2p_sam` | SAM (the address is the key hash) | off; SCRAM only |
+| `*.i2p` | `i2p_sam` | SAM `NAMING LOOKUP`; destination pinned (SECURITY_ISSUES X1) | off; SCRAM only |
+| `*.onion` | `tor` | Tor, inside SOCKS5 CONNECT | off; SCRAM only |
+| anything else | `clearnet_tls` | system DNS (SRV, then the domain on 5222) | CA-verified, hostname checked |
+
+**Clearnet addresses (rc.6).** RFC 6120 §3.2.1 SRV first:
+`_xmpp-client._tcp.<domain>`, asked of the phone's own DNS servers
+(`android_bridge/dns_srv.py`; the APK has no aiodns, and without this slixmpp
+silently dialled `<domain>:5222` -- the wrong machine for yax.im). Targets in
+RFC 2782 order; `<domain>:5222` only when there is no SRV record. Within a
+target, IPv4 before IPv6, and EVERY address is tried before the attempt is
+called failed (the first failure used to end it). An SRV answer only says
+where to dial: TLS is still verified against the JID's domain, so a forged
+record produces `certificate_failure`, never an impostor. The trace records
+`dns_plan` (SRV status, targets, fallback, address counts) and each stage.
+
+An explicit override is honoured where safe (`tor` for a clearnet name keeps
+certificate checks) and refused where it would leak a name (`.i2p`/`.onion`
+never to DNS). Only `i2p_sam` enters `checking_router`; only `tor` enters
+`checking_tor` (Orbot's SOCKS5 greeting); `clearnet_tls` goes straight to
+`connecting`. No route falls back to another. The trace records
+`transport selected` with the route, resolver and certificate policy.
+`tests/test_transport_route.py`.
 
 ## 9. Rules for anyone adding a transport
 

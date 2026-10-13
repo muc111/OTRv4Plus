@@ -69,14 +69,11 @@ REBUILD_HINT = (
     "The compiled core is older than this client. Rebuild it:\n"
     "\n"
     "  cd ~/OTRv4Plus/Rust\n"
-    "  cargo build --release --features extension-module,pq-rust\n"
-    "  cp target/release/libotrv4_core.so ../otrv4_core.so\n"
+    "  bash build.sh\n"
     "\n"
-    "or, where maturin is available:\n"
+    "Then start the client again with the project's Python, from ~/OTRv4Plus:\n"
     "\n"
-    "  cd ~/OTRv4Plus && python3 -m pip install --break-system-packages ./Rust\n"
-    "\n"
-    "Then start the client again."
+    "  .venv/bin/python otrv4plus_xmpp.py ..."
 )
 
 

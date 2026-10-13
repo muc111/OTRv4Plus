@@ -7,15 +7,17 @@
 <p align="center"><strong>Private messaging and voice over I2P</strong></p>
 
 <p align="center">
-<code>v10.30.0 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.30.0 · Rust crypto core · chat (X448 + ML-KEM-1024, AES-256-GCM) · group chat (MLS: X448 + ML-KEM-1024, Ed448 + ML-DSA-87, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
-OTRv4+ is an open-source client for end-to-end encrypted chat, file transfer
-and voice calls. It is built around the I2P network and needs no phone number.
-Tor and TLS also work for chat.
+OTRv4+ is an open-source client for end-to-end encrypted chat, encrypted
+group chat, file transfer and voice calls. It is built around the I2P network
+and needs no phone number. Tor and TLS also work for chat.
 
-It is an experimental, single-author project with no external security
-review. Do not rely on it where your safety depends on it.
+**Security status: extensively tested and hardened through developer-led and
+AI-assisted analysis, but not independently audited.** See
+[Security assessment and audit status](#security-assessment-and-audit-status)
+for what that covers and what it does not.
 
 ## Android app (experimental)
 
@@ -23,25 +25,23 @@ review. Do not rely on it where your safety depends on it.
 [Releases page](https://github.com/muc111/OTRv4Plus/releases). Only the
 newest Android build is kept there, so the one you see is the one to test.
 
-1. Under **Assets**, tap `otrv4plus-<commit>-release.apk`. That is the one to
-   install. The `-debug.apk` is only needed for diagnostics.
-2. Optional: check the file against the `release sha256` value in the
-   release notes.
-3. Open the downloaded file and allow installs from your browser or file
-   manager when Android asks.
-4. If an older build is installed and Android refuses the update, uninstall
-   the old one first. Builds are signed with a CI key, not a release key.
+1. Under **Assets**, tap `otrv4plus-<commit>-release.apk` (the `-debug.apk`
+   is for diagnostics); optionally check its `release sha256`.
+2. Open it and allow installs when Android asks. If Android refuses an
+   update, uninstall the old build first (builds use a CI signing key).
 
-**Before you sign in** you need an I2P router on the phone with the SAM
-bridge turned on (for example the I2P app from F-Droid or Google Play, with
-"Use SAM bridge" enabled in its settings). The first connection can take one
-to two minutes while I2P builds its tunnels.
-
-Works on Android 8.0 and newer, including the Pixel 7.
+**No separate I2P app is needed.** The app has an I2P router built in
+(i2pd, SAM bridge on loopback only). With "I2P router: Automatic" it uses an
+I2P app already running on the phone, and its own router otherwise. The first
+start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+.
 
 **What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms,
 OTRv4+ encryption, SMP identity verification, encrypted file transfer with a
-Termux peer, and two-way voice calls (app to app, and app to Termux).
+Termux peer, two-way voice calls (app to app, and app to Termux),
+end-to-end encrypted group chat (four accounts on two phones: two in the app,
+two in Termux, all sending and receiving), and
+account creation and login on an ordinary clearnet server (yax.im, over
+TLS with the certificate verified).
 **Not yet tested on a phone:** the newest additions listed in
 [CHANGELOG.md](CHANGELOG.md). The step-by-step test list
 is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
@@ -56,8 +56,22 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 | File transfer | Working (XMPP) |
 | Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
-| Group encryption | Not implemented. Rooms are ordinary XMPP rooms that the server can read. See [MLS_FEASIBILITY.md](MLS_FEASIBILITY.md) |
-| External security review | None |
+| Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls are implemented but **not yet tested on a phone**. Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
+| Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) and [SECURITY_AUDIT_2026-10-11.md](SECURITY_AUDIT_2026-10-11.md) |
+
+## Security assessment and audit status
+
+OTRv4+ has had extensive developer-led security review and hardening: Rust unit and
+integration tests, ML-KEM-1024 known-answer tests and a cross-check against Go's
+`crypto/mlkem`, X448/Ed448 differential tests, cargo-fuzz on every Rust parser of
+untrusted input, attack and property tests, Python and Kotlin suites, `cargo audit`
+in CI, threat-model and Rust-authority reviews, AI-assisted review, and physical tests
+on Android. Findings were fixed, each with a regression test.
+
+It has **not** had a paid independent third-party audit or a formal external
+cryptographic assessment, and that work is not equivalent to one. Known limitations:
+[SECURITY_ISSUES.md](SECURITY_ISSUES.md) (some, A1 and A2, need a future protocol
+version). The evidence, layer by layer: [SECURITY.md](SECURITY.md#security-assessment-and-audit-status).
 
 ## Cryptography
 
@@ -90,70 +104,94 @@ and Kotlin handles the Android screens; neither holds session keys. SMP
 Details, design notes and caveats are in [TECHNICAL.md](TECHNICAL.md) and
 [SPEC.md](SPEC.md).
 
+## Encrypted group chat (MLS)
+
+Secure groups use **MLS** (RFC 9420, through OpenMLS) with every primitive
+from the same Rust core: hybrid KEM **X448 + ML-KEM-1024**, composite
+signature **Ed448 + ML-DSA-87** (both must verify), AES-256-GCM, HKDF-SHA-384
+(ciphersuite 0xF0A1). Standard MLS suites have no post-quantum protection;
+these groups resist "record now, decrypt later". The XMPP room carries only
+`?OTRv4MLS1:` ciphertext. Invitations and Welcomes travel inside 1:1 OTRv4+
+sessions; keys move on at every membership change and on a timer;
+a removed member reads nothing after the removal; messages typed while a
+group resyncs wait instead of being lost. The server still sees the room,
+its members and message timing. 0xF0A1 is a private code point and the
+hybrid constructions are this project's own, not independently audited.
+Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
+[MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md).
+
 ## Quick start
 
-### Termux and Linux (terminal clients)
-
-Termux on Android is the reference client. The same steps work on Linux.
+### Termux, Ubuntu and other Linux (terminal clients)
 
 **1. Install the tools.** Python 3.12 or newer is required.
 
-```bash
-# Termux
-pkg install python rust openssl clang git
-# Debian / Ubuntu: install python3, python3-pip, git, clang and Rust (rustup.rs)
+On **Termux**:
 
-pip install PySocks slixmpp aiodns
+```bash
+pkg install python rust openssl clang git
 ```
 
-For voice calls in Termux, also run `pkg install libopus termux-api` and
-`pip install opuslib`.
-
-**2. Download and build the Rust core** (about 3 minutes on a modern phone):
+On **Ubuntu 24.04+ / Debian 13+** (Rust from rustup; the distribution's rustc is too old):
 
 ```bash
-git clone https://github.com/muc111/OTRv4Plus.git
+sudo apt install git python3 python3-venv build-essential curl libopus0 pulseaudio-utils
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+. "$HOME/.cargo/env"     # puts Rust on this terminal's PATH (new terminals have it)
+```
+
+Do not `pip install` anything: `build.sh` puts the Python modules in the project's own
+`.venv` (Ubuntu refuses a system-wide pip install: "externally-managed-environment").
+`libopus0 pulseaudio-utils` are for calls (Termux: `pkg install libopus termux-api`);
+`build.sh` installs the opuslib binding and says if voice is missing anything.
+
+**2. Download and build the Rust core** (the first run on a phone also compiles
+the build tool once, so it takes longer; later builds are much faster):
+
+```bash
+git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus/Rust
-cargo build --release --features extension-module,pq-rust
-cp target/release/libotrv4_core.so ../otrv4_core.so
+bash build.sh
 cd ..
 ```
 
-**3. Update later.** Pull, then rebuild the core, because both the Python
-files and the Rust core change:
+That branch matches the APK on the Releases page (`main` lags behind). To switch an
+existing clone: `git fetch origin && git checkout claude/otrv4plus-android-spec-a3oq4d`.
+
+`build.sh` sets up its own Python environment in `.venv`, runs the Rust tests and
+lints, installs the core (with secure groups) and ends with `BUILD OK`. Keep Termux
+open while it runs; details in [TECHNICAL.md](TECHNICAL.md#buildsh-in-detail).
+
+**3. Update later.** Pull, then rebuild the core (both Python and Rust change):
 
 ```bash
 cd ~/OTRv4Plus
 git pull
-cd Rust && cargo build --release --features extension-module,pq-rust
-cp target/release/libotrv4_core.so ../otrv4_core.so && cd ..
+cd Rust && bash build.sh && cd ..
 git log -1 --format='%h %ad'     # check you are on the latest commit
 ```
 
-If `git pull` refuses because of local changes, `git status` shows what they
-are; `git reset --hard origin/main` discards them. Keys and settings live in
-`~/.otrv4plus`, outside the repository, and are not touched.
+Keys and settings live in `~/.otrv4plus`, outside the repository; updates leave them.
 
-**4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656
-(for example the I2P app, with "Use SAM bridge" enabled). For Tor, run Orbot
-with SOCKS on port 9050. Plain TLS needs nothing extra.
+**4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656: on a
+phone the I2P app ("Use SAM bridge" on); on Ubuntu/Debian `sudo apt install i2pd`
+(SAM is on by default). For Tor, Orbot or `tor` with SOCKS on port 9050.
 
 **5. Run it.**
 
 XMPP over I2P (chat, files and voice):
 
 ```bash
-PYTHONMALLOC=malloc python otrv4plus_xmpp.py \
+PYTHONMALLOC=malloc .venv/bin/python otrv4plus_xmpp.py \
   --jid you@yourserver.i2p --peer friend@yourserver.i2p
 ```
 
-Add `--server <address>.b32.i2p` if your server name does not resolve, and
-`--voice-debug` for call diagnostics every 5 seconds.
+Add `--server <address>.b32.i2p` if the server name does not resolve; `--voice-debug` for call stats.
 
 IRC (defaults to `irc.postman.i2p` over I2P; `-s irc.libera.chat` for TLS):
 
 ```bash
-PYTHONMALLOC=malloc python otrv4+.py
+PYTHONMALLOC=malloc .venv/bin/python otrv4+.py
 ```
 
 **6. First commands** (XMPP; IRC uses the same `/otr` and `/smp`):
@@ -162,14 +200,15 @@ PYTHONMALLOC=malloc python otrv4+.py
 /otr              start an encrypted session
 /smp              verify identity with a passphrase agreed in person
 /call             encrypted voice call (after SMP); /answer, /hangup
-/sendfile <path>  encrypted file transfer (after SMP)
+/sendfile <path>  encrypted file (after SMP; asks y/n to strip metadata)
 /status           session, trust and verification state
 /help             every command
 ```
 
-The Android app starts OTRv4+ by itself with a Termux client that advertises
-OTRv4Plus, which needs a Termux build from 2026-09-24 or later. With an older
-build, start it from Termux with `/otr`.
+Encrypted group chat (XMPP): `/group create mls3` (then its passphrase),
+`/group invite mls3 bob`, `y` to join, then just type; `/group verify mls3`
+checks every member, then `/group call mls3` or `/sendfile` (to the group).
+App: Rooms, "Create end-to-end encrypted group"; Verify, Call, Send a file.
 
 Building on musl (Alpine), every option and all commands are in
 [TECHNICAL.md](TECHNICAL.md).
@@ -180,6 +219,7 @@ Building on musl (Alpine), every option and all commands are in
 - [SPEC.md](SPEC.md): wire-level protocol specification
 - [SECURITY.md](SECURITY.md): threat model and known issues
 - [CHANGELOG.md](CHANGELOG.md): what changed in each version
+- [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md): encrypted group chat (MLS) design and threat model
 - [OTRV4PLUS_CAPABILITY.md](OTRV4PLUS_CAPABILITY.md): how the app decides who can receive OTRv4+
 - [PROSODY_USER_DISCOVERY.md](PROSODY_USER_DISCOVERY.md): the People list and the Welcome room
 - [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute

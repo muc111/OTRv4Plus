@@ -15,7 +15,7 @@ generated.
 | File | Used for |
 |---|---|
 | `CC-BY-SA-4.0.txt` | This project's documentation (see `LICENSING.md`) |
-| `Apache-2.0.txt`, `MIT.txt`, `BSD-2-Clause.txt`, `BSD-3-Clause.txt`, `PSF-2.0.txt`, `Unicode-3.0.txt` | Third-party components, as recorded in `NOTICE` and `LICENSING_AUDIT.md` |
+| `Apache-2.0.txt`, `MIT.txt`, `BSD-2-Clause.txt`, `BSD-3-Clause.txt`, `BSL-1.0.txt`, `PSF-2.0.txt`, `Unicode-3.0.txt` | Third-party components, as recorded in `NOTICE` and `LICENSING_AUDIT.md` |
 
 The software licence texts are at the repository root: `LICENSE`
 (AGPL-3.0-only) and `LICENSE-COMMERCIAL.md`.

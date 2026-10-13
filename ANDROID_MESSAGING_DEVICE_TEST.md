@@ -18,7 +18,7 @@ Termux (otrv4+.py, alice)                    Android app (bob)
    otrv4plus_xmpp                               android_bridge.transport
             └──── otrv4plus_fragment (shared) ────┘
                          │
-              SAM → i2pd → I2P → xmpp-elite.i2p
+              SAM → i2pd → I2P → otrv4plus.i2p
 ```
 
 ---
@@ -147,8 +147,8 @@ Everything above is plaintext. This is where that changes.
 
 | # | Do | Expect | If it differs |
 |---|---|---|---|
-| 26a | On the sign-in screen, look at the Server dropdown | It reads **xmpp-elite.i2p** and there is no b32 address anywhere on the screen | A b32 on the sign-in screen is the bug this replaced |
-| 26b | Type just `bob` in Username | The field shows `bob@xmpp-elite.i2p` underneath as you type | — |
+| 26a | On the sign-in screen, look at the Server dropdown | It reads **otrv4plus.i2p** and there is no b32 address anywhere on the screen | A b32 on the sign-in screen is the bug this replaced |
+| 26b | Type just `bob` in Username | The field shows `bob@otrv4plus.i2p` underneath as you type | — |
 | 26c | Connect with that | Connects normally | If it fails, the internal b32 mapping did not apply — send the error log |
 | 26d | Open Diagnostics, press **Share error log** | The Android Sharesheet appears; pick any app; you get a `.txt` | If nothing happens, note whether the Share failed message appeared and use **Copy error details** instead |
 | 26e | Open the file you shared | Timestamps, `state_change` lines with `state_before`/`state_after`, the stages the connection went through, and any exception with a stack trace | Missing events means the trace is not being fed — say which component is absent |

@@ -27,13 +27,13 @@ import kotlin.test.assertTrue
 class EncryptionArchitectureTest {
 
     private val direct = ConversationRef(
-        account = "alice@xmpp-elite.i2p",
-        target = "bob@xmpp-elite.i2p",
+        account = "alice@otrv4plus.i2p",
+        target = "bob@otrv4plus.i2p",
         isGroup = false)
 
     private val group = ConversationRef(
-        account = "alice@xmpp-elite.i2p",
-        target = "general@rooms.xmpp-elite.i2p",
+        account = "alice@otrv4plus.i2p",
+        target = "general@rooms.otrv4plus.i2p",
         isGroup = true)
 
     private fun all(kind: EncryptionKind) = Availability.AVAILABLE
@@ -251,7 +251,7 @@ class EncryptionArchitectureTest {
             securityOf = { SecurityState.PLAINTEXT },
             startSession = { asked = it })
         val outcome = provider.establish(direct)
-        assertEquals("bob@xmpp-elite.i2p", asked)
+        assertEquals("bob@otrv4plus.i2p", asked)
         assertEquals(EncryptionState.ESTABLISHING, outcome.state)
     }
 

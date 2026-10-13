@@ -79,7 +79,9 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         """Both ends must derive the same MKmac for one message.
 
         If they did not, the MAC could never verify -- and the key one side
-        published would be meaningless to the other.
+        published would be meaningless to the other. MKmac is a Rust
+        `MessageMacKey` on both sides (R2): the check is that both handles
+        MAC the same region identically and both match the published key.
         """
         alice, bob = _ratchet_pair()
         ct, header, nonce, tag, _epoch, _reveal, send_mkmac = \
@@ -88,18 +90,26 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         plaintext, recv_mkmac = bob.decrypt_message(header, ct, nonce, tag)
 
         assert plaintext == b"message one"
-        assert len(send_mkmac) == MKMAC_LEN, "MKmac must be 64 bytes per OTRv4 4.4.2"
-        assert bytes(send_mkmac) == bytes(recv_mkmac), \
+        region = b"any public region"
+        assert len(bytes(send_mkmac.seal(region))) == MKMAC_LEN
+        assert bytes(send_mkmac.seal(region)) == bytes(recv_mkmac.seal(region)), \
             "sender and receiver derived different MKmac for the same message"
+        *_x, revealed, _y = bob.encrypt_message(b"reply")
+        assert any(send_mkmac.matches(bytes(k)) for k in revealed)
+        assert any(recv_mkmac.matches(bytes(k)) for k in revealed)
 
     def test_mkmac_is_not_zero_and_not_the_message_key(self):
-        """The exact regression: a 32-byte zero placeholder used to sit here."""
-        alice, _bob = _ratchet_pair()
-        _ct, _h, _n, _t, _e, _r, mkmac = alice.encrypt_message(b"probe")
-        mkmac = bytes(mkmac)
+        """The exact regression: a 32-byte zero placeholder used to sit here.
+        Checked on the key as published, the first moment it is public."""
+        alice, bob = _ratchet_pair()
+        ct, h, n, t, _e, _r, handle = alice.encrypt_message(b"probe")
+        bob.decrypt_message(h, ct, n, t)
+        *_x, revealed, _y = bob.encrypt_message(b"reply")
+        mkmac = next(bytes(k) for k in revealed if handle.matches(bytes(k)))
         assert len(mkmac) == MKMAC_LEN
         assert mkmac != bytes(MKMAC_LEN), "MKmac is all zeros -- the L1 bug is back"
         assert set(mkmac) != {0}
+        assert not handle.matches(bytes(MKMAC_LEN)) and not handle.matches(bytes(32))
         # And it must not simply be the message key repeated or padded.
         assert mkmac[:32] != mkmac[32:], "MKmac looks like a doubled 32-byte value"
 
@@ -108,13 +118,14 @@ class TestRevealedKeyIsTheAuthenticatingKey:
 
         Pre-fix the authenticating key was sha3_512(session_id || ratchet_id ||
         msg_num), constant in session_id. This asserts the key now moves with
-        the chain rather than being a function of wire fields.
+        the chain rather than being a function of wire fields: eight handles
+        MAC one region eight different ways.
         """
         alice, _bob = _ratchet_pair()
         seen = set()
         for i in range(8):
             *_rest, mkmac = alice.encrypt_message(f"message {i}".encode())
-            seen.add(bytes(mkmac))
+            seen.add(bytes(mkmac.seal(b"same region")))
         assert len(seen) == 8, "MKmac repeated across messages"
 
     def test_receiver_publishes_the_key_that_authenticated_what_it_received(self):
@@ -139,11 +150,11 @@ class TestRevealedKeyIsTheAuthenticatingKey:
             f"published keys are not 64-byte MKmac: {[len(k) for k in revealed]}"
 
         # 3. The published key IS the key that authenticated M1.
-        assert bytes(alice_mkmac) in revealed, (
+        assert any(alice_mkmac.matches(k) for k in revealed), (
             "the key Bob published is not the key that authenticated the "
             "message he received -- revelation is decorative"
         )
-        assert bytes(bob_mkmac) in revealed
+        assert any(bob_mkmac.matches(k) for k in revealed)
 
     def test_a_published_key_can_re_mac_a_forgery_of_the_real_message(self):
         """Deniability's operative consequence, using the implementation's own key.
@@ -156,7 +167,8 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         ct1, h1, n1, t1, _e, _r, _mk = alice.encrypt_message(b"what was really said")
         _pt, _recv_mk = bob.decrypt_message(h1, ct1, n1, t1)
         *_x, revealed, _y = bob.encrypt_message(b"reply")
-        published = bytes(revealed[0])
+        # A third party holds only the published bytes.
+        published = otrv4_core.MessageMacKey.from_revealed(bytes(revealed[0]))
 
         # Reconstruct the wire message as a third party would from a transcript,
         # then alter it and re-MAC with the published key.

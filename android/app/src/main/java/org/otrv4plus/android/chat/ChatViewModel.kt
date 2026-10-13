@@ -5,6 +5,8 @@ package org.otrv4plus.android.chat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -19,6 +21,7 @@ import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.FileOutcome
 import org.otrv4plus.android.bridge.FileTransferView
 import org.otrv4plus.android.bridge.MetadataFinding
+import org.otrv4plus.android.bridge.OtrBridgeException
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
 import org.otrv4plus.android.crypto.CallUi
@@ -176,6 +179,186 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    // -- secure groups (MLS) ----------------------------------------------------
+
+    /** Whether [jid] is an OTRv4Plus secure group, as the engine reported. */
+    fun isSecureRoom(jid: String): Boolean { observe(); return state?.isSecureRoom(jid) == true }
+    fun isSyncingRoom(jid: String): Boolean { observe(); return state?.isSyncingRoom(jid) == true }
+
+    /** A secure group's row badge (MLS), or null for any other row. */
+    fun groupBadge(jid: String): RowSecurity.Badge? =
+        if (isSecureRoom(jid)) RowSecurity.group(isSyncingRoom(jid)) else null
+
+    fun groupInvites(): List<OtrEvent.GroupInvited> {
+        observe()
+        return state?.pendingGroupInvites.orEmpty()
+    }
+
+    private val groupMembers = mutableMapOf<String, List<org.otrv4plus.android.bridge.GroupMember>>()
+
+    fun groupMembers(jid: String): List<org.otrv4plus.android.bridge.GroupMember> {
+        observe()
+        return groupMembers[jid].orEmpty()
+    }
+
+    private fun groupCall(label: String,
+                          onOk: (org.otrv4plus.android.bridge.RoomOutcome) -> Unit = {},
+                          op: (ChaquopyOtrCore) -> org.otrv4plus.android.bridge.RoomOutcome) {
+        val c = core ?: return
+        val state = this.state ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { op(c) }.getOrElse {
+                    org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "")
+                }
+            }
+            if (outcome.ok) onOk(outcome)
+            GroupText.outcome(outcome.code)?.let { state.note("$label: $it") }
+            revision++
+        }
+    }
+
+    private var secureRoomsAt = 0L
+
+    /** Which rooms are secure groups, from the engine; at most every 10 s. */
+    private fun refreshSecureRooms() {
+        val c = core ?: return
+        val state = this.state ?: return
+        val now = System.currentTimeMillis()
+        if (now - secureRoomsAt < 10_000L) return
+        secureRoomsAt = now
+        viewModelScope.launch {
+            val rooms = withContext(Dispatchers.IO) {
+                runCatching { c.secureGroups() }.getOrNull()
+            } ?: return@launch
+            state.noteSecureRooms(rooms)
+        }
+    }
+
+    fun acceptGroupInvite(room: String) {
+        state?.clearGroupInvite(room)
+        groupCall("Joining $room", onOk = { state?.noteRoom(room) }) { it.acceptGroupInvite(room) }
+    }
+
+    fun declineGroupInvite(room: String) {
+        state?.clearGroupInvite(room)
+        groupCall("Declining") { it.declineGroupInvite(room) }
+    }
+
+    fun inviteToGroup(room: String, peer: String) {
+        // A user name alone ("bob") means a user on our own server.
+        val typed = peer.trim()
+        val domain = state?.account?.bareJid.orEmpty().substringAfter('@', "")
+        val full = if ('@' !in typed && domain.isNotEmpty() && typed.isNotEmpty()) "$typed@$domain" else typed
+        val jid = ChatState.bare(full)
+        if (state?.validContact(jid) != true) {
+            state?.note("Enter the address of a contact to invite.")
+            revision++
+            return
+        }
+        groupCall("Inviting $jid", onOk = {
+            if (it.code == "ok") state?.note("Invitation sent to $jid over OTRv4+.")
+        }) {
+            it.inviteToGroup(room, jid)
+        }
+    }
+
+    // ── group verification (the group passphrase) and group calls ───────────
+
+    fun groupVerifyState(room: String): org.otrv4plus.android.bridge.GroupVerifyState {
+        observe(); return state?.groupVerifyState(room) ?: org.otrv4plus.android.bridge.GroupVerifyState()
+    }
+
+    fun groupCallState(room: String): org.otrv4plus.android.bridge.GroupCallState {
+        observe(); return state?.groupCallState(room) ?: org.otrv4plus.android.bridge.GroupCallState()
+    }
+
+    /** Re-read verification and call state for [room] (cheap: no network). */
+    fun refreshGroupState(room: String) {
+        val c = core ?: return
+        viewModelScope.launch {
+            val (v, k) = withContext(Dispatchers.IO) {
+                runCatching { c.groupVerifyState(room) to c.groupCallState(room) }
+                    .getOrNull()
+            } ?: return@launch
+            if (state?.noteGroupState(room, v, k) == true) revision++
+        }
+    }
+
+    /** Verify every member with the group passphrase ("" = the one set at creation). */
+    fun startGroupVerify(room: String, passphrase: String) {
+        groupCall("Verifying $room", onOk = {
+            state?.note("Verifying every member of $room with the group passphrase. " +
+                "Each member is asked to type it.")
+            refreshGroupState(room)
+        }) { it.startGroupVerify(room, passphrase) }
+    }
+
+    fun setGroupCallAutoJoin(allowed: Boolean) {
+        val c = core ?: return
+        viewModelScope.launch(Dispatchers.IO) { runCatching { c.setGroupCallAutoJoin(allowed) } }
+    }
+
+    fun startGroupCall(room: String) {
+        groupCall("Calling $room", onOk = { refreshGroupState(room) }) { it.startGroupCall(room) }
+    }
+
+    fun joinGroupCall(room: String) {
+        groupCall("Joining the call in $room", onOk = { refreshGroupState(room) }) {
+            it.joinGroupCall(room)
+        }
+    }
+
+    fun pauseGroupCall(room: String) {
+        groupCall("Pausing", onOk = { refreshGroupState(room) }) { it.pauseGroupCall() }
+    }
+
+    fun hangupGroupCall(room: String) {
+        groupCall("Hanging up", onOk = { refreshGroupState(room) }) { it.hangupGroupCall() }
+    }
+
+    /** Group calls need verified members: send our key to each, say who needs SMP. */
+    fun verifyGroupMembers(room: String) {
+        val c = core ?: return
+        val state = this.state ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { c.verifyGroupMembers(room) }.getOrNull()
+            } ?: return@launch
+            state.note(if (outcome.ok) outcome.detail
+                       else GroupText.outcome(outcome.code) ?: outcome.detail)
+            refreshGroupMembers(room)
+        }
+    }
+
+    /** Forget the group's keys on this phone and leave its room. */
+    fun leaveSecureGroup(room: String) {
+        groupCall("Leaving $room") { it.leaveSecureGroup(room) }
+    }
+
+    /** Delete the group for everyone: its room goes, and every member's copy. */
+    fun deleteSecureGroup(room: String) {
+        groupCall("Deleting $room") { it.deleteSecureGroup(room) }
+    }
+
+    fun removeGroupMember(room: String, member: String) {
+        groupCall("Removing $member", onOk = { refreshGroupMembers(room) }) {
+            it.removeGroupMember(room, member)
+        }
+    }
+
+    fun refreshGroupMembers(room: String) {
+        val c = core ?: return
+        viewModelScope.launch {
+            val (outcome, members) = withContext(Dispatchers.IO) {
+                runCatching { c.groupMembers(room) }.getOrNull()
+                    ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "") to emptyList())
+            }
+            if (outcome.ok) groupMembers[room] = members
+            revision++
+        }
+    }
+
     // -- wiring ---------------------------------------------------------------
 
     /**
@@ -201,6 +384,8 @@ class ChatViewModel : ViewModel() {
                 refreshDiscovery()
                 refreshWelcome()
                 refreshHandshake()
+                refreshSecureRooms()
+                refreshAvatars()
                 delay(REDRAW_INTERVAL_MS)
             }
         }
@@ -323,10 +508,158 @@ class ChatViewModel : ViewModel() {
                     ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "network", "") to emptyList())
             }
             creatingWelcome = false
-            state.note(OnlineUsers.welcomeCreated(outcome.ok, outcome.detail, missing))
+            state.note(OnlineUsers.welcomeCreated(outcome.ok, outcome.code, outcome.detail, missing))
             lastWelcome = 0L
             refreshWelcome()
             revision++
+        }
+    }
+
+    // ── avatars ──────────────────────────────────────────────────────────
+
+    /**
+     * Bare JID -> picture, built from PIXELS the bridge decoded
+     * ([AvatarPixels]); no Android image decoder reads a peer's file.
+     */
+    // An immutable map swapped whole on a change: a display cache, not
+    // conversation state (which ChatState owns).
+    private var avatarBitmaps by mutableStateOf<Map<String, ImageBitmap>>(emptyMap())
+    private val avatarShown = HashMap<String, String>()     // jid -> id drawn
+    private var lastAvatars = 0L
+
+    fun avatar(jid: String): ImageBitmap? =
+        avatarBitmaps[ChatState.bare(jid)]
+
+    /** What happened to the last "set profile picture", for the screen. */
+    var avatarStatus: String? by mutableStateOf(null)
+
+    private fun refreshAvatars() {
+        val core = this.core ?: return
+        val now = System.currentTimeMillis()
+        if (now - lastAvatars < AVATAR_INTERVAL_MS) return
+        lastAvatars = now
+        viewModelScope.launch {
+            val index = withContext(Dispatchers.IO) {
+                runCatching { core.avatarIndex() }.getOrDefault(emptyMap())
+            }
+            // Gone from the bridge (removed, wiped, signed out): gone here.
+            for (jid in avatarShown.keys.toList()) {
+                if (jid !in index) {
+                    avatarShown.remove(jid)
+                    avatarBitmaps = avatarBitmaps - jid
+                }
+            }
+            for ((jid, id) in index) {
+                if (avatarShown[jid] == id) continue
+                val bitmap = withContext(Dispatchers.Default) {
+                    val image = runCatching { core.avatarImage(jid) }.getOrNull()
+                        ?: return@withContext null
+                    val argb = AvatarPixels.argb(image.rgba, image.width, image.height)
+                        ?: return@withContext null
+                    runCatching {
+                        android.graphics.Bitmap.createBitmap(
+                            argb, image.width, image.height,
+                            android.graphics.Bitmap.Config.ARGB_8888,
+                        ).asImageBitmap()
+                    }.getOrNull()
+                } ?: continue
+                avatarShown[jid] = id
+                avatarBitmaps = avatarBitmaps + (jid to bitmap)
+            }
+        }
+    }
+
+    /** Publish [png] (already scaled and re-encoded by the screen). */
+    fun setOwnAvatar(png: ByteArray?) {
+        val core = this.core ?: run { avatarStatus = "Connect first."; return }
+        if (png == null) {
+            avatarStatus = "That picture could not be used."
+            return
+        }
+        avatarStatus = "Updating your picture…"
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.setAvatar(png) }.getOrNull()
+            }
+            avatarStatus = when {
+                outcome == null -> "Your picture could not be published."
+                outcome.ok -> "Your picture is updated. Contacts see it when they next connect."
+                else -> outcome.detail.ifBlank { "Your picture could not be published." }
+            }
+            lastAvatars = 0L
+        }
+    }
+
+    fun removeOwnAvatar() {
+        val core = this.core ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.removeAvatar() }.getOrNull()
+            }
+            avatarStatus = if (outcome?.ok == true) "Your picture is removed."
+                           else "Your picture could not be removed."
+            lastAvatars = 0L
+        }
+    }
+
+    // ── the XMPP profile ─────────────────────────────────────────────────
+
+    /** The fields the bridge defines; loaded with the first profile. */
+    var profileFields: List<org.otrv4plus.android.bridge.ProfileField> by mutableStateOf(emptyList())
+        private set
+
+    /** The profile on screen: ours, or a contact's (read-only). */
+    var profileValues: Map<String, String> by mutableStateOf(emptyMap())
+        private set
+    var profileJid: String by mutableStateOf("")
+        private set
+    var profileBusy by mutableStateOf(false)
+        private set
+    var profileStatus: String? by mutableStateOf(null)
+
+    /** Load [jid]'s profile; blank means our own. */
+    fun loadProfile(jid: String = "") {
+        val core = this.core ?: run { profileStatus = "Connect first."; return }
+        profileJid = jid
+        profileValues = emptyMap()
+        profileBusy = true
+        profileStatus = null
+        viewModelScope.launch {
+            val (fields, result) = withContext(Dispatchers.IO) {
+                val f = if (profileFields.isEmpty())
+                    runCatching { core.profileFields() }.getOrDefault(emptyList())
+                    else profileFields
+                f to runCatching { core.profileGet(jid) }.getOrNull()
+            }
+            if (fields.isNotEmpty()) profileFields = fields
+            profileBusy = false
+            if (profileJid != jid) return@launch       // another profile was opened
+            if (result == null || !result.first.ok) {
+                profileStatus = "The profile could not be read. " +
+                    (result?.first?.code?.let { "($it)" } ?: "")
+                return@launch
+            }
+            profileValues = result.second
+            if (result.second.isEmpty()) profileStatus = ProfileText.empty(jid)
+        }
+    }
+
+    /** Publish our profile. The bridge sanitises it and says what it kept. */
+    fun saveProfile(values: Map<String, String>) {
+        val core = this.core ?: run { profileStatus = "Connect first."; return }
+        profileBusy = true
+        profileStatus = "Saving…"
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { core.profileSet(values) }.getOrNull()
+            }
+            profileBusy = false
+            if (result == null || !result.first.ok) {
+                profileStatus = "Your profile could not be saved."
+                return@launch
+            }
+            profileValues = result.second
+            profileStatus = ProfileText.saved(values, result.second, profileFields)
         }
     }
 
@@ -826,9 +1159,11 @@ class ChatViewModel : ViewModel() {
                 }
             }
             outcome.onFailure {
+                val code = (it as? OtrBridgeException)?.code.orEmpty()
                 state.note(
-                    if (incoming) "The verification could not be answered."
-                    else "The verification could not be started.")
+                    Verification.refusal(code)
+                        ?: if (incoming) "The verification could not be answered."
+                        else "The verification could not be started.")
             }
             revision++
         }
@@ -990,6 +1325,13 @@ class ChatViewModel : ViewModel() {
     /** What the attach control should be for [jid]. Never a security claim. */
     fun transferOffer(jid: String): TransferUi.Offer {
         observe()
+        // A secure group: every other member verified (the bridge decides;
+        // this only mirrors it). An ordinary room has no files at all.
+        if (isRoom(jid)) {
+            return if (isSecureRoom(jid))
+                TransferUi.groupOffer(groupMembers(jid)) ?: TransferUi.Offer.NeedsEncryption
+            else TransferUi.Offer.NeedsEncryption
+        }
         return TransferUi.offer(conversation(jid).security)
     }
 
@@ -1028,6 +1370,17 @@ class ChatViewModel : ViewModel() {
     }
 
     fun closeViewer() { viewing = null }
+
+    /**
+     * Decrypt a received container into [directory] for the viewer. Blocking;
+     * the viewer calls it off the main thread. Null when it does not open.
+     */
+    fun openReceivedTo(container: String, directory: String): String? {
+        val c = core ?: return null
+        val transfer = viewing ?: return null
+        if (!canOpen(transfer) || transfer.path != container) return null
+        return c.openReceivedTo(container, directory)
+    }
 
     private val rates = TransferUi.RateMeter()
 
@@ -1130,7 +1483,9 @@ class ChatViewModel : ViewModel() {
                 discardStaged(path)
                 result
             }
-            TransferUi.refusal(outcome)?.let(state::note)
+            val refusal = if (isRoom(jid)) TransferUi.groupRefusal(outcome)
+                          else TransferUi.refusal(outcome)
+            refusal?.let(state::note)
             revision++
         }
     }
@@ -1222,6 +1577,9 @@ class ChatViewModel : ViewModel() {
         const val AUTO_RETRY_MS = 45_000L
         const val DISCOVERY_INTERVAL_MS = 120_000L
         const val WELCOME_INTERVAL_MS = 3_000L
+
+        /** How often the avatar index is re-read (local, no network). */
+        const val AVATAR_INTERVAL_MS = 5_000L
         const val HANDSHAKE_INTERVAL_MS = 1_000L
     }
 }

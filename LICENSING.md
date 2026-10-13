@@ -15,7 +15,7 @@ artwork, and they are not all under the same terms. This file is the map.
 | **Code in documentation** — snippets, commands and examples inside those documents | `CC-BY-SA-4.0` **and also** the software licence | So a snippet copied from a document into the codebase does not import a second licence into it. |
 | **Legal instruments** — `LICENSE`, `LICENSE-COMMERCIAL.md`, `CLA.md`, `CONTRACTOR-IP.md` | Not licensed for modification; reproduce them verbatim | They are the terms themselves. Relicensing a licence is not a thing. |
 | **Licence texts** — `LICENSES/*.txt` | Their own terms (the SPDX-published texts) | `LICENSES/README.md` |
-| **Third-party material** — Rust crates, Python packages and Android libraries bundled in a build, and `third_party/` | Each component's own licence | [`NOTICE`](NOTICE), [`LICENSING_AUDIT.md`](LICENSING_AUDIT.md) |
+| **Third-party material** — Rust crates, Python packages and Android libraries bundled in a build, the I2P router in the APK (i2pd, with OpenSSL and Boost), and `third_party/` | Each component's own licence | [`NOTICE`](NOTICE), [`LICENSING_AUDIT.md`](LICENSING_AUDIT.md) |
 | **Artwork** — `icon.png` and the launcher icons derived from it | **No licence asserted.** AI-generated placeholder | [`ASSETS.md`](ASSETS.md) |
 
 ## Why a separate documentation licence

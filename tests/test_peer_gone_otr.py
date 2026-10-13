@@ -275,3 +275,50 @@ class TestShutdown:
         src = inspect.getsource(xmpp.OTRv4PlusXMPP.cleanup)
         assert "_peer_gone_task" in src
         assert "_peer_gone_at.clear()" in src
+
+
+# ── One resource leaving is not the peer leaving (device report 2026-09-24) ──
+
+class _Jid:
+    def __init__(self, full):
+        self.bare, _, self.resource = full.partition("/")
+
+
+class _ResourceClient(_FakeClient):
+    _on_presence_available = xmpp.OTRv4PlusXMPP._on_presence_available
+    _on_presence_unavailable = xmpp.OTRv4PlusXMPP._on_presence_unavailable
+
+    def __init__(self):
+        super().__init__()
+        self._own_bare = "me@example.i2p"
+        self._peer_resources = {}
+        self._start_peer_gone_sweeper = lambda: None
+
+
+def _pres(full, show=""):
+    return {"from": _Jid(full), "show": show, "status": ""}
+
+
+def test_an_old_resource_timing_out_does_not_arm_the_teardown():
+    """Relaunch = new resource; the server times the old one out later."""
+    c = _ResourceClient()
+    c._on_presence_available(_pres(PEER + "/new"))
+    c._on_presence_unavailable(_pres(PEER + "/old"))
+    assert PEER not in c._peer_gone_at
+
+
+def test_the_last_resource_leaving_does_arm_it():
+    c = _ResourceClient()
+    c._on_presence_available(_pres(PEER + "/a"))
+    c._on_presence_available(_pres(PEER + "/b"))
+    c._on_presence_unavailable(_pres(PEER + "/a"))
+    assert PEER not in c._peer_gone_at
+    c._on_presence_unavailable(_pres(PEER + "/b"))
+    assert PEER in c._peer_gone_at
+
+
+def test_our_reconnect_forgets_their_resources():
+    c = _ResourceClient()
+    c._on_presence_available(_pres(PEER + "/a"))
+    c._clear_peer_gone("our transport dropped")
+    assert c._peer_resources == {}

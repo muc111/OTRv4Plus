@@ -11,7 +11,7 @@ already drawn what the user typed before our echo runs.  Reported from a
 handset:
 
     i shiuld not seewgat i type twice
-    🔒 [otr] alice@xmpp-elite.i2p: i shiuld not seewgat i type twice
+    🔒 [otr] alice@otrv4plus.i2p: i shiuld not seewgat i type twice
 
 The fix rewrites the terminal's copy rather than printing underneath it, and
 almost all of these tests are about the cases where it must NOT do that.

@@ -60,4 +60,13 @@ class HandshakeUiTest {
         assertTrue("failed" in v.title)
         assertEquals(0f, v.progress)
     }
+
+    @Test
+    fun `the eta says how long is left and what is waiting`() {
+        val v = HandshakeUi.view(HandshakeUi.Status("waiting_reply", 1, elapsed = 20, eta = 40, queued = 2))!!
+        assertTrue("about 40 s left" in v.elapsed, v.elapsed)
+        assertTrue("2 messages will be sent" in v.detail, v.detail)
+        assertTrue("longer than usual" in HandshakeUi.etaText(200, 5))
+        assertTrue(HandshakeUi.etaText(10, 0).startsWith("10 s so far"))
+    }
 }
