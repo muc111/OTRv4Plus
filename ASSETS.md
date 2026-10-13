@@ -92,9 +92,11 @@ not shipped in any package and are covered by the documentation licence.
 
 | File | Origin | SHA-256 |
 |---|---|---|
-| `desktop/docs/chat.jpg` | A verified conversation. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `301e5067e1d34c9e30ff1f8943bfad988fbd65f2ba5f54514632146ab9e6abc5` |
+| `desktop/docs/chat.jpg` | A verified conversation (contact picture from engine-decoded pixels). Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `62e65ee67e287ab5eb596954a5be9083a1d170186d60d555516588338186c2f9` |
 | `desktop/docs/connect.jpg` | The sign-in screen. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `5cd772dae6e4982ee076f473c7736bf72a5827c104511f2817879366caca05b1` |
 | `desktop/docs/unverified.jpg` | An encrypted, unverified conversation, with Verify offered. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `c55ee7cda09c680cec08511f1474783106d6c7ff3cb2e989649af74b8ee8adff` |
+| `desktop/docs/group.jpg` | An encrypted group: verification in progress and the members panel. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `94659819458f5cf849a1170487cb5c3fbb9ba5249848fdaa66b36c6ba266c553` |
+| `desktop/docs/profile.jpg` | A contact's profile, read-only. Rendered by `desktop/` `gradle test` (AppFlowTest, a scripted engine with made-up contacts), in CI; no device, no real data. Skia JPEG, no EXIF. | `17ceb147314e4944265dbb63a6821240685ae472d4faa59e18bc61f9cb00b3c9` |
 
 ## Test fixtures
 

@@ -103,6 +103,8 @@ path = [
     "desktop/docs/chat.jpg",
     "desktop/docs/connect.jpg",
     "desktop/docs/unverified.jpg",
+    "desktop/docs/group.jpg",
+    "desktop/docs/profile.jpg",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"

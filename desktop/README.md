@@ -7,6 +7,8 @@ conversation on the right.
 
 ![A verified conversation](docs/chat.jpg)
 
+![An encrypted group: verification and members](docs/group.jpg)
+
 The screenshots come from `gradle test`, which renders the app driven by
 a scripted engine (CI uploads them on every change).
 

@@ -102,9 +102,6 @@ jobs:
       - name: Dump 4-people.jpg
         if: inputs.dump && !cancelled()
         run: .github/scripts/dump-annotations.sh desktop/build/screens/4-people.jpg
-      - name: Dump verification-metadata.xml
-        if: inputs.dump && !cancelled()
-        run: .github/scripts/dump-annotations.sh desktop/gradle/verification-metadata.xml
 
       - name: Test report
         if: failure()
