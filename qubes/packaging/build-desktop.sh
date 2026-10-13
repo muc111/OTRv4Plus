@@ -101,6 +101,7 @@ Architecture: amd64
 Maintainer: muc111 <noreply@otrv4plus.invalid>
 Installed-Size: $(du -sk --apparent-size "$ROOT" | cut -f1)
 Depends: otrv4plus (= $VERSION), openjdk-21-jre
+Recommends: libnotify-bin
 Section: net
 Priority: optional
 Homepage: https://github.com/muc111/OTRv4Plus

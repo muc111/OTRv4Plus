@@ -3,6 +3,8 @@
 package org.otrv4plus.desktop.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
+import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.AlertDialog
@@ -41,6 +44,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.TooltipBox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.PlainTooltip
@@ -84,17 +88,29 @@ fun ConversationPane(model: AppModel, jid: String) {
     val c = model.conversation(jid)
     val isRoom = model.chat.isRoom(jid)
     var pendingFile by remember(jid) { mutableStateOf<String?>(null) }
+    val secure = isRoom && model.chat.isSecureRoom(jid)
+    var showMembers by remember(jid) { mutableStateOf(true) }
+    LaunchedEffect(jid, secure) { if (secure) model.refreshGroupNow(jid) }
 
-    Column(Modifier.fillMaxSize()) {
-        Header(model, jid, isRoom) { path -> pendingFile = path }
-        HorizontalDivider()
-        if (!isRoom) {
-            CallBar(model, jid)
-            HandshakeView(model.handshake)
+    Row(Modifier.fillMaxSize()) {
+        Column(Modifier.weight(1f).fillMaxHeight()) {
+            Header(model, jid, isRoom, onMembers = if (secure) ({ showMembers = !showMembers }) else null) {
+                path -> pendingFile = path
+            }
+            HorizontalDivider()
+            if (!isRoom) {
+                CallBar(model, jid)
+                HandshakeView(model.handshake)
+            }
+            if (secure) GroupBar(model, jid)
+            FileOffers(model, jid)
+            Messages(model, jid, isRoom, Modifier.weight(1f))
+            Composer(model, jid, isRoom, c.security)
         }
-        FileOffers(model, jid)
-        Messages(model, jid, isRoom, Modifier.weight(1f))
-        Composer(model, jid, isRoom, c.security)
+        if (secure && showMembers) {
+            VerticalDivider()
+            GroupMembersPanel(model, jid, Modifier.width(300.dp))
+        }
     }
 
     if (!isRoom) model.verificationPrompt(jid)?.let { prompt -> SmpDialog(model, jid, prompt) }
@@ -108,13 +124,16 @@ fun ConversationPane(model: AppModel, jid: String) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Header(model: AppModel, jid: String, isRoom: Boolean, onFile: (String) -> Unit) {
+private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (() -> Unit)?,
+                   onFile: (String) -> Unit) {
     val c = model.conversation(jid)
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        Avatar(c.displayName.ifBlank { jid }, c.presence)
+        // The avatar and name open the contact's profile (vCard), read-only.
+        val open = if (isRoom) Modifier else Modifier.clickable { model.viewProfile(jid) }
+        Box(open) { Avatar(c.displayName.ifBlank { jid }, c.presence, image = model.avatar(jid)) }
         Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
+        Column(Modifier.weight(1f).then(open)) {
             Text(c.displayName.ifBlank { jid }, style = MaterialTheme.typography.titleMedium,
                  fontWeight = FontWeight.SemiBold)
             if (isRoom) {
@@ -165,12 +184,18 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onFile: (Strin
                 }
             }
         }
+        if (onMembers != null) {
+            TextButton(onClick = onMembers) {
+                Icon(Icons.Filled.Groups, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
+                Text("Members")
+            }
+        }
         val offer = if (isRoom) null else TransferUi.offer(c.security)
         TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
                    tooltip = { PlainTooltip { Text(if (offer is TransferUi.Offer.Available || isRoom) "Send a file"
                                                    else "Verify this contact to send files") } },
                    state = rememberTooltipState()) {
-            IconButton(onClick = { pickFile()?.let(onFile) },
+            IconButton(onClick = { pickFile("Send a file")?.let(onFile) },
                        enabled = isRoom && model.chat.isSecureRoom(jid) || offer is TransferUi.Offer.Available) {
                 Icon(Icons.Filled.AttachFile, "Send a file")
             }
@@ -178,13 +203,6 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onFile: (Strin
     }
 }
 
-/** The OS file chooser. The path goes to the engine, which reads the file. */
-private fun pickFile(): String? {
-    val dialog = java.awt.FileDialog(null as java.awt.Frame?, "Send a file", java.awt.FileDialog.LOAD)
-    dialog.isVisible = true
-    val name = dialog.file ?: return null
-    return java.io.File(dialog.directory, name).absolutePath
-}
 
 @Composable
 private fun CallBar(model: AppModel, jid: String) {

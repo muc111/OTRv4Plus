@@ -46,32 +46,51 @@ a scripted engine (CI uploads them on every change).
 
 ## Status
 
-This is the first version. Working now:
+Working now:
 
-* sign-in, with the same status wording as the Android Connect screen;
-* the chat list with security badges and unread counts;
-* the conversation view: encrypted and plaintext labels on every message,
-  queued and failed sends, and automatic OTRv4+ with a handshake progress
-  bar;
-* **Encrypt**;
-* **Verify** (SMP), both starting a check and answering one;
-* **Call**, with the engine's gate and its reason, and answering and hanging
-  up;
-* **files**: a picker, the remove-hidden-information choice, and
-  accepting or declining incoming files with progress;
-* **People**: contacts and subscription requests;
-* **Rooms**: joining a room, creating an encrypted MLS group, and group
-  invites;
-* **Settings**: your fingerprint, the theme, and Wipe & Exit.
+* **Sign-in**, with the same status wording as the Android Connect screen.
+* **Chats**: security badges, unread counts and contact pictures.
+* **Conversations**:
+  * every message is labelled encrypted or plaintext, with queued and
+    failed sends marked;
+  * automatic OTRv4+, with handshake progress shown;
+  * **Encrypt**;
+  * **Verify** (SMP): start a verification or answer one;
+  * **Call**, behind the engine's gate, which gives its reason when it
+    refuses; answer and hang up;
+  * **Files**: a picker, a choice to strip hidden information, and
+    accept or decline with progress.
+* **Profiles**: click a contact's picture or name to see their XMPP
+  profile (read-only). Settings has your own picture and profile:
+  * your picture is cut to a square, scaled to 96 px and re-encoded
+    before it is published;
+  * the profile fields are the ones `android_bridge/profile.py` defines;
+  * the screen says that a profile is public.
+* **Pictures**: contacts' avatars are built here from pixels that the
+  engine's bounded decoder has already decoded. No image decoder in this
+  process ever reads a file someone else sent.
+* **Encrypted groups**, working the same way as the Android app:
+  * **Verify group**, using the shared passphrase, with progress and a
+    time estimate;
+  * **Call the group** once members are verified;
+  * when someone calls: **Join**;
+  * during a call: **Pause** and **Hang up**;
+  * a members panel showing each member's verified state, plus invite
+    over OTRv4+, remove, verify members, leave, and delete for everyone.
+* **People**: contacts and subscription requests.
+* **Rooms**: join a room, create an encrypted MLS group, accept group
+  invites.
+* **Notifications**, under the Android rules:
+  * they say "New message", "N new messages" or "Incoming call", and
+    never who or what;
+  * messages are announced only while the window is not in front;
+    calls (1:1 and group) are announced always;
+  * delivered with `notify-send`, which dom0 shows on Qubes.
+* **Settings**: fingerprint, theme, joining group calls automatically,
+  and Wipe & Exit.
 
-Still to do:
-
-* chat history on disk (it is in memory only for now; the Android app
-  encrypts its history store with the Keystore, and the desktop
-  equivalent still needs a vault);
-* avatars and profile editing;
-* group verification and group calls in the room view;
-* notifications.
+Chat history is kept in memory only, by choice: nothing is written to
+disk.
 
 ## Build and run
 

@@ -9,6 +9,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonPrimitive
@@ -59,7 +60,41 @@ class AppFlowTest {
         "secure_groups" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","value":["team@conference.otrv4plus.i2p"]}""")
         "otr_capability", "ensure_otr" -> JsonPrimitive("available")
         "send_user_text" -> { sent += args["body"]!!.jsonPrimitive.content; JsonPrimitive("encrypted") }
+        "avatar_index" -> Json.parseToJsonElement("""["$bob\tav1"]""")
+        "avatar_pixels" -> if (args["jid"]!!.jsonPrimitive.content == bob) Json.parseToJsonElement(
+            """{"id":"av1","width":48,"height":48,"rgba_b64":"${pixels()}"}""") else JsonNull
+        "profile_fields" -> Json.parseToJsonElement(
+            """["FN\tName\t80\t0","NICKNAME\tNickname\t40\t0","NOTE\tAbout\t500\t1","URL\tWebsite\t200\t0"]""")
+        "profile_get_json" -> {
+            val who = args["jid"]?.jsonPrimitive?.content.orEmpty()
+            val v = if (who.isBlank()) """{\"FN\":\"Alice\",\"NOTE\":\"Qubes, otr-chat\"}"""
+                    else """{\"FN\":\"Bob\",\"NICKNAME\":\"bob\",\"NOTE\":\"Pixel 7, verified in person\"}"""
+            Json.parseToJsonElement("""{"ok":true,"code":"ok","detail":"","value":"$v"}""")
+        }
+        "group_verify_state" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","value":
+            {"members":{"$bob":"verified","carol@otrv4plus.i2p":"running"},"all_verified":false,
+             "started_by":"","active":true,"done":1,"total":2,"eta":42,"excluded":[]}}""")
+        "group_call_state" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","value":
+            {"in_call":false,"paused":false,"participants":[],"ringing_from":""}}""")
+        "group_members" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","value":[
+            {"jid":"$me","fingerprint":"AA","me":true,"verified":true,"bound":true},
+            {"jid":"$bob","fingerprint":"BB","me":false,"verified":true,"bound":true},
+            {"jid":"carol@otrv4plus.i2p","fingerprint":"CC","me":false,"verified":false,"bound":true}]}""")
+        "start_group_verify" -> { verifyPassphrases += args["passphrase"]!!.jsonPrimitive.content
+            Json.parseToJsonElement("""{"ok":true,"code":"ok","detail":""}""") }
         else -> null
+    }
+
+    private val verifyPassphrases = mutableListOf<String>()
+
+    /** A 48x48 purple gradient as RGBA, base64: what the engine's decoder hands over. */
+    private fun pixels(): String {
+        val b = ByteArray(48 * 48 * 4)
+        for (y in 0 until 48) for (x in 0 until 48) {
+            val i = (y * 48 + x) * 4
+            b[i] = (90 + x * 2).toByte(); b[i + 1] = (50 + y).toByte(); b[i + 2] = (180 + y).toByte(); b[i + 3] = 255.toByte()
+        }
+        return java.util.Base64.getEncoder().encodeToString(b)
     }
 
     private fun waitFor(what: String, timeoutMs: Long = 10_000, cond: () -> Boolean) {
@@ -88,7 +123,9 @@ class AppFlowTest {
     fun signInReceiveAndSend() {
         val host = FakeHost(::answers)
         val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
-        val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui))
+        val notes = mutableListOf<String>()
+        val notifier = Notifier({ args -> notes += args.last(); "7" }, available = true)
+        val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui), notifier)
         model.jid = me
         host.ready()
         model.start()
@@ -101,6 +138,10 @@ class AppFlowTest {
 
         host.event("""{"type":"MessageReceived","peer":"$bob/desk","body":"Hi Alice — call later? Verified both ends.","timestamp":${System.currentTimeMillis() / 1000.0}}""")
         waitFor("message") { model.messages(bob).isNotEmpty() }
+        // The window was not in front: one notification, with no sender and no text.
+        waitFor("notification") { notes.isNotEmpty() }
+        assertEquals(listOf("New message"), notes)
+        waitFor("avatar") { model.avatar(bob) != null }
         model.open(bob)
         model.setDraft(bob, "Yes, after 6. The new build runs in a qube with no network.")
         model.send(bob)
@@ -116,7 +157,36 @@ class AppFlowTest {
         model.tab = AppModel.Tab.PEOPLE
         render(model, "4-people")
         model.tab = AppModel.Tab.SETTINGS
-        render(model, "5-settings")
+        waitFor("own profile") { model.profile["FN"] == "Alice" }
+        Thread.sleep(300)
+        render(model, "5-settings", h = 1100)
+
+        // A contact's profile, read-only.
+        model.tab = AppModel.Tab.CHATS
+        model.open(bob)
+        model.viewProfile(bob)
+        waitFor("bob's profile") { model.viewing?.first == bob }
+        render(model, "7-profile")
+        model.closeProfile()
+
+        // A secure group: verification in progress, members, Call offered.
+        val team = "team@conference.otrv4plus.i2p"
+        model.chat.noteRoom(team)
+        waitFor("secure group known") { model.chat.isSecureRoom(team) }
+        model.open(team)
+        model.refreshGroupNow(team)
+        waitFor("group state") { model.groupVerify(team).total == 2 && model.groupMembers[team]?.size == 3 }
+        Thread.sleep(400)
+        render(model, "6-group")
+        model.startGroupVerify(team, "our group phrase")
+        waitFor("verify sent") { verifyPassphrases.isNotEmpty() }
+        assertEquals(listOf("our group phrase"), verifyPassphrases)
+
+        // A group call rings: notified whatever the focus, with nothing but the word.
+        host.event("""{"type":"GroupChanged","peer":"$team","change":"call_ringing","epoch":3,"detail":"$bob"}""")
+        waitFor("call notification") { notes.size == 2 }
+        assertEquals("Incoming call", notes.last())
+        assertTrue(notes.none { it.contains("bob") || it.contains("Hi Alice") }, notes.toString())
 
         // The boundary: the password crossed exactly once, in "connect", and
         // was the only argument there; "prepare" carried no secret.

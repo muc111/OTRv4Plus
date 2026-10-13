@@ -41,6 +41,9 @@ fun main() = application {
         state = rememberWindowState(size = DpSize(1180.dp, 780.dp)),
     ) {
         DisposableEffect(Unit) { onDispose { model.shutdown() } }
+        // Notifications for messages only while the window is not in front.
+        val focused = androidx.compose.ui.platform.LocalWindowInfo.current.isWindowFocused
+        androidx.compose.runtime.LaunchedEffect(focused) { model.setUiVisible(focused) }
         App(model, onWipe = { model.wipeAndExit { exitProcess(0) } })
     }
 }

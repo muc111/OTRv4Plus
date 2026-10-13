@@ -69,6 +69,7 @@ fun MainScreen(model: AppModel, onWipe: () -> Unit) {
                        "conversation until you have verified them again.",
                        alarm = true) { model.dismissFingerprintAlert() }
             }
+            model.viewing?.let { (who, values) -> ProfileDialog(model, who, values) }
             when (model.tab) {
                 AppModel.Tab.CHATS -> ChatsPane(model)
                 AppModel.Tab.PEOPLE -> PeoplePane(model)
@@ -165,13 +166,20 @@ private fun EmptyPane() {
     }
 }
 
+/** A round picture: the contact's avatar (built from engine-decoded pixels), or an initial. */
 @Composable
-fun Avatar(name: String, presence: Presence = Presence.UNKNOWN, size: Int = 40) {
+fun Avatar(name: String, presence: Presence = Presence.UNKNOWN, size: Int = 40,
+           image: androidx.compose.ui.graphics.ImageBitmap? = null) {
     Box {
         Box(Modifier.size(size.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primaryContainer),
             contentAlignment = Alignment.Center) {
-            Text(name.trim().take(1).uppercase().ifBlank { "?" },
-                 color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+            if (image != null) {
+                androidx.compose.foundation.Image(image, null, Modifier.size(size.dp),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Crop)
+            } else {
+                Text(name.trim().take(1).uppercase().ifBlank { "?" },
+                     color = MaterialTheme.colorScheme.onPrimaryContainer, fontWeight = FontWeight.Bold)
+            }
         }
         if (presence == Presence.ONLINE) {
             Box(Modifier.align(Alignment.BottomEnd).size(12.dp).clip(CircleShape)
@@ -188,7 +196,7 @@ private fun ConversationRow(model: AppModel, c: Conversation, selected: Boolean)
     Row(Modifier.fillMaxWidth().background(bg).clickable { model.open(c.jid) }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
-        Avatar(c.displayName.ifBlank { c.jid }, c.presence)
+        Avatar(c.displayName.ifBlank { c.jid }, c.presence, image = model.avatar(c.jid))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {

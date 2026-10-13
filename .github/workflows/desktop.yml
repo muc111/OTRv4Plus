@@ -85,6 +85,15 @@ jobs:
       - name: Dump 3-unverified.jpg
         if: inputs.dump && !cancelled()
         run: .github/scripts/dump-annotations.sh desktop/build/screens/3-unverified.jpg
+      - name: Dump 5-settings.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/5-settings.jpg
+      - name: Dump 6-group.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/6-group.jpg
+      - name: Dump 7-profile.jpg
+        if: inputs.dump && !cancelled()
+        run: .github/scripts/dump-annotations.sh desktop/build/screens/7-profile.jpg
       - name: Dump 4-people.jpg
         if: inputs.dump && !cancelled()
         run: .github/scripts/dump-annotations.sh desktop/build/screens/4-people.jpg

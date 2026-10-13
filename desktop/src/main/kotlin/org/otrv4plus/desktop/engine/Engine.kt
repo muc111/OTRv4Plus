@@ -202,5 +202,9 @@ internal fun JsonElement?.asDouble(): Double =
 
 internal fun JsonElement?.asInt(): Int = asLong().toInt()
 
+/** A Python bool: JSON true/false, or the string "True" from an older shape. */
+internal fun JsonElement?.flag(): Boolean =
+    asBool() || (this as? JsonPrimitive)?.contentOrNull == "True"
+
 internal fun JsonElement?.jsonPrimitiveOrNull(): JsonPrimitive? =
     runCatching { this?.jsonPrimitive }.getOrNull()

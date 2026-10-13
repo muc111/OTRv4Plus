@@ -17,6 +17,7 @@ chat-runtime:
       - pulseaudio-qubes      # VM audio; use pipewire-qubes on a PipeWire template
       - xterm
       - openjdk-21-jre            # the desktop GUI (otrv4plus-desktop)
+      - libnotify-bin             # notify-send: content-free notifications, shown by dom0
       - gpgv
     - install_recommends: false
 

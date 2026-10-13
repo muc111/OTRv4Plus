@@ -176,6 +176,25 @@ class TestProtocol:
                           "timestamp": 1.0}} in frames(out)
 
 
+class TestAvatarsAndGroups:
+
+    def test_avatar_pixels_cross_as_text_and_the_raw_bytes_do_not(self):
+        host, _, _ = make()
+        host.controller = type("C", (), {"avatar_pixels": lambda self, jid: {
+            "id": "a1", "width": 2, "height": 1, "rgba": b"\x01\x02\x03\x04" * 2,
+            "rgba_b64": "AQIDBAECAwQ="}})()
+        out = host.call("avatar_pixels", {"jid": "bob@x"})
+        assert out == {"id": "a1", "width": 2, "height": 1, "rgba": None, "rgba_b64": "AQIDBAECAwQ="}
+
+    def test_the_group_and_profile_operations_are_there(self):
+        for op in ("group_verify_state", "start_group_verify", "group_call_state",
+                   "start_group_call", "join_group_call", "pause_group_call",
+                   "hangup_group_call", "group_members", "verify_group_members",
+                   "avatar_index", "avatar_pixels", "set_avatar_b64", "remove_avatar",
+                   "profile_fields", "profile_get_json", "profile_set_json"):
+            assert op in H.CONTROLLER_OPS, op
+
+
 class TestTheOperationsAreTheEngines:
 
     def test_every_operation_is_a_real_method_with_those_arguments(self):

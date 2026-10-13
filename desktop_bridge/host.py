@@ -85,6 +85,20 @@ CONTROLLER_OPS: Dict[str, tuple] = {
     "pause_group_call": (),
     "hangup_group_call": (),
     "group_call_state": ("room",),
+    "set_group_call_auto_join": ("allowed",),
+    "verify_group_members": ("room",),
+    "remove_group_member": ("room", "member"),
+    "delete_secure_group": ("room",),
+    # Avatars arrive as PIXELS (RGBA, base64 text) decoded by the bounded
+    # decoder in android_bridge/avatar.py: no image decoder in the GUI ever
+    # reads a file a peer sent. Our own picture goes the other way as PNG
+    # the GUI made from the user's own file, checked like anybody's.
+    "avatar_index": (),
+    "avatar_pixels": ("jid",),
+    "set_avatar_b64": ("text",),
+    "remove_avatar": (),
+    "profile_fields": (),
+    "profile_set_json": ("text",),
     "welcome_directory": (),
     "discover_online_users": (),
     "profile_get_json": ("jid",),

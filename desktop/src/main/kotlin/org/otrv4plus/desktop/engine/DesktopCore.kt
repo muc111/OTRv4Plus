@@ -5,7 +5,13 @@ package org.otrv4plus.desktop.engine
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import org.otrv4plus.android.bridge.AvatarImage
 import org.otrv4plus.android.bridge.CallState
+import org.otrv4plus.android.bridge.GroupCallState
+import org.otrv4plus.android.bridge.GroupMember
+import org.otrv4plus.android.bridge.GroupVerifyState
+import org.otrv4plus.android.bridge.ProfileField
+import org.otrv4plus.android.chat.AvatarPixels
 import org.otrv4plus.android.bridge.ConnectionState
 import org.otrv4plus.android.bridge.ConnectionStatus
 import org.otrv4plus.android.bridge.Contact
@@ -233,6 +239,98 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun startGroupCall(room: String) = controller("start_group_call", "room" to room)
     fun joinGroupCall(room: String) = controller("join_group_call", "room" to room)
     fun hangupGroupCall() = controller("hangup_group_call")
+
+    fun leaveSecureGroup(room: String) = controller("leave_secure_group", "room" to room)
+    fun deleteSecureGroup(room: String) = controller("delete_secure_group", "room" to room)
+    fun removeGroupMember(room: String, member: String) =
+        controller("remove_group_member", "room" to room, "member" to member)
+    fun verifyGroupMembers(room: String) = controller("verify_group_members", "room" to room)
+    fun pauseGroupCall() = controller("pause_group_call")
+    fun setGroupCallAutoJoin(allowed: Boolean) =
+        controller("set_group_call_auto_join", "allowed" to allowed)
+
+    /** Who is verified in [room], and a verification someone started. */
+    fun groupVerifyState(room: String): GroupVerifyState {
+        val v = controller("group_verify_state", "room" to room).value as? JsonObject
+            ?: return GroupVerifyState()
+        return GroupVerifyState(
+            members = (v["members"] as? JsonObject).orEmpty().mapValues { it.value.asStr() },
+            allVerified = v["all_verified"].flag(), startedBy = v.str("started_by"),
+            active = v["active"].flag(), done = v["done"].asInt(), total = v["total"].asInt(),
+            etaSeconds = v["eta"].asInt(),
+            excluded = (v["excluded"] as? JsonArray).orEmpty().map { it.asStr() },
+        )
+    }
+
+    fun groupCallState(room: String): GroupCallState {
+        val v = controller("group_call_state", "room" to room).value as? JsonObject
+            ?: return GroupCallState()
+        return GroupCallState(
+            inCall = v["in_call"].flag(), paused = v["paused"].flag(),
+            participants = (v["participants"] as? JsonArray).orEmpty().map { it.asStr() },
+            ringingFrom = v.str("ringing_from"),
+        )
+    }
+
+    fun groupMembers(room: String): Pair<Outcome, List<GroupMember>> {
+        val r = controller("group_members", "room" to room)
+        val members = (r.value as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.map { m ->
+            GroupMember(jid = m.str("jid"), fingerprint = m.str("fingerprint"),
+                        me = m["me"].flag(), verified = m["verified"].flag(), bound = m["bound"].flag())
+        }
+        return r to members
+    }
+
+    // -- avatars: pixels, decoded by the engine's bounded decoder ------------------------
+
+    /** Bare JID -> avatar id. No network. */
+    fun avatarIndex(): Map<String, String> = runCatching {
+        AvatarPixels.index((call("avatar_index") as JsonArray).map { it.asStr() })
+    }.getOrDefault(emptyMap())
+
+    /**
+     * A contact's avatar as RGBA PIXELS. Base64 here is text decoding, not
+     * image decoding: no image decoder in this process reads a peer's file.
+     */
+    fun avatarImage(jid: String): AvatarImage? = runCatching {
+        val v = call("avatar_pixels", "jid" to jid) as? JsonObject ?: return null
+        AvatarImage(id = v.str("id"), width = v["width"].asInt(), height = v["height"].asInt(),
+                    rgba = java.util.Base64.getDecoder().decode(v.str("rgba_b64")))
+    }.getOrNull()
+
+    /** Publish our avatar: PNG this app made from the user's own picture. */
+    fun setAvatar(png: ByteArray) =
+        controller("set_avatar_b64", "text" to java.util.Base64.getEncoder().encodeToString(png))
+
+    fun removeAvatar() = controller("remove_avatar")
+
+    // -- the XMPP profile (vcard-temp) ---------------------------------------------------
+
+    fun profileFields(): List<ProfileField> = runCatching {
+        (call("profile_fields") as JsonArray).mapNotNull { item ->
+            val p = item.asStr().split('\t')
+            if (p.size != 4) null else ProfileField(p[0], p[1], p[2].toIntOrNull() ?: 0, p[3] == "1")
+        }
+    }.getOrDefault(emptyList())
+
+    /** A profile (ours when [jid] is blank), sanitised by the engine. */
+    fun profileGet(jid: String = ""): Pair<Outcome, Map<String, String>> {
+        val r = controller("profile_get_json", "jid" to jid)
+        return r to jsonMap(r.value.asStr())
+    }
+
+    fun profileSet(values: Map<String, String>): Pair<Outcome, Map<String, String>> {
+        val text = kotlinx.serialization.json.JsonObject(
+            values.mapValues { kotlinx.serialization.json.JsonPrimitive(it.value) }).toString()
+        val r = controller("profile_set_json", "text" to text)
+        return r to jsonMap(r.value.asStr())
+    }
+
+    private fun jsonMap(text: String): Map<String, String> = runCatching {
+        if (text.isBlank()) return emptyMap()
+        (kotlinx.serialization.json.Json.parseToJsonElement(text) as JsonObject)
+            .mapValues { it.value.asStr() }
+    }.getOrDefault(emptyMap())
 
     fun joinedRooms(): List<String> = names(controller("joined_rooms").value)
     fun secureGroups(): List<String> = names(controller("secure_groups").value)

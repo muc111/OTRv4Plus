@@ -79,7 +79,7 @@ fun PeoplePane(model: AppModel) {
                         .padding(horizontal = 16.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically) {
                     val presence = model.conversation(e.jid).presence
-                    Avatar(e.displayName.ifBlank { e.jid }, presence)
+                    Avatar(e.displayName.ifBlank { e.jid }, presence, image = model.avatar(e.jid))
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(e.displayName.ifBlank { e.jid }, fontWeight = FontWeight.Medium)
@@ -171,6 +171,25 @@ fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
                  style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.padding(4.dp))
             OutlinedButton(onClick = { model.disconnect() }) { Text("Sign out") }
+        }
+        Section("Profile") { ProfileSection(model) }
+        Section("Group calls") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Switch(checked = model.groupAutoJoin,
+                                                  onCheckedChange = { model.allowGroupAutoJoin(it) })
+                Spacer(Modifier.width(12.dp))
+                Text("Join verified members' group calls by myself", Modifier.weight(1f))
+            }
+            Text("Off: you are asked each time (Join). On Qubes the microphone is also " +
+                 "attached to this qube by hand: qvm-device mic attach otr-chat dom0:mic.",
+                 style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Section("Notifications") {
+            Text(if (org.otrv4plus.desktop.Notifier.findNotifySend() != null)
+                     "On. They say \"New message\" or \"Incoming call\" and nothing more: never " +
+                     "who, never what. Messages only while this window is not in front."
+                 else "notify-send is not installed (package libnotify-bin), so there are none.",
+                 style = MaterialTheme.typography.bodyMedium)
         }
         Section("Your fingerprint") {
             SelectionContainer { Text(model.fingerprint, fontFamily = FontFamily.Monospace) }

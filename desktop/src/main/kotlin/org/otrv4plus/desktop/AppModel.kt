@@ -15,6 +15,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.otrv4plus.android.bridge.CallState
 import org.otrv4plus.android.bridge.FileTransferView
+import org.otrv4plus.android.bridge.GroupCallState
+import org.otrv4plus.android.bridge.GroupMember
+import org.otrv4plus.android.bridge.GroupVerifyState
+import org.otrv4plus.android.bridge.ProfileField
 import org.otrv4plus.android.bridge.OtrBridgeException
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
@@ -54,6 +58,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 class AppModel(
     private val core: DesktopCore,
     private val ui: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Main),
+    val notifier: Notifier = Notifier(),
 ) {
     val chat = ChatState()
 
@@ -125,11 +130,25 @@ class AppModel(
         var any = false
         while (true) {
             val event = inbox.poll() ?: break
-            chat.handle(event)
+            // handle() is true only for a NEW stored 1:1 message: a
+            // duplicate, a presence change or a room line never notifies
+            // (the Android rule -- a peer must not be able to buzz at will).
+            if (chat.handle(event)) notifier.message()
+            if (event is OtrEvent.GroupChanged && event.change == "call_ringing") notifier.call()
             any = true
         }
-        chat.takeRingChanges()
+        // Only a verified peer's call can reach RINGING (CallAlert).
+        for (change in chat.takeRingChanges()) {
+            if (change == org.otrv4plus.android.crypto.CallAlert.Change.START) notifier.call()
+        }
         if (any) changed()
+    }
+
+    /** The window came to the front or went behind. */
+    fun setUiVisible(visible: Boolean) {
+        chat.setUiVisible(visible)
+        notifier.setUiVisible(visible)
+        changed()
     }
 
     private suspend fun refresh(tick: Int) {
@@ -143,6 +162,8 @@ class AppModel(
         if (open != null && !chat.isRoom(open)) {
             refreshConversation(open)
         }
+        if (open != null && chat.isSecureRoom(open) && tick % 4 == 1) refreshGroup(open)
+        if (tick % 10 == 3) refreshAvatars()
         if (tick % 4 == 0) {
             transfers = withContext(Dispatchers.IO) { core.transfers() }
             groups = withContext(Dispatchers.IO) { runCatching { core.secureGroups() }.getOrDefault(emptyList()) }
@@ -390,6 +411,150 @@ class AppModel(
             changed()
         }
     }
+
+    // -- secure groups: verification and calls (the gates are the engine's) ---
+
+    var groupMembers by mutableStateOf<Map<String, List<GroupMember>>>(emptyMap())
+        private set
+
+    fun groupVerify(room: String): GroupVerifyState = chat.groupVerifyState(room)
+    fun groupCall(room: String): GroupCallState = chat.groupCallState(room)
+
+    private suspend fun refreshGroup(room: String) {
+        val (verify, call, members) = withContext(Dispatchers.IO) {
+            Triple(core.groupVerifyState(room), core.groupCallState(room), core.groupMembers(room).second)
+        }
+        chat.noteGroupState(room, verify, call)
+        groupMembers = groupMembers + (room to members)
+    }
+
+    fun refreshGroupNow(room: String) { ui.launch { refreshGroup(room); changed() } }
+
+    /** The group passphrase goes to the engine and is not kept here. */
+    fun startGroupVerify(room: String, passphrase: String) =
+        groupAction("Verify") { core.startGroupVerify(room, passphrase) }
+    fun verifyGroupMembers(room: String) = groupAction("Verify members") { core.verifyGroupMembers(room) }
+    fun startGroupCall(room: String) = groupAction("Call") { core.startGroupCall(room) }
+    fun joinGroupCall(room: String) = groupAction("Join") { core.joinGroupCall(room) }
+    fun pauseGroupCall() = groupAction("Pause") { core.pauseGroupCall() }
+    fun hangupGroupCall() = groupAction("Hang up") { core.hangupGroupCall() }
+    fun removeGroupMember(room: String, member: String) =
+        groupAction("Remove") { core.removeGroupMember(room, member) }
+    fun leaveSecureGroup(room: String) = groupAction("Leave") { core.leaveSecureGroup(room) }
+    fun deleteSecureGroup(room: String) = groupAction("Delete") { core.deleteSecureGroup(room) }
+
+    /**
+     * Whether a verified member's group call is joined by itself. Off by
+     * default: the desktop has no per-app microphone prompt, so joining is
+     * asked each time unless the user turns this on (Qubes: the microphone
+     * is also attached to the qube by hand, in dom0).
+     */
+    var groupAutoJoin by mutableStateOf(false)
+        private set
+
+    fun allowGroupAutoJoin(allowed: Boolean) {
+        groupAutoJoin = allowed
+        ui.launch { withContext(Dispatchers.IO) { core.setGroupCallAutoJoin(allowed) } }
+    }
+
+    private fun groupAction(label: String, block: () -> DesktopCore.Outcome) {
+        val room = chat.openConversation
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { block() }
+            if (!r.ok) chat.note("$label: " + (org.otrv4plus.android.chat.GroupText.outcome(r.code)
+                                               ?: r.detail.ifBlank { r.code }))
+            if (room != null && chat.isSecureRoom(room)) refreshGroup(room)
+            changed()
+        }
+    }
+
+    // -- avatars: built from pixels the engine decoded --------------------------
+
+    var avatars by mutableStateOf<Map<String, androidx.compose.ui.graphics.ImageBitmap>>(emptyMap())
+        private set
+    private val avatarIds = HashMap<String, String>()
+
+    fun avatar(jid: String): androidx.compose.ui.graphics.ImageBitmap? = avatars[ChatState.bare(jid)]
+
+    private suspend fun refreshAvatars() {
+        val index = withContext(Dispatchers.IO) { core.avatarIndex() }
+        val next = HashMap(avatars)
+        next.keys.retainAll(index.keys)
+        for ((who, id) in index) {
+            if (avatarIds[who] == id && who in next) continue
+            val image = withContext(Dispatchers.IO) { core.avatarImage(who) } ?: continue
+            Avatars.bitmap(image)?.let { next[who] = it; avatarIds[who] = id }
+        }
+        if (next != avatars) avatars = next
+    }
+
+    /** Publish the user's own picture: decoded, squared and re-encoded here. */
+    fun setOwnAvatar(path: String) {
+        ui.launch {
+            val png = withContext(Dispatchers.Default) { Avatars.ownPng(java.io.File(path)) }
+            if (png == null) { chat.note("That picture could not be read."); changed(); return@launch }
+            val r = withContext(Dispatchers.IO) { core.setAvatar(png) }
+            chat.note(if (r.ok) "Your picture is published." else r.detail.ifBlank { "The picture was not published (${r.code})." })
+            refreshAvatars()
+            changed()
+        }
+    }
+
+    fun removeOwnAvatar() {
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.removeAvatar() }
+            if (!r.ok) chat.note(r.detail.ifBlank { "The picture was not removed (${r.code})." })
+            refreshAvatars()
+            changed()
+        }
+    }
+
+    // -- the XMPP profile (vCard) ------------------------------------------------
+
+    var profileFields by mutableStateOf<List<ProfileField>>(emptyList())
+        private set
+    var profile by mutableStateOf<Map<String, String>>(emptyMap())
+        private set
+    /** Someone else's profile, open in a dialog: (jid, fields) or null. */
+    var viewing by mutableStateOf<Pair<String, Map<String, String>>?>(null)
+        private set
+    var profileBusy by mutableStateOf(false)
+        private set
+
+    fun loadProfile() {
+        ui.launch {
+            profileBusy = true
+            val (fields, got) = withContext(Dispatchers.IO) { core.profileFields() to core.profileGet("") }
+            profileFields = fields
+            if (got.first.ok) profile = got.second
+            else chat.note(got.first.detail.ifBlank { "Your profile could not be read (${got.first.code})." })
+            profileBusy = false
+            changed()
+        }
+    }
+
+    fun saveProfile(values: Map<String, String>) {
+        ui.launch {
+            profileBusy = true
+            val (r, saved) = withContext(Dispatchers.IO) { core.profileSet(values) }
+            if (r.ok) { profile = saved; chat.note(org.otrv4plus.android.chat.ProfileText.saved(values, saved, profileFields)) }
+            else chat.note(r.detail.ifBlank { "Your profile was not published (${r.code})." })
+            profileBusy = false
+            changed()
+        }
+    }
+
+    fun viewProfile(jid: String) {
+        ui.launch {
+            if (profileFields.isEmpty()) profileFields = withContext(Dispatchers.IO) { core.profileFields() }
+            val (r, values) = withContext(Dispatchers.IO) { core.profileGet(jid) }
+            if (r.ok) viewing = jid to values
+            else chat.note(r.detail.ifBlank { "Their profile could not be read (${r.code})." })
+            changed()
+        }
+    }
+
+    fun closeProfile() { viewing = null }
 
     fun dismissNotice() { chat.dismissNotice(); changed() }
     fun dismissFingerprintAlert() { chat.dismissFingerprintAlert(); changed() }
