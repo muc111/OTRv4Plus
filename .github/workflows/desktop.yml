@@ -52,11 +52,16 @@ jobs:
         # downloaded), for review and commit -- the offline Qubes build
         # (qubes/packaging/build-desktop.sh) refuses to run without it.
         run: |
+          set -o pipefail
           if [ -f gradle/verification-metadata.xml ]; then
-            gradle --no-daemon --dependency-verification strict test desktopLib
+            gradle --no-daemon --dependency-verification strict test desktopLib 2>&1 | tee build.log
           else
-            gradle --no-daemon --write-verification-metadata sha256 test desktopLib
+            gradle --no-daemon --write-verification-metadata sha256 test desktopLib 2>&1 | tee build.log
           fi
+
+      - name: Failures as annotations
+        if: failure()
+        run: python3 .github/scripts/report-failures.py desktop/build.log
 
       - name: Dependency checksums
         if: always()
