@@ -62,7 +62,7 @@ class NotifierTest {
         val out = ImageIO.read(png.inputStream())
         assertEquals(96, out.width); assertEquals(96, out.height)
         assertTrue(png.size < 64 * 1024, "over the engine's 64 KiB limit")
-        val notAPicture = File.createTempFile("x", ".png").apply { writeText("not a picture"); deleteOnExit() }
+        val notAPicture = File.createTempFile("notpic", ".png").apply { writeText("not a picture"); deleteOnExit() }
         assertEquals(null, Avatars.ownPng(notAPicture))
     }
 }

@@ -60,9 +60,9 @@ class AppFlowTest {
         "secure_groups" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","value":["team@conference.otrv4plus.i2p"]}""")
         "otr_capability", "ensure_otr" -> JsonPrimitive("available")
         "send_user_text" -> { sent += args["body"]!!.jsonPrimitive.content; JsonPrimitive("encrypted") }
-        "avatar_index" -> Json.parseToJsonElement("""["$bob\tav1"]""")
+        "avatar_index" -> Json.parseToJsonElement("""["$bob\t4f2a9c0e1b7d3a5f6e8c9b0a1d2e3f4a5b6c7d8e"]""")
         "avatar_pixels" -> if (args["jid"]!!.jsonPrimitive.content == bob) Json.parseToJsonElement(
-            """{"id":"av1","width":48,"height":48,"rgba_b64":"${pixels()}"}""") else JsonNull
+            """{"id":"4f2a9c0e1b7d3a5f6e8c9b0a1d2e3f4a5b6c7d8e","width":48,"height":48,"rgba_b64":"${pixels()}"}""") else JsonNull
         "profile_fields" -> Json.parseToJsonElement(
             """["FN\tName\t80\t0","NICKNAME\tNickname\t40\t0","NOTE\tAbout\t500\t1","URL\tWebsite\t200\t0"]""")
         "profile_get_json" -> {
