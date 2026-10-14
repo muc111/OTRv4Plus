@@ -186,12 +186,18 @@ jobs:
       # not installed here and some tests stand down accordingly, which is a
       # known gap and should be readable in the log rather than inferred.
       - name: pytest
-        run: python -m pytest tests/ -q -rs --timeout=600 --durations=10
+        run: python -m pytest tests/ -q -rs --timeout=600 --durations=10 --junitxml=pytest-junit.xml
         env:
           # Keeps a stray test from reaching the network if one is ever added
           # without noticing; every transport in this project is local.
           PYTHONWARNINGS: default
           OTRV4PLUS_ALLOW_RAW_KEY_TEST_API: "1"
+
+      # The job log is not readable everywhere the result is needed; the
+      # failed tests are, as annotations through the API.
+      - name: Failures as annotations
+        if: failure()
+        run: python3 .github/scripts/report-failures.py --junit pytest-junit.xml
 
       # The artifact that ships -- the APK's features, nothing test-only --
       # must expose no raw-key entry point and must still run the live

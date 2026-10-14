@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""Failed Gradle tests (and the tail of the build log) as ::error annotations,
-readable through the API where the job log is not."""
+"""Failed Gradle tests (and the tail of the build log), or with --junit
+<file> failed pytest tests, as ::error annotations, readable through the
+API where the job log is not."""
 import glob
 import sys
 import xml.etree.ElementTree as ET
@@ -13,7 +14,17 @@ def esc(text):
 
 
 n = 0
-for path in glob.glob("desktop/build/test-results/test/TEST-*.xml"):
+args = sys.argv[1:]
+paths = glob.glob("desktop/build/test-results/test/TEST-*.xml")
+if args[:1] == ["--junit"]:
+    # A pytest --junitxml report (the Python workflow).
+    paths, args = args[1:2], args[2:]
+    sys.argv = sys.argv[:1] + args
+for path in paths:
+    try:
+        ET.parse(path)
+    except (OSError, ET.ParseError):
+        continue
     for case in ET.parse(path).getroot().iter("testcase"):
         for bad in list(case.findall("failure")) + list(case.findall("error")):
             text = (bad.get("message") or "") + "\n" + (bad.text or "")
