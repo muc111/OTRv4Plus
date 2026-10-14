@@ -57,6 +57,29 @@ fun OtrTheme(mode: ThemeTokens.Mode, content: @Composable () -> Unit) {
  * not secret, says nothing about any account or conversation, and must be
  * readable before anything is unlocked. Listed in `WipeAndExit.STORES`.
  */
+/**
+ * "Send typing notifications" and "Send read receipts", in the same ordinary
+ * preferences file as the theme (listed in `WipeAndExit.STORES`): two
+ * booleans about this device, nothing about any contact. Both on by default,
+ * as in Conversations; either can be turned off from the ⋮ menu.
+ */
+object PrivacyStore {
+    private const val TYPING = "send_typing"
+    private const val READ = "send_read_receipts"
+
+    fun load(context: Context): Pair<Boolean, Boolean> = runCatching {
+        val p = context.getSharedPreferences(ThemeStore.FILE, Context.MODE_PRIVATE)
+        p.getBoolean(TYPING, true) to p.getBoolean(READ, true)
+    }.getOrDefault(true to true)
+
+    fun save(context: Context, typing: Boolean, readReceipts: Boolean) {
+        runCatching {
+            context.getSharedPreferences(ThemeStore.FILE, Context.MODE_PRIVATE).edit()
+                .putBoolean(TYPING, typing).putBoolean(READ, readReceipts).apply()
+        }
+    }
+}
+
 object ThemeStore {
     const val FILE = "otrv4plus.ui"
     const val KEY = "theme"

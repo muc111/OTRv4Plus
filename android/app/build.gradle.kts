@@ -409,6 +409,8 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // entry here is an ImportError at launch. Nothing in the app calls
             // it; it starts no process unless a terminal client asks.
             "otrv4plus_alerts.py",
+            // Carbons, archive, receipts: imported by android_bridge.sync.
+            "otrv4plus_sync.py",
             // Whether a conversation may send in the clear. Shared with the
             // terminal client and imported by android_bridge.app at module
             // scope, so the same rule applies: missing here is an ImportError

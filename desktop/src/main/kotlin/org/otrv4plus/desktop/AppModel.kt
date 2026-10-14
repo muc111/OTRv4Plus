@@ -156,6 +156,8 @@ class AppModel(
     fun setUiVisible(visible: Boolean) {
         chat.setUiVisible(visible)
         notifier.setUiVisible(visible)
+        // XEP-0352: the server may hold back presence floods while nobody looks.
+        ui.launch(Dispatchers.IO) { runCatching { core.setClientActive(visible) } }
         changed()
     }
 
@@ -169,6 +171,9 @@ class AppModel(
         val open = chat.openConversation
         if (open != null && !chat.isRoom(open)) {
             refreshConversation(open)
+            // On screen: a read marker for what arrived (XEP-0333; the bridge
+            // sends nothing when read receipts are off or nothing is new).
+            if (chat.uiVisible) withContext(Dispatchers.IO) { runCatching { core.markDisplayed(open) } }
         }
         if (open != null && chat.isSecureRoom(open) && tick % 4 == 1) refreshGroup(open)
         if (tick % 10 == 3) refreshAvatars()
@@ -202,6 +207,7 @@ class AppModel(
                 runCatching {
                     core.prepare(account, server.trim(), samHost.trim(),
                                  samPort.trim().toIntOrNull() ?: 0)
+                    core.setPrivacy(sendTyping, sendReadReceipts)
                     core.connect(password)
                 }.getOrElse { e ->
                     org.otrv4plus.android.bridge.ConnectionStatus(
@@ -237,7 +243,47 @@ class AppModel(
     fun conversation(jid: String): Conversation = chat.conversation(jid)
     fun messages(jid: String): List<Message> = chat.messages(jid)
     fun draft(jid: String): String = chat.draft(jid)
-    fun setDraft(jid: String, text: String) { chat.setDraft(jid, text); changed() }
+    fun setDraft(jid: String, text: String) {
+        chat.setDraft(jid, text)
+        changed()
+        typing(jid, text.isNotBlank())
+    }
+
+    // -- typing and read receipts (XEP-0085, XEP-0333) ---------------------------
+
+    private var pausedJob: kotlinx.coroutines.Job? = null
+
+    private fun typing(jid: String, active: Boolean) {
+        pausedJob?.cancel()
+        ui.launch(Dispatchers.IO) {
+            runCatching { core.sendChatStateTo(jid, if (active) "composing" else "active") }
+        }
+        if (active) pausedJob = ui.launch {
+            kotlinx.coroutines.delay(6_000)
+            withContext(Dispatchers.IO) { runCatching { core.sendChatStateTo(jid, "paused") } }
+        }
+    }
+
+    fun isTyping(jid: String): Boolean = chat.isTyping(jid)
+
+    private fun privacyPrefs() = java.util.prefs.Preferences.userNodeForPackage(AppModel::class.java)
+
+    var sendTyping by mutableStateOf(runCatching { privacyPrefs().getBoolean("send_typing", true) }.getOrDefault(true))
+        private set
+    var sendReadReceipts by mutableStateOf(runCatching { privacyPrefs().getBoolean("send_read_receipts", true) }.getOrDefault(true))
+        private set
+
+    /** Settings: what this device tells contacts. Applied to the engine now
+     *  and on every connect. */
+    fun setPrivacy(typing: Boolean, readReceipts: Boolean) {
+        sendTyping = typing
+        sendReadReceipts = readReceipts
+        runCatching {
+            privacyPrefs().putBoolean("send_typing", typing)
+            privacyPrefs().putBoolean("send_read_receipts", readReceipts)
+        }
+        ui.launch(Dispatchers.IO) { runCatching { core.setPrivacy(typing, readReceipts) } }
+    }
     val openConversation: String? get() = chat.openConversation
 
     fun open(jid: String) {
@@ -251,10 +297,12 @@ class AppModel(
 
     fun send(jid: String) {
         val message = chat.beginSend(jid) ?: return
+        pausedJob?.cancel()
         changed()
         ui.launch {
             val outcome = withContext(Dispatchers.IO) {
-                runCatching { core.sendUserText(jid, message.body) }.getOrDefault(SendOutcome.FAILED)
+                runCatching { core.sendUserText(jid, message.body, message.wireId) }
+                    .getOrDefault(SendOutcome.FAILED)
             }
             chat.completeSend(message, outcome)
             changed()

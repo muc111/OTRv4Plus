@@ -59,6 +59,7 @@ import otrv4plus_ping as _ping
 import otrv4plus_registration as _registration
 
 from .app import Transport
+from .sync import SyncMixin
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
 
@@ -809,7 +810,18 @@ class TransportError(RuntimeError):
         self.detail = detail
 
 
-class XmppTransport(Transport):
+def _accepts_meta(fn) -> bool:
+    """Whether an on_payload callable takes `meta=` (OtrApp.receive_message
+    does; the many two-argument test doubles do not)."""
+    import inspect
+    try:
+        inspect.signature(fn).bind("peer", "body", meta=None)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+class XmppTransport(SyncMixin, Transport):
     """Carries OTR payloads between `OtrApp` and an XMPP server over I2P."""
 
     def __init__(
@@ -835,6 +847,7 @@ class XmppTransport(Transport):
         self._profile = profile
         self._password = password
         self._on_payload = on_payload
+        self._payload_meta = _accepts_meta(on_payload)
         #: Set by `set_room_handler`; None drops room messages.
         self._on_room_message: Optional[Callable[..., None]] = None
         self._on_presence = on_presence
@@ -1797,6 +1810,9 @@ class XmppTransport(Transport):
             _log.warning("could not request the roster")
             _TRACE.record_exception("roster", "request_failed", exc)
         self._start_keepalive()
+        # Carbons on, then the archive since this device last looked
+        # (android_bridge.sync). In the background: nothing waits for it.
+        self._start_sync()
 
     # -- keepalive ------------------------------------------------------------
 
@@ -2489,6 +2505,23 @@ class XmppTransport(Transport):
             peer = target
         self._send_now(self._send(peer, payload), CALL_TIMEOUT)
 
+    def send_typed(self, peer: str, payload: str, message_id: str) -> None:
+        """`send`, for something a person typed: [message_id] goes on the
+        last stanza as its id and origin-id, with a request for a delivery
+        receipt and a read marker (android_bridge.sync). The wire-level OTR
+        rule is `send`'s, unchanged."""
+        if not self.is_connected:
+            raise TransportError("not_connected", "not connected")
+        if _caps.is_otr_protocol(payload):
+            target = self._caps.target(_caps.split_jid(peer)[0])
+            if target is None:
+                raise TransportError(
+                    "otrv4plus_unavailable",
+                    "no resource of this contact is known to support OTRv4Plus")
+            self._caps.pin(peer, _caps.split_jid(target)[1])
+            peer = target
+        self._send_now(self._send(peer, payload, message_id), CALL_TIMEOUT)
+
     # -- OTRv4Plus capability -------------------------------------------------
 
     def set_capability_handler(self, handler) -> None:
@@ -2555,7 +2588,7 @@ class XmppTransport(Transport):
                       state=self._caps.state(bare))
         self._notify_capability(bare)
 
-    async def _send(self, peer: str, payload: str) -> None:
+    async def _send(self, peer: str, payload: str, message_id: str = "") -> None:
         """One stanza per fragment, through the shared wire format.
 
         This used to send the payload whole, which is why an Android peer and
@@ -2569,8 +2602,10 @@ class XmppTransport(Transport):
         threshold, so an ordinary message still goes out exactly as it did.
         """
         parts, self._frag_seq = _fragment.fragment(payload, self._frag_seq)
-        for part in parts:
-            self._client.send_message(mto=peer, mbody=part, mtype="chat")
+        # Ids, receipt requests and, for OTR frames, the hints that keep them
+        # off our other devices and out of the archive (android_bridge.sync).
+        self._send_stanzas(peer, parts, message_id=message_id,
+                           otr=_caps.is_otr_protocol(payload))
 
     def disconnect(self) -> None:
         if self._client is None or self._closed:
@@ -3716,6 +3751,9 @@ class XmppTransport(Transport):
             # An older slixmpp without stream filters still works; the probe
             # is then the only liveness signal, which is what this used to be.
             _log.warning("could not install the inbound filter")
+        # Carbons, the archive, receipts, read markers and chat states
+        # (android_bridge.sync): one handler that sees body-less messages too.
+        self._install_sync_handler(client)
         client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
         client.add_event_handler("message_error", self._on_message_error)
@@ -3950,6 +3988,9 @@ class XmppTransport(Transport):
             # plaintext message is a different message from the one sent.
             _log.warning("dropped an oversized inbound body (%d chars)", len(body))
             return
+        # Its ids, recorded so the carbon and archive copies of the same
+        # message are not shown again (android_bridge.sync).
+        item = self.live_item(stanza)
         # Reassembly BEFORE the engine, and before any decision about what the
         # body is. A Termux peer fragments anything over 6000 bytes, which
         # includes every DAKE2 and every SMP frame; handing those to the
@@ -3974,12 +4015,19 @@ class XmppTransport(Transport):
                 return
 
         try:
-            self._on_payload(peer, body)
+            if getattr(self, "_payload_meta", False):
+                shown = self._on_payload(peer, body, meta=item)
+            else:
+                shown = self._on_payload(peer, body)
         except Exception:
             # A callback that raises must not take the connection down: it is
             # UI code across a language boundary, and a screen bug is not a
             # reason to drop a session. Same rule as OtrApp._emit.
             _log.warning("the inbound payload handler raised")
+            return
+        # A delivery receipt, once the message was really taken -- decrypted,
+        # or stored as plaintext -- and never for a protocol frame.
+        self.after_live(item, isinstance(shown, str) and bool(shown))
 
     def _on_subscribe(self, stanza) -> None:
         """Someone asked to see our presence.
@@ -4262,6 +4310,12 @@ def _default_client_factory():
             client.register_plugin("xep_0084")
         except Exception:
             _log.warning("could not register xep_0084; avatars are off")
+        # XEP-0352 client state indication: the server learns when the app
+        # is in the background (android_bridge.sync.set_client_active).
+        try:
+            client.register_plugin("xep_0352")
+        except Exception:
+            _log.warning("could not register xep_0352")
         return client
 
     return factory

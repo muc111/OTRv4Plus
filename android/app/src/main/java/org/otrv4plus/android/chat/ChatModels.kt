@@ -42,6 +42,27 @@ data class Message(
      * cannot pass for a line from Bob.
      */
     val sender: String = "",
+    /**
+     * The id this message has ON THE WIRE (XEP-0359 origin-id), random for
+     * ours. Receipts, read markers, corrections, replies and reactions name a
+     * message by it. Empty for a local note or for a message that carried
+     * none. Never shown.
+     */
+    val wireId: String = "",
+    /** Corrected by its author after it was sent (XEP-0308). */
+    val edited: Boolean = false,
+    /** Deleted by its author for everyone (XEP-0424): shown as a tombstone. */
+    val retracted: Boolean = false,
+    /** The [wireId] of the message this one replies to (XEP-0461), or "". */
+    val replyTo: String = "",
+    /** A short quote of that message, as it was when the reply was made. */
+    val replyPreview: String = "",
+    /**
+     * Reactions (XEP-0444): who -> their emoji, in order. "me" for ours; the
+     * contact's bare JID, or a room nickname, for theirs. Each reactor's set
+     * REPLACES their previous one, as the XEP says.
+     */
+    val reactions: Map<String, List<String>> = emptyMap(),
 )
 
 /**
@@ -60,6 +81,12 @@ enum class SendState {
 
     /** The engine encrypted it and the transport took it. */
     SENT,
+
+    /** The contact's device has it (a XEP-0184 receipt). */
+    DELIVERED,
+
+    /** The contact has seen it (a XEP-0333 read marker). */
+    READ,
 
     /** No session yet. The engine holds it; nothing is on the wire. */
     QUEUED,
@@ -308,6 +335,31 @@ object MessageId {
      */
     fun inbound(conversationId: String, at: Long, body: String): String =
         "in:$conversationId:$at:${body.hashCode()}"
+
+    /**
+     * Ours, named by its random wire id. Unique across restarts, which the
+     * per-run sequence above is not: after a restart "out:<jid>:1" could
+     * name a message already in the stored history, and the store would
+     * silently refuse the new one as a duplicate.
+     */
+    fun outgoingWire(conversationId: String, wireId: String): String =
+        "out:$conversationId:w:$wireId"
+
+    /** A fresh wire id: random, so it says nothing about who or when. */
+    fun newWireId(): String = java.util.UUID.randomUUID().toString().replace("-", "")
+
+    /**
+     * An inbound message that carried a protocol id (XEP-0359): the same id
+     * on the live copy, a carbon and the archive's, so all three collapse.
+     * The body's hash is kept in it, so a peer reusing an id for a different
+     * message gets two messages, not a silently replaced one.
+     */
+    fun inboundWire(conversationId: String, wireId: String, body: String): String =
+        "in:$conversationId:w:$wireId:${body.hashCode()}"
+
+    /** A message this account sent from ANOTHER device. */
+    fun elsewhere(conversationId: String, wireId: String, body: String): String =
+        "out:$conversationId:w:$wireId:${body.hashCode()}"
 
     /**
      * A room message. The SENDER is part of the id: two people in a room can

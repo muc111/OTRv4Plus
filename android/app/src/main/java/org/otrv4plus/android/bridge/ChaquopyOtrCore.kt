@@ -1149,6 +1149,27 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             requireApp().callAttr("send_user_text", peer, body).toString())
     }
 
+    override fun sendUserText(peer: String, body: String, messageId: String): SendOutcome = wrap {
+        SendOutcome.fromName(
+            requireApp().callAttr("send_user_text", peer, body, messageId).toString())
+    }
+
+    override fun markDisplayed(peer: String) {
+        runCatching { requireApp().callAttr("mark_displayed", peer) }
+    }
+
+    override fun sendChatStateTo(peer: String, state: String) {
+        runCatching { requireApp().callAttr("set_chat_state", peer, state) }
+    }
+
+    override fun setPrivacy(chatStates: Boolean, readMarkers: Boolean) {
+        runCatching { requireApp().callAttr("set_privacy", chatStates, readMarkers) }
+    }
+
+    override fun setClientActive(active: Boolean) {
+        runCatching { requireApp().callAttr("set_client_active", active) }
+    }
+
     override fun sendMessage(peer: String, body: String) {
         wrap { requireApp().callAttr("send_message", peer, body) }
     }
@@ -1559,7 +1580,23 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
             "MessageReceived" ->
                 OtrEvent.MessageReceived(
-                    str("peer"), str("body"), num("timestamp"))
+                    str("peer"), str("body"), num("timestamp"),
+                    messageId = item.callAttr("get", "message_id")?.toString()
+                        ?.takeIf { it != "None" } ?: "",
+                    source = str("source").ifBlank { "live" })
+
+            "MessageSentElsewhere" ->
+                OtrEvent.MessageSentElsewhere(
+                    str("peer"), str("body"), num("timestamp"),
+                    str("message_id"), str("source"))
+
+            "MessageDisplayed" ->
+                OtrEvent.MessageDisplayed(str("peer"), str("message_id"))
+
+            "ChatStateChanged" ->
+                OtrEvent.ChatStateChanged(str("peer"), str("state"))
+
+            "HistorySynced" -> OtrEvent.HistorySynced(int("count"))
 
             "RoomMessageReceived" ->
                 OtrEvent.RoomMessageReceived(
@@ -1594,11 +1631,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     str("peer"), str("stored_fingerprint"),
                     str("received_fingerprint"))
 
-            // Carries no body -- a receipt for something already on screen.
-            // Mapped to Failed(code) would be a lie; there is no Kotlin event
-            // for it yet, so it is skipped deliberately rather than by
-            // omission, and the drift test knows that.
-            "MessageDelivered" -> null
+            // A delivery receipt (XEP-0184) for one of our messages.
+            "MessageDelivered" ->
+                OtrEvent.MessageDelivered(str("peer"), str("message_id"))
 
             "CallStateChanged" ->
                 OtrEvent.CallChanged(

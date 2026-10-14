@@ -39,6 +39,7 @@ __all__ = [
     "CallStateChanged", "ErrorOccurred", "SubscriptionRequested",
     "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
     "GroupInvite", "GroupChanged",
+    "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
 ]
 
 
@@ -218,9 +219,18 @@ class SessionStateChanged(Event):
 
 @dataclass(frozen=True)
 class MessageReceived(Event):
+    """`message_id` is the protocol's id for it (XEP-0359 origin-id, else
+    the stanza id, else the server's archive id): the same on every copy,
+    so the UI can show a message that arrives live, as a carbon and from
+    the archive once. `source` is "live", "carbon" (it went to another of
+    our devices) or "archive" (sent while this device was away). Only
+    "live" messages are ever encrypted; copies are plaintext by
+    construction (otrv4plus_sync.classify)."""
+
     body: str = ""
     timestamp: float = 0.0
     message_id: Optional[str] = None
+    source: str = "live"
 
 
 @dataclass(frozen=True)
@@ -267,7 +277,42 @@ class GroupChanged(Event):
 
 @dataclass(frozen=True)
 class MessageDelivered(Event):
+    """The contact's device received our message `message_id` (XEP-0184)."""
+
     message_id: str = ""
+
+
+@dataclass(frozen=True)
+class MessageDisplayed(Event):
+    """The contact has seen our messages up to `message_id` (XEP-0333)."""
+
+    message_id: str = ""
+
+
+@dataclass(frozen=True)
+class MessageSentElsewhere(Event):
+    """A message this ACCOUNT sent to `peer` from another device (a XEP-0280
+    carbon or the XEP-0313 archive). Plaintext only, by construction: an
+    encrypted message belongs to the device whose session sent it."""
+
+    body: str = ""
+    timestamp: float = 0.0
+    message_id: str = ""
+    source: str = "carbon"
+
+
+@dataclass(frozen=True)
+class ChatStateChanged(Event):
+    """XEP-0085: `state` is active, composing, paused, inactive or gone."""
+
+    state: str = ""
+
+
+@dataclass(frozen=True)
+class HistorySynced(Event):
+    """The archive catch-up on connect finished: `count` messages added."""
+
+    count: int = 0
 
 
 @dataclass(frozen=True)

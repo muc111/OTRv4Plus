@@ -154,6 +154,26 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     override fun sendUserText(peer: String, body: String): SendOutcome =
         SendOutcome.fromName(call("send_user_text", "peer" to peer, "body" to body).asStr())
 
+    override fun sendUserText(peer: String, body: String, messageId: String): SendOutcome =
+        SendOutcome.fromName(call("send_user_text", "peer" to peer, "body" to body,
+                                  "message_id" to messageId).asStr())
+
+    override fun markDisplayed(peer: String) {
+        runCatching { call("mark_displayed", "peer" to peer) }
+    }
+
+    override fun sendChatStateTo(peer: String, state: String) {
+        runCatching { call("set_chat_state", "peer" to peer, "state" to state) }
+    }
+
+    override fun setPrivacy(chatStates: Boolean, readMarkers: Boolean) {
+        runCatching { call("set_privacy", "chat_states" to chatStates, "read_markers" to readMarkers) }
+    }
+
+    override fun setClientActive(active: Boolean) {
+        runCatching { call("set_client_active", "active" to active) }
+    }
+
     override fun smpStart(peer: String, secret: String, question: String) {
         call("smp_start", "peer" to peer, "secret" to secret, "question" to question)
     }
@@ -387,7 +407,14 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                         ?: ConnectionState.DISCONNECTED)
                 "SessionStateChanged" -> OtrEvent.SessionChanged(
                     str("peer"), SecurityState.fromLevel(int("security_level")))
-                "MessageReceived" -> OtrEvent.MessageReceived(str("peer"), str("body"), num("timestamp"))
+                "MessageReceived" -> OtrEvent.MessageReceived(
+                    str("peer"), str("body"), num("timestamp"),
+                    messageId = str("message_id"), source = str("source").ifBlank { "live" })
+                "MessageSentElsewhere" -> OtrEvent.MessageSentElsewhere(
+                    str("peer"), str("body"), num("timestamp"), str("message_id"), str("source"))
+                "MessageDisplayed" -> OtrEvent.MessageDisplayed(str("peer"), str("message_id"))
+                "ChatStateChanged" -> OtrEvent.ChatStateChanged(str("peer"), str("state"))
+                "HistorySynced" -> OtrEvent.HistorySynced(int("count"))
                 "RoomMessageReceived" -> OtrEvent.RoomMessageReceived(
                     str("peer"), str("sender"), str("body"), num("timestamp"),
                     encrypted = flag("encrypted"), senderIdentity = str("sender_identity"),
@@ -400,7 +427,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "SmpResult" -> OtrEvent.SmpFinished(str("peer"), SmpState.fromName(str("state")))
                 "FingerprintChanged" -> OtrEvent.FingerprintChanged(
                     str("peer"), str("stored_fingerprint"), str("received_fingerprint"))
-                "MessageDelivered" -> null
+                "MessageDelivered" -> OtrEvent.MessageDelivered(str("peer"), str("message_id"))
                 "CallStateChanged" -> OtrEvent.CallChanged(
                     str("peer"), CallState.fromName(str("state")), int("duration_seconds"))
                 "SubscriptionRequested" -> OtrEvent.SubscriptionRequested(

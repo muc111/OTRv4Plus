@@ -201,7 +201,10 @@ class TestTheRoomIsDiscoveredNeverGuessed:
         finally:
             t.close()
         assert set(made["disco"].asked) == {DOMAIN, MUC}
-        assert set(made["info_asked"]) <= {MUC, OTHER_SERVICE, ROOM}
+        # Plus our OWN server and account, whose features say whether
+        # carbons and the message archive are there (android_bridge.sync):
+        # questions about ourselves, never about anyone else.
+        assert set(made["info_asked"]) <= {MUC, OTHER_SERVICE, ROOM, DOMAIN, ME}
 
     def test_a_taken_nickname_retries_once_with_our_own_suffix(self):
         muc = RosterMuc(conflict_first=True)

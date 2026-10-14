@@ -77,6 +77,27 @@ interface OtrCore {
     fun sendUserText(peer: String, body: String): SendOutcome
 
     /**
+     * [sendUserText] with the bubble's [messageId] going on the wire as the
+     * message's id (XEP-0359), so delivery receipts, read markers and copies
+     * on our other devices can be matched back to it.
+     */
+    fun sendUserText(peer: String, body: String, messageId: String): SendOutcome =
+        sendUserText(peer, body)
+
+    /** The user is looking at [peer]'s conversation (a XEP-0333 read marker,
+     *  if switched on). */
+    fun markDisplayed(peer: String) {}
+
+    /** The user is typing to [peer] ("composing") or stopped ("paused"). */
+    fun sendChatStateTo(peer: String, state: String) {}
+
+    /** Settings: send "typing..." and read markers. */
+    fun setPrivacy(chatStates: Boolean, readMarkers: Boolean) {}
+
+    /** The app is on screen (true) or in the background (XEP-0352). */
+    fun setClientActive(active: Boolean) {}
+
+    /**
      * Begin verification.
      *
      * [secret] is passed straight to the engine and is not retained, logged or
@@ -882,7 +903,37 @@ data class SecurityDetails(
 sealed interface OtrEvent {
     data class ConnectionChanged(val state: ConnectionState) : OtrEvent
     data class SessionChanged(val peer: String, val security: SecurityState) : OtrEvent
-    data class MessageReceived(val peer: String, val body: String, val timestamp: Double) : OtrEvent
+    /**
+     * A message to us. [messageId] is the protocol's id for it (the same on
+     * every copy, so a message arriving live, as a carbon and from the
+     * archive is shown once); [source] is "live", "carbon" (it went to
+     * another of our devices) or "archive" (sent while this device was away).
+     * Copies are plaintext by construction: an encrypted message belongs to
+     * the device whose session it was.
+     */
+    data class MessageReceived(
+        val peer: String, val body: String, val timestamp: Double,
+        val messageId: String = "", val source: String = "live",
+    ) : OtrEvent
+
+    /** Our message [messageId] reached [peer]'s device (XEP-0184). */
+    data class MessageDelivered(val peer: String, val messageId: String) : OtrEvent
+
+    /** [peer] has seen our messages up to [messageId] (XEP-0333). */
+    data class MessageDisplayed(val peer: String, val messageId: String) : OtrEvent
+
+    /** This account wrote [body] to [peer] from ANOTHER device (a carbon or
+     *  the archive). Plaintext only, by construction. */
+    data class MessageSentElsewhere(
+        val peer: String, val body: String, val timestamp: Double,
+        val messageId: String, val source: String,
+    ) : OtrEvent
+
+    /** XEP-0085: active, composing, paused, inactive or gone. */
+    data class ChatStateChanged(val peer: String, val state: String) : OtrEvent
+
+    /** The archive catch-up after connecting added [count] messages. */
+    data class HistorySynced(val count: Int) : OtrEvent
 
     /**
      * Group chat. [room] is the room's JID; [sender] is the nickname the ROOM

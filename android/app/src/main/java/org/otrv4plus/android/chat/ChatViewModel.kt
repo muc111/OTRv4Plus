@@ -381,6 +381,7 @@ class ChatViewModel : ViewModel() {
                 // here as well would be two drainers on one destructive queue.
                 revision++
                 autoSecure()
+                markOpenDisplayed()
                 refreshDiscovery()
                 refreshWelcome()
                 refreshHandshake()
@@ -396,6 +397,56 @@ class ChatViewModel : ViewModel() {
     fun setDraft(jid: String, text: String) {
         state?.setDraft(jid, text)
         revision++
+        typing(jid, text.isNotBlank())
+    }
+
+    // -- typing, read markers (XEP-0085, XEP-0333) -----------------------------
+    //
+    // The bridge decides whether anything goes (only to a contact who already
+    // sees our presence, only when switched on, at most every ten seconds);
+    // this only says what the user is doing.
+
+    private var pausedJob: kotlinx.coroutines.Job? = null
+
+    private fun typing(jid: String, active: Boolean) {
+        val core = this.core ?: return
+        pausedJob?.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { core.sendChatStateTo(jid, if (active) "composing" else "active") }
+        }
+        if (active) {
+            pausedJob = viewModelScope.launch {
+                delay(TYPING_PAUSE_MS)
+                withContext(Dispatchers.IO) { runCatching { core.sendChatStateTo(jid, "paused") } }
+            }
+        }
+    }
+
+    /** Whether [jid] is typing ("typing..." under the name). */
+    fun isTyping(jid: String): Boolean { observe(); return state?.isTyping(jid) ?: false }
+
+    /** Settings: send "typing..." and read receipts. */
+    var sendTyping by mutableStateOf(true)
+        private set
+    var sendReadReceipts by mutableStateOf(true)
+        private set
+
+    fun setPrivacy(typing: Boolean, readReceipts: Boolean) {
+        sendTyping = typing
+        sendReadReceipts = readReceipts
+        val core = this.core ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { core.setPrivacy(typing, readReceipts) }
+        }
+    }
+
+    /** The open conversation is on screen: a read marker for what arrived. */
+    private fun markOpenDisplayed() {
+        val core = this.core ?: return
+        val state = this.state ?: return
+        val open = state.openConversation ?: return
+        if (!state.uiVisible) return
+        viewModelScope.launch(Dispatchers.IO) { runCatching { core.markDisplayed(open) } }
     }
 
     fun open(jid: String) {
@@ -930,12 +981,14 @@ class ChatViewModel : ViewModel() {
         val state = this.state ?: return
         val message = state.beginSend(jid) ?: return
         revision++
+        // The message itself carries <active/>: no "paused" after it.
+        pausedJob?.cancel()
 
         viewModelScope.launch {
             val outcome = withContext(Dispatchers.IO) {
                 // getOrDefault, not a rethrow: a bridge failure is a failed
                 // send, and the exception's text may name what it was handling.
-                runCatching { core.sendUserText(jid, message.body) }
+                runCatching { core.sendUserText(jid, message.body, message.wireId) }
                     .getOrDefault(SendOutcome.FAILED)
             }
             state.completeSend(message, outcome)
@@ -1572,6 +1625,8 @@ class ChatViewModel : ViewModel() {
          * quickly a message the service has already received appears on screen.
          */
         const val REDRAW_INTERVAL_MS = 400L
+        /** No keystroke for this long: "paused" (XEP-0085). */
+        const val TYPING_PAUSE_MS = 6_000L
 
         /** How long an automatic OTRv4+ start gets before it is retried. */
         const val AUTO_RETRY_MS = 45_000L

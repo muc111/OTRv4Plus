@@ -103,6 +103,21 @@ fun ConversationsScreen(
                                 DropdownMenuItem(text = { Text("Theme") },
                                                  onClick = { menuOpen = false; choosingTheme = true })
                             }
+                            // What this device tells contacts (XEP-0085 and
+                            // XEP-0333). Delivery receipts are always answered.
+                            val context = androidx.compose.ui.platform.LocalContext.current
+                            DropdownMenuItem(
+                                text = { Text((if (model.sendTyping) "\u2713 " else "    ") + "Send typing notifications") },
+                                onClick = {
+                                    model.setPrivacy(!model.sendTyping, model.sendReadReceipts)
+                                    org.otrv4plus.android.ui.PrivacyStore.save(context, model.sendTyping, model.sendReadReceipts)
+                                })
+                            DropdownMenuItem(
+                                text = { Text((if (model.sendReadReceipts) "\u2713 " else "    ") + "Send read receipts") },
+                                onClick = {
+                                    model.setPrivacy(model.sendTyping, !model.sendReadReceipts)
+                                    org.otrv4plus.android.ui.PrivacyStore.save(context, model.sendTyping, model.sendReadReceipts)
+                                })
                             DropdownMenuItem(text = { Text("About & licences") },
                                              onClick = { menuOpen = false; onOpenAbout() })
                             // Debug builds only: a release build is for people

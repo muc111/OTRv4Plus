@@ -235,7 +235,11 @@ class MainActivity : ComponentActivity() {
                     LaunchedEffect(connection.core, connection.chat) {
                         val core = connection.core
                         val state = connection.chat
-                        if (core != null && state != null) chat.attach(core, state)
+                        if (core != null && state != null) {
+                            chat.attach(core, state)
+                            val (typing, read) = org.otrv4plus.android.ui.PrivacyStore.load(this@MainActivity)
+                            chat.setPrivacy(typing, read)
+                        }
                     }
 
                     when (screen) {

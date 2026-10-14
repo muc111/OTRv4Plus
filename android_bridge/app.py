@@ -47,8 +47,9 @@ from otrv4plus_mode import OtrMode
 
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
-    ErrorOccurred, Event, EventSink, FingerprintChanged, MessageReceived,
-    OtrCapabilityChanged, QueuedSent, RoomMessageReceived,
+    ChatStateChanged, ErrorOccurred, Event, EventSink, FingerprintChanged,
+    HistorySynced, MessageDelivered, MessageDisplayed, MessageReceived,
+    MessageSentElsewhere, OtrCapabilityChanged, QueuedSent, RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
     call_state_from_engine, security_state_from_level, smp_state_from_status,
 )
@@ -75,6 +76,20 @@ def _is_trade_signal(body: Any) -> bool:
     module = sys.modules.get("otrv4plus_trade")
     prefix = getattr(module, "TRADE_PREFIX", None) if module else None
     return body.startswith(prefix or TRADE_PREFIX_FALLBACK)
+
+
+class _Line(str):
+    """A line in the outbox: the text, carrying the id it will be sent
+    with (XEP-0359), so a line that waited for a handshake still gets its
+    delivery receipt matched to the right bubble. A str, so everything that
+    reads the outbox as text still does."""
+
+    message_id: str = ""
+
+    def __new__(cls, text: str, message_id: str = ""):
+        line = super().__new__(cls, text)
+        line.message_id = message_id or ""
+        return line
 
 
 class BridgeError(RuntimeError):
@@ -282,6 +297,12 @@ class OtrApp:
         #: Set by `wipe` and never cleared. See `wipe` for what it refuses.
         self._wiped = False
         self._wipe_lock = threading.Lock()
+        #: peer -> (full JID, id) of the newest message that asked for a read
+        #: marker (XEP-0333); answered by `mark_displayed`.
+        self._markable: Dict[str, tuple] = {}
+        #: The user's choices: send "typing..." and read markers.
+        self._chat_states_on = True
+        self._read_markers_on = True
         self._enable_guided_smp()
 
     #: How many peers' last-seen times to keep.
@@ -770,6 +791,15 @@ class OtrApp:
         for box in getattr(self, "_outbox", {}).values():
             box.clear()
         getattr(self, "_outbox", {}).clear()
+        getattr(self, "_markable", {}).clear()
+        # The archive cursor (android_bridge.sync): an opaque id, but it is
+        # this account's, and Wipe & Exit leaves nothing of the account.
+        try:
+            import otrv4plus_sync as _sync
+            from .sync import CURSOR_PATH
+            _sync.ArchiveCursor(os.path.expanduser(CURSOR_PATH)).forget()
+        except Exception as exc:
+            report["errors"].append("sync_cursor:%s" % type(exc).__name__)
         getattr(self, "_invite_after_otr", {}).clear()
 
         calls = self._calls_bridge
@@ -1154,12 +1184,21 @@ class OtrApp:
     #: The handshake ETA before any has been measured (I2P, two tunnels).
     HANDSHAKE_TYPICAL_SECONDS = 75
 
-    def _hold(self, peer: str, body: str) -> bool:
+    def _hold(self, peer: str, body: str, message_id: str = "") -> bool:
         box = self._outbox.setdefault(peer, [])
         if len(box) >= self.OUTBOX_MAX:
             return False
-        box.append(body)
+        box.append(body if isinstance(body, _Line) else _Line(body, message_id))
         return True
+
+    def _send_user(self, peer: str, payload: str, message_id: str = "") -> None:
+        """Send something a person typed, with its id when the transport
+        can carry one (XmppTransport.send_typed); test doubles get `send`."""
+        typed = getattr(self._transport, "send_typed", None)
+        if message_id and typed is not None:
+            typed(peer, payload, message_id)
+        else:
+            self._transport.send(peer, payload)
 
     def outbox_count(self, peer: str) -> int:
         return len(self._outbox.get(self.canonical_peer(peer), ()))
@@ -1189,7 +1228,7 @@ class OtrApp:
                         break
                     text = (payload.decode("utf-8", errors="replace")
                             if isinstance(payload, (bytes, bytearray)) else str(payload))
-                    self._transport.send(peer, text)
+                    self._send_user(peer, text, getattr(body, "message_id", ""))
                 except Exception:
                     break
                 box.pop(0)
@@ -1207,7 +1246,8 @@ class OtrApp:
             sent = 0
             while box:
                 try:
-                    self._transport.send(peer, box[0])
+                    self._send_user(peer, str(box[0]),
+                                    getattr(box[0], "message_id", ""))
                 except Exception:
                     break
                 box.pop(0)
@@ -1617,10 +1657,14 @@ class OtrApp:
     SEND_FAILED = "failed"
     SEND_PLAINTEXT = "plaintext"
 
-    def send_user_text(self, peer: str, body: str) -> str:
+    def send_user_text(self, peer: str, body: str, message_id: str = "") -> str:
         """Send one typed line the way the terminal client does.
 
         Returns SEND_ENCRYPTED, SEND_QUEUED or SEND_FAILED.
+
+        [message_id] (the UI's id for the bubble, random) goes on the wire as
+        the message's id and XEP-0359 origin-id, so receipts, read markers and
+        copies on our other devices can be matched back to it.
 
         WHY THIS EXISTS ALONGSIDE `send_message`
         ----------------------------------------
@@ -1693,14 +1737,14 @@ class OtrApp:
         secure = self.security_state(peer) is not SecurityState.PLAINTEXT
         if secure and self._outbox.get(peer):
             # Behind what is already waiting, in order.
-            if not self._hold(peer, body):
+            if not self._hold(peer, body, message_id):
                 return self.SEND_FAILED
             self._flush_outbox(peer)
             return self.SEND_QUEUED if self._outbox.get(peer) else self.SEND_ENCRYPTED
         if not secure and self._capability_enforced():
             capability = self.otr_capability(peer)
             if capability == "available" or self._mode.is_otr(peer):
-                if not self._hold(peer, body):
+                if not self._hold(peer, body, message_id):
                     return self.SEND_FAILED
                 if capability == "available":
                     try:
@@ -1710,12 +1754,12 @@ class OtrApp:
                         pass
                 return self.SEND_QUEUED
             if capability in ("checking", "unknown", "offline"):
-                return self.SEND_QUEUED if self._hold(peer, body) else self.SEND_FAILED
+                return self.SEND_QUEUED if self._hold(peer, body, message_id) else self.SEND_FAILED
 
         if self._mode.may_send_plaintext(
                 peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
             try:
-                self._transport.send(peer, body)
+                self._send_user(peer, body, message_id)
             except Exception:
                 return self.SEND_FAILED
             self._touch(peer)
@@ -1730,14 +1774,14 @@ class OtrApp:
         if not should_send:
             # No session yet. The OUTBOX holds it (the engine's own queue is
             # dropped when its handshake completes) and sends it then.
-            return self.SEND_QUEUED if self._hold(peer, body) else self.SEND_FAILED
+            return self.SEND_QUEUED if self._hold(peer, body, message_id) else self.SEND_FAILED
         if not payload:
             return self.SEND_FAILED
 
         text = (payload.decode("utf-8", errors="replace")
                 if isinstance(payload, (bytes, bytearray)) else str(payload))
         try:
-            self._transport.send(peer, text)
+            self._send_user(peer, text, message_id)
         except Exception:
             # It was encrypted but did not leave. Distinct from queued: there
             # is nothing holding it and nothing will retry.
@@ -1745,11 +1789,16 @@ class OtrApp:
         self._touch(peer)
         return self.SEND_ENCRYPTED
 
-    def receive_message(self, peer: str, payload: str) -> Optional[str]:
+    def receive_message(self, peer: str, payload: str, meta: Any = None) -> Optional[str]:
         """Feed an inbound frame to the engine; emit a MessageReceived if it was one.
 
         Returns the plaintext for the caller that wants it inline; the same value
         is delivered as an event.  Nothing here is logged.
+
+        [meta] is the transport's `otrv4plus_sync.Item` for the stanza (its
+        ids, whether it asks for a read marker); None from a caller that has
+        none. The transport sends the delivery receipt itself, and only when
+        this returns text.
         """
         peer = self.canonical_peer(peer)
         # The PEER asking counts as asking. Marked before the engine runs, so
@@ -1881,7 +1930,14 @@ class OtrApp:
             return None
 
         self._touch(peer)
-        self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock()))
+        ref = getattr(meta, "ref", "") or None
+        self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock(),
+                                   message_id=ref))
+        if meta is not None and getattr(meta, "markable", False) and \
+                getattr(meta, "message_id", ""):
+            if len(self._markable) < self.MAX_TRACKED_ACTIVITY or peer in self._markable:
+                self._markable[peer] = (getattr(meta, "full_jid", "") or peer,
+                                        meta.message_id)
         # A decrypted message means a session exists; the level may have moved
         # on this very frame (a DATA message completing a rekey, say).
         after = self.security_state(peer)
@@ -1889,6 +1945,115 @@ class OtrApp:
             self._emit(SessionStateChanged(peer=peer, security=after))
         self._announce_smp_change(peer, before_smp)
         return body
+
+    # -- other devices, the archive, receipts, typing (android_bridge.sync) ----
+
+    def on_sync(self, kind: str, **fields: Any) -> None:
+        """The transport's sync handler (XmppTransport.set_sync_handler).
+
+        Copies (carbons, the archive) arrive here already classified by
+        otrv4plus_sync: plaintext only, never an OTR frame, and never handed
+        to the engine -- a copy of encrypted traffic belongs to the device
+        whose session it was."""
+        if self._wiped:
+            return
+        if kind == "message":
+            item = fields.get("item")
+            if item is None:
+                return
+            import otrv4plus_sync as _sync
+            peer = self.canonical_peer(item.peer)
+            if peer in self._rooms:
+                return
+            body = _sync.strip_whitespace_tag(item.body)
+            if not body.strip():
+                return
+            if item.direction == "out":
+                self._emit(MessageSentElsewhere(
+                    peer=peer, body=body, timestamp=item.when,
+                    message_id=item.ref, source=item.source))
+            else:
+                self._emit(MessageReceived(
+                    peer=peer, body=body, timestamp=item.when,
+                    message_id=item.ref or None, source=item.source))
+        elif kind == "receipt":
+            self._emit(MessageDelivered(peer=self.canonical_peer(fields.get("peer", "")),
+                                        message_id=str(fields.get("message_id", ""))))
+        elif kind == "marker":
+            peer = self.canonical_peer(fields.get("peer", ""))
+            mid = str(fields.get("message_id", ""))
+            if fields.get("marker") == "displayed":
+                self._emit(MessageDisplayed(peer=peer, message_id=mid))
+            elif fields.get("marker") == "received":
+                self._emit(MessageDelivered(peer=peer, message_id=mid))
+        elif kind == "chat_state":
+            state = str(fields.get("state", ""))
+            self._emit(ChatStateChanged(peer=self.canonical_peer(fields.get("peer", "")),
+                                        state=state))
+        elif kind == "synced":
+            self._emit(HistorySynced(count=int(fields.get("count", 0) or 0)))
+
+    def mark_displayed(self, peer: str) -> bool:
+        """The user is looking at [peer]'s conversation: tell them their
+        newest message was seen (XEP-0333), if read markers are on."""
+        peer = self.canonical_peer(peer)
+        entry = self._markable.pop(peer, None)
+        if entry is None or not self._read_markers_on:
+            return False
+        sender = getattr(self._transport, "send_marker", None)
+        if sender is None:
+            return False
+        try:
+            sender(entry[0], entry[1], "displayed")
+            return True
+        except Exception:
+            return False
+
+    def set_chat_state(self, peer: str, state: str) -> bool:
+        """The user started or stopped typing to [peer] (XEP-0085)."""
+        peer = self.canonical_peer(peer)
+        if not self._chat_states_on or peer in self._rooms or (
+                self._groups is not None and self._groups.is_secure(peer)):
+            return False
+        sender = getattr(self._transport, "send_chat_state", None)
+        if sender is None:
+            return False
+        try:
+            return bool(sender(peer, state))
+        except Exception:
+            return False
+
+    def set_privacy(self, chat_states: bool, read_markers: bool) -> None:
+        """Settings: send "typing..." and read markers. Kept here so a new
+        transport (every reconnect builds one) gets them too."""
+        self._chat_states_on = bool(chat_states)
+        self._read_markers_on = bool(read_markers)
+        apply = getattr(self._transport, "set_privacy", None)
+        if apply is not None:
+            try:
+                apply(self._chat_states_on, self._read_markers_on)
+            except Exception:
+                pass
+
+    def privacy(self) -> Dict[str, bool]:
+        return {"chat_states": self._chat_states_on,
+                "read_markers": self._read_markers_on}
+
+    def set_client_active(self, active: bool) -> None:
+        """The app came to the front or went to the background (XEP-0352)."""
+        apply = getattr(self._transport, "set_client_active", None)
+        if apply is not None:
+            try:
+                apply(bool(active))
+            except Exception:
+                pass
+
+    def sync_status(self) -> Dict[str, Any]:
+        status = getattr(self._transport, "sync_status", None)
+        try:
+            return dict(status()) if status is not None else {}
+        except Exception:
+            return {}
 
     #: At most one automatic handshake per peer in this many seconds.
     RECOVERY_INTERVAL = 30.0

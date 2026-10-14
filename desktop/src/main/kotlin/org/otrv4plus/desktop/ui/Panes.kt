@@ -197,6 +197,24 @@ fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
                 Text("Sounds for messages and calls", Modifier.weight(1f))
             }
         }
+        Section("Privacy") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Switch(checked = model.sendTyping,
+                    onCheckedChange = { model.setPrivacy(it, model.sendReadReceipts) })
+                Spacer(Modifier.width(12.dp))
+                Text("Send typing notifications", Modifier.weight(1f))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Switch(checked = model.sendReadReceipts,
+                    onCheckedChange = { model.setPrivacy(model.sendTyping, it) })
+                Spacer(Modifier.width(12.dp))
+                Text("Send read receipts", Modifier.weight(1f))
+            }
+            Text("Only contacts who can already see when you are online are told. " +
+                 "Delivery ticks are always answered, as in other messengers.",
+                 style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
         Section("Your fingerprint") {
             SelectionContainer { Text(model.fingerprint, fontFamily = FontFamily.Monospace) }
             Text("Compare it with your contact in person, or verify with a shared passphrase.",

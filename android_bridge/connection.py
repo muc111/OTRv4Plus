@@ -546,6 +546,21 @@ class ConnectionController:
         note = getattr(self._app, "note_capability", None)
         if caps is not None and note is not None:
             caps(note)
+        # Carbons, the archive, receipts, read markers and typing
+        # (android_bridge.sync), and the user's choices about the last two,
+        # which outlive any one transport.
+        sync = getattr(self._transport, "set_sync_handler", None)
+        on_sync = getattr(self._app, "on_sync", None)
+        if sync is not None and on_sync is not None:
+            sync(on_sync)
+        privacy = getattr(self._app, "privacy", None)
+        apply = getattr(self._transport, "set_privacy", None)
+        if privacy is not None and apply is not None:
+            try:
+                p = privacy()
+                apply(p["chat_states"], p["read_markers"])
+            except Exception:
+                pass
         self._enter("connecting")
         try:
             self._transport.connect()

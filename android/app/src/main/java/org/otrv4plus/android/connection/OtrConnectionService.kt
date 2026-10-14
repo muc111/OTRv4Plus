@@ -844,6 +844,9 @@ class OtrConnectionService : Service() {
         // conversation the user cannot see happens to be the open one.
         chat.setUiVisible(visible)
         if (alerts.setUiVisible(visible)) cancelArrivalNotification()
+        // XEP-0352: the server may hold back presence floods and "typing..."
+        // while nobody is looking, which saves battery and radio.
+        scope.launch(Dispatchers.IO) { runCatching { core.setClientActive(visible) } }
     }
 
     /**

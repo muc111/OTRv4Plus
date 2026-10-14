@@ -116,7 +116,14 @@ fun ConversationScreen(
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.titleMedium,
                         )
-                        PresenceDot(conversation.presence)
+                        // "typing..." (XEP-0085) replaces the presence line
+                        // while it lasts, as messengers do.
+                        if (!model.isRoom(jid) && model.isTyping(jid)) {
+                            Text("typing\u2026", style = MaterialTheme.typography.labelSmall,
+                                 color = MaterialTheme.colorScheme.primary)
+                        } else {
+                            PresenceDot(conversation.presence)
+                        }
                     }
                 },
                 actions = {
@@ -1019,9 +1026,22 @@ private fun statusWord(message: Message): String? = when {
     message.sendState == SendState.SENT &&
         message.security == SecurityLabel.PLAINTEXT -> "sent, not encrypted"
     message.sendState == SendState.SENT -> "sent"
+    // Ticks as in every messenger: one for sent, two for delivered (a
+    // XEP-0184 receipt), "read" once the contact's app says they saw it
+    // (XEP-0333). Each still says whether it was encrypted.
+    message.sendState == SendState.DELIVERED ->
+        "\u2713\u2713 delivered" + encryptedSuffix(message)
+    message.sendState == SendState.READ ->
+        "\u2713\u2713 read" + encryptedSuffix(message)
     !message.outgoing && message.security == SecurityLabel.PLAINTEXT ->
         "not encrypted"
     else -> null
+}
+
+private fun encryptedSuffix(message: Message): String = when (message.security) {
+    SecurityLabel.ENCRYPTED -> ", encrypted"
+    SecurityLabel.PLAINTEXT -> ", not encrypted"
+    else -> ""
 }
 
 /**

@@ -58,7 +58,10 @@ def _packaged_modules():
     """The .py files `syncPythonSources` copies into the APK."""
     source = _read(GRADLE)
     start = source.index("val syncPythonSources by tasks.registering")
-    block = source[start:start + 6000]
+    # To the end of the task's file list (its `exclude(`), however long the
+    # comments in it grow.
+    end = source.find("exclude(", start)
+    block = source[start:end if end > start else start + 12000]
     return set(re.findall(r'^\s+"([A-Za-z0-9_+.-]+\.py)",?\s*$', block, re.M))
 
 

@@ -108,6 +108,7 @@ class ChatState(
         smpStates.clear()
         sessionStates.clear()
         capabilities.clear()
+        chatStates.clear()
         discovery = null
         welcome = org.otrv4plus.android.bridge.WelcomeView.NONE
         // A call belongs to the account that placed it. Carrying one into the
@@ -432,6 +433,16 @@ class ChatState(
     fun handle(event: OtrEvent): Boolean {
         return when (event) {
             is OtrEvent.MessageReceived -> receive(event)
+            // Ticks: never a notification.
+            is OtrEvent.MessageDelivered -> { markDelivered(event.peer, event.messageId); false }
+            is OtrEvent.MessageDisplayed -> { markSeenUpTo(event.peer, event.messageId); false }
+            // Written by us elsewhere: stored, never announced.
+            is OtrEvent.MessageSentElsewhere -> receiveElsewhere(event)
+            is OtrEvent.ChatStateChanged -> {
+                chatStates[bare(event.peer)] = event.state to now()
+                false
+            }
+            is OtrEvent.HistorySynced -> false
             // Stored, never announced: a busy room would otherwise buzz the
             // phone for every line strangers type. The unread count still
             // shows it.
@@ -853,16 +864,28 @@ class ChatState(
         if (event.body.isBlank()) return false
         val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong()
                  else now()
+        // A message ends "typing...".
+        chatStates.remove(jid)
+        val live = event.source == "live"
+        // An old message (from the archive) that predates a deletion stays
+        // deleted, as a room's replayed history does.
+        if (!live && deleted.predatesDeletion(jid, at)) return false
         val added = store.append(
             Message(
-                id = MessageId.inbound(jid, at, event.body),
+                id = if (event.messageId.isNotEmpty())
+                         MessageId.inboundWire(jid, event.messageId, event.body)
+                     else MessageId.inbound(jid, at, event.body),
+                wireId = event.messageId,
                 conversationId = jid,
                 body = event.body,
                 outgoing = false,
                 at = at,
                 // What the ENGINE says about that peer, captured now. Not
                 // inferred from the body's shape, which a peer controls.
-                security = SecurityLabel.forInbound(securityOf(jid)),
+                // A COPY (carbon, archive) is plaintext by construction,
+                // whatever the session with that peer is now.
+                security = if (live) SecurityLabel.forInbound(securityOf(jid))
+                           else SecurityLabel.PLAINTEXT,
                 sendState = SendState.NONE,
             )
         )
@@ -872,7 +895,9 @@ class ChatState(
         // in front of them. Either alone is not "they saw it".
         if (added) deleted.restore(jid)
         if (added && uiVisible && openConversation == jid) store.markRead(jid)
-        return added
+        // Something from while this device was away is history, not news:
+        // stored, counted unread, but no sound or notification.
+        return added && event.source != "archive"
     }
 
     // -- what the UI reads ---------------------------------------------------
@@ -1075,8 +1100,11 @@ class ChatState(
         // the box rather than vanishing into a message that cannot go.
         if (!canSend()) return null
         drafts[jid] = ""
+        ++outgoingSequence
+        val wireId = MessageId.newWireId()
         val message = Message(
-            id = MessageId.outgoing(jid, ++outgoingSequence),
+            id = MessageId.outgoingWire(jid, wireId),
+            wireId = wireId,
             conversationId = jid,
             body = body,
             outgoing = true,
@@ -1099,8 +1127,20 @@ class ChatState(
      * OTR is ready`, and reporting that as "not sent" is what made the first
      * version of this screen look broken during a DAKE.
      */
-    fun completeSend(message: Message, outcome: SendOutcome): Boolean =
-        store.update(
+    fun completeSend(message: Message, outcome: SendOutcome): Boolean {
+        // A receipt can beat the send call's own return (the contact's device
+        // answered before the bridge did): never step back from DELIVERED/READ.
+        val current = store.messages(message.conversationId).firstOrNull { it.id == message.id }
+        if (current != null && outcome != SendOutcome.FAILED &&
+            current.sendState in setOf(SendState.DELIVERED, SendState.READ)) {
+            return store.update(current.copy(
+                security = when (outcome) {
+                    SendOutcome.ENCRYPTED -> SecurityLabel.ENCRYPTED
+                    SendOutcome.PLAINTEXT -> SecurityLabel.PLAINTEXT
+                    else -> SecurityLabel.UNKNOWN
+                }))
+        }
+        return store.update(
             message.copy(
                 sendState = when (outcome) {
                     SendOutcome.ENCRYPTED -> SendState.SENT
@@ -1120,6 +1160,74 @@ class ChatState(
                 },
             )
         )
+    }
+
+    // -- receipts, read markers, other devices, typing (XEP-0184/0333/0280/0085)
+
+    /** [peer]'s device has our message [wireId]. Only ever moves forward. */
+    fun markDelivered(peer: String, wireId: String): Boolean {
+        if (wireId.isEmpty()) return false
+        val jid = bare(peer)
+        val m = store.messages(jid).firstOrNull { it.outgoing && it.wireId == wireId }
+            ?: return false
+        if (m.sendState !in setOf(SendState.SENDING, SendState.SENT, SendState.QUEUED)) return false
+        return store.update(m.copy(sendState = SendState.DELIVERED))
+    }
+
+    /** [peer] has seen our messages up to [wireId]: that one and every
+     *  earlier one that went out are READ. */
+    fun markSeenUpTo(peer: String, wireId: String): Boolean {
+        if (wireId.isEmpty()) return false
+        val jid = bare(peer)
+        val list = store.messages(jid)
+        val upTo = list.indexOfLast { it.outgoing && it.wireId == wireId }
+        if (upTo < 0) return false
+        var changed = false
+        for (i in 0..upTo) {
+            val m = list[i]
+            if (m.outgoing && m.sendState in setOf(SendState.SENT, SendState.DELIVERED)) {
+                changed = store.update(m.copy(sendState = SendState.READ)) || changed
+            }
+        }
+        return changed
+    }
+
+    /** A message this account wrote to [event.peer] from another device. */
+    private fun receiveElsewhere(event: OtrEvent.MessageSentElsewhere): Boolean {
+        val jid = bare(event.peer)
+        if (event.body.isBlank() || jid.isEmpty()) return false
+        // This device's own message coming back from the archive.
+        if (event.messageId.isNotEmpty() &&
+            store.messages(jid).any { it.outgoing && it.wireId == event.messageId }) return false
+        val at = if (event.timestamp > 0) (event.timestamp * 1000).toLong() else now()
+        if (deleted.predatesDeletion(jid, at)) return false
+        val added = store.append(Message(
+            id = if (event.messageId.isNotEmpty())
+                     MessageId.elsewhere(jid, event.messageId, event.body)
+                 else MessageId.inbound(jid, at, event.body).replaceFirst("in:", "out:"),
+            wireId = event.messageId,
+            conversationId = jid,
+            body = event.body,
+            outgoing = true,
+            at = at,
+            sendState = SendState.SENT,
+            // A copy is plaintext by construction: an encrypted message
+            // belongs to the device whose session sent it.
+            security = SecurityLabel.PLAINTEXT,
+        ))
+        if (added) deleted.restore(jid)
+        return false
+    }
+
+    /** jid -> (chat state, when) from XEP-0085. */
+    private val chatStates = mutableMapOf<String, Pair<String, Long>>()
+
+    /** Whether [jid] is typing now. A "composing" with no follow-up for 30 s
+     *  is taken as stopped (XEP-0085 asks senders to send "paused" anyway). */
+    fun isTyping(jid: String): Boolean {
+        val (state, at) = chatStates[bare(jid)] ?: return false
+        return state == "composing" && now() - at < 30_000
+    }
 
     /** Mark the oldest [count] QUEUED outgoing messages to [jid] as sent. */
     fun promoteQueued(jid: String, count: Int, encrypted: Boolean): Int {

@@ -39,9 +39,6 @@ pytestmark = pytest.mark.skipif(
 NOT_MAPPED = {
     # Base class, never emitted on its own.
     "Event": "abstract base",
-    # A receipt for something already on screen. There is no Kotlin event for
-    # it yet and inventing one would be worse than skipping it.
-    "MessageDelivered": "no Kotlin event yet; skipped explicitly",
 }
 
 

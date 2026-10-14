@@ -147,6 +147,11 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
                     Icon(securityIcon(c.security), null, Modifier.size(14.dp), tint = securityColour(c.security))
                     Spacer(Modifier.width(4.dp))
                     Text(level.label, style = MaterialTheme.typography.bodySmall, color = securityColour(c.security))
+                    if (model.isTyping(jid)) {
+                        Spacer(Modifier.width(10.dp))
+                        Text("typing\u2026", style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.primary)
+                    }
                 }
             }
         }
@@ -332,6 +337,9 @@ private fun Bubble(m: Message, isRoom: Boolean) {
                     SendState.SENDING -> " · sending"
                     SendState.QUEUED -> " · queued until encrypted"
                     SendState.FAILED -> " · not sent"
+                    SendState.SENT -> " · \u2713"
+                    SendState.DELIVERED -> " · \u2713\u2713 delivered"
+                    SendState.READ -> " · \u2713\u2713 read"
                     else -> ""
                 }, style = MaterialTheme.typography.labelSmall,
                    color = if (m.sendState == SendState.FAILED) MaterialTheme.colorScheme.error
