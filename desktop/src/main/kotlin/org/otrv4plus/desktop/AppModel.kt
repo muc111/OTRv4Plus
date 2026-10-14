@@ -133,13 +133,21 @@ class AppModel(
             // handle() is true only for a NEW stored 1:1 message: a
             // duplicate, a presence change or a room line never notifies
             // (the Android rule -- a peer must not be able to buzz at will).
-            if (chat.handle(event)) notifier.message()
-            if (event is OtrEvent.GroupChanged && event.change == "call_ringing") notifier.call()
+            if (chat.handle(event)) notifier.message(
+                when (event) {
+                    is OtrEvent.MessageReceived -> event.peer
+                    is OtrEvent.RoomMessageReceived -> event.room
+                    else -> ""
+                }, chat.openConversation)
+            if (event is OtrEvent.GroupChanged && event.change == "call_ringing") notifier.call(group = true)
             any = true
         }
         // Only a verified peer's call can reach RINGING (CallAlert).
         for (change in chat.takeRingChanges()) {
-            if (change == org.otrv4plus.android.crypto.CallAlert.Change.START) notifier.call()
+            when (change) {
+                org.otrv4plus.android.crypto.CallAlert.Change.START -> notifier.call()
+                org.otrv4plus.android.crypto.CallAlert.Change.STOP -> notifier.stopRinging()
+            }
         }
         if (any) changed()
     }
@@ -452,6 +460,24 @@ class AppModel(
     var groupAutoJoin by mutableStateOf(false)
         private set
 
+    /**
+     * Message and call sounds (Notifier). On by default; the choice is one
+     * boolean in the user's Java preferences -- nothing about any contact.
+     */
+    private var soundsState by mutableStateOf(
+        runCatching { java.util.prefs.Preferences.userNodeForPackage(AppModel::class.java)
+            .getBoolean(SOUNDS_KEY, true) }.getOrDefault(true)
+            .also { notifier.sounds = it })
+    var soundsOn: Boolean
+        get() = soundsState
+        set(value) {
+            soundsState = value
+            notifier.sounds = value
+            if (!value) notifier.stopRinging()
+            runCatching { java.util.prefs.Preferences.userNodeForPackage(AppModel::class.java)
+                .putBoolean(SOUNDS_KEY, value) }
+        }
+
     fun allowGroupAutoJoin(allowed: Boolean) {
         groupAutoJoin = allowed
         ui.launch { withContext(Dispatchers.IO) { core.setGroupCallAutoJoin(allowed) } }
@@ -579,5 +605,6 @@ class AppModel(
     companion object {
         const val TICK_MS = 500L
         const val AUTO_RETRY_MS = 45_000L
+        const val SOUNDS_KEY = "sounds"
     }
 }

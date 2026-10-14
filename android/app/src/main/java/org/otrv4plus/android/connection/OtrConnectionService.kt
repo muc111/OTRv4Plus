@@ -721,7 +721,7 @@ class OtrConnectionService : Service() {
                             // stored. Notifying on anything else -- a
                             // duplicate, a presence change, a session state --
                             // would let a peer buzz the phone at will.
-                            if (chat.handle(event)) announceArrival()
+                            if (chat.handle(event)) soundForMessage(event)
                             // A call is not a message, and rings through its
                             // own path. Only a verified peer can reach
                             // RINGING -- see CallAlert.
@@ -731,6 +731,9 @@ class OtrConnectionService : Service() {
                                     CallAlert.Change.STOP -> cancelCallNotification()
                                 }
                             }
+                            // A group call starting rings once (SoundPolicy).
+                            if (event is org.otrv4plus.android.bridge.OtrEvent.GroupChanged &&
+                                event.change == "call_ringing") announceCall(group = true)
                         }
                 }
                 delay(DRAIN_INTERVAL_MS)
@@ -852,6 +855,40 @@ class OtrConnectionService : Service() {
      * with every name removed, because the number of entries is the number of
      * people who messaged.
      */
+    /**
+     * The sound for a newly stored message (SoundPolicy): the notification in
+     * the background, a short tone when the app is on screen in another
+     * conversation, nothing in the conversation being read.
+     */
+    private fun soundForMessage(event: org.otrv4plus.android.bridge.OtrEvent) {
+        val from = when (event) {
+            is org.otrv4plus.android.bridge.OtrEvent.MessageReceived -> event.peer
+            is org.otrv4plus.android.bridge.OtrEvent.RoomMessageReceived -> event.room
+            else -> return
+        }
+        when (org.otrv4plus.android.chat.SoundPolicy.forMessage(
+                alerts.uiVisible, chat.openConversation, from)) {
+            org.otrv4plus.android.chat.SoundPolicy.Sound.NOTIFICATION -> announceArrival()
+            org.otrv4plus.android.chat.SoundPolicy.Sound.IN_APP_TONE -> playInAppTone()
+            else -> {}
+        }
+    }
+
+    /** The system's notification sound, once, without a notification. */
+    private fun playInAppTone() {
+        runCatching {
+            val uri = android.media.RingtoneManager.getDefaultUri(
+                android.media.RingtoneManager.TYPE_NOTIFICATION) ?: return
+            android.media.RingtoneManager.getRingtone(applicationContext, uri)?.apply {
+                audioAttributes = android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+                play()
+            }
+        }
+    }
+
     private fun announceArrival() {
         val alert = alerts.note() ?: return
         runCatching {
@@ -874,7 +911,7 @@ class OtrConnectionService : Service() {
      * to calling and alarm apps and which the user has to grant separately
      * on Android 14+; that is a later decision, not one to make silently.
      */
-    private fun announceCall() {
+    private fun announceCall(group: Boolean = false) {
         val open = PendingIntent.getActivity(
             this, 3,
             Intent(this, MainActivity::class.java)
@@ -891,17 +928,30 @@ class OtrConnectionService : Service() {
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            // A group call rings once and clears itself; nothing marks the
+            // moment it is "answered" (SoundPolicy.forCall).
+            .apply { if (group) setTimeoutAfter(GROUP_RING_MS) }
             .build()
+        // A 1:1 call rings until answered, rejected or over: FLAG_INSISTENT
+        // repeats the channel's ringtone until the notification is cancelled
+        // (CallAlert.Change.STOP cancels it).
+        if (org.otrv4plus.android.chat.SoundPolicy.forCall(group) ==
+            org.otrv4plus.android.chat.SoundPolicy.Sound.RING_REPEATING) {
+            notification.flags = notification.flags or Notification.FLAG_INSISTENT
+        }
         runCatching {
             getSystemService(NotificationManager::class.java)
-                ?.notify(CALL_NOTIFICATION_ID, notification)
+                ?.notify(if (group) GROUP_CALL_NOTIFICATION_ID else CALL_NOTIFICATION_ID, notification)
         }
     }
 
     private fun cancelCallNotification() {
         runCatching {
             getSystemService(NotificationManager::class.java)
-                ?.cancel(CALL_NOTIFICATION_ID)
+                ?.apply {
+                    cancel(CALL_NOTIFICATION_ID)
+                    cancel(GROUP_CALL_NOTIFICATION_ID)
+                }
         }
     }
 
@@ -1011,6 +1061,11 @@ class OtrConnectionService : Service() {
         // call that waits in the shade for somebody to look is a missed call.
         // Separate so the user can silence messages without silencing calls,
         // or the other way round.
+        //
+        // THE RINGTONE, not the notification sound: a call that sounds like
+        // a text message is a missed call. A channel's sound is fixed when
+        // the channel is created, so the old channel (notification sound) is
+        // deleted and this one has a new id.
         val calls = NotificationChannel(
             CALL_CHANNEL_ID,
             getString(R.string.call_channel_name),
@@ -1019,6 +1074,19 @@ class OtrConnectionService : Service() {
             description = getString(R.string.call_channel_description)
             setShowBadge(false)
             lockscreenVisibility = Notification.VISIBILITY_SECRET
+            setSound(
+                android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_RINGTONE),
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 800, 600, 800, 600)
+        }
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.deleteNotificationChannel(OLD_CALL_CHANNEL_ID)
         }
         getSystemService(NotificationManager::class.java)
             ?.createNotificationChannels(listOf(channel, messages, calls))
@@ -1114,10 +1182,16 @@ class OtrConnectionService : Service() {
          */
         private const val MESSAGE_NOTIFICATION_ID = 2
 
-        private const val CALL_CHANNEL_ID = "otrv4plus.calls"
+        private const val CALL_CHANNEL_ID = "otrv4plus.calls.ringtone"
+        /** The call channel before it had the ringtone; deleted on start. */
+        private const val OLD_CALL_CHANNEL_ID = "otrv4plus.calls"
 
         /** One id for a ringing call. Only one call can ring at a time. */
         private const val CALL_NOTIFICATION_ID = 3
+
+        /** A group call's ring, separate so it never cancels a 1:1 ring. */
+        private const val GROUP_CALL_NOTIFICATION_ID = 4
+        private const val GROUP_RING_MS = 30_000L
 
         const val ACTION_START = "org.otrv4plus.android.START"
         const val ACTION_STOP = "org.otrv4plus.android.STOP"

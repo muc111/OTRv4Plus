@@ -20,7 +20,7 @@ class NotifierTest {
     @Test
     fun messagesOnlyWhenTheWindowIsNotInFront() {
         val sent = Sent()
-        val n = Notifier(sent, available = true)
+        val n = Notifier(sent, available = true, play = {})
         n.setUiVisible(true)
         n.message()
         assertEquals(0, sent.calls.size, "a visible window was notified")
@@ -36,18 +36,56 @@ class NotifierTest {
     @Test
     fun callsAlwaysAndNothingButTheWord() {
         val sent = Sent()
-        val n = Notifier(sent, available = true)
+        val n = Notifier(sent, available = true, play = {})
         n.setUiVisible(true)
         n.call()
-        assertEquals(listOf("notify-send", "--app-name=OTRv4Plus", "--icon=otrv4plus",
-                            "--urgency=critical", "--print-id", "OTRv4Plus", "Incoming call"),
+        assertEquals(listOf("notify-send", "--app-name=Off The Record v4 Plus", "--icon=otrv4plus",
+                            "--urgency=critical", "--print-id", "Off The Record v4 Plus", "Incoming call"),
                      sent.calls.single())
+        n.stopRinging()
+    }
+
+    @Test
+    fun soundsFollowTheSharedPolicy() {
+        val played = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val n = Notifier({ "1" }, available = true, play = { played += it })
+        n.setUiVisible(false)
+        n.message("bob@x.i2p", null)
+        assertEquals(listOf(Notifier.MESSAGE_SOUND), played.toList(), "behind: the message sound")
+        played.clear()
+        n.setUiVisible(true)
+        n.message("bob@x.i2p", "carol@x.i2p")
+        assertEquals(listOf(Notifier.TONE_SOUND), played.toList(), "another conversation: a tone")
+        played.clear()
+        n.message("bob@x.i2p", "Bob@x.i2p")
+        assertEquals(emptyList(), played.toList(), "the conversation being read is silent")
+        n.call(group = true)
+        assertEquals(listOf(Notifier.RING_SOUND), played.toList(), "a group call rings once")
+        played.clear()
+        n.sounds = false
+        n.setUiVisible(false)
+        n.message("bob@x.i2p", null)
+        assertEquals(emptyList(), played.toList(), "sounds off")
+    }
+
+    @Test
+    fun aOneToOneCallRingsUntilStopped() {
+        val played = java.util.concurrent.atomic.AtomicInteger()
+        val n = Notifier({ "1" }, available = true, play = { played.incrementAndGet() },
+                         ringEveryMs = 20, ringForMs = 10_000)
+        n.call()
+        Thread.sleep(200)
+        n.stopRinging()
+        val atStop = played.get()
+        assertTrue(atStop >= 3, "rang $atStop times in 200 ms")
+        Thread.sleep(100)
+        assertTrue(played.get() <= atStop + 1, "kept ringing after stop")
     }
 
     @Test
     fun withoutNotifySendNothingRuns() {
         val sent = Sent()
-        val n = Notifier(sent, available = false)
+        val n = Notifier(sent, available = false, play = {})
         n.message(); n.call()
         assertEquals(0, sent.calls.size)
     }

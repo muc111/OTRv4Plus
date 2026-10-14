@@ -190,6 +190,12 @@ fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
                      "who, never what. Messages only while this window is not in front."
                  else "notify-send is not installed (package libnotify-bin), so there are none.",
                  style = MaterialTheme.typography.bodyMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                androidx.compose.material3.Switch(checked = model.soundsOn,
+                                                  onCheckedChange = { model.soundsOn = it })
+                Spacer(Modifier.width(12.dp))
+                Text("Sounds for messages and calls", Modifier.weight(1f))
+            }
         }
         Section("Your fingerprint") {
             SelectionContainer { Text(model.fingerprint, fontFamily = FontFamily.Monospace) }

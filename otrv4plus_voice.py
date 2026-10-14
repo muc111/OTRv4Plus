@@ -5766,6 +5766,13 @@ class VoiceCallManager:
         return "\n".join("[voice] %s: %s" % (_san(p, 64), s.describe())
                          for p, s in self._calls.items())
 
+    def ringing_peer(self):
+        """The peer whose incoming call is ringing now, if any."""
+        for peer, session in self._calls.items():
+            if session.state == CallState.RINGING:
+                return peer
+        return None
+
     def any_active_peer(self):
         for peer, session in self._calls.items():
             if session.state != CallState.ENDED:
@@ -6145,8 +6152,20 @@ class VoiceCallManager:
         self._arm_timeout(peer, call_id)
 
         self._start_ringing(peer, call_id)
+        # A bare y/n answers it (owner, 2026-10-14: "less typing"). The
+        # client may be a test stub without the method.
+        ask = getattr(self.client, "ask_answer_call", None)
+        if ask is not None:
+            try:
+                ask(peer)
+            except Exception:
+                ask = None
         _print("\n[voice] incoming call from %s" % _san(peer, 64))
-        if self._ringers.get(peer) is not None \
+        if ask is not None:
+            _print("[voice] Answer? [y/n]   (or /answer, /reject%s)\n"
+                   % (", or the notification's buttons"
+                      if getattr(self._ringers.get(peer), "_actions", None) else ""))
+        elif self._ringers.get(peer) is not None \
                 and getattr(self._ringers[peer], "_actions", None):
             _print("[voice] Answer/Decline on the notification, or "
                    "/answer and /reject here\n")

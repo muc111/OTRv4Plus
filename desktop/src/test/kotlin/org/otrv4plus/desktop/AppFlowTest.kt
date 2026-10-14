@@ -124,7 +124,7 @@ class AppFlowTest {
         val host = FakeHost(::answers)
         val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
         val notes = mutableListOf<String>()
-        val notifier = Notifier({ args -> notes += args.last(); "7" }, available = true)
+        val notifier = Notifier({ args -> notes += args.last(); "7" }, available = true, play = {})
         val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui), notifier)
         model.jid = me
         host.ready()

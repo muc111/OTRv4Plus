@@ -412,11 +412,12 @@ class TermuxGroups:
               % (ev.peer[:64], ev.sender[:48], (ev.sender_identity or "")[:96],
                  mark, ev.body))
             self._activate(ev.peer, only_if_idle=True)
+            self._sound("message")
         elif isinstance(ev, GroupInvite):
             # Answered with a bare y or n (owner request, 2026-10-10): the
             # same kind of question as an SMP request, and only an exact
             # y/yes/n/no answers it -- anything else is typed as usual.
-            self._prompt = ("invite", ev.room, self._clock())
+            self._ask("invite", ev.room)
             p("[group] %s invites you to the secure group %s (%s). "
               "Join? [y/n]   (or later: /group accept %s)"
               % (ev.peer, ev.room, "SMP-verified" if ev.verified else
@@ -473,8 +474,12 @@ class TermuxGroups:
                       % (ev.peer[:64], caller))
                     asyncio.ensure_future(self._call(ev.peer, start=False))
                 else:
-                    p("[group call %s] %s is calling. /group answer %s"
+                    # A bare y/n answers it (owner, 2026-10-14: "less typing").
+                    self._ask("call", ev.peer)
+                    p("[group call %s] %s is calling. Join? [y/n]   "
+                      "(or /group answer %s while it rings)"
                       % (ev.peer[:64], caller, ev.peer[:64]))
+                self._sound("ring_once")
             elif change == "call_paused":
                 p("[group call %s] paused: you hear the call, nobody hears you. "
                   "/pause again to talk" % ev.peer[:64])
@@ -482,7 +487,7 @@ class TermuxGroups:
                 p("[group call %s] talking again" % ev.peer[:64])
             elif change == "verify_started":
                 if (ev.detail or "") != self.groups.account:
-                    self._prompt = ("verify", ev.peer, self._clock())
+                    self._ask("verify", ev.peer)
                     p("[group %s] %s started verifying the group with its "
                       "passphrase. Join? [y/n]  (or /group verify %s)"
                       % (ev.peer[:64], (ev.detail or "")[:96],
@@ -590,8 +595,9 @@ class TermuxGroups:
         row = next((r for r in self.files.transfers()
                     if r["id"] == ev.transfer_id), {})
         if not ev.outgoing and state == "offered":
-            self._prompt = ("file", ev.peer, self._clock())
+            self._ask("file", ev.peer)
             self._prompt_file = ev.transfer_id
+            self._sound("message")
             p("[group %s] %s offers %s (%s). Accept? [y/n]   (or later: "
               "/transfer accept %s)" % (room, row.get("from", "a member"),
                                         name, _human(ev.size), ev.transfer_id[:8]))
@@ -1194,6 +1200,29 @@ class TermuxGroups:
             p("[group] %s failed: %s%s" % (verb, exc.code,
                                           (" (%s)" % exc.detail) if exc.detail else ""))
 
+    def _ask(self, kind: str, room: str) -> None:
+        """Make this the question a bare y/n answers. The newest question
+        wins, so the host's own (a 1:1 call or file, otrv4plus_alerts) is
+        dropped; it keeps its /command."""
+        self._prompt = (kind, room, self._clock())
+        quick = getattr(self.host, "_quick_answer", None)
+        if quick is not None:
+            try:
+                quick().clear()
+            except Exception:
+                pass
+
+    def _sound(self, what: str) -> None:
+        """The host's content-free sound (otrv4plus_alerts), if it has one."""
+        alerts = getattr(self.host, "_alerts", None)
+        if alerts is None:
+            return
+        try:
+            a = alerts()
+            a.ring_once() if what == "ring_once" else a.message()
+        except Exception:
+            pass
+
     #: How long a y/n stays the answer to an invitation.
     PROMPT_SECONDS = 600.0
 
@@ -1218,6 +1247,10 @@ class TermuxGroups:
                 for r in self.files.transfers()):
             self._prompt = None
             return None
+        if kind == "call" and (self.in_call() or not any(
+                r["room"] == room for r in self._group_calls().ringing())):
+            self._prompt = None
+            return None
         return room
 
     def answer_prompt(self, answer: str) -> bool:
@@ -1237,6 +1270,12 @@ class TermuxGroups:
         elif kind == "invite":
             asyncio.ensure_future(self.command(
                 "%s %s" % ("accept" if yes else "decline", room)))
+        elif kind == "call":
+            if yes:
+                asyncio.ensure_future(self._call(room, start=False))
+            else:
+                self._print("[group call %s] not joining; /group answer %s "
+                            "while it still rings" % (room[:64], room[:64]))
         elif yes:
             self._ask_passphrase(room)       # armed by THIS user's "y"
         else:

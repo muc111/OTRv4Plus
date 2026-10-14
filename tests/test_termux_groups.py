@@ -1373,6 +1373,12 @@ class TestVerifyingTheGroupWithItsPassphrase:
                 await w.server.pump()
             assert w.b.lines("is calling")
             assert [r["room"] for r in w.b.groups._calls.ringing()] == [ROOM]
+            # Owner (2026-10-14): a bare y/n answers the ring.
+            assert w.b.lines("Join? [y/n]")
+            assert w.b.groups.pending_prompt() == ROOM
+            assert w.b.client.dispatch_line(None, "n") is True
+            assert w.b.lines("not joining")
+            assert w.b.groups.pending_prompt() is None
 
         run(go())
 

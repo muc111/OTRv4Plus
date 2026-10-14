@@ -160,6 +160,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 
 import otrv4plus_address as _address
+import otrv4plus_alerts as _alerts
 import otrv4plus_caps as _caps
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_fragment as _frag
@@ -1960,6 +1961,8 @@ class OTRv4PlusXMPP(ClientXMPP):
                 notify=print,
                 verified=self._file_peer_verified,
                 spawn=self._start_file_pump,
+                on_state=self._on_file_state,
+                quick_answer=True,
             )
         if self._trade_manager is None:
             # Same three dependencies the transfer engine takes, plus the
@@ -3206,6 +3209,7 @@ class OTRv4PlusXMPP(ClientXMPP):
                     + " "
                     + (_colorize(text_s, "dark_blue") if smp_ok else text_s)
                 )
+                self._alerts().message()
 
         self._report_smp(peer)
         self._check_dake_complete(peer)
@@ -4603,6 +4607,61 @@ class OTRv4PlusXMPP(ClientXMPP):
         on_choice(word in ("y", "yes"))
         return True
 
+    # -- sounds and y/n answers (otrv4plus_alerts) -------------------------
+
+    def _alerts(self) -> "_alerts.Alerts":
+        # Lazy, so the many tests that drive this class from a bare stub
+        # without __init__ still work.
+        a = getattr(self, "_alerts_obj", None)
+        if a is None:
+            a = self._alerts_obj = _alerts.Alerts()
+        return a
+
+    def _quick_answer(self) -> "_alerts.QuickAnswer":
+        q = getattr(self, "_quick_obj", None)
+        if q is None:
+            q = self._quick_obj = _alerts.QuickAnswer(on_ask=self._drop_group_prompt)
+        return q
+
+    def _drop_group_prompt(self) -> None:
+        # The newest question wins: a group question still open keeps its
+        # /command but no longer takes the bare y/n.
+        groups = getattr(self, "_groups", None)
+        if groups is not None and hasattr(groups, "_prompt"):
+            groups._prompt = None
+
+    def _on_file_state(self, transfer, outgoing: bool) -> None:
+        """An incoming 1:1 offer becomes the question a bare y/n answers."""
+        if outgoing or getattr(transfer, "state", "") != _filetransfer.TransferState.OFFERED:
+            return
+        key = transfer.offer.transfer_id.hex()[:8]
+        mgr = self._file_manager
+
+        def still_open() -> bool:
+            t = mgr.incoming.get(transfer.offer.transfer_id.hex()) if mgr else None
+            return t is not None and not t.accepted
+
+        self._quick_answer().ask(
+            "file",
+            on_yes=lambda: self._cmd_transfer("accept " + key),
+            on_no=lambda: self._cmd_transfer("decline " + key),
+            still_open=still_open)
+        self._alerts().message()
+
+    def ask_answer_call(self, peer: str) -> None:
+        """Called by the voice manager when a 1:1 call starts ringing."""
+        vm = self._voice_manager
+
+        def still_open() -> bool:
+            return vm is not None and vm.ringing_peer() == peer
+
+        self._quick_answer().ask(
+            "call",
+            on_yes=lambda: (None if self._voice_blocked_by_tofu(peer) else
+                            asyncio.ensure_future(vm.answer_call(peer))),
+            on_no=lambda: asyncio.ensure_future(vm.reject_call(peer)),
+            still_open=still_open)
+
     def _cmd_transfer(self, rest: str) -> None:
         parts = rest.split(None, 1)
         action = parts[0].lower() if parts else ""
@@ -5506,6 +5565,8 @@ class OTRv4PlusXMPP(ClientXMPP):
             "                       group, to the group). Asks y/n to remove\n"
             "                       hidden information (location, camera) first\n"
             "  /transfer            show file transfer state (group files too)\n"
+            "  /sound on|off        message and group-call sounds (y/n answers\n"
+            "                       a ringing call or an offered file)\n"
             "  /trade               list open trades\n"
             "  /trade init <terms>  propose a trade to the verified peer\n"
             "  /trade accept        agree to a proposal\n"
@@ -5882,11 +5943,18 @@ class OTRv4PlusXMPP(ClientXMPP):
                 "y", "yes", "n", "no"):
             self._handle_smp_consent(consent_for, line.strip().lower())
             return True
+        # A call ringing or a file offered asks the same way (QuickAnswer).
+        # Before the group questions: a call is the most urgent thing on
+        # screen and the newest question there.
+        if self._quick_answer().answer(line):
+            return True
         # A group invitation asks the same way: only an exact y/n answers it.
         groups = getattr(self, "_groups", None)
         if groups is not None and getattr(groups, "answer_prompt", None) is not None:
             if groups.answer_prompt(line):
                 return True
+        if line.strip():
+            self._alerts().seen()
 
         if not line:
             return True
@@ -5901,6 +5969,13 @@ class OTRv4PlusXMPP(ClientXMPP):
         lstrip = line.strip()
 
         # --- TUI toggle ---
+        if lstrip in ("/sound", "/sound on", "/sound off"):
+            if lstrip != "/sound":
+                self._alerts().enabled = lstrip == "/sound on"
+            print("[sound] message and group-call sounds are %s (/sound on|off; "
+                  "a 1:1 call always rings)"
+                  % ("on" if self._alerts().enabled else "off"))
+            return True
         if lstrip == "/tui":
             if getattr(self, "_tui_enabled", False):
                 print("[tui] switching to plain scrollback mode")

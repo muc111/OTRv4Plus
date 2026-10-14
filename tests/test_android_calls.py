@@ -828,13 +828,13 @@ class TestAnIncomingCallRingsThePhone:
         return _kt("connection", "OtrConnectionService.kt")
 
     def test_the_drain_acts_on_ring_changes(self, service):
-        drain = service[service.index("if (chat.handle(event)) announceArrival()"):]
+        drain = service[service.index("if (chat.handle(event)) soundForMessage(event)"):]
         drain = drain[:drain.index("delay(DRAIN_INTERVAL_MS)")]
         assert "chat.takeRingChanges()" in drain
         assert "announceCall()" in drain and "cancelCallNotification()" in drain
 
     def test_the_ring_says_nothing_about_who(self, service):
-        body = service[service.index("private fun announceCall()"):]
+        body = service[service.index("private fun announceCall("):]
         body = body[:body.index("private fun cancelCallNotification()")]
         assert "VISIBILITY_SECRET" in body, (
             "the call notification is visible on a locked screen")

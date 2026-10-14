@@ -178,7 +178,7 @@ class TestOnlyANewMessageNotifies:
     def test_the_drain_loop_gates_on_what_handle_returned(self, service_code):
         block = service_code[service_code.index("private fun startDraining("):]
         block = block[:block.index("private suspend fun watchUntilDropped")]
-        assert "if (chat.handle(event)) announceArrival()" in block, (
+        assert "if (chat.handle(event)) soundForMessage(event)" in block, (
             "the drain loop notifies for events the store rejected, so a "
             "peer who resends can buzz the phone at will")
 
@@ -190,7 +190,8 @@ class TestOnlyANewMessageNotifies:
         """Every rule lives in InboundAlerts, which is executed by tests. The
         service may only act on the answer."""
         block = service[service.index("private fun announceArrival("):]
-        block = block[:block.index("\n    private fun cancelArrivalNotification")]
+        # To the end of announceArrival itself (the next member).
+        block = block[:block.index("\n    }\n") + 6]
         code = _code_only(block)
         assert "alerts.note()" in code
         assert "if" not in re.sub(r"\w*[Ii]f\w+", "", code).replace(

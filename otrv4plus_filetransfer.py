@@ -895,7 +895,8 @@ class FileTransferManager:
                  verified: Callable[[str], bool],
                  spawn: Optional[Callable[["OutgoingTransfer"], None]] = None,
                  on_state: Optional[Callable[[object, bool], None]] = None,
-                 seal_at_rest: bool = False):
+                 seal_at_rest: bool = False,
+                 quick_answer: bool = False):
         if _core is None:                        # pragma: no cover
             raise TransferError(
                 "otrv4_core is unavailable, so file transfer cannot run; "
@@ -920,6 +921,9 @@ class FileTransferManager:
         # device key, rather than as plaintext. On for Android; the terminal
         # client keeps plaintext until it has a /save command.
         self._seal_at_rest = bool(seal_at_rest)
+        # The terminal client answers an offer with a bare y/n
+        # (otrv4plus_alerts.QuickAnswer); the prompt line says so.
+        self._quick_answer = bool(quick_answer)
         self.outgoing: Dict[str, OutgoingTransfer] = {}
         self.incoming: Dict[str, IncomingTransfer] = {}
         # Transfers we gave up on. A CANCEL goes to the sender, but chunks
@@ -1159,11 +1163,18 @@ class FileTransferManager:
         transfer = IncomingTransfer(peer=peer, offer=offer)
         self.incoming[key] = transfer
         self._state(transfer, False, TransferState.OFFERED)
-        self._notify(
-            "\n[file] %s wants to send %s (%s)\n"
-            "       /transfer accept %s   or   /transfer decline %s"
-            % (peer, sanitise_filename(offer.filename), offer.human_size(),
-               key[:8], key[:8]))
+        if self._quick_answer:
+            self._notify(
+                "\n[file] %s wants to send %s (%s). Accept? [y/n]\n"
+                "       (later: /transfer accept %s  or  /transfer decline %s)"
+                % (peer, sanitise_filename(offer.filename), offer.human_size(),
+                   key[:8], key[:8]))
+        else:
+            self._notify(
+                "\n[file] %s wants to send %s (%s)\n"
+                "       /transfer accept %s   or   /transfer decline %s"
+                % (peer, sanitise_filename(offer.filename), offer.human_size(),
+                   key[:8], key[:8]))
         return transfer
 
     def accept(self, transfer_id: bytes, ratchet) -> IncomingTransfer:
