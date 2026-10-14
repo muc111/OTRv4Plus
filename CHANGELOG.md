@@ -4,6 +4,50 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.64 — 2026-10-14 — Off The Record v4 Plus: automatic I2P, tidier screens, sounds, y/n answers (core 0.13.1)
+
+Owner request: no router dropdown, the full name on screen, a less
+cluttered sign-in, debug detail only in the debug build, simple y/n
+answers in the terminal, and sounds for messages and calls.
+
+- **The name says what it is:** "Off The Record v4 Plus" in the app, the
+  desktop window, the terminal's version line and the Qubes menu entries.
+- **No router choice to make.** If an I2P router (such as the i2pd app)
+  already answers on 127.0.0.1:7656 it is used; otherwise the bundled one
+  starts. The dropdown is gone.
+- **Sign-in screen:** one full-width Log in, Create account beneath it,
+  password show/hide, Enter to log in. Test server, About, Debug (debug
+  build only) and Wipe & Exit moved into the ⋮ menu, Wipe still behind its
+  confirmation. Once connected: Open conversations, then Disconnect and
+  Sign out side by side.
+- **Chat list:** a bottom bar (Chats, People, Rooms, Profile) with badges
+  for pending requests and invitations, "● Online / ○ Offline" in the top
+  bar, and a "New chat" button.
+- **Release builds are clean:** error codes, the link-failure code, the
+  dropped-update counter and the Debug screen appear only in the debug APK.
+- **Sounds:**
+  - Android -- a new message with the app in the background notifies with
+    its sound; on screen in another conversation, a short tone; in the
+    conversation you are reading, nothing. A 1:1 call rings with the
+    ringtone until answered (new "Calls" channel); a group call rings once.
+  - Desktop -- the same rules, from the desktop's sound theme, with a
+    Settings switch.
+  - Terminal -- a bell and (on Termux) a content-free notification for new
+    messages; /sound on|off.
+- **y/n in the terminal:** a ringing 1:1 call ("Answer? [y/n]"), a 1:1 file
+  offer ("Accept? [y/n]") and a ringing group call ("Join? [y/n]") join the
+  group invitation, verification and group file questions. The newest
+  question takes the answer; each still has its /command.
+- **Group files:** the sender finishes as soon as every other member has
+  the file (checked), instead of after 30 minutes; an offer that runs out
+  tells members still waiting at once; acceptances and confirmations are
+  counted rather than repeated; endings are said in words.
+- **Dependencies:** Rust crates to their latest compatible patch releases
+  (serde_json 1.0.154, sha2 0.11.1, zerocopy 0.8.63, cc 1.8.0 and others;
+  OpenMLS stays pinned to the patched 0.9.1); Compose BOM 2025.02.00 and
+  Navigation 2.8.9 (patch releases of the same Compose 1.7 and Navigation
+  2.8 lines). Python pins were already the newest.
+
 ## Android 0.7.0-experimental.rc.63 — 2026-10-11 — the Connect screen says "failed" only when something is (core 0.13.1)
 
 Owner report: with the built-in router a red failure showed at the bottom

@@ -399,9 +399,9 @@ PSF licence notice must appear in the app's attribution screen.
 | AndroidX Core KTX | 1.15.0 | Apache-2.0 | bundled | Yes |
 | AndroidX Lifecycle | 2.8.7 | Apache-2.0 | bundled | Yes |
 | AndroidX Activity Compose | 1.9.3 | Apache-2.0 | bundled | Yes |
-| Jetpack Compose (BOM) | 2024.10.01 | Apache-2.0 | bundled | Yes |
+| Jetpack Compose (BOM) | 2025.02.00 | Apache-2.0 | bundled | Yes |
 | Compose Material 3 | via BOM | Apache-2.0 | bundled | Yes |
-| Navigation Compose | 2.8.4 | Apache-2.0 | bundled | Yes |
+| Navigation Compose | 2.8.9 | Apache-2.0 | bundled | Yes |
 | kotlinx-coroutines | 1.8.1 / 1.9.0 | Apache-2.0 | bundled / test | Yes |
 | JUnit 4 | 4.13.2 | **EPL-1.0** | **test only, not shipped** | Yes |
 | Hamcrest Core | 1.3 | BSD-3-Clause | test only | Yes |
