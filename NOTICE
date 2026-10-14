@@ -695,7 +695,7 @@ serde_derive 1.0.229
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-serde_json 1.0.152
+serde_json 1.0.154
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/serde-rs/json
@@ -776,7 +776,7 @@ syn 2.0.119
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-syn 3.0.7
+syn 3.0.9
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/dtolnay/syn
@@ -841,7 +841,7 @@ typenum 1.20.1
     Copyright 2014 Paho Lurie-Gregg
     Copyright (c) 2014 Paho Lurie-Gregg
 
-unicode-ident 1.0.26
+unicode-ident 1.0.27
     Offered: (MIT OR Apache-2.0) AND Unicode-3.0
     Taken:   MIT WITH Unicode-3.0
     Source:  https://github.com/dtolnay/unicode-ident
@@ -868,7 +868,7 @@ x448 0.6.0
     Source:  https://github.com/crate-crypto/x448
     Copyright (c) Kevaundray Wedderburn <kevtheappdev@gmail.com>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
 
-zerocopy 0.8.62
+zerocopy 0.8.63
     Offered: BSD-2-Clause OR Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/google/zerocopy
@@ -878,7 +878,7 @@ zerocopy 0.8.62
     Copyright 2019 The Fuchsia Authors.
     copyright notice, this list of conditions and the following disclaimer
 
-zerocopy-derive 0.8.62
+zerocopy-derive 0.8.63
     Offered: BSD-2-Clause OR Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/google/zerocopy
