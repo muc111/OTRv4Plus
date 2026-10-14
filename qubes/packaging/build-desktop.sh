@@ -84,7 +84,7 @@ EOF
 cat > "$ROOT/usr/share/applications/otrv4plus-desktop.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=OTRv4Plus
+Name=Off The Record v4 Plus
 GenericName=Post-quantum encrypted chat
 Comment=XMPP over I2P with OTRv4+ (X448 + ML-KEM-1024, ML-DSA-87)
 Exec=otrv4plus-desktop

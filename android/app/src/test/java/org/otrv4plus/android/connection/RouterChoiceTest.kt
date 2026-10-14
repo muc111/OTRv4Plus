@@ -8,41 +8,25 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
-import org.otrv4plus.android.connection.RouterChoice.Mode
 import org.otrv4plus.android.connection.RouterChoice.Use
 
 class RouterChoiceTest {
 
     @Test
-    fun `automatic prefers the router already on the phone`() {
-        assertEquals(Use.EXTERNAL, RouterChoice.decide(Mode.AUTOMATIC, true, true))
+    fun `the router already on the phone is used when it answers`() {
+        assertEquals(Use.EXTERNAL, RouterChoice.decide(true, true))
     }
 
     @Test
-    fun `automatic starts ours when nothing answers`() {
-        assertEquals(Use.BUILT_IN, RouterChoice.decide(Mode.AUTOMATIC, false, true))
-    }
-
-    @Test
-    fun `the user's choice wins`() {
-        assertEquals(Use.EXTERNAL, RouterChoice.decide(Mode.EXTERNAL, false, true))
-        assertEquals(Use.BUILT_IN, RouterChoice.decide(Mode.BUILT_IN, true, true))
+    fun `ours starts when nothing answers`() {
+        assertEquals(Use.BUILT_IN, RouterChoice.decide(false, true))
     }
 
     @Test
     fun `an APK without a router never tries to start one`() {
-        for (mode in Mode.entries) {
-            for (external in listOf(true, false)) {
-                assertEquals(Use.EXTERNAL, RouterChoice.decide(mode, external, false))
-            }
+        for (external in listOf(true, false)) {
+            assertEquals(Use.EXTERNAL, RouterChoice.decide(external, false))
         }
-    }
-
-    @Test
-    fun `an unknown stored value reads as automatic`() {
-        assertEquals(Mode.AUTOMATIC, Mode.fromStored(null))
-        assertEquals(Mode.AUTOMATIC, Mode.fromStored("something"))
-        for (mode in Mode.entries) assertEquals(mode, Mode.fromStored(mode.stored))
     }
 
     @Test

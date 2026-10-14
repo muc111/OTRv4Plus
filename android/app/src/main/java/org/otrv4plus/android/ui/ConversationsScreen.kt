@@ -4,7 +4,6 @@ package org.otrv4plus.android.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -67,71 +66,97 @@ fun ConversationsScreen(
     // A JID, not a Conversation: the row can change under an open dialog.
     var deleting by rememberSaveable { mutableStateOf<String?>(null) }
 
+    var menuOpen by remember { mutableStateOf(false) }
+    var wiping by rememberSaveable { mutableStateOf(false) }
+
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("OTRv4+") },
-                actions = {
-                    // People sits beside the connection state: who is here is
-                    // a question about the same server.
-                    if (model.canSend()) {
-                        TextButton(onClick = onOpenPeople) {
-                            Text(OnlineUsers.peopleButton(model.directory))
-                        }
+                title = {
+                    Column {
+                        Text("Chats")
+                        Text("Off The Record v4 Plus",
+                             style = MaterialTheme.typography.labelSmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                },
+                actions = {
+                    // The connection, in one word, and the way to it.
                     TextButton(onClick = onOpenConnection) {
                         Text(when {
                             model.link != ChatState.Link.OK -> "Checking…"
-                            model.connection.connected -> "Connected"
-                            else -> "Not connected"
-                        })
+                            model.connection.connected -> "\u25CF Online"
+                            else -> "\u25CB Offline"
+                        }, color = if (model.connection.connected) MaterialTheme.colorScheme.primary
+                                   else MaterialTheme.colorScheme.error)
+                    }
+                    // Everything that is not a conversation, in one place:
+                    // the bottom of this screen used to carry six buttons
+                    // in a sideways-scrolling row.
+                    Box {
+                        TextButton(onClick = { menuOpen = true }) {
+                            Text("\u22EE", style = MaterialTheme.typography.titleLarge)
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            if (onTheme != null) {
+                                DropdownMenuItem(text = { Text("Theme") },
+                                                 onClick = { menuOpen = false; choosingTheme = true })
+                            }
+                            DropdownMenuItem(text = { Text("About & licences") },
+                                             onClick = { menuOpen = false; onOpenAbout() })
+                            // Debug builds only: a release build is for people
+                            // who want to chat, not to read a transport trace.
+                            if (org.otrv4plus.android.BuildConfig.DEV_DIAGNOSTICS) {
+                                DropdownMenuItem(text = { Text("Debug") },
+                                                 onClick = { menuOpen = false; onOpenDiagnostics() })
+                            }
+                            // Reachable from the conversation list without
+                            // going back to the connection screen. The same
+                            // confirmation and teardown as everywhere else.
+                            onWipeAndExit?.let {
+                                HorizontalDivider()
+                                DropdownMenuItem(
+                                    text = { Text("Wipe & Exit", color = MaterialTheme.colorScheme.error) },
+                                    onClick = { menuOpen = false; wiping = true },
+                                )
+                            }
+                        }
                     }
                 },
             )
         },
-        // THE FOOTER IS THE BOTTOM BAR. It used to be the last thing in the
-        // content column, and Scaffold places its floating "+" over the
-        // content -- on top of Wipe & Exit (device report, 2026-10-03). A
-        // bottom bar is laid out below the floating button, so the two can
-        // no longer overlap. The buttons scroll sideways rather than squash
-        // on a narrow phone.
+        // The four places a messenger has, one tap each. Text glyphs rather
+        // than icon fonts: this app ships no icon library.
         bottomBar = {
-            Surface(tonalElevation = 2.dp) {
-                Column(Modifier.fillMaxWidth().navigationBarsPadding()) {
-                    Row(
-                        Modifier.fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 8.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        // Rooms sit alongside one-to-one conversations rather
-                        // than inside them: a room is group chat and is not
-                        // end-to-end encrypted, and listing rooms among
-                        // conversations would blur two things that have
-                        // different guarantees.
-                        TextButton(onClick = onOpenRooms) { Text("Rooms") }
-                        TextButton(onClick = onOpenProfile) { Text("Profile") }
-                        TextButton(onClick = onOpenDiagnostics) { Text("Debug") }
-                        TextButton(onClick = onOpenAbout) { Text("About & licences") }
-                        if (onTheme != null) {
-                            TextButton(onClick = { choosingTheme = true }) { Text("Theme") }
-                        }
-                    }
-                    // Beside Debug and Licences, so it is reachable without
-                    // going back to the connection screen. The same control,
-                    // confirmation and teardown as there.
-                    onWipeAndExit?.let { wipe ->
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.End) {
-                            WipeAndExitButton(onWipe = wipe)
-                        }
-                    }
-                }
+            NavigationBar {
+                NavigationBarItem(selected = true, onClick = {},
+                                  icon = { Text("\uD83D\uDCAC") }, label = { Text("Chats") })
+                NavigationBarItem(
+                    selected = false, onClick = onOpenPeople,
+                    icon = {
+                        val waiting = model.pendingSubscriptions.size
+                        if (waiting > 0) BadgedBox(badge = { Badge { Text("$waiting") } }) { Text("\uD83D\uDC65") }
+                        else Text("\uD83D\uDC65")
+                    },
+                    label = { Text(if (model.canSend()) OnlineUsers.peopleButton(model.directory) else "People",
+                                   maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                )
+                NavigationBarItem(
+                    selected = false, onClick = onOpenRooms,
+                    icon = {
+                        val invites = model.groupInvites().size
+                        if (invites > 0) BadgedBox(badge = { Badge { Text("$invites") } }) { Text("#") }
+                        else Text("#")
+                    },
+                    label = { Text("Rooms") },
+                )
+                NavigationBarItem(selected = false, onClick = onOpenProfile,
+                                  icon = { Text("\uD83D\uDC64") }, label = { Text("Profile") })
             }
         },
         floatingActionButton = {
             if (model.canSend()) {
-                FloatingActionButton(onClick = { showAdd = true }) { Text("+") }
+                ExtendedFloatingActionButton(onClick = { showAdd = true }) { Text("+  New chat") }
             }
         },
     ) { padding ->
@@ -255,6 +280,10 @@ fun ConversationsScreen(
             onDelete = { leave -> model.deleteChat(jid, leaveRoom = leave); deleting = null },
             onDismiss = { deleting = null },
         )
+    }
+
+    if (wiping && onWipeAndExit != null) {
+        WipeAndExitDialog(onWipe = onWipeAndExit, onDismiss = { wiping = false })
     }
 
     if (choosingTheme && onTheme != null) {

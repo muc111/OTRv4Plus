@@ -203,10 +203,10 @@ sed -i "s|@PY@|/usr/bin/$PY|" "$ROOT/usr/lib/otrv4plus/otrv4plus-engine"
 cat > "$ROOT/usr/share/applications/otrv4plus.desktop" <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=OTRv4Plus
+Name=Off The Record v4 Plus (terminal)
 GenericName=Post-quantum encrypted chat
 Comment=XMPP over I2P with OTRv4+ (X448 + ML-KEM-1024, ML-DSA-87)
-Exec=xterm -fa Monospace -fs 11 -bg '#1C1B1F' -fg '#E6E1E5' -T OTRv4Plus -e otrv4plus
+Exec=xterm -fa Monospace -fs 11 -bg '#1C1B1F' -fg '#E6E1E5' -T 'Off The Record v4 Plus' -e otrv4plus
 Icon=otrv4plus
 Terminal=false
 Categories=Network;InstantMessaging;

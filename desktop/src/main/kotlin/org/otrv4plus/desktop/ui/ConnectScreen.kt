@@ -73,9 +73,9 @@ fun ConnectScreen(model: AppModel) {
                          modifier = Modifier.size(36.dp))
                     Spacer(Modifier.width(12.dp))
                     Column {
-                        Text("OTRv4Plus", style = MaterialTheme.typography.headlineSmall,
+                        Text("Off The Record v4 Plus", style = MaterialTheme.typography.headlineSmall,
                              fontWeight = FontWeight.SemiBold)
-                        Text("Post-quantum encrypted chat over I2P",
+                        Text("OTRv4+ · post-quantum encrypted chat over I2P",
                              style = MaterialTheme.typography.bodySmall,
                              color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }

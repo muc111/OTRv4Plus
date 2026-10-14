@@ -37,7 +37,7 @@ fun main() = application {
     }
     Window(
         onCloseRequest = { model.shutdown(); exitApplication() },
-        title = "OTRv4Plus",
+        title = "Off The Record v4 Plus",
         state = rememberWindowState(size = DpSize(1180.dp, 780.dp)),
     ) {
         DisposableEffect(Unit) { onDispose { model.shutdown() } }

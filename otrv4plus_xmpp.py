@@ -1988,7 +1988,7 @@ class OTRv4PlusXMPP(ClientXMPP):
         except (IqError, IqTimeout):
             pass
         print(f"\n[connected] {self.boundjid.full}")
-        print(f"[version]   OTRv4+ XMPP {XMPP_VERSION}")
+        print(f"[version]   Off The Record v4 Plus (OTRv4+) XMPP {XMPP_VERSION}")
         self._remember_server_alias()
         if self.peer:
             self.send_presence_subscription(pto=self.peer)

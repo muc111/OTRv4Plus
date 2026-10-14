@@ -45,10 +45,14 @@ def test_search_is_a_local_filter_that_asks_nobody():
         assert forbidden not in body, forbidden
 
 
-def test_the_people_button_sits_beside_the_connection_state():
-    bar = CHATS[CHATS.index("topBar = {"):CHATS.index("floatingActionButton")]
-    assert bar.index("onClick = onOpenPeople") < bar.index("onClick = onOpenConnection")
+def test_people_is_one_tap_from_the_chat_list():
+    """A tab of the bottom navigation (owner, 2026-10-14: the old row of six
+    buttons read as clutter), labelled with the live count, and a badge for
+    requests waiting on the user."""
+    bar = CHATS[CHATS.index("bottomBar = {"):CHATS.index("floatingActionButton")]
+    assert "onClick = onOpenPeople" in bar
     assert "OnlineUsers.peopleButton(model.directory)" in bar
+    assert "model.pendingSubscriptions.size" in bar
 
 
 def test_one_list_only():

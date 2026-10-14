@@ -23,6 +23,7 @@ a test must never be able to reach the real one.
 """
 
 import os
+import re
 import tempfile
 import threading
 import time
@@ -584,21 +585,23 @@ class TestTheAndroidSideIsWired:
 
     def test_the_three_buttons_say_what_they_do(self):
         screen = _kt("ui", "ConnectScreen.kt")
-        assert 'onClick = { model.disconnect() },\n                ) { Text("Disconnect") }' in screen
-        assert 'onClick = { model.logout() },\n                ) { Text("Sign out") }' in screen
-        # One shared control (ui/WipeControl.kt) carries the confirmation and
-        # the task removal; both screens use it.
-        assert "WipeAndExitButton(onWipe = { model.wipeAndExit() })" in screen
+        assert re.search(r'onClick = \{ model\.disconnect\(\) \},\s+modifier = Modifier\.weight\(1f\),\s+\) \{ Text\("Disconnect"\) \}', screen)
+        assert re.search(r'onClick = \{ model\.logout\(\) \},\s+modifier = Modifier\.weight\(1f\),\s+\) \{ Text\("Sign out"\) \}', screen)
+        # Wipe & Exit is in the screen's menu (owner, 2026-10-14: three
+        # buttons in a row looked cluttered), with the one shared
+        # confirmation (ui/WipeControl.kt) that carries the task removal.
+        assert 'Text("Wipe & Exit"' in screen
+        assert "WipeAndExitDialog(onWipe = { model.wipeAndExit() }" in screen
         control = _kt("ui", "WipeControl.kt")
         assert "WipeAndExit.CONFIRM_BODY" in control
         assert "finishAndRemoveTask()" in control
         assert control.index("onWipe()") < control.index("finishAndRemoveTask()")
 
-    def test_wipe_is_at_the_foot_of_the_conversation_list(self):
-        """Beside Debug and About & licences, same control, same teardown."""
+    def test_wipe_is_reachable_from_the_conversation_list(self):
+        """In the list's menu, same confirmation, same teardown."""
         screen = _kt("ui", "ConversationsScreen.kt")
-        footer = screen[screen.index('Text("About & licences")'):]
-        assert "WipeAndExitButton(onWipe = wipe)" in footer[:800]
+        assert 'Text("Wipe & Exit"' in screen
+        assert "WipeAndExitDialog(onWipe = onWipeAndExit" in screen
         main = _kt("MainActivity.kt")
         assert "onWipeAndExit = { connection.wipeAndExit() }" in main
 

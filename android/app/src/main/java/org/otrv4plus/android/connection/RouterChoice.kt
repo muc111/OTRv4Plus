@@ -15,22 +15,6 @@ package org.otrv4plus.android.connection
  */
 object RouterChoice {
 
-    /** What the user picked. Stored by name; unknown names read as AUTOMATIC. */
-    enum class Mode(val stored: String) {
-        /** A router already on the phone if its SAM bridge answers, else ours. */
-        AUTOMATIC("auto"),
-        /** Only the phone's own I2P app; never start ours. */
-        EXTERNAL("external"),
-        /** Always ours, even when another router is running. */
-        BUILT_IN("builtin");
-
-        companion object {
-            fun fromStored(value: String?): Mode =
-                entries.firstOrNull { it.stored == value } ?: AUTOMATIC
-        }
-    }
-
-    /** Which router a connection attempt uses. */
     enum class Use { EXTERNAL, BUILT_IN }
 
     /** The SAM bridge of a router already on the phone (the I2P default). */
@@ -56,14 +40,17 @@ object RouterChoice {
      */
     const val NO_SAM_PORT = 1
 
-    /** The rule. [bundled] is whether this APK carries a router at all. */
-    fun decide(mode: Mode, externalAnswers: Boolean, bundled: Boolean): Use = when {
-        !bundled -> Use.EXTERNAL
-        mode == Mode.EXTERNAL -> Use.EXTERNAL
-        mode == Mode.BUILT_IN -> Use.BUILT_IN
-        externalAnswers -> Use.EXTERNAL
-        else -> Use.BUILT_IN
-    }
+    /**
+     * The rule, and there is no setting (owner, 2026-10-14: "it should just
+     * be automatically handled"). An I2P app already running on the phone
+     * whose SAM bridge answers is used; otherwise ours starts. A choice the
+     * user had to make was a choice they could get wrong -- "My I2P app" with
+     * none running failed every connection -- and nobody needs to know which
+     * router carried their traffic. [bundled] is whether this APK carries a
+     * router at all.
+     */
+    fun decide(externalAnswers: Boolean, bundled: Boolean): Use =
+        if (externalAnswers || !bundled) Use.EXTERNAL else Use.BUILT_IN
 
     /**
      * Whether a sign-in goes over I2P at all. Clearnet (TLS) and Tor accounts

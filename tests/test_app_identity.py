@@ -70,7 +70,10 @@ class TestTheAppSaysWhatItIs:
                 "shipped for four commits after the decision." % name)
 
     def test_the_name_is_the_project(self):
-        assert "otr" in strings().get("app_name", "").lower()
+        # "Off The Record v4 Plus" (owner, 2026-10-14: people asked what
+        # OTRv4+ means, so the app now says it in words).
+        name = strings().get("app_name", "").lower()
+        assert "off the record" in name or "otr" in name
 
     def test_the_name_is_not_empty_or_a_placeholder(self):
         name = strings().get("app_name", "").strip()

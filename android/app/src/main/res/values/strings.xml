@@ -8,7 +8,7 @@
          back.
 
          No credential, key, or seed may ever be added to this file. -->
-    <string name="app_name">OTRv4+</string>
+    <string name="app_name">Off The Record v4 Plus</string>
 
     <string name="dev_diagnostics_title">Integration diagnostics</string>
 

@@ -292,24 +292,3 @@ class BundledRouter(private val context: Context) {
     }
 }
 
-/**
- * The user's router choice ([RouterChoice.Mode]), in the app's ordinary
- * preferences beside the theme: not secret, about no account, and needed
- * before anything is unlocked. Listed in `WipeAndExit.STORES`.
- */
-object RouterStore {
-    private const val FILE = "otrv4plus.ui"
-    private const val KEY = "i2p_router"
-
-    fun load(context: Context): RouterChoice.Mode = RouterChoice.Mode.fromStored(
-        runCatching {
-            context.getSharedPreferences(FILE, Context.MODE_PRIVATE).getString(KEY, null)
-        }.getOrNull())
-
-    fun save(context: Context, mode: RouterChoice.Mode) {
-        runCatching {
-            context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
-                .edit().putString(KEY, mode.stored).apply()
-        }
-    }
-}

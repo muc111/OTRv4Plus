@@ -2,12 +2,17 @@ package org.otrv4plus.android.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.text.input.KeyboardType
@@ -16,9 +21,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ConnectionViewModel
-import org.otrv4plus.android.connection.RouterChoice
+import org.otrv4plus.android.BuildConfig
 import org.otrv4plus.android.connection.SignIn
-import org.otrv4plus.android.security.WipeAndExit
 
 /**
  * The first screen that does something real.
@@ -85,11 +89,14 @@ fun ConnectScreen(
     // full address is still accepted and respected -- see SignIn.resolve.
     var account by rememberSaveable { mutableStateOf(SignIn.INITIAL_USERNAME) }
     var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
     // Stored as a Boolean rather than the enum: `rememberSaveable` puts this
     // in a Bundle, and a primitive needs no argument about whether a custom
     // Saver is required.
     var customServerChosen by rememberSaveable { mutableStateOf(false) }
     var customServer by rememberSaveable { mutableStateOf("") }
+    var menuOpen by remember { mutableStateOf(false) }
+    var wiping by rememberSaveable { mutableStateOf(false) }
     val choice = if (customServerChosen) SignIn.Choice.CUSTOM
                  else SignIn.Choice.DEFAULT
 
@@ -98,37 +105,113 @@ fun ConnectScreen(
     val problem = SignIn.problem(account, choice, customServer)
     val target = SignIn.resolve(account, choice, customServer)
 
+    // `model.connecting` included so a login in progress disables both
+    // buttons: during the 30-120 s an I2P tunnel takes, a second press would
+    // start a second attempt.
+    val canSubmit = busy == null && !model.connecting && !status.connected &&
+        target != null && password.isNotBlank()
+    val editable = !status.connected && busy == null && !model.connecting
+
+    // One function, used by the button and by the keyboard's Done key.
+    // The password is cleared on the same line on both paths: a rejected
+    // password is a reason to retype it, and a connected session has no
+    // further use for it here. The ViewModel never keeps a copy.
+    fun logIn() {
+        if (!canSubmit) return
+        model.connect(target!!.jid, password, target.server)
+        password = ""
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
             // The window no longer fits the decor -- MainActivity turns that
             // off so the keyboard is handled by exactly one mechanism -- so
-            // every screen that is not a Scaffold has to inset itself. Without
-            // this the title sits under the status bar and the last control
-            // sits under the navigation bar.
+            // every screen that is not a Scaffold has to inset itself.
             .systemBarsPadding()
             .verticalScroll(rememberScrollState())
-            .padding(24.dp),
+            .padding(horizontal = 24.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        Text("OTRv4+", style = MaterialTheme.typography.headlineMedium)
+        // ── Who we are ────────────────────────────────────────────────────
+        //
+        // The name in words (owner, 2026-10-14: people asked what OTRv4+
+        // means), and everything that is not signing in tucked behind ⋮:
+        // Test server, About & licences, Debug (debug builds only) and Wipe &
+        // Exit. Three buttons in a row read as clutter; a login screen has
+        // one job.
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("Off The Record v4 Plus",
+                     style = MaterialTheme.typography.headlineSmall,
+                     fontWeight = FontWeight.SemiBold)
+                Text("Private messaging over I2P, with post-quantum OTRv4+ encryption",
+                     style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            Box {
+                TextButton(onClick = { menuOpen = true }) {
+                    Text("⋮", style = MaterialTheme.typography.titleLarge)
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    // Reaches the server and stops: no sign-in, no account,
+                    // no password. Needs only the address.
+                    DropdownMenuItem(
+                        text = { Text("Test server") },
+                        enabled = busy == null && !status.connected && target != null,
+                        onClick = {
+                            menuOpen = false
+                            model.testServer(target!!.jid, target.server)
+                        },
+                    )
+                    // Never disabled: the licence notice and the attribution
+                    // are obligations that do not depend on the app's state.
+                    DropdownMenuItem(
+                        text = { Text("About & licences") },
+                        onClick = { menuOpen = false; onOpenAbout() },
+                    )
+                    // Debug builds only. A release build is for people who
+                    // want to chat, not to read a transport trace.
+                    if (BuildConfig.DEV_DIAGNOSTICS) {
+                        DropdownMenuItem(
+                            text = { Text("Debug") },
+                            enabled = !status.connected && busy == null,
+                            onClick = { menuOpen = false; onOpenDiagnostics() },
+                        )
+                    }
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("Wipe & Exit", color = MaterialTheme.colorScheme.error) },
+                        onClick = { menuOpen = false; wiping = true },
+                    )
+                }
+            }
+        }
+        if (wiping) {
+            WipeAndExitDialog(onWipe = { model.wipeAndExit() }, onDismiss = { wiping = false })
+        }
 
         val ready = init?.ok == true
         if (init == null) {
-            CircularProgressIndicator()
-            Text("Starting Python and loading the Rust core...")
+            Spacer(Modifier.height(24.dp))
+            CircularProgressIndicator(Modifier.align(Alignment.CenterHorizontally))
+            Text("Getting ready…", Modifier.align(Alignment.CenterHorizontally),
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             return@Column
         }
         if (!ready) {
             // The stack did not come up. Connecting is not the problem to
             // solve and offering it would waste the user's time.
             Text(
-                "The OTRv4+ core did not start, so there is nothing to " +
-                    "connect with.",
+                "The app could not start its encryption engine, so it cannot " +
+                    "connect. Restarting the app usually fixes this; if it does " +
+                    "not, reinstall it.",
                 style = MaterialTheme.typography.bodyMedium,
             )
-            init?.failureCode?.let { StatusRow("Failure", it) }
-            Button(onClick = onOpenDiagnostics) { Text("Open diagnostics") }
+            if (BuildConfig.DEV_DIAGNOSTICS) {
+                init?.failureCode?.let { StatusRow("Failure", it) }
+                Button(onClick = onOpenDiagnostics) { Text("Open diagnostics") }
+            }
             return@Column
         }
 
@@ -136,13 +219,14 @@ fun ConnectScreen(
         //
         // A DROPDOWN, not a b32 field. The destination hash for the default
         // server is compiled into android_bridge/settings.py and applied by
-        // the bridge; nobody has to know it exists. Custom routing is still
-        // possible -- it is one selection away -- but it is not the price of
-        // signing in.
+        // the bridge; nobody has to know it exists.
+        //
+        // NO ROUTER CHOICE. An I2P app already running on the phone is used;
+        // otherwise the router built into the app starts (RouterChoice.decide).
         var serverMenuOpen by remember { mutableStateOf(false) }
         ExposedDropdownMenuBox(
             expanded = serverMenuOpen,
-            onExpandedChange = { serverMenuOpen = !serverMenuOpen },
+            onExpandedChange = { if (editable) serverMenuOpen = !serverMenuOpen },
         ) {
             OutlinedTextField(
                 value = when (choice) {
@@ -155,7 +239,7 @@ fun ConnectScreen(
                 trailingIcon = {
                     ExposedDropdownMenuDefaults.TrailingIcon(serverMenuOpen)
                 },
-                enabled = !status.connected && busy == null,
+                enabled = editable,
                 modifier = Modifier
                     .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                     .fillMaxWidth(),
@@ -172,7 +256,7 @@ fun ConnectScreen(
                     },
                 )
                 DropdownMenuItem(
-                    text = { Text("Another server\u2026") },
+                    text = { Text("Another server…") },
                     onClick = {
                         customServerChosen = true
                         serverMenuOpen = false
@@ -195,21 +279,10 @@ fun ConnectScreen(
                          "full .b32.i2p destination.")
                 },
                 singleLine = true,
-                enabled = !status.connected && busy == null,
+                enabled = editable,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri,
+                                                  imeAction = ImeAction.Next),
                 modifier = Modifier.fillMaxWidth(),
-            )
-        }
-
-        // ── Which I2P router ──────────────────────────────────────────────
-        //
-        // Only in an APK that carries one. Automatic uses an I2P app already
-        // on the phone when its SAM bridge answers, and the built-in router
-        // otherwise -- so somebody with no I2P app still gets connected.
-        if (model.routerBundled) {
-            RouterPicker(
-                mode = model.routerMode,
-                enabled = !status.connected && busy == null && !model.connecting,
-                onChoose = { model.chooseRouter(it) },
             )
         }
 
@@ -226,8 +299,9 @@ fun ConnectScreen(
             },
             isError = account.isNotBlank() && problem != null,
             singleLine = true,
-            enabled = !status.connected && busy == null,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            enabled = editable,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email,
+                                              imeAction = ImeAction.Next),
             modifier = Modifier.fillMaxWidth(),
         )
         OutlinedTextField(
@@ -235,149 +309,102 @@ fun ConnectScreen(
             onValueChange = { password = it },
             label = { Text("Password") },
             singleLine = true,
-            enabled = !status.connected && busy == null,
-            // Never echoed. The same rule the terminal client enforces with
-            // termios: a password prompt that shows the password is not a
-            // password prompt.
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            enabled = editable,
+            // Hidden unless the user asks to see it, and hidden again on
+            // every new screen: a password prompt that shows the password by
+            // default is not a password prompt.
+            visualTransformation = if (showPassword) VisualTransformation.None
+                                   else PasswordVisualTransformation(),
+            trailingIcon = {
+                TextButton(onClick = { showPassword = !showPassword }) {
+                    Text(if (showPassword) "Hide" else "Show")
+                }
+            },
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password,
+                                              imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = { logIn() }),
             modifier = Modifier.fillMaxWidth(),
         )
 
         // ── Actions ───────────────────────────────────────────────────────
         //
         // Every one of these hands off to the ViewModel rather than launching
-        // in a screen-scoped coroutine. A `rememberCoroutineScope()` is
-        // cancelled when the composition goes away, which on Android includes
-        // a rotation -- so a connect started here would stop being waited on
+        // in a screen-scoped coroutine: a rotation cancels a composition's
+        // scope, and a connect started there would stop being waited on
         // halfway through its own tunnel build.
-        // `model.connecting` included so a login in progress disables both
-        // buttons. It did not before: `busy` is set by the register path and
-        // by start-up, never by a login, so during the 30-120 s an I2P tunnel
-        // takes the Log in button stayed live and a second press started a
-        // second attempt. The service rejects the duplicate
-        // (`already_connecting`), so nothing broke — but the user got a red
-        // code for pressing a button that looked enabled.
-        val canSubmit = busy == null && !model.connecting && !status.connected &&
-            target != null && password.isNotBlank()
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (!status.connected) {
             Button(
                 enabled = canSubmit,
-                onClick = {
-                    model.connect(target!!.jid, password, target.server)
-                    // Cleared immediately, on both paths: a rejected password
-                    // is a reason to retype it, and a connected session has no
-                    // further use for it here. The ViewModel never keeps a
-                    // copy, so after this line the only one left is inside
-                    // slixmpp, where SASL needs it.
-                    password = ""
-                },
+                onClick = { logIn() },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
             ) { Text("Log in") }
 
-            // SECOND, and an outlined button rather than a filled one.
-            //
-            // Almost every press on this screen is a login; account creation
-            // happens once. Giving both the same weight would make the
-            // commoner action the one you have to look for, and on a server
-            // that does not offer XEP-0077 -- which we cannot know until we
-            // ask -- it is four minutes to find out.
-            //
-            // It deliberately does NOT then sign in. See
-            // ConnectionController.register: two operations, two outcomes,
-            // so a registration that worked and a login that did not can be
-            // told apart.
+            // SECOND, and an outlined button rather than a filled one: almost
+            // every press here is a login; account creation happens once.
+            // It deliberately does NOT then sign in (ConnectionController.
+            // register): a registration that worked and a login that did not
+            // stay two outcomes.
             OutlinedButton(
                 enabled = canSubmit,
                 onClick = {
                     model.register(target!!.jid, password, target.server)
                     password = ""
                 },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
             ) { Text("Create account") }
-
-            // DISCONNECT, and labelled as what it does. This button said
-            // "Sign out" and called `disconnect()` -- which ends the
-            // connection and keeps the account, its history and its contacts.
-            // A user who pressed "Sign out" to leave nothing behind on a
-            // shared phone left everything behind.
-            if (status.connected) {
+        } else {
+            // No object is handed over. The chat screens read the core from
+            // the ViewModel that owns it.
+            Button(onClick = onConnected, modifier = Modifier.fillMaxWidth().height(52.dp)) {
+                Text("Open conversations")
+            }
+            // DISCONNECT ends the connection and keeps the account. SIGN OUT
+            // forgets this account (credentials and history) and keeps the
+            // app. Wipe & Exit (in ⋮) destroys everything. None is ever
+            // described as another.
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     enabled = busy == null,
                     onClick = { model.disconnect() },
+                    modifier = Modifier.weight(1f),
                 ) { Text("Disconnect") }
-            }
-        }
-
-        // SIGN OUT and WIPE & EXIT, separate from Disconnect and from each
-        // other. Sign out forgets this account (credentials and history) and
-        // leaves the app open. Wipe & Exit destroys everything -- see
-        // WipeAndExit for exactly what -- and closes the app. Neither is
-        // ever described as the other.
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            if (status.connected) {
                 OutlinedButton(
                     enabled = busy == null,
                     onClick = { model.logout() },
+                    modifier = Modifier.weight(1f),
                 ) { Text("Sign out") }
             }
-            WipeAndExitButton(onWipe = { model.wipeAndExit() })
         }
 
-        // Only while an attempt is actually running. This is the one control
-        // that must not be disabled by `busy`, because `busy` is precisely the
-        // state it exists to get out of: without it, backing out of a cold
-        // tunnel meant waiting up to four minutes or killing the app, and
-        // killing the app left the tunnel building.
+        // Only while an attempt is actually running. The one control that is
+        // not disabled by `busy`, because `busy` is the state it gets out of.
         if (model.connecting) {
-            OutlinedButton(onClick = { model.cancelConnect() }) {
-                Text("Cancel")
-            }
-
-            // THE SAME MECHANISM "Create account" USES -- a
-            // LinearProgressIndicator and a line of text -- rather than a
-            // second spinner that behaves subtly differently.
-            //
-            // Register could set `busy` on the line after the call because it
-            // runs in a ViewModel coroutine. A login cannot: the service owns
-            // the attempt, so the only in-progress signal was `phase`, which
-            // does not exist until the service has started and the next poll
-            // tick has read it. Between the tap and that tick the screen said
-            // nothing at all, on the one operation that can take two minutes.
-            // `LoginProgress` covers that gap and expires on its own so this
-            // cannot become a permanent spinner.
-            Spacer(Modifier.height(4.dp))
             LinearProgressIndicator(Modifier.fillMaxWidth())
-            Text(model.connectingLabel,
-                 style = MaterialTheme.typography.bodySmall)
+            Text(model.connectingLabel, style = MaterialTheme.typography.bodySmall)
             model.routerLabel?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall)
+                Text(it, style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+            TextButton(onClick = { model.cancelConnect() }) { Text("Cancel") }
         }
 
         busy?.let {
-            Spacer(Modifier.height(4.dp))
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(it, style = MaterialTheme.typography.bodySmall)
         }
 
         // ── What happened ─────────────────────────────────────────────────
         //
-        // ONE LINE, and it is a sentence. This screen used to carry the SAM
-        // probe's raw detail, the failure code, the worker-thread state and
-        // `inputs` -- the literal arguments that crossed into the transport.
-        // All of it is genuinely useful and none of it belongs in front of
-        // somebody trying to sign in: a login screen that reports
-        // `stream_failed` and `worker thread: alive` reads as broken even when
-        // it is working. It moved to the Debug screen, where somebody who
-        // wants it can go and find it.
-        Spacer(Modifier.height(4.dp))
-        StatusRow("State", stageLabel(status.stage))
+        // ONE LINE, and it is a sentence -- and none at all while there is
+        // nothing to say. The transport's codes and arguments are on the
+        // Debug screen of a debug build, where somebody who wants them can
+        // find them.
+        if (status.stage != "idle" && !model.connecting) {
+            StatusRow("State", stageLabel(status.stage))
+        }
 
-        // Registration is its own outcome, not a connection state. Placed
-        // here rather than merged into the status line because a success ends
-        // with nobody signed in, and rendering that as part of the connection
-        // would put "Not connected" next to "your account was created".
+        // Registration is its own outcome, not a connection state.
         registration?.let {
-            Spacer(Modifier.height(4.dp))
             Text(
                 if (it.ok) "Account created" else "Could not create the account",
                 style = MaterialTheme.typography.titleSmall,
@@ -402,7 +429,6 @@ fun ConnectScreen(
         }
 
         model.serverTest?.let {
-            Spacer(Modifier.height(4.dp))
             Text(
                 if (it.ok) "Server test: reached" else "Server test: failed",
                 style = MaterialTheme.typography.titleSmall,
@@ -410,36 +436,34 @@ fun ConnectScreen(
                         else MaterialTheme.colorScheme.error,
             )
             SelectionContainer {
-                Text("${it.code}: ${it.detail}" +
-                         (if (it.reached.isNotBlank()) "\nReached: ${it.reached}" else ""),
+                Text(it.detail + (if (BuildConfig.DEV_DIAGNOSTICS)
+                                      "\n${it.code}" + (if (it.reached.isNotBlank()) " · reached ${it.reached}" else "")
+                                  else ""),
                      style = MaterialTheme.typography.bodySmall)
             }
         }
 
         // What went wrong, if anything did -- and NOT while the app is still
-        // doing its job (owner report, 2026-10-11: with the built-in router a
-        // red "failed" showed while it was starting and building tunnels).
-        // ConnectProblem decides: expected I2P start-up trouble is a quiet
-        // "still connecting" line until it has repeated, a wrong password or
-        // a security stop is an error at once.
-        val problem = org.otrv4plus.android.connection.ConnectProblem.line(
+        // doing its job (owner report, 2026-10-11). ConnectProblem decides:
+        // expected I2P start-up trouble is a quiet "still connecting" line
+        // until it has repeated; a wrong password or a security stop is an
+        // error at once.
+        val problemLine = org.otrv4plus.android.connection.ConnectProblem.line(
             failure = model.failureCode,
             connected = status.connected,
             retrying = model.connecting,
             failuresInARow = model.failuresInARow,
         )
-        problem?.let { line ->
-            val error = line.tone == org.otrv4plus.android.connection.ConnectProblem.Tone.ERROR
-            Spacer(Modifier.height(4.dp))
+        problemLine?.let { line ->
+            val isError = line.tone == org.otrv4plus.android.connection.ConnectProblem.Tone.ERROR
             Text(
                 line.text,
                 style = MaterialTheme.typography.bodySmall,
-                color = if (error) MaterialTheme.colorScheme.error
+                color = if (isError) MaterialTheme.colorScheme.error
                         else MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            // The transport's own sentence, for an error only: the details of
-            // a step that is still being retried are noise.
-            if (error && status.detail.isNotBlank() && status.stage == "failed") {
+            // The transport's own sentence, for an error only.
+            if (isError && status.detail.isNotBlank() && status.stage == "failed") {
                 SelectionContainer {
                     Text(status.detail, style = MaterialTheme.typography.bodySmall)
                 }
@@ -448,61 +472,14 @@ fun ConnectScreen(
 
         error?.let {
             // A Kotlin-side throw, as opposed to a reported Python failure.
-            // The class name only: an exception's message can carry what the
-            // engine was handling.
-            //
-            // THIS LINE IS WHAT SHOWED `transport_failed` NEXT TO A WORKING
-            // SESSION. The poll used to fold the service's connection failure
-            // into `error`, and folded it one way only -- so a first attempt
-            // that failed, followed by a backoff retry that connected, left
-            // "The app itself failed while doing that (transport_failed)" on
-            // screen permanently. The two are separate fields now; this one is
-            // only ever a Kotlin throw, which is what the sentence claims.
+            // The class name only, and only in a debug build: an exception's
+            // message can carry what the engine was handling.
             Text(
-                "The app itself failed while doing that ($it).",
+                "Something went wrong in the app" +
+                    (if (BuildConfig.DEV_DIAGNOSTICS) " ($it)." else ". Please try again."),
                 color = MaterialTheme.colorScheme.error,
                 style = MaterialTheme.typography.bodySmall,
             )
-        }
-
-        // The connection's own last failure, and ONLY when it is still the
-        // authoritative answer.
-        //
-        // Not while connected: the last attempt's verdict is superseded by a
-        // session that exists, and printing it there is the untruth this whole
-        // fix is about. Not while connecting either: an attempt in progress
-        // has not failed yet, and the previous attempt's code next to a
-        // running progress bar reads as the current one having failed.
-
-        if (status.connected) {
-            Spacer(Modifier.height(8.dp))
-            // No object is handed over. The chat screens read the core from
-            // the ViewModel that owns it, so navigation carries nothing that
-            // could go stale or be duplicated.
-            Button(onClick = onConnected) { Text("Open conversations") }
-        }
-
-        Spacer(Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Disabled while connected. The diagnostics screen builds its own
-            // engine, and two EnhancedSessionManagers on one device would open
-            // the same identity and trust files twice.
-            TextButton(
-                enabled = !status.connected && busy == null,
-                onClick = onOpenDiagnostics,
-            ) { Text("Debug") }
-
-            // Reaches the server and stops: no sign-in, no account, no
-            // password. Needs only the address, so it is enabled without one.
-            TextButton(
-                enabled = busy == null && !status.connected && target != null,
-                onClick = { model.testServer(target!!.jid, target.server) },
-            ) { Text("Test server") }
-
-            // Never disabled, and reachable before anyone signs in: the
-            // licence notice and the third-party attribution are obligations
-            // that do not depend on the app's state.
-            TextButton(onClick = onOpenAbout) { Text("About & licences") }
         }
     }
 }
@@ -580,57 +557,6 @@ private fun ServerIdentityWarning(
  * is slow tells the user what to do: a stall at `building_tunnels` is normal
  * and wants patience, a stall anywhere else does not.
  */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun RouterPicker(
-    mode: RouterChoice.Mode,
-    enabled: Boolean,
-    onChoose: (RouterChoice.Mode) -> Unit,
-) {
-    var open by remember { mutableStateOf(false) }
-    fun name(m: RouterChoice.Mode) = when (m) {
-        RouterChoice.Mode.AUTOMATIC -> "Automatic"
-        RouterChoice.Mode.EXTERNAL -> "My I2P app"
-        RouterChoice.Mode.BUILT_IN -> "Built-in router"
-    }
-    ExposedDropdownMenuBox(expanded = open, onExpandedChange = { open = !open }) {
-        OutlinedTextField(
-            value = name(mode),
-            onValueChange = {},
-            readOnly = true,
-            label = { Text("I2P router") },
-            supportingText = {
-                Text(when (mode) {
-                    RouterChoice.Mode.AUTOMATIC ->
-                        "Uses an I2P app on this phone if one is running, " +
-                            "otherwise the router built into OTRv4+."
-                    RouterChoice.Mode.EXTERNAL ->
-                        "Needs an I2P app on this phone with its SAM bridge on."
-                    RouterChoice.Mode.BUILT_IN ->
-                        "Always the router built into OTRv4+. Its first start " +
-                            "takes a few minutes."
-                })
-            },
-            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(open) },
-            enabled = enabled,
-            modifier = Modifier
-                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                .fillMaxWidth(),
-        )
-        ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            for (m in RouterChoice.Mode.entries) {
-                DropdownMenuItem(
-                    text = { Text(name(m)) },
-                    onClick = {
-                        onChoose(m)
-                        open = false
-                    },
-                )
-            }
-        }
-    }
-}
-
 private fun stageLabel(stage: String): String = when (stage) {
     "idle" -> "Not connected"
     // Only .i2p servers pass through checking_router and only .onion (or an
