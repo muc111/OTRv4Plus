@@ -202,3 +202,56 @@ def test_receipts_markers_and_chat_states_are_read():
     assert S.marker_of(m) == ("displayed", "ID2")
     c = X("<message xmlns='jabber:client' from='%s/p'><composing xmlns='http://jabber.org/protocol/chatstates'/></message>" % BOB)
     assert S.chat_state_of(c) == "composing"
+
+
+# -- blocking, reports, bookmarks, self-ping -------------------------------------
+
+def test_block_with_a_spam_report_and_unblock():
+    el = S.blocking_payload("block", ["Spammer@x.i2p/res"], report="spam")
+    item = el.find("{urn:xmpp:blocking}item")
+    assert el.tag == "{urn:xmpp:blocking}block" and item.get("jid") == "spammer@x.i2p"
+    assert item.find("{urn:xmpp:reporting:1}report").get("reason") == "urn:xmpp:reporting:spam"
+    un = S.blocking_payload("unblock", ["spammer@x.i2p"], report="spam")
+    assert un.find(".//{urn:xmpp:reporting:1}report") is None     # never on unblock
+    try:
+        S.blocking_payload("delete", ["x@y"])
+        assert False
+    except ValueError:
+        pass
+
+
+def test_blocklist_parsing():
+    xml = X("<iq xmlns='jabber:client' type='result'><blocklist xmlns='urn:xmpp:blocking'>"
+            "<item jid='A@x.i2p'/><item jid='b@x.i2p/r'/><item/></blocklist></iq>")
+    assert S.parse_blocklist(xml) == ["a@x.i2p", "b@x.i2p"]
+
+
+def test_bookmarks_are_published_private_and_read_back():
+    pub = S.bookmark_publish("Room@muc.x.i2p", nick="me", password="pw")
+    fields = {f.get("var"): f.findtext("{jabber:x:data}value")
+              for f in pub.iter("{jabber:x:data}field")}
+    assert fields["pubsub#access_model"] == "whitelist"
+    assert fields["pubsub#persist_items"] == "true"
+    marks = S.parse_bookmarks(pub)
+    assert marks == [{"room": "room@muc.x.i2p", "name": "", "autojoin": True,
+                      "nick": "me", "password": "pw"}]
+    retract = S.bookmark_retract("room@muc.x.i2p")
+    assert retract.find(".//{http://jabber.org/protocol/pubsub}item").get("id") == "room@muc.x.i2p"
+
+
+def test_malformed_bookmarks_are_skipped():
+    xml = X("<pubsub xmlns='http://jabber.org/protocol/pubsub'><items node='urn:xmpp:bookmarks:1'>"
+            "<item id='not-a-room'><conference xmlns='urn:xmpp:bookmarks:1'/></item>"
+            "<item id='r@muc.x'/>"
+            "<item id='ok@muc.x'><conference xmlns='urn:xmpp:bookmarks:1' autojoin='1'/></item>"
+            "</items></pubsub>")
+    assert [m["room"] for m in S.parse_bookmarks(xml)] == ["ok@muc.x"]
+
+
+def test_self_ping_verdicts():
+    assert S.self_ping_verdict(None) == S.JOINED
+    assert S.self_ping_verdict("service-unavailable") == S.JOINED
+    assert S.self_ping_verdict("feature-not-implemented") == S.JOINED
+    assert S.self_ping_verdict("not-acceptable") == S.NOT_JOINED
+    assert S.self_ping_verdict("item-not-found") == S.GONE
+    assert S.self_ping_verdict("remote-server-timeout") == S.UNKNOWN

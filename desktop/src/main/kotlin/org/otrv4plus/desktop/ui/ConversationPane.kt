@@ -189,6 +189,39 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
                 }
             }
         }
+        if (!isRoom && model.blockingSupported) {
+            var askBlock by remember { mutableStateOf(false) }
+            if (model.isBlocked(jid)) {
+                TextButton(onClick = { model.unblock(jid) }) { Text("Unblock") }
+            } else {
+                TextButton(onClick = { askBlock = true }) {
+                    Text("Block", color = MaterialTheme.colorScheme.error)
+                }
+            }
+            if (askBlock) {
+                var report by remember { mutableStateOf(false) }
+                androidx.compose.material3.AlertDialog(
+                    onDismissRequest = { askBlock = false },
+                    title = { Text("Block ${c.displayName.ifBlank { jid }}?") },
+                    text = {
+                        Column {
+                            Text("Their messages, calls and files stop reaching every device of this " +
+                                 "account, and they no longer see when you are online. They are not told.")
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                androidx.compose.material3.Checkbox(checked = report, onCheckedChange = { report = it })
+                                Text("Also report as spam to the server")
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = { askBlock = false; model.block(jid, if (report) "spam" else "") }) {
+                            Text("Block", color = MaterialTheme.colorScheme.error)
+                        }
+                    },
+                    dismissButton = { TextButton(onClick = { askBlock = false }) { Text("Cancel") } },
+                )
+            }
+        }
         if (onMembers != null) {
             TextButton(onClick = onMembers) {
                 Icon(Icons.Filled.Groups, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))

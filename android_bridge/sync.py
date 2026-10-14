@@ -368,7 +368,9 @@ class SyncMixin:
             server = str(client.boundjid.domain)
         except Exception:
             server = own.split("@", 1)[-1]
-        if S.NS["carbons"] in await self._features(server):
+        server_features = await self._features(server)
+        own_features = await self._features(own)
+        if S.NS["carbons"] in server_features:
             try:
                 iq = client.make_iq_set()
                 iq.xml.append(ET.Element("{%s}enable" % S.NS["carbons"]))
@@ -377,7 +379,15 @@ class SyncMixin:
                 _TRACE.record("sync", "carbons_enabled", "info")
             except Exception:
                 _TRACE.record("sync", "carbons_refused", "warning")
-        if S.NS["mam"] in await self._features(own):
+        # Blocking, bookmarks and room self-ping (android_bridge.account_sync).
+        after = getattr(self, "_account_after_session", None)
+        if after is not None:
+            try:
+                await after(server_features, own_features)
+            except Exception:
+                _TRACE.record("sync", "account_sync_failed", "warning")
+            self._sync_emit("account")
+        if S.NS["mam"] in own_features:
             st["mam"] = True
             try:
                 count = await self._catch_up(own)

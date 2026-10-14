@@ -552,7 +552,16 @@ class ConnectionController:
         sync = getattr(self._transport, "set_sync_handler", None)
         on_sync = getattr(self._app, "on_sync", None)
         if sync is not None and on_sync is not None:
-            sync(on_sync)
+            def handle(kind, **fields):
+                if kind == "account":
+                    # Bookmarks are in: join the rooms they say to.
+                    self._join_bookmarked_rooms()
+                    return
+                on_sync(kind, **fields)
+            sync(handle)
+        lost = getattr(self._transport, "set_room_lost_handler", None)
+        if lost is not None:
+            lost(self._on_room_lost)
         privacy = getattr(self._app, "privacy", None)
         apply = getattr(self._transport, "set_privacy", None)
         if privacy is not None and apply is not None:
@@ -1044,8 +1053,12 @@ class ConnectionController:
         if problem is not None:
             return {"ok": False, "code": problem[0], "detail": problem[1],
                     "value": None}
-        return self._noting_room(self._muc_call("join_room", room, nick, password),
-                                 room, joined=True)
+        result = self._noting_room(self._muc_call("join_room", room, nick, password),
+                                   room, joined=True)
+        if result.get("ok"):
+            # Every device of this account joins it too (XEP-0402).
+            self._bookmark(room, nick, password, keep=True)
+        return result
 
     def create_room(self, room: str, nick: str,
                     password: str = "") -> Dict[str, Any]:
@@ -1062,8 +1075,11 @@ class ConnectionController:
             return {"ok": False, "code": problem[0], "detail": problem[1],
                     "value": None}
         args = (room, nick, password) if password else (room, nick)
-        return self._noting_room(self._muc_call("create_room", *args),
-                                 room, joined=True)
+        result = self._noting_room(self._muc_call("create_room", *args),
+                                   room, joined=True)
+        if result.get("ok"):
+            self._bookmark(room, nick, password, keep=True)
+        return result
 
     # -- secure groups (MLS over a room; see android_bridge.groups) --------
 
@@ -1291,13 +1307,117 @@ class ConnectionController:
         return self._group_call(self._app.groups.rooms)
 
     def leave_room(self, room: str, nick: str) -> Dict[str, Any]:
-        return self._noting_room(self._muc_call("leave_room", room, nick),
-                                 room, joined=False)
+        result = self._noting_room(self._muc_call("leave_room", room, nick),
+                                   room, joined=False)
+        self._bookmark(room, nick, "", keep=False)
+        return result
 
     def destroy_room(self, room: str, reason: str = "") -> Dict[str, Any]:
         """Delete a room. Owners only, and the SERVICE is what enforces it."""
-        return self._noting_room(self._muc_call("destroy_room", room, reason),
-                                 room, joined=False)
+        result = self._noting_room(self._muc_call("destroy_room", room, reason),
+                                   room, joined=False)
+        if result.get("ok"):
+            self._bookmark(room, "", "", keep=False)
+        return result
+
+    # -- bookmarks (XEP-0402) and rooms that forgot us (XEP-0410) -------------
+
+    def _bookmarkable(self, room: str) -> bool:
+        """Plain rooms only: never a secure group (its room is nothing
+        without this device's MLS state) and never the Welcome room (joined
+        by itself on every sign-in)."""
+        room = str(room).lower()
+        if self._is_group_room(room):
+            return False
+        from . import welcome as _welcome
+        return not room.startswith(_welcome.ROOM_LOCALPART + "@")
+
+    def _bookmark(self, room: str, nick: str, password: str, keep: bool) -> None:
+        transport = getattr(self, "_transport", None)
+        if transport is None or getattr(self, "_app", None) is None:
+            return
+        try:
+            if not self._bookmarkable(room):
+                return
+        except Exception:
+            return
+        call = getattr(transport, "bookmark_room" if keep else "unbookmark_room", None)
+        if call is None:
+            return
+        if keep:
+            have = getattr(transport, "bookmark_for", lambda r: None)(room)
+            if have and have.get("nick") == nick and have.get("password") == password:
+                return
+        args = (room, nick, password) if keep else (room,)
+
+        def run():
+            try:
+                code, _detail, _value = call(*args)
+                _TRACE.record("muc", "bookmark" if keep else "unbookmark",
+                              "info" if code in ("ok", "unsupported") else "warning",
+                              code=code)
+            except Exception:
+                pass
+        threading.Thread(target=run, name="otr-bookmark", daemon=True).start()
+
+    def _join_bookmarked_rooms(self) -> None:
+        """Join, in the background, every room this account's bookmarks
+        say to (rooms joined on another device, or before a reconnect)."""
+        transport = self._transport
+        marks = getattr(transport, "bookmarks", None)
+        if marks is None:
+            return
+        try:
+            wanted = [m for m in marks() if m.get("autojoin")]
+        except Exception:
+            return
+        default_nick = self._profile.jid.split("@", 1)[0]
+
+        def run():
+            for mark in wanted:
+                room = mark["room"]
+                if not self._bookmarkable(room) or self._app.is_room(room):
+                    continue
+                password = getattr(transport, "room_password", lambda r: "")(room)
+                try:
+                    self.join_room(room, mark.get("nick") or default_nick, password)
+                except Exception:
+                    pass
+        threading.Thread(target=run, name="otr-autojoin", daemon=True).start()
+
+    def _on_room_lost(self, room: str) -> None:
+        """The room says we are not in it (XEP-0410): join it again, as
+        whoever we were, so its messages (and a secure group's commits)
+        reach us again."""
+        transport = self._transport
+        nicks = getattr(transport, "_room_nicks", {}) or {}
+        nick = nicks.get(str(room).lower()) or self._profile.jid.split("@", 1)[0]
+        password = getattr(transport, "room_password", lambda r: "")(room)
+        try:
+            self._app.note_room_left(room)
+        except Exception:
+            pass
+        self.join_room(room, nick, password)
+
+    # -- blocking (XEP-0191) and spam reports (XEP-0377) -----------------------
+
+    def block_contact(self, jid: str, report: str = "") -> Dict[str, Any]:
+        """Block [jid] on the server, on every device; [report] "spam" or
+        "abuse" also tells the server's operator why."""
+        return self._muc_call("block_contact", str(jid).strip().lower(),
+                              report if report in ("spam", "abuse") else "")
+
+    def unblock_contact(self, jid: str) -> Dict[str, Any]:
+        return self._muc_call("unblock_contact", str(jid).strip().lower())
+
+    def blocked_contacts(self) -> Dict[str, Any]:
+        transport = self._transport
+        listing = getattr(transport, "blocked_contacts", None)
+        supported = getattr(transport, "blocking_supported", lambda: False)
+        if listing is None:
+            return {"ok": False, "code": "network", "value": [], "supported": False}
+        return {"ok": True, "code": "ok", "value": list(listing()),
+                "supported": bool(supported())}
 
     def room_occupants(self, room: str) -> Dict[str, Any]:
         """Who is in [room], as `{nick, role, affiliation}` rows."""

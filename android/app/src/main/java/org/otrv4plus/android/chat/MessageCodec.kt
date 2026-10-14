@@ -71,7 +71,7 @@ internal object MessageCodec {
         if (!isHeader(header)) return emptyList()
         val version = header?.split(FIELD)?.firstOrNull()
         val count = when (version) { LEGACY_VERSION -> 7; V2 -> 8; else -> 13 }
-        return parts.drop(1).mapNotNull { decode(it, count) }
+        return parts.drop(1).mapNotNull { decodeFields(it, count) }
     }
 
     /** The persisted unread count, or null when the record is unreadable. */
@@ -125,9 +125,9 @@ internal object MessageCodec {
     fun decode(line: String, legacy: Boolean = false): Message? =
         // Every field is escaped, so the raw separators count the fields
         // exactly: 13 for a v3 record, 8 for v2 (7 when told it is v1).
-        decode(line, if (legacy) 7 else if (line.count { it == FIELD } >= 12) 13 else 8)
+        decodeFields(line, if (legacy) 7 else if (line.count { it == FIELD } >= 12) 13 else 8)
 
-    fun decode(line: String, count: Int): Message? {
+    private fun decodeFields(line: String, count: Int): Message? {
         if (line.isBlank()) return null
         val parts = line.split(FIELD, limit = count)
         if (parts.size != count) return null

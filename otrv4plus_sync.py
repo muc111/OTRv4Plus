@@ -465,3 +465,158 @@ def chat_state_of(msg: ET.Element) -> str:
         if _child(msg, "chatstates", name) is not None:
             return name
     return ""
+
+
+# ═══ Blocking (XEP-0191) and spam reports (XEP-0377) ═════════════════════════
+#
+# Server-side: a blocked JID's messages and presence are dropped by OUR
+# server, on every device, and it stops seeing our presence. A report says
+# why (spam or abuse) to the server's operator; nothing is sent to the
+# blocked person.
+
+NS["blocking"] = "urn:xmpp:blocking"
+NS["reporting"] = "urn:xmpp:reporting:1"
+NS["pubsub"] = "http://jabber.org/protocol/pubsub"
+NS["bookmarks"] = "urn:xmpp:bookmarks:1"
+NS["data"] = "jabber:x:data"
+NS["ping"] = "urn:xmpp:ping"
+
+REPORT_REASONS = {"spam": "urn:xmpp:reporting:spam",
+                  "abuse": "urn:xmpp:reporting:abuse"}
+
+
+def blocking_payload(action: str, jids: List[str], report: str = "") -> ET.Element:
+    """<block/> or <unblock/> for [jids]; `report` ("spam"/"abuse") adds a
+    XEP-0377 report to each blocked item."""
+    if action not in ("block", "unblock"):
+        raise ValueError(action)
+    el = ET.Element("{%s}%s" % (NS["blocking"], action))
+    for jid in jids:
+        item = ET.SubElement(el, "{%s}item" % NS["blocking"])
+        item.set("jid", _bare(jid))
+        if action == "block" and report in REPORT_REASONS:
+            r = ET.SubElement(item, "{%s}report" % NS["reporting"])
+            r.set("reason", REPORT_REASONS[report])
+    return el
+
+
+def parse_blocklist(xml: ET.Element) -> List[str]:
+    """The JIDs in a <blocklist/>, <block/> or <unblock/> (bare, lower)."""
+    out = []
+    for tag in ("blocklist", "block", "unblock"):
+        el = xml.find(".//{%s}%s" % (NS["blocking"], tag))
+        if el is not None:
+            for item in el.findall("{%s}item" % NS["blocking"]):
+                jid = _bare(item.get("jid") or "")
+                if jid:
+                    out.append(jid)
+    return out
+
+
+# ═══ Room bookmarks (XEP-0402, PEP native bookmarks) ═════════════════════════
+#
+# The rooms this account is in, kept by the server so every device joins the
+# same ones (autojoin). PRIVATE: published with access_model=whitelist, and
+# not published at all if the server will not honour that -- a public list
+# of the rooms somebody is in is exactly the metadata this app avoids.
+# Secure groups are never bookmarked: their room means nothing without the
+# MLS state, which lives on the device that joined.
+
+BOOKMARK_OPTIONS = (
+    ("FORM_TYPE", "http://jabber.org/protocol/pubsub#publish-options"),
+    ("pubsub#persist_items", "true"),
+    ("pubsub#max_items", "max"),
+    ("pubsub#send_last_published_item", "never"),
+    ("pubsub#access_model", "whitelist"),
+)
+
+
+def _form(fields) -> ET.Element:
+    x = ET.Element("{%s}x" % NS["data"], {"type": "submit"})
+    for var, value in fields:
+        f = ET.SubElement(x, "{%s}field" % NS["data"], {"var": var})
+        if var == "FORM_TYPE":
+            f.set("type", "hidden")
+        ET.SubElement(f, "{%s}value" % NS["data"]).text = value
+    return x
+
+
+def bookmark_publish(room: str, nick: str = "", name: str = "",
+                     password: str = "", autojoin: bool = True) -> ET.Element:
+    pubsub = ET.Element("{%s}pubsub" % NS["pubsub"])
+    publish = ET.SubElement(pubsub, "{%s}publish" % NS["pubsub"],
+                            {"node": NS["bookmarks"]})
+    item = ET.SubElement(publish, "{%s}item" % NS["pubsub"], {"id": _bare(room)})
+    conf = ET.SubElement(item, "{%s}conference" % NS["bookmarks"])
+    if name:
+        conf.set("name", name[:120])
+    conf.set("autojoin", "true" if autojoin else "false")
+    if nick:
+        ET.SubElement(conf, "{%s}nick" % NS["bookmarks"]).text = nick[:64]
+    if password:
+        ET.SubElement(conf, "{%s}password" % NS["bookmarks"]).text = password[:256]
+    options = ET.SubElement(pubsub, "{%s}publish-options" % NS["pubsub"])
+    options.append(_form(BOOKMARK_OPTIONS))
+    return pubsub
+
+
+def bookmark_retract(room: str) -> ET.Element:
+    pubsub = ET.Element("{%s}pubsub" % NS["pubsub"])
+    retract = ET.SubElement(pubsub, "{%s}retract" % NS["pubsub"],
+                            {"node": NS["bookmarks"], "notify": "true"})
+    ET.SubElement(retract, "{%s}item" % NS["pubsub"], {"id": _bare(room)})
+    return pubsub
+
+
+def bookmarks_query() -> ET.Element:
+    pubsub = ET.Element("{%s}pubsub" % NS["pubsub"])
+    ET.SubElement(pubsub, "{%s}items" % NS["pubsub"], {"node": NS["bookmarks"]})
+    return pubsub
+
+
+MAX_BOOKMARKS = 256
+
+
+def parse_bookmarks(xml: ET.Element) -> List[Dict[str, Any]]:
+    """Bookmarks from an items result (or a PEP event): room, name,
+    autojoin, nick, password. Anything malformed is skipped."""
+    out = []
+    for item in xml.iter("{%s}item" % NS["pubsub"]):
+        conf = item.find("{%s}conference" % NS["bookmarks"])
+        room = _bare(item.get("id") or "")
+        if conf is None or "@" not in room or len(room) > 1023:
+            continue
+        out.append({
+            "room": room,
+            "name": (conf.get("name") or "")[:120],
+            "autojoin": conf.get("autojoin") in ("true", "1"),
+            "nick": (conf.findtext("{%s}nick" % NS["bookmarks"]) or "")[:64],
+            "password": (conf.findtext("{%s}password" % NS["bookmarks"]) or "")[:256],
+        })
+        if len(out) >= MAX_BOOKMARKS:
+            break
+    return out
+
+
+# ═══ MUC self-ping (XEP-0410) ════════════════════════════════════════════════
+#
+# Rooms forget an occupant whose stream blipped (an I2P tunnel rebuild does
+# that) and nothing tells the client. A ping to our own occupant JID answers
+# "still in" or "not in", and a "not in" is rejoined.
+
+JOINED, NOT_JOINED, GONE, UNKNOWN = "joined", "not_joined", "gone", "unknown"
+
+
+def self_ping_verdict(error_condition: Optional[str]) -> str:
+    """What a ping to our own occupant JID says. None = a result."""
+    if error_condition is None:
+        return JOINED
+    # The room answered for our occupant: we are there, our client simply
+    # does not answer pings through the room (XEP-0410 §3.2).
+    if error_condition in ("service-unavailable", "feature-not-implemented"):
+        return JOINED
+    if error_condition == "not-acceptable":
+        return NOT_JOINED
+    if error_condition == "item-not-found":
+        return GONE
+    return UNKNOWN

@@ -177,6 +177,7 @@ class AppModel(
         }
         if (open != null && chat.isSecureRoom(open) && tick % 4 == 1) refreshGroup(open)
         if (tick % 10 == 3) refreshAvatars()
+        if (tick % 20 == 7) runCatching { refreshBlocked() }
         if (tick % 4 == 0) {
             transfers = withContext(Dispatchers.IO) { core.transfers() }
             groups = withContext(Dispatchers.IO) { runCatching { core.secureGroups() }.getOrDefault(emptyList()) }
@@ -549,6 +550,40 @@ class AppModel(
     private val avatarIds = HashMap<String, String>()
 
     fun avatar(jid: String): androidx.compose.ui.graphics.ImageBitmap? = avatars[ChatState.bare(jid)]
+
+    // -- blocking (XEP-0191) and spam reports (XEP-0377) ------------------------
+
+    var blocked by mutableStateOf(emptySet<String>())
+        private set
+    var blockingSupported by mutableStateOf(false)
+        private set
+
+    fun isBlocked(jid: String): Boolean = ChatState.bare(jid) in blocked
+
+    private suspend fun refreshBlocked() {
+        val (list, supported) = withContext(Dispatchers.IO) { core.blockedContacts() }
+        blocked = list.map { ChatState.bare(it) }.toSet()
+        blockingSupported = supported
+    }
+
+    /** [report]: "spam" also reports them to the server's operator. */
+    fun block(jid: String, report: String = "") {
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.blockContact(jid, report) }
+            if (r.ok) blocked = blocked + ChatState.bare(jid)
+            else chat.note(r.detail.ifBlank { "Could not block." })
+            changed()
+        }
+    }
+
+    fun unblock(jid: String) {
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.unblockContact(jid) }
+            if (r.ok) blocked = blocked - ChatState.bare(jid)
+            else chat.note(r.detail.ifBlank { "Could not unblock." })
+            changed()
+        }
+    }
 
     private suspend fun refreshAvatars() {
         val index = withContext(Dispatchers.IO) { core.avatarIndex() }

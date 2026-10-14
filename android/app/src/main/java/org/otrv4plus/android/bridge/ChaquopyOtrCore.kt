@@ -486,6 +486,30 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     // written that way. It got through the local plain-Kotlin harness because
     // that harness cannot compile this file at all (it needs Chaquopy), so CI
     // was the first compiler to see it.
+    // -- blocking (XEP-0191) and spam reports (XEP-0377) ------------------------
+
+    /** Block [jid] on the server (every device); [report] "spam"/"abuse" or "". */
+    fun blockContact(jid: String, report: String = ""): RoomOutcome {
+        val result = call("block_contact", jid, report) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    fun unblockContact(jid: String): RoomOutcome {
+        val result = call("unblock_contact", jid) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
+    /** The server's block list, and whether the server can block at all. */
+    fun blockedContacts(): Pair<List<String>, Boolean> {
+        val result = call("blocked_contacts") ?: return emptyList<String>() to false
+        val list = runCatching {
+            listValue(result)?.asList()?.map { it.toString() }
+        }.getOrNull() ?: emptyList()
+        val supported = runCatching { result.callAttr("get", "supported")?.toBoolean() }
+            .getOrNull() ?: false
+        return list to supported
+    }
+
     fun leaveRoom(room: String, nick: String): RoomOutcome {
         val result = call("leave_room", room, nick) ?: return notPrepared()
         return outcomeOf(result)

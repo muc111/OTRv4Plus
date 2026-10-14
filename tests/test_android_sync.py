@@ -392,3 +392,81 @@ def test_a_queued_line_keeps_its_id_until_it_is_sent(app):
     assert app._transport.typed == [(BOB, "hello", "ID9")]
     app._send_user(BOB, "no id")
     assert app._transport.sent == [(BOB, "no id")]
+
+
+# -- blocking and bookmarks (android_bridge.account_sync) ---------------------------
+
+def account_transport():
+    t, c, got = transport()
+
+    def make_iq_get(ito=None):
+        c._n += 1
+        el = ET.Element("{jabber:client}iq", {"type": "get", "id": "g%d" % c._n})
+        if ito:
+            el.set("to", ito)
+        return FakeStanza(c, el)
+    c.make_iq_get = make_iq_get
+
+    def answer(iq):
+        async def reply():
+            result = ET.Element("{jabber:client}iq", {"type": "result"})
+            if iq.find("{urn:xmpp:blocking}blocklist") is not None:
+                bl = ET.SubElement(result, "{urn:xmpp:blocking}blocklist")
+                ET.SubElement(bl, "{urn:xmpp:blocking}item", {"jid": "old@x.i2p"})
+            return FakeStanza(c, result)
+        return reply()
+    c.answer = answer
+    t._room_call = lambda coro: ("ok", "", asyncio.run(coro))
+    return t, c, got
+
+
+def test_blocking_needs_server_support_then_blocks_and_reports():
+    t, c, _ = account_transport()
+    assert t.block_contact("spam@x.i2p", "spam")[0] == "unsupported"
+    asyncio.run(t._account_after_session(["urn:xmpp:blocking"], []))
+    assert t.blocked_contacts() == ["old@x.i2p"]
+    code, _, value = t.block_contact("Spam@x.i2p", "spam")
+    assert code == "ok" and "spam@x.i2p" in value
+    sent = c.sent[-1]
+    item = sent.find(".//{urn:xmpp:blocking}item")
+    assert item.get("jid") == "spam@x.i2p"
+    assert item.find("{urn:xmpp:reporting:1}report") is not None
+    t.unblock_contact("spam@x.i2p")
+    assert t.blocked_contacts() == ["old@x.i2p"]
+    t._stop_self_ping()
+
+
+def test_a_blocking_push_only_from_our_own_server():
+    t, c, _ = account_transport()
+
+    class Push(FakeStanza):
+        def reply(self):
+            return FakeStanza(c, ET.Element("{jabber:client}iq", {"type": "result"}))
+
+    forged = Push(c, ET.fromstring(
+        "<iq xmlns='jabber:client' type='set' from='mallory@x.i2p'>"
+        "<block xmlns='urn:xmpp:blocking'><item jid='friend@x.i2p'/></block></iq>"))
+    t._on_blocking_push(forged)
+    assert t.blocked_contacts() == []
+    real = Push(c, ET.fromstring(
+        "<iq xmlns='jabber:client' type='set'>"
+        "<block xmlns='urn:xmpp:blocking'><item jid='troll@x.i2p'/></block></iq>"))
+    t._on_blocking_push(real)
+    assert t.blocked_contacts() == ["troll@x.i2p"]
+
+
+def test_bookmarks_are_kept_only_where_the_server_keeps_them_private():
+    t, c, _ = account_transport()
+    asyncio.run(t._account_after_session([], []))
+    assert t.bookmark_room("r@muc.x.i2p", "me")[0] == "unsupported"
+    assert not any(e.find(".//{http://jabber.org/protocol/pubsub}publish") is not None
+                   for e in c.sent)
+    asyncio.run(t._account_after_session(
+        [], ["http://jabber.org/protocol/pubsub#publish-options"]))
+    assert t.bookmark_room("r@muc.x.i2p", "me", "pw")[0] == "ok"
+    assert t.bookmark_for("R@muc.x.i2p")["password"] == "pw"
+    assert t.bookmarks()[0]["password"] is True        # never handed out
+    assert t.room_password("r@muc.x.i2p") == "pw"
+    t.unbookmark_room("r@muc.x.i2p")
+    assert t.bookmarks() == []
+    t._stop_self_ping()

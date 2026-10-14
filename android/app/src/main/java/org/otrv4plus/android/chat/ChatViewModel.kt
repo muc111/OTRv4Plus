@@ -233,6 +233,59 @@ class ChatViewModel : ViewModel() {
             } ?: return@launch
             state.noteSecureRooms(rooms)
         }
+        viewModelScope.launch {
+            val (list, supported) = withContext(Dispatchers.IO) {
+                runCatching { c.blockedContacts() }.getOrDefault(emptyList<String>() to false)
+            }
+            blocked = list.map { ChatState.bare(it) }.toSet()
+            blockingSupported = supported
+        }
+    }
+
+    // -- blocking (XEP-0191) and spam reports (XEP-0377) ------------------------
+
+    /** Blocked on the server: nothing from them reaches any of our devices. */
+    var blocked by mutableStateOf(emptySet<String>())
+        private set
+    var blockingSupported by mutableStateOf(false)
+        private set
+    var blockStatus by mutableStateOf<String?>(null)
+        private set
+
+    /** The conversation's ⋮ menu, and the block question (with its "also
+     *  report as spam" box) while it is asked. Screen state, kept here with
+     *  the rest so the screen holds nothing but passphrases. */
+    var conversationMenu by mutableStateOf(false)
+    var askBlock by mutableStateOf<String?>(null)
+    var blockReport by mutableStateOf(false)
+
+    fun isBlocked(jid: String): Boolean = ChatState.bare(jid) in blocked
+
+    /** [report]: "spam", "abuse" or "" (block only). */
+    fun block(jid: String, report: String = "") {
+        val c = core ?: return
+        viewModelScope.launch {
+            val out = withContext(Dispatchers.IO) { runCatching { c.blockContact(jid, report) }.getOrNull() }
+            if (out?.ok == true) {
+                blocked = blocked + ChatState.bare(jid)
+                blockStatus = if (report.isEmpty()) "Blocked." else "Blocked and reported."
+            } else {
+                blockStatus = out?.detail?.ifBlank { null } ?: "Could not block."
+            }
+        }
+    }
+
+    fun unblock(jid: String) {
+        val c = core ?: return
+        viewModelScope.launch {
+            val out = withContext(Dispatchers.IO) { runCatching { c.unblockContact(jid) }.getOrNull() }
+            if (out?.ok == true) {
+                blocked = blocked - ChatState.bare(jid)
+                blockStatus = "Unblocked."
+            } else {
+                blockStatus = out?.detail?.ifBlank { null } ?: "Could not unblock."
+            }
+        }
     }
 
     fun acceptGroupInvite(room: String) {

@@ -60,6 +60,7 @@ import otrv4plus_registration as _registration
 
 from .app import Transport
 from .sync import SyncMixin
+from .account_sync import AccountSyncMixin
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
 
@@ -821,7 +822,7 @@ def _accepts_meta(fn) -> bool:
         return False
 
 
-class XmppTransport(SyncMixin, Transport):
+class XmppTransport(SyncMixin, AccountSyncMixin, Transport):
     """Carries OTR payloads between `OtrApp` and an XMPP server over I2P."""
 
     def __init__(
@@ -1858,6 +1859,10 @@ class XmppTransport(SyncMixin, Transport):
         depend on where that await happened to fall. The loop returns on its
         own line after the teardown, so nothing is left running.
         """
+        # The room self-ping (android_bridge.account_sync) goes with it.
+        stop_ping = getattr(self, "_stop_self_ping", None)
+        if stop_ping is not None:
+            stop_ping()
         task, self._keepalive_task = self._keepalive_task, None
         if task is None or task.done():
             return
@@ -3066,6 +3071,8 @@ class XmppTransport(SyncMixin, Transport):
         if not password and await self._room_wants_password(room):
             raise TransportError("not_authorized", "this room needs a password")
         await self._join_muc(room, nick, password)
+        # Kept (memory only) for a rejoin after the room forgets us (XEP-0410).
+        self.remember_room_password(room, password)
         self._room_nicks[str(room).split("/", 1)[0].lower()] = nick
         return self._room_standing(room, nick)
 
@@ -3754,6 +3761,8 @@ class XmppTransport(SyncMixin, Transport):
         # Carbons, the archive, receipts, read markers and chat states
         # (android_bridge.sync): one handler that sees body-less messages too.
         self._install_sync_handler(client)
+        # Blocking lists pushed by our other devices (android_bridge.account_sync).
+        self._install_account_handlers(client)
         client.add_event_handler("presence_subscribe", self._on_subscribe)
         client.add_event_handler("message", self._on_message)
         client.add_event_handler("message_error", self._on_message_error)

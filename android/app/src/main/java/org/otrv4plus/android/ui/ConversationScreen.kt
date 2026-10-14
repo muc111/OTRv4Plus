@@ -127,9 +127,30 @@ fun ConversationScreen(
                     }
                 },
                 actions = {
-                    // A person's profile; a room has none.
-                    if (onOpenProfile != null && !model.isRoom(jid)) {
-                        TextButton(onClick = { onOpenProfile(jid) }) { Text("Profile") }
+                    // A person's profile and blocking; a room has neither.
+                    if (!model.isRoom(jid)) {
+                        Box {
+                            TextButton(onClick = { model.conversationMenu = true }) {
+                                Text("\u22EE", style = MaterialTheme.typography.titleLarge)
+                            }
+                            DropdownMenu(expanded = model.conversationMenu,
+                                         onDismissRequest = { model.conversationMenu = false }) {
+                                if (onOpenProfile != null) {
+                                    DropdownMenuItem(text = { Text("Profile") },
+                                                     onClick = { model.conversationMenu = false; onOpenProfile(jid) })
+                                }
+                                if (model.blockingSupported) {
+                                    if (model.isBlocked(jid)) {
+                                        DropdownMenuItem(text = { Text("Unblock") },
+                                                         onClick = { model.conversationMenu = false; model.unblock(jid) })
+                                    } else {
+                                        DropdownMenuItem(
+                                            text = { Text("Block\u2026", color = MaterialTheme.colorScheme.error) },
+                                            onClick = { model.conversationMenu = false; model.askBlock = jid })
+                                    }
+                                }
+                            }
+                        }
                     }
                 },
             )
@@ -155,6 +176,27 @@ fun ConversationScreen(
                 .padding(padding)
                 .fillMaxSize(),
         ) {
+            if (model.askBlock == jid) {
+                BlockDialog(
+                    name = conversation.displayName,
+                    report = model.blockReport,
+                    onReport = { model.blockReport = it },
+                    onBlock = { report -> model.askBlock = null; model.block(jid, report) },
+                    onDismiss = { model.askBlock = null },
+                )
+            }
+            if (!room && model.isBlocked(jid)) {
+                Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Text("Blocked: nothing they send reaches you.",
+                             style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onErrorContainer,
+                             modifier = Modifier.weight(1f))
+                        TextButton(onClick = { model.unblock(jid) }) { Text("Unblock") }
+                    }
+                }
+            }
             if (room) {
                 RoomHeader(model, jid)
             } else {
@@ -1001,6 +1043,37 @@ private fun Bubble(message: Message) {
             }
         }
     }
+}
+
+/**
+ * Block a contact on the server (XEP-0191): every device of this account
+ * stops receiving their messages and they stop seeing our presence. The
+ * report (XEP-0377) goes to the server's operator, never to them.
+ */
+@Composable
+private fun BlockDialog(name: String, report: Boolean, onReport: (Boolean) -> Unit,
+                        onBlock: (String) -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Block $name?") },
+        text = {
+            Column {
+                Text("Their messages, calls and files stop reaching every device of " +
+                     "this account, and they no longer see when you are online. " +
+                     "They are not told.")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = report, onCheckedChange = onReport)
+                    Text("Also report as spam to the server")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onBlock(if (report) "spam" else "") }) {
+                Text("Block", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
 }
 
 /**

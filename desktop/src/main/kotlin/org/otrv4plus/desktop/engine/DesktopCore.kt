@@ -250,6 +250,13 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         controller("answer_subscription", "jid" to jid, "approve" to approve)
     fun joinRoom(room: String, nick: String) = controller("join_room", "room" to room, "nick" to nick)
     fun leaveRoom(room: String, nick: String) = controller("leave_room", "room" to room, "nick" to nick)
+    fun blockContact(jid: String, report: String) = controller("block_contact", "jid" to jid, "report" to report)
+    fun unblockContact(jid: String) = controller("unblock_contact", "jid" to jid)
+    /** The server's block list, and whether it can block at all. */
+    fun blockedContacts(): Pair<List<String>, Boolean> {
+        val r = runCatching { call("blocked_contacts") as? JsonObject }.getOrNull() ?: return emptyList<String>() to false
+        return names(r["value"]) to r["supported"].asBool()
+    }
     fun createSecureGroup(room: String) = controller("create_secure_group", "room" to room, "password" to "")
     fun acceptGroupInvite(room: String) = controller("accept_group_invite", "room" to room)
     fun declineGroupInvite(room: String) = controller("decline_group_invite", "room" to room)
