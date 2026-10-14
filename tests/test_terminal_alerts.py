@@ -147,12 +147,12 @@ def test_the_bell_is_not_written_into_a_pipe():
 
 def test_the_client_answers_calls_and_files_with_y_n_and_sounds_messages():
     src = (ROOT / "otrv4plus_xmpp.py").read_text()
-    assert "self._quick_answer().answer(line)" in src
+    assert "quick().answer(line)" in src
     assert "on_state=self._on_file_state" in src and "quick_answer=True" in src
     assert "self._alerts().message()" in src
     assert '"/sound on"' in src
     # The y/n check sits before group questions and before command parsing.
-    assert src.index("self._quick_answer().answer(line)") < src.index(
+    assert src.index("quick().answer(line)") < src.index(
         "groups.answer_prompt(line)") < src.index('if lstrip == "/tui":')
     voice = (ROOT / "otrv4plus_voice.py").read_text()
     assert 'getattr(self.client, "ask_answer_call", None)' in voice

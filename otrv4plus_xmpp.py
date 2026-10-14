@@ -5946,14 +5946,15 @@ class OTRv4PlusXMPP(ClientXMPP):
         # A call ringing or a file offered asks the same way (QuickAnswer).
         # Before the group questions: a call is the most urgent thing on
         # screen and the newest question there.
-        if self._quick_answer().answer(line):
+        quick = getattr(self, "_quick_answer", None)
+        if quick is not None and quick().answer(line):
             return True
         # A group invitation asks the same way: only an exact y/n answers it.
         groups = getattr(self, "_groups", None)
         if groups is not None and getattr(groups, "answer_prompt", None) is not None:
             if groups.answer_prompt(line):
                 return True
-        if line.strip():
+        if line.strip() and getattr(self, "_alerts", None) is not None:
             self._alerts().seen()
 
         if not line:
