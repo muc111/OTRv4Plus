@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.ui
 
+import org.otrv4plus.android.BuildConfig
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.rememberScrollState
@@ -172,7 +173,10 @@ fun ConversationsScreen(
                 model.link == ChatState.Link.FAILING ->
                     LinkBanner(
                         "Cannot read the connection state" +
-                            (model.readFailure?.let { " ($it)" } ?: "") + ".",
+                            // The failure code is for a developer; release
+                            // builds say only what the user can act on.
+                            (if (BuildConfig.DEV_DIAGNOSTICS)
+                                model.readFailure?.let { " ($it)" } ?: "" else "") + ".",
                     )
 
                 model.link == ChatState.Link.UNKNOWN ->
@@ -220,7 +224,7 @@ fun ConversationsScreen(
                 }
             }
 
-            if (model.droppedEvents > 0) {
+            if (BuildConfig.DEV_DIAGNOSTICS && model.droppedEvents > 0) {
                 Text(
                     "${model.droppedEvents} update(s) were dropped while the " +
                         "app was busy.",

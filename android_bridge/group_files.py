@@ -31,7 +31,8 @@ A member that accepts later, or missed pieces (a commit by somebody else can
 move the group to a new epoch under a piece in flight), asks with NEED and
 the sender posts those pieces again. A member that has the whole file, and
 its hash matches, says GOT. The sender keeps the file in memory for
-OFFER_SECONDS after the offer, then forgets it.
+OFFER_SECONDS after the offer, then forgets it and says so (CANCEL,
+"expired") -- or sooner, DELIVERED, once every other member has said GOT.
 
 Wire (inside the MLS plaintext, after FILE_PREFIX), JSON:
     {"t":"offer","id":<32 hex>,"name":<str>,"size":<int>,"chunks":<int>,"sha":<64 hex>}
@@ -40,6 +41,7 @@ Wire (inside the MLS plaintext, after FILE_PREFIX), JSON:
     {"t":"need","id":...,"i":[<index>, ...]}
     {"t":"got","id":...}            received and verified
     {"t":"cancel","id":...}         the sender stopped it
+    {"t":"cancel","id":...,"why":"expired"}  ...or kept it as long as it does
 
 States and reasons are `otrv4plus_filetransfer.TransferState` and
 `TransferReason` codes, so both clients show a group file the way they show a
@@ -324,6 +326,13 @@ class GroupFiles:
             outs, ins = list(self._out.values()), list(self._in.values())
         for out in outs:
             if now - out.at >= self.OFFER_SECONDS:
+                # Tell the group the file is gone, so a member who accepted
+                # late, or is still waiting on pieces, is told now rather
+                # than after its own NEEDs run out (minutes later).
+                try:
+                    self._control(out.room, {"t": "cancel", "id": out.tid, "why": "expired"})
+                except Exception:
+                    pass
                 if out.got:
                     self._end_out(out, "delivered")
                 elif out.accepted_by:
@@ -427,6 +436,8 @@ class GroupFiles:
         if out is not None and out.room == room:
             if kind == "accept":
                 with self._lock:
+                    if sender in out.accepted_by:
+                        return               # a repeat: nothing new to send
                     first = not out.accepted_by
                     out.accepted_by.add(sender)
                     if out.state == "waiting":
@@ -456,14 +467,24 @@ class GroupFiles:
                 # Counted (`delivered_to`); the file is still kept until
                 # OFFER_SECONDS for a member that accepts late.
                 with self._lock:
+                    if sender in out.got:
+                        return
                     out.got.add(sender)
-                self._changed_out(out)
+                    others = self._other_members(out.room)
+                    everyone = bool(others) and others <= out.got
+                if everyone:
+                    # Every other member has it, checked: nobody is left to
+                    # accept late, so it is finished now, not in 30 minutes.
+                    self._end_out(out, "delivered")
+                else:
+                    self._changed_out(out)
             return
         if inc is None or inc.room != room or sender != inc.sender:
             return
         if kind == "cancel":
             if inc.state in ("offered", "accepted"):
-                self._end_in(inc, "cancelled", "by_peer")
+                self._end_in(inc, "cancelled",
+                             "expired" if msg.get("why") == "expired" else "by_peer")
         elif kind == "data" and inc.state == "accepted":
             self._on_piece(inc, msg)
 
@@ -547,6 +568,12 @@ class GroupFiles:
             pass
 
     # -- inside -------------------------------------------------------------------
+
+    def _other_members(self, room: str) -> Set[str]:
+        try:
+            return {m.get("jid", "") for m in self._groups.members(room) if not m.get("me")}
+        except Exception:
+            return set()
 
     def _still_verified(self, room: str) -> bool:
         try:

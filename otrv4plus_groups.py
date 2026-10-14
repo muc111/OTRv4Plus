@@ -123,6 +123,24 @@ def _room_was_created(join_result: Any) -> bool:
         return False
 
 
+_FILE_END_WORDS = {
+    ("declined", ""): "declined",
+    ("cancelled", "by_us"): "cancelled",
+    ("cancelled", "by_peer"): "the sender cancelled it",
+    ("cancelled", "expired"): "no longer offered (offers last 30 minutes)",
+    ("cancelled", "unverified_member"): "stopped: an unverified member joined the group",
+    ("failed", "lost_chunk"): "failed: pieces went missing; ask for it again",
+    ("failed", "verify_failed"): "failed: it did not match its checksum and was thrown away",
+    ("failed", "transport"): "failed: it could not be written to storage",
+}
+
+
+def _file_end_words(state: str, reason: str) -> str:
+    """How a group file ended, in words (codes from the engine)."""
+    return _FILE_END_WORDS.get((state, reason or ""),
+                               "%s%s" % (state, (" (%s)" % reason) if reason else ""))
+
+
 def _human(size: int) -> str:
     for unit in ("B", "KB", "MB"):
         if size < 1024 or unit == "MB":
@@ -590,10 +608,23 @@ class TermuxGroups:
                            if r["state"] == "accepted" else ""))
 
     def _on_file(self, ev: FileTransferChanged) -> None:
+        """One line per thing that happened, in plain words. The engine
+        reports a sender's transfer again for each member who accepts or
+        confirms; that is said as a count, never as the same line again."""
         p = self._print
         room, name, state = ev.peer[:64], ev.filename, ev.state
         row = next((r for r in self.files.transfers()
                     if r["id"] == ev.transfer_id), {})
+        seen = getattr(self, "_file_said", None)
+        if seen is None:
+            seen = self._file_said = {}
+        said = (state, row.get("accepted_by", 0), row.get("delivered_to", 0))
+        if seen.get(ev.transfer_id) == said:
+            return
+        before = seen.get(ev.transfer_id)
+        seen[ev.transfer_id] = said
+        while len(seen) > 64:
+            seen.pop(next(iter(seen)))
         if not ev.outgoing and state == "offered":
             self._ask("file", ev.peer)
             self._prompt_file = ev.transfer_id
@@ -601,6 +632,12 @@ class TermuxGroups:
             p("[group %s] %s offers %s (%s). Accept? [y/n]   (or later: "
               "/transfer accept %s)" % (room, row.get("from", "a member"),
                                         name, _human(ev.size), ev.transfer_id[:8]))
+        elif ev.outgoing and state in ("accepted", "sent") and before is not None \
+                and before[0] in ("accepted", "sent") and said[2] > before[2]:
+            p("[group %s] %s: %d member(s) have it, checked" % (room, name, said[2]))
+        elif ev.outgoing and state in ("accepted", "sent") and before is not None \
+                and before[0] in ("accepted", "sent") and said[1] > before[1]:
+            p("[group %s] %s: %d member(s) accepted" % (room, name, said[1]))
         elif state == "accepted" and ev.outgoing:
             p("[group %s] sending %s to the group" % (room, name))
         elif state == "accepted":
@@ -613,11 +650,10 @@ class TermuxGroups:
             p("[group %s] received %s from %s -- size and SHA-256 verified: %s"
               % (room, name, row.get("from", "a member"), row.get("path", "")))
         elif state == "delivered":
-            p("[group %s] %s: %d member(s) received it" %
+            p("[group %s] %s: done, %d member(s) received it" %
               (room, name, row.get("delivered_to", 0)))
         elif state in ("failed", "cancelled", "declined"):
-            p("[group %s] %s: %s%s" % (room, name, state,
-                                        (" (%s)" % ev.reason) if ev.reason else ""))
+            p("[group %s] %s: %s" % (room, name, _file_end_words(state, ev.reason)))
 
     # -- invitations: OTRv4+ first, by itself ------------------------------------
 

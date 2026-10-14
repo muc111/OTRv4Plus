@@ -301,7 +301,7 @@ object TransferUi {
         "transport" -> "the connection failed while sending"
         "by_peer" -> "cancelled by the other side"
         "by_us" -> "cancelled"
-        "expired" -> "nobody accepted it in time"
+        "expired" -> "the offer expired (offers last 30 minutes)"
         "unverified_member" ->
             "a member who is not verified joined the group, so it was stopped"
         else -> "it did not complete"

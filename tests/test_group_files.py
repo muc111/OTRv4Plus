@@ -117,7 +117,47 @@ class TestAFileReachesTheGroup:
             # (Both members share one directory here: the second is "photo (1)".)
             assert os.path.basename(row["path"]).startswith("photo")
         out = _received(a, tid)
-        assert out["state"] == "sent" and out["delivered_to"] == 2
+        # Every other member confirmed it: finished now, not after the
+        # 30-minute offer time (and the sender's copy is zeroed).
+        assert out["state"] == "delivered" and out["delivered_to"] == 2
+        assert tid not in a.files._out
+
+    def test_until_every_member_has_it_the_sender_keeps_it(self, tmp_path):
+        w, (a, b, c), now, _vol = _sharing(3)
+        _verify_all([a, b, c])
+        a.files.send(ROOM, _file(tmp_path, G.CHUNK + 5))
+        tid = _offer(b).transfer_id
+        b.files.accept(tid)
+        _run([a, b, c], now)
+        out = _received(a, tid)
+        assert out["state"] == "sent" and out["delivered_to"] == 1
+        assert tid in a.files._out          # c may still accept
+
+    def test_an_expired_offer_tells_a_member_still_waiting(self, tmp_path):
+        w, (a, b, c), now, _vol = _sharing(3)
+        _verify_all([a, b, c])
+        a.files.send(ROOM, _file(tmp_path, G.CHUNK + 5))
+        tid = _offer(b).transfer_id
+        b.files.accept(tid)
+        _run([a, b, c], now)
+        assert _received(c, tid)["state"] == "offered"
+        now[0] += G.OFFER_SECONDS + 1
+        a.files.tick()
+        _run([a, b, c], now)
+        row = _received(c, tid)
+        assert (row["state"], row["reason"]) == ("cancelled", "expired")
+        assert _received(b, tid)["state"] == "received"   # unaffected
+
+    def test_a_repeated_accept_sends_nothing_again(self, tmp_path):
+        w, (a, b, c), now, _vol = _sharing(3)
+        _verify_all([a, b, c])
+        a.files.send(ROOM, _file(tmp_path, 2 * G.CHUNK))
+        tid = _offer(b).transfer_id
+        b.files.accept(tid)
+        _run([a, b, c], now)
+        out = a.files._out[tid]
+        a.files._on_control(ROOM, "bob@x.i2p", True, '{"t":"accept","id":"%s"}' % tid)
+        assert out.resend == [] and out.state == "sent"
 
     def test_a_member_that_does_not_accept_writes_nothing(self, tmp_path):
         w, (a, b, c), now, _vol = _sharing(3)
