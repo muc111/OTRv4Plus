@@ -94,10 +94,11 @@ dependency audit is clean, the documentation licence is decided, the icon's
 origin is recorded, and the release variant is built and its contents
 inspected on this run. It is still **not a release** and it is still
 EXPERIMENTAL: encrypted chat, identity verification, file transfer,
-two-way voice calls (app to app, and app to Termux) and post-quantum secure
-groups of four members across the app and Termux have been proved on
-handsets; group verification and group calls are not yet, and the items
-below are still open.
+two-way voice calls (app to app, and app to Termux), post-quantum secure
+groups of four members across the app and Termux, the built-in I2P router,
+group verification, disguised voice notes and location pins have been proved
+on handsets; group calls connect but are not yet reliable both ways, and the
+items below are still open.
 
 ---
 
@@ -155,6 +156,23 @@ app and a Termux client (four accounts):
 - **re-inviting a member whose copy of the group had fallen behind**
   (rc.39): the invitation shows, and the member reads the group again.
 
+Reported on 2026-10-15, two phones (Android 15), app to app, through the
+**built-in I2P router**:
+
+- **the built-in I2P router** (rc.45) starts on the phone and carries the
+  connection, chat and calls; no separate I2P app was installed;
+- **group verification with the group passphrase**: completes, members
+  shown verified;
+- **group voice calls** connect and audio flows -- **but only one way** on
+  the test call: the phone that joined sent 1088 frames and received 3.
+  rc.74 adds a receive watchdog that rebuilds the silent leg (below);
+  **re-test needed**;
+- **disguised voice notes**: every mode was understandable, and Synthetic
+  is now the default (rc.66-rc.67);
+- **location pins** (rc.73): the 📍 button, a GPS-only fix, and the pin
+  received as a card;
+- the **bottom bar** on every main screen (rc.71).
+
 No cryptography runs in Kotlin or Python: every session, SMP and file key is
 held by the Rust core.
 
@@ -185,19 +203,25 @@ Asserted on every run rather than assumed:
 
 ## NOT verified, and the reason this is still experimental
 
-- **The built-in I2P router on a phone** (rc.45). It builds from pinned
-  source in CI and the APK inspection checks it is there for both ABIs, but
-  it has not yet been started on a handset: the first start (joining the I2P
-  network, usually 2 to 5 minutes), choosing it automatically when no I2P
-  app runs, voice and group calls through it, and Wipe & Exit removing its
-  data all need a phone with no other I2P app.
-- **Group verification with the group passphrase** (rc.43-rc.44: SMP between
-  every pair of members, the progress bar and ETA, excluding a member whose
-  passphrase did not match) has run in tests only, not over I2P on phones.
-- **Group voice calls on phones**, from the app (new in rc.43) or Termux:
-  ringing, automatic joining of verified members, pause and hang up. Tested
-  in-process only. The call uses the 1:1 call's frame encryption, ratchet,
-  replay window and padding, with fresh keys from the group every 120 s.
+- **Group calls both ways** (rc.74, to re-test with two phones): each
+  phone now watches every participant's audio and, when one goes silent
+  without having paused, rebuilds its own I2P receive path and announces it
+  in the group (at most twice a call); a pause is announced so it is not
+  taken for a dead path; a ring builds the I2P session before Join is
+  pressed, so joining is quicker. Please send the **diagnostics report from
+  BOTH phones** after a group call: the counters (\`peers\`, \`rx\`, \`tx\`,
+  \`reopened\`) now print as numbers instead of labels.
+- **The composer's 🎤 voice-note and 📎 file buttons** (rc.74): now shown
+  in every encrypted conversation; until the contact (or every group member)
+  is verified, a tap says what is needed instead of sending.
+- **Opt-in server account deletion on Wipe & Exit** (rc.70), **profile
+  pictures from HEIC and rotated photos** (rc.72), **replies, corrections,
+  deletions and reactions** in plain rooms and secure groups (rc.68-rc.69),
+  and **room history from the server archive** (rc.68).
+- **Location pins on the desktop app** (typed Plus Code only) and opening a
+  pin in a maps app on Android.
+- **The built-in router's** Wipe & Exit removal of its data, and choosing an
+  already-running I2P app instead when there is one.
 - **Since rc.25, in use but not checked one by one**: automatic MLS rekeys
   and per-group signing keys rotated at each, the re-send of a lost group
   change, removal of members away for 72 hours, verification that survives

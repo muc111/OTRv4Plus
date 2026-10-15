@@ -174,8 +174,12 @@ fun ConversationScreen(
                 // The mic: a disguised, encrypted voice note. Offered where a
                 // file may be sent (verified contact, or a secure group whose
                 // members are all verified); nowhere else.
-                onVoice = if (model.transferOffer(jid) is TransferUi.Offer.Available)
-                              ({ model.openVoiceSheet() }) else null,
+                // Shown in every encrypted conversation; until the contact (or
+                // every group member) is verified a tap explains instead.
+                onVoice = if (model.transferOffer(jid) !is TransferUi.Offer.NeedsEncryption)
+                              ({ model.requestVoice(jid) }) else null,
+                onAttach = if (model.transferOffer(jid) !is TransferUi.Offer.NeedsEncryption)
+                               ({ model.requestFile(jid) }) else null,
                 // A location pin: only inside encryption (OTR, or a secure group).
                 onLocation = if (model.canShareLocation(jid)) ({ model.openLocation(jid) }) else null,
             )
@@ -651,6 +655,15 @@ private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = fals
         // Examined before anything leaves: a photo carries where and when it
         // was taken, and the user decides whether that goes with it.
         if (staged != null) model.prepareFile(jid, staged)
+    }
+
+    // The composer's 📎 asked for the picker (the launcher lives here).
+    val wanted = model.pickFileFor
+    LaunchedEffect(wanted) {
+        if (wanted != null && wanted == ChatState.bare(jid)) {
+            model.filePickerOpened()
+            picker.launch(arrayOf("*/*"))
+        }
     }
 
     model.pendingMetadata?.takeIf { it.jid == ChatState.bare(jid) }?.let { pending ->
@@ -1249,6 +1262,7 @@ private fun Composer(
     status: String? = null,
     onVoice: (() -> Unit)? = null,
     onLocation: (() -> Unit)? = null,
+    onAttach: (() -> Unit)? = null,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -1288,6 +1302,12 @@ private fun Composer(
                     IconButton(onClick = it, enabled = enabled,
                                modifier = Modifier.semantics { contentDescription = "Share a location" }) {
                         Text("📍")
+                    }
+                }
+                onAttach?.let {
+                    IconButton(onClick = it, enabled = enabled,
+                               modifier = Modifier.semantics { contentDescription = "Send a file" }) {
+                        Text("📎")
                     }
                 }
                 OutlinedTextField(

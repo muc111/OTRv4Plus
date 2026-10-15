@@ -88,6 +88,8 @@ class _Call:
     peers: Dict[str, str] = field(default_factory=dict)
     last_rekey: float = 0.0
     drop_previous_at: float = 0.0
+    #: Participants who said they paused: silent on purpose, not lost.
+    paused_peers: set = field(default_factory=set)
 
 
 def mix(frames: List[bytes]) -> bytes:
@@ -205,12 +207,36 @@ class GroupCalls:
                 raise ValueError("no_call")
             self._paused = (not self._paused) if on is None else bool(on)
             paused = self._paused
+            call = self._calls.get(room)
+        # Said to the others, so their watchdog does not take our silence
+        # for a dead path (an older client ignores an unknown "t").
+        if call is not None:
+            try:
+                self._control(room, {"t": "pause", "call": call.call_id, "on": paused})
+            except Exception:
+                pass
         self._emit(GroupChanged(peer=room, change="call_paused" if paused else "call_resumed"))
         return paused
 
     @property
     def paused(self) -> bool:
         return self._paused
+
+    def paused_peers(self, room: str) -> List[str]:
+        with self._lock:
+            call = self._calls.get(room)
+            return sorted(call.paused_peers) if call else []
+
+    def announce(self, room: str) -> None:
+        """Tell the call our (new) destination: after the media session was
+        rebuilt, every participant must send to the new one."""
+        with self._lock:
+            call = self._calls.get(room)
+            if call is None or not call.joined:
+                return
+            call_id = call.call_id
+        self._control(room, {"t": "here", "call": call_id,
+                             "dest": self._local_destination()})
 
     def participants(self, room: str) -> List[str]:
         with self._lock:
@@ -369,9 +395,17 @@ class GroupCalls:
                 with self._lock:
                     if sender in call.peers or len(call.peers) + 1 < self.MAX_PARTICIPANTS:
                         call.peers[sender] = dest
+        elif kind == "pause":
+            if verified:
+                with self._lock:
+                    if msg.get("on") is True:
+                        call.paused_peers.add(sender)
+                    else:
+                        call.paused_peers.discard(sender)
         elif kind == "leave":
             with self._lock:
                 call.peers.pop(sender, None)
+                call.paused_peers.discard(sender)
                 # The caller hung up before we answered: stop ringing.
                 if not call.joined and sender == call.starter:
                     self._calls.pop(room, None)

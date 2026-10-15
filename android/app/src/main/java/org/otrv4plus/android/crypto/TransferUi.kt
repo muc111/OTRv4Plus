@@ -37,6 +37,23 @@ object TransferUi {
     }
 
     /**
+     * What the composer's 📎 and 🎤 say when tapped before they can send.
+     * Device report (2026-10-15): "voice note icon is missing", "file
+     * transfer icon is missing" -- they were hidden until verification, so
+     * nobody could find them. They are shown in every encrypted conversation
+     * now and, until the conversation allows it, explain instead of sending.
+     * Null when sending is allowed. The rule itself is unchanged.
+     */
+    @JvmStatic
+    fun lockedHint(offer: Offer, group: Boolean): String? = when (offer) {
+        Offer.Available -> null
+        Offer.NeedsVerification ->
+            if (group) "Files and voice notes go only to a group whose members are all verified."
+            else "Files and voice notes need SMP verification first (Verify, above)."
+        Offer.NeedsEncryption -> "Files and voice notes need an encrypted conversation."
+    }
+
+    /**
      * A secure group's attach control: available when every other member is
      * verified (the group passphrase or 1:1 SMP) -- the bridge refuses
      * otherwise, as for 1:1. Null with nobody else in the group.

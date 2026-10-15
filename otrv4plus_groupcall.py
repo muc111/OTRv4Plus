@@ -215,7 +215,11 @@ class GroupCallMedia:
         #: them; play_err/cap_err: the speaker or microphone failing. Read by
         #: the app's diagnostics to tell which leg of a call is silent.
         self.stats = {"tx": 0, "rx": 0, "rx_bad": 0, "decoded": 0, "heard": 0,
-                      "captured": 0, "play_err": 0, "cap_err": 0, "oversize": 0}
+                      "captured": 0, "play_err": 0, "cap_err": 0, "oversize": 0,
+                      "reopened": 0}
+        #: member -> monotonic time their last frame arrived (the watchdog's
+        #: evidence that a leg of the call is alive; see GroupCallBridge).
+        self._heard_at: Dict[str, float] = {}
 
     def describe(self) -> Dict[str, Any]:
         """Counters and the audio devices, for diagnostics (no addresses)."""
@@ -235,18 +239,47 @@ class GroupCallMedia:
     def destination(self) -> str:
         return self._dest
 
+    def last_heard(self, who: str) -> float:
+        """When a frame from `who` last arrived (monotonic), 0 if never."""
+        return self._heard_at.get(who, 0.0)
+
     # -- the I2P datagram session --------------------------------------------
 
     async def open(self) -> str:
         """Create the SAM datagram session. Returns our public destination."""
+        (self._sock, self._transport, self._control, self._session_id,
+         self._dest) = await self._create()
+        return self._dest
+
+    async def reopen(self) -> str:
+        """A NEW datagram session (new tunnels, new destination) in place of
+        the current one, which is closed once the new one is up -- we keep
+        sending on the old one meanwhile. For a call where audio stopped
+        arriving: our inbound tunnels, or the peer's cached route to them,
+        are what a fresh destination replaces. Returns the new destination,
+        which the caller announces to the group."""
+        made = await self._create()
+        old_transport, old_control = self._transport, self._control
+        (self._sock, self._transport, self._control, self._session_id,
+         self._dest) = made
+        self.stats["reopened"] += 1
+        for thing in (old_transport, old_control):
+            if thing is not None:
+                try:
+                    thing.close()
+                except Exception:
+                    pass
+        return self._dest
+
+    async def _create(self):
         host = _voice._HOST
         sam_open, read_line, parse = host["sam_open"], host["sam_read_line"], host["sam_parse"]
         if not all((sam_open, read_line, parse)):
             raise RuntimeError("SAM helpers not bound")
-        self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.bind(("127.0.0.1", 0))
-        self._sock.setblocking(False)
-        port = self._sock.getsockname()[1]
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.setblocking(False)
+        port = sock.getsockname()[1]
 
         def create():
             ctrl = sam_open(self._sam_host, self._sam_port, _voice.SAM_HELLO_TIMEOUT)
@@ -262,18 +295,21 @@ class GroupCallMedia:
             ctrl.settimeout(None)
             return ctrl, sid, blob
 
-        self._control, self._session_id, blob = await self._loop.run_in_executor(None, create)
+        try:
+            control, session_id, blob = await self._loop.run_in_executor(None, create)
+        except BaseException:
+            sock.close()
+            raise
         # Only the public half is ever announced.
-        self._dest = _voice.i2p_public_destination(blob)
+        dest = _voice.i2p_public_destination(blob)
         media = self
 
         class _Proto(asyncio.DatagramProtocol):
             def datagram_received(self, data, addr):
                 media._on_datagram(data)
 
-        self._transport, _ = await self._loop.create_datagram_endpoint(
-            _Proto, sock=self._sock)
-        return self._dest
+        transport, _ = await self._loop.create_datagram_endpoint(_Proto, sock=sock)
+        return sock, transport, control, session_id, dest
 
     def send_datagram(self, dest: str, packet: bytes) -> None:
         if self._transport is None:
@@ -332,6 +368,7 @@ class GroupCallMedia:
             return
         if not opus_frame:
             return
+        self._heard_at[who] = time.monotonic()
         self._playout.push(who, opus_frame, frame_number(ts))
 
     def _capture_loop(self) -> None:

@@ -104,6 +104,11 @@ _KEY_KINDS = (
     ("session_id", "id"),
 )
 
+#: A plain count, which no identity looks like (see `AliasBook.field`).
+_COUNT = re.compile(r"-?\d{1,12}")
+#: Keys whose value is a name that may be all digits: never passed through.
+_NAMES_ITSELF = re.compile(r"nick|occupant|resource|username|jid|account|localpart|mto|recipient|contact")
+
 #: Every hint, for callers that only want to ask "is this key an identity".
 IDENTITY_KEY_HINTS = frozenset(hint for hint, _ in _KEY_KINDS)
 
@@ -241,6 +246,14 @@ class AliasBook:
         """Alias a whole field, by name first and then by shape."""
         kind = kind_for_key(name)
         if kind is not None:
+            # A COUNT under an identity-ish key (`peers=1`, `jb_senders=2`)
+            # is a number, not somebody. Device report 2026-10-15: the group
+            # call counters came out as `peers=user-D`, `jb_dropped_senders=
+            # user-C` -- the 1 and the 0 labelled as people, which hid the
+            # one fact the report was for. A name that could be all digits
+            # (a nick, a resource, a localpart) is still aliased.
+            if _COUNT.fullmatch(str(value or "").strip()) and not _NAMES_ITSELF.search(str(name).lower()):
+                return str(value).strip()
             return self.alias(value, kind)
         return self.scrub(value)
 

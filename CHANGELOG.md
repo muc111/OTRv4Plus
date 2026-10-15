@@ -4,6 +4,34 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.74 — 2026-10-15 — group calls recover a silent leg; 🎤 and 📎 always visible (core 0.13.1)
+
+- **Group calls: one-way audio is noticed and repaired.** Device report: on
+  a two-phone call the phone that joined sent 1088 frames and received 3,
+  none refused -- its receive path died ten seconds in and nothing noticed.
+  Each phone now watches every participant's audio (constant-rate, so
+  silence means a dead path) and, when one goes quiet without having
+  paused, builds a NEW I2P datagram session (new tunnels, new destination),
+  announces it inside MLS, and the others send to it. 60 s grace for a new
+  participant, 20 s of silence after audio has flowed, at most 2 rebuilds a
+  call, 60 s apart -- as bounded as the 1:1 call's recovery.
+- **A pause is announced** to the call, so a paused member is not mistaken
+  for a lost one (older clients ignore it).
+- **Joining is quicker**: a ring now builds the I2P session in the
+  background while the user decides (announced to nobody; closed after
+  90 s if nobody joins).
+- **The diagnostics report printed counters as people**: `peers=user-D`,
+  `jb_dropped_senders=user-C` -- a 1 and a 0 labelled as identities
+  because the key names contain "peer" and "sender". A plain number is now
+  kept as a number unless the key names a name (nick, JID, resource).
+- **🎤 voice notes and 📎 files in the composer, in every encrypted
+  conversation.** They were hidden until the contact (or every group member)
+  was verified, so they could not be found. Until then a tap explains what
+  is needed; nothing is sent. The rule is unchanged. Desktop: the mic is
+  shown (disabled) the same way.
+- Pre-release notes rewritten: what has now been proved on phones, and
+  what still needs testing.
+
 ## Android 0.7.0-experimental.rc.73 — 2026-10-15 — location pins (core 0.13.1)
 
 - **Share a location, encrypted.** A 📍 button in the composer, shown only

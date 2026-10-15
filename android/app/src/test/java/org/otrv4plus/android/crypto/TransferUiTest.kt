@@ -202,4 +202,12 @@ class TransferUiTest {
         assertNull(TransferUi.groupRefusal("started"))
         assertTrue(TransferUi.refusal("cannot_scrub")!!.contains("hidden information"))
     }
+
+    @Test
+    fun `the composer buttons explain until the conversation allows sending`() {
+        assertNull(TransferUi.lockedHint(TransferUi.Offer.Available, group = false))
+        assertTrue(TransferUi.lockedHint(TransferUi.Offer.NeedsVerification, group = false)!!.contains("SMP"))
+        assertTrue(TransferUi.lockedHint(TransferUi.Offer.NeedsVerification, group = true)!!.contains("verified"))
+        assertTrue(TransferUi.lockedHint(TransferUi.Offer.NeedsEncryption, group = false)!!.contains("encrypted"))
+    }
 }

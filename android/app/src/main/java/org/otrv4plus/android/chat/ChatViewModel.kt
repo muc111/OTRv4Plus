@@ -1549,7 +1549,8 @@ class ChatViewModel : ViewModel() {
         // this only mirrors it). An ordinary room has no files at all.
         if (isRoom(jid)) {
             return if (isSecureRoom(jid))
-                TransferUi.groupOffer(groupMembers(jid)) ?: TransferUi.Offer.NeedsEncryption
+                // Members not listed yet: still encrypted, still to be verified.
+                TransferUi.groupOffer(groupMembers(jid)) ?: TransferUi.Offer.NeedsVerification
             else TransferUi.Offer.NeedsEncryption
         }
         return TransferUi.offer(conversation(jid).security)
@@ -1805,6 +1806,25 @@ class ChatViewModel : ViewModel() {
         private set
     private var voiceMode = VoiceNotes.DEFAULT
     private var voicePoll: Job? = null
+
+    /** The conversation whose file picker the composer's 📎 asked for. */
+    var pickFileFor by mutableStateOf<String?>(null)
+
+    /** 📎 in the composer: the picker if allowed here, otherwise why not. */
+    fun requestFile(jid: String) {
+        val hint = TransferUi.lockedHint(transferOffer(jid), isRoom(jid))
+        if (hint == null) { actionStatus = null; pickFileFor = ChatState.bare(jid) }
+        else actionStatus = hint
+    }
+
+    fun filePickerOpened() { pickFileFor = null }
+
+    /** 🎤 in the composer: the voice-note sheet if allowed, otherwise why not. */
+    fun requestVoice(jid: String) {
+        val hint = TransferUi.lockedHint(transferOffer(jid), isRoom(jid))
+        if (hint == null) { actionStatus = null; openVoiceSheet() }
+        else actionStatus = hint
+    }
 
     fun openVoiceSheet() {
         if (voiceSheet == null) voiceSheet = VoiceSheet.Choosing(voiceMode)

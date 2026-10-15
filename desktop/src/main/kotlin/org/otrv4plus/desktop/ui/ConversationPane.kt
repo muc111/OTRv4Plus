@@ -519,8 +519,10 @@ private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: Se
             // or a secure group): the mic. Otherwise Send.
             val voice = if (isRoom) model.chat.isSecureRoom(jid)
                         else TransferUi.offer(security) is TransferUi.Offer.Available
-            if (text.isBlank() && voice) {
-                FilledIconButton(onClick = { model.openVoiceSheet() }, enabled = canSend) {
+            // Shown in every encrypted conversation so it can be found;
+            // usable once the contact (or every group member) is verified.
+            if (text.isBlank() && locationAllowed(model, jid, isRoom, security)) {
+                FilledIconButton(onClick = { model.openVoiceSheet() }, enabled = canSend && voice) {
                     Icon(Icons.Filled.Mic, "Record a voice note")
                 }
             } else {

@@ -100,7 +100,9 @@ class TestACall:
                            for e in m.events)
             assert not any(isinstance(e, RoomMessageReceived) for e in m.events)
         # ... and travelled as MLS ciphertext, not as text in the room.
-        assert not any("ring" in body for _s, body in w.room.log)
+        # (The control message's own form; a bare "ring" also turns up by
+        # chance in tens of kilobytes of base64 ciphertext -- a flaky test.)
+        assert not any('"t":"ring"' in body or CALL_PREFIX in body for _s, body in w.room.log)
 
     def test_an_unverified_member_is_not_in_the_call(self):
         w, (a, b, c), net, now, heard = _calling(3)
@@ -328,3 +330,35 @@ def test_the_app_joins_a_verified_ring_only_with_the_microphone_allowed():
         gcb.threading.Thread = orig
     assert any(isinstance(e, GroupChanged) and e.change == "call_ringing"
                for e in b.events)                       # still shown
+
+
+class TestOneWayAudioRecovers:
+    """Device report 2026-10-15: one phone stopped receiving 10 s into a group
+    call and nothing noticed. A pause is now announced (so silence on purpose
+    is not taken for a dead path), and a rebuilt destination is announced so
+    every participant sends to it."""
+
+    def test_a_pause_is_told_to_the_others(self):
+        w, (a, b), net, now, heard = _calling(2)
+        _pair_all(w, [a, b])
+        a.calls.start(ROOM)
+        b.calls.join(ROOM)
+        assert b.calls.pause(True)
+        assert a.calls.paused_peers(ROOM) == ["bob@x.i2p"]
+        assert not b.calls.pause(False)
+        assert a.calls.paused_peers(ROOM) == []
+
+    def test_a_new_destination_is_used_once_announced(self):
+        w, (a, b), net, now, heard = _calling(2)
+        _pair_all(w, [a, b])
+        a.calls.start(ROOM)
+        b.calls.join(ROOM)
+        # Bob's old destination stops delivering; he rebuilds and announces.
+        net.drop.add("dest-bob@x.i2p")
+        a.calls.send_audio(b"\x01\x00")
+        assert heard["bob@x.i2p"] == []
+        net.calls["dest-bob-2"] = b.calls
+        b.calls._local_destination = lambda: "dest-bob-2"
+        b.calls.announce(ROOM)
+        a.calls.send_audio(b"\x02\x00")
+        assert heard["bob@x.i2p"] == [("alice@x.i2p", b"\x02\x00")]
