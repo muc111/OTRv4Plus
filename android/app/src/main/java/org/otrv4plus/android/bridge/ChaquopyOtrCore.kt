@@ -1666,7 +1666,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     runCatching {
                         item.callAttr("get", "emojis")?.asList()?.map { it.toString() }
                     }.getOrNull() ?: emptyList(),
-                    flag("outgoing"), str("source"))
+                    flag("outgoing"), str("source"), str("sender"))
+
+            "RoomMessageAcked" ->
+                OtrEvent.RoomMessageAcked(str("peer"), str("message_id"), str("stanza_id"))
 
             "MessageSentElsewhere" ->
                 OtrEvent.MessageSentElsewhere(
@@ -1686,7 +1689,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     str("peer"), str("sender"), str("body"), num("timestamp"),
                     encrypted = flag("encrypted"),
                     senderIdentity = str("sender_identity"),
-                    verified = flag("verified"))
+                    verified = flag("verified"),
+                    messageId = str("message_id"),
+                    replyTo = str("reply_to"),
+                    source = str("source").ifBlank { "live" },
+                    own = flag("own"))
 
             "GroupInvite" ->
                 OtrEvent.GroupInvited(str("peer"), str("room"), flag("verified"))

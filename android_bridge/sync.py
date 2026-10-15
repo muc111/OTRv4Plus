@@ -302,7 +302,16 @@ class SyncMixin:
                     or xml.find("{%s}sent" % S.NS["carbons"]) is not None):
                 self._on_carbon(xml, own)
                 return
-            if xml.get("type") in ("groupchat", "error"):
+            if xml.get("type") == "groupchat":
+                # A room's reaction carries no body, so the room plugin never
+                # sees it (it only matches messages with one).
+                body = xml.find("{jabber:client}body")
+                if body is None and xml.find("{urn:xmpp:reactions:0}reactions") is not None:
+                    on_bodiless = getattr(self, "_on_room_bodiless", None)
+                    if on_bodiless is not None:
+                        on_bodiless(xml)
+                return
+            if xml.get("type") == "error":
                 return
             sender = (xml.get("from") or "").split("/", 1)[0].lower()
             if not sender or sender == own:
@@ -452,9 +461,13 @@ class SyncMixin:
         _TRACE.record("sync", "archive_read", "info", count=shown)
         return shown
 
-    async def _archive_page(self, plan: Dict[str, Any]):
+    async def _archive_page(self, plan: Dict[str, Any], room: str = ""):
+        """One page of our own archive, or of [room]'s (XEP-0313 §4.1.1 with
+        to = the room). Results are only taken from whom we asked."""
         client = self._client
         iq = client.make_iq_set()
+        if room:
+            iq["to"] = room
         query_id = iq["id"]
         q = ET.SubElement(iq.xml, "{%s}query" % S.NS["mam"])
         q.set("queryid", query_id)
@@ -467,7 +480,8 @@ class SyncMixin:
         if plan.get("after"):
             ET.SubElement(rsm, "{%s}after" % NS_RSM).text = plan["after"]
         collected: List[Any] = []
-        self._sync()["queries"][query_id] = collected
+        source = (room or self._own_bare_jid()).split("/", 1)[0].lower()
+        self._sync()["queries"][query_id] = (collected, source)
         try:
             result = await iq.send(timeout=ARCHIVE_TIMEOUT)
         finally:
@@ -481,20 +495,28 @@ class SyncMixin:
                 fin_last = el.text.strip()[:128]
         own = self._own_bare_jid()
         page = []
+        if room:
+            import otrv4plus_roomsync as RS
         for xml in collected:
-            got = S.parse_archive_result(xml, own, query_id)
+            got = (RS.parse_room_archive(xml, room, query_id) if room
+                   else S.parse_archive_result(xml, own, query_id))
             if got is not None:
                 page.append(got)
         return page, fin_last, complete
 
     def _on_archive_result(self, xml: ET.Element, own: str) -> None:
         result = xml.find("{%s}result" % S.NS["mam"])
-        sender = xml.get("from")
-        if sender is not None and sender.split("/", 1)[0].lower() != own:
-            return
         query_id = result.get("queryid") or ""
-        bucket = self._sync()["queries"].get(query_id)
-        if bucket is not None and len(bucket) < 10 * S.PAGE:
+        entry = self._sync()["queries"].get(query_id)
+        if entry is None:
+            return
+        bucket, source = entry
+        # Only from whom we asked: our own server for our archive (no 'from'
+        # means our own account), the room itself for a room's.
+        sender = (xml.get("from") or own).split("/", 1)[0].lower()
+        if sender != source:
+            return
+        if len(bucket) < 10 * S.PAGE:
             bucket.append(xml)
 
     def forget_sync(self) -> None:

@@ -50,7 +50,7 @@ from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ChatStateChanged, ErrorOccurred, Event, EventSink, FingerprintChanged,
     HistorySynced, MessageChanged, MessageDelivered, MessageDisplayed, MessageReceived,
-    MessageSentElsewhere, OtrCapabilityChanged, QueuedSent, RoomMessageReceived,
+    MessageSentElsewhere, OtrCapabilityChanged, QueuedSent, RoomMessageAcked, RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
     call_state_from_engine, security_state_from_level, smp_state_from_status,
 )
@@ -554,8 +554,16 @@ class OtrApp:
         if peer in self._rooms:
             raise BridgeError(code, "rooms are not end-to-end encrypted")
 
+    def _room_refs(self):
+        refs = getattr(self, "_room_refs_table", None)
+        if refs is None:
+            import otrv4plus_roomsync as _rs
+            refs = self._room_refs_table = _rs.RoomRefs()
+        return refs
+
     def receive_room_message(self, room: str, nick: str, body: str,
-                             timestamp: float = 0.0, own: bool = False) -> None:
+                             timestamp: float = 0.0, own: bool = False,
+                             item: Any = None) -> None:
         """A room message from the transport. Emitted as its own event type,
         never as `MessageReceived`: nothing downstream may confuse a room's
         plaintext with a peer's decrypted text.
@@ -568,6 +576,14 @@ class OtrApp:
         if room not in self._rooms:
             return
         groups = self._groups
+        secure = groups is not None and groups.is_secure(room)
+        if item is not None and (item.action or not body) and secure:
+            # A plaintext action on a secure group's message is not
+            # authenticated: ignored, never applied.
+            return
+        if not secure and item is not None and self._plain_room_item(room, nick, body,
+                                                                      timestamp, own, item):
+            return
         if groups is not None:
             try:
                 if groups.on_room_body(room, nick, body, timestamp, own=own):
@@ -587,6 +603,62 @@ class OtrApp:
             return
         self._emit(RoomMessageReceived(peer=room, sender=nick, body=body,
                                        timestamp=timestamp))
+
+    def _room_action(self, room: str, action: str, target_id: str, body: str,
+                     emojis: Any, message_id: str) -> str:
+        """A correction, deletion or reaction in a PLAIN room, with the
+        standard elements. A correction names the message's own id
+        (XEP-0308); a deletion or reaction names the room's (XEP-0424/-0444)."""
+        if room in self._keyless_groups:
+            return self.SEND_FAILED
+        send = getattr(self._transport, "send_room_message", None)
+        if send is None:
+            return self.SEND_FAILED
+        emojis = _actions.clean_emojis(list(emojis or []))
+        if action == "edit":
+            if not (body or "").strip():
+                return self.SEND_FAILED
+            target, text = self._room_refs().own_id_of(room, target_id), body
+        elif action == "retract":
+            target, text = target_id, _actions.RETRACT_FALLBACK
+        else:
+            target, text = target_id, None
+        message_id = message_id if _actions.valid_id(message_id) else _new_message_id()
+        try:
+            send(room, text, message_id=message_id,
+                 elements=_actions.action_elements(action, target, emojis))
+        except Exception:
+            return self.SEND_FAILED
+        return self.SEND_PLAINTEXT
+
+    def _plain_room_item(self, room: str, nick: str, body: str, timestamp: float,
+                         own: bool, item: Any) -> bool:
+        """A plain room message with its ids (otrv4plus_roomsync). True if it
+        was handled here (an echo, an action, or a message with ids)."""
+        refs = self._room_refs()
+        refs.remember(room, item.own_id, item.ref)
+        if not refs.first_time(item):
+            return True
+        if own and item.source != "archive":
+            # The room's id for a message we sent: say so, show nothing.
+            if item.own_id and item.stanza_id:
+                self._emit(RoomMessageAcked(peer=room, message_id=item.own_id,
+                                            stanza_id=item.stanza_id))
+            return True
+        if item.action:
+            self._emit(MessageChanged(
+                peer=room, action=item.action, target_id=refs.resolve(room, item.target),
+                body=body if item.action == "edit" else "",
+                emojis=tuple(item.emojis), outgoing=own, source=item.source,
+                sender="" if own else nick))
+            return True
+        if not body or body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
+            return False
+        self._emit(RoomMessageReceived(
+            peer=room, sender=nick, body=body, timestamp=timestamp,
+            message_id=item.ref, reply_to=refs.resolve(room, item.reply) if item.reply else "",
+            source=item.source, own=own))
+        return True
 
     # -- secure groups (MLS) ---------------------------------------------------
 
@@ -1779,7 +1851,15 @@ class OtrApp:
             if sender is None:
                 return self.SEND_FAILED
             try:
-                sender(peer, body)
+                if _actions.valid_id(message_id):
+                    extra = (_actions.action_elements("reply", reply_to)
+                             if _actions.valid_id(reply_to) else [])
+                    try:
+                        sender(peer, body, message_id=message_id, elements=extra)
+                    except TypeError:          # a transport without ids
+                        sender(peer, body)
+                else:
+                    sender(peer, body)
             except Exception:
                 return self.SEND_FAILED
             return self.SEND_PLAINTEXT
@@ -2109,9 +2189,11 @@ class OtrApp:
         peer = self.canonical_peer(peer)
         if action not in _actions.ACTIONS or not _actions.valid_id(target_id):
             return self.SEND_FAILED
-        if self._transport is None or peer in self._rooms or (
+        if self._transport is None or (
                 self._groups is not None and self._groups.is_secure(peer)):
             return self.SEND_FAILED
+        if peer in self._rooms:
+            return self._room_action(peer, action, target_id, body, emojis, message_id)
         message_id = message_id if _actions.valid_id(message_id) else _new_message_id()
         emojis = _actions.clean_emojis(list(emojis or []))
         text = body if action == "edit" else ""

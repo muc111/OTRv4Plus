@@ -304,7 +304,7 @@ class AppModel(
 
     fun canAct(m: Message): Boolean =
         m.wireId.isNotEmpty() && !m.retracted &&
-            m.security != org.otrv4plus.android.chat.SecurityLabel.SYSTEM && !chat.isRoom(m.conversationId)
+            m.security != org.otrv4plus.android.chat.SecurityLabel.SYSTEM && !chat.isSecureRoom(m.conversationId)
 
     fun startReply(m: Message) { editing = null; replyingTo = m; changed() }
 

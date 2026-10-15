@@ -40,7 +40,7 @@ __all__ = [
     "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
     "GroupInvite", "GroupChanged",
     "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
-    "MessageChanged",
+    "MessageChanged", "RoomMessageAcked",
 ]
 
 
@@ -254,6 +254,15 @@ class RoomMessageReceived(Event):
     encrypted: bool = False
     sender_identity: str = ""
     verified: bool = False
+    #: A plain room's reference for it (the room's stanza-id, else the
+    #: sender's id): what replies, deletions and reactions name. "" if none.
+    message_id: str = ""
+    #: The reference this message replies to (XEP-0461), or "".
+    reply_to: str = ""
+    #: "live" or "archive" (the room's XEP-0313 history: no sound).
+    source: str = "live"
+    #: Written by us: our own message, found in the room's archive.
+    own: bool = False
 
 
 @dataclass(frozen=True)
@@ -319,6 +328,19 @@ class MessageChanged(Event):
     emojis: tuple = ()
     outgoing: bool = False
     source: str = "live"
+    #: In a ROOM: the nickname that acted. The UI applies a correction or a
+    #: deletion only to a message from the same nickname. "" in a 1:1 chat.
+    sender: str = ""
+
+
+@dataclass(frozen=True)
+class RoomMessageAcked(Event):
+    """The room `peer` reflected our message `message_id` back and gave it
+    the id `stanza_id`, which other occupants' reactions and deletions will
+    name. The UI keeps knowing the message by it."""
+
+    message_id: str = ""
+    stanza_id: str = ""
 
 
 @dataclass(frozen=True)

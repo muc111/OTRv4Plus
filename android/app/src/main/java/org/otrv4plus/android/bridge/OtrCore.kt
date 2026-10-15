@@ -942,7 +942,14 @@ sealed interface OtrEvent {
         val peer: String, val action: String, val targetId: String,
         val body: String, val emojis: List<String>, val outgoing: Boolean,
         val source: String,
+        /** In a room: the nickname that acted; "" in a 1:1 chat. */
+        val sender: String = "",
     ) : OtrEvent
+
+    /** The room reflected our message [messageId] and gave it [stanzaId],
+     *  the id other occupants' reactions and deletions name. */
+    data class RoomMessageAcked(val room: String, val messageId: String,
+                                val stanzaId: String) : OtrEvent
 
     /** Our message [messageId] reached [peer]'s device (XEP-0184). */
     data class MessageDelivered(val peer: String, val messageId: String) : OtrEvent
@@ -979,6 +986,12 @@ sealed interface OtrEvent {
         val encrypted: Boolean = false,
         val senderIdentity: String = "",
         val verified: Boolean = false,
+        /** A plain room's reference for it (its stanza-id), or "". */
+        val messageId: String = "",
+        val replyTo: String = "",
+        val source: String = "live",
+        /** Our own message, found in the room's archive. */
+        val own: Boolean = false,
     ) : OtrEvent
 
     /** [peer] invited us to the secure group [room], over OTRv4+. Never auto-accepted. */

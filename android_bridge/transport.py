@@ -61,6 +61,7 @@ import otrv4plus_registration as _registration
 from .app import Transport
 from .sync import SyncMixin
 from .account_sync import AccountSyncMixin
+from .room_sync import RoomSyncMixin
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
 
@@ -822,7 +823,7 @@ def _accepts_meta(fn) -> bool:
         return False
 
 
-class XmppTransport(SyncMixin, AccountSyncMixin, Transport):
+class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     """Carries OTR payloads between `OtrApp` and an XMPP server over I2P."""
 
     def __init__(
@@ -2346,12 +2347,26 @@ class XmppTransport(SyncMixin, AccountSyncMixin, Transport):
                 _log.warning("the room-joined handler raised")
         for args, kwargs in held or ():
             self._deliver_room_message(*args, **kwargs)
+        # Then what the room archived while we were away (XEP-0313).
+        after = getattr(self, "_room_after_join", None)
+        if after is not None:
+            after(str(room))
 
     def _deliver_room_message(self, *args, **kwargs) -> None:
         if getattr(self, "_on_room_message", None) is None:
             return
         try:
-            self._on_room_message(*args, **kwargs)
+            try:
+                self._on_room_message(*args, **kwargs)
+            except TypeError:
+                # A handler that predates room ids takes no `item`.
+                if "item" not in kwargs:
+                    raise
+                item = kwargs.get("item")
+                kwargs = {k: v for k, v in kwargs.items() if k != "item"}
+                # Never an action shown as if it were text.
+                if args[2] and not getattr(item, "action", ""):
+                    self._on_room_message(*args, **kwargs)
         except Exception:
             _log.warning("the room message handler raised")
 
@@ -2425,10 +2440,18 @@ class XmppTransport(SyncMixin, AccountSyncMixin, Transport):
         if not body or not nick:
             return
         own = nick == self._our_nick(room)
-        # Our own reflection is dropped -- except a secure group's MLS frames,
-        # which need it: a commit learns it won the epoch by coming back
-        # first (android_bridge.groups). Plain text of ours stays dropped.
+        try:
+            item = self._room_item(stanza.xml)
+        except Exception:
+            item = None
+        # Our own reflection is not shown again -- except a secure group's MLS
+        # frames, which need it: a commit learns it won the epoch by coming
+        # back first (android_bridge.groups). A plain one goes up only to say
+        # which id the room gave our message (its stanza-id), which is what
+        # reactions and deletions in a room name.
         if own and not body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
+            if item is not None and item.own_id and item.stanza_id:
+                self._room_route(room, nick, "", item.when, True, item)
             return
         stamp = 0.0
         try:
@@ -2441,6 +2464,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, Transport):
             args, kwargs = (room, nick, body, stamp or time.time()), {"own": True}
         else:
             args, kwargs = (room, nick, body, stamp or time.time()), {}
+        if item is not None:
+            kwargs["item"] = item
         held = self._held().get(self._room_key(room))
         if held is not None:
             # Our join is still completing: hold it, bounded, for _end_join.
@@ -2449,21 +2474,33 @@ class XmppTransport(SyncMixin, AccountSyncMixin, Transport):
             return
         self._deliver_room_message(*args, **kwargs)
 
-    def send_room_message(self, room: str, body: str, volatile: bool = False) -> None:
+    def send_room_message(self, room: str, body: Optional[str], volatile: bool = False,
+                          message_id: str = "", elements=None) -> None:
         """Send plaintext to a room we are in. Raises TransportError.
 
         `volatile`: with a no-store hint (XEP-0334), so the room keeps it out
-        of its history (a secure group's file pieces)."""
+        of its history (a secure group's file pieces). `message_id`: the id
+        (and XEP-0359 origin-id) a person's message carries, so replies,
+        corrections and reactions can name it. `elements`: a plain room
+        action's XEP elements (otrv4plus_actions); `body` may then be None
+        (a reaction has none)."""
         if not self.is_connected:
             raise TransportError("not_connected", "not connected")
-        self._send_now(self._send_room(room, body, volatile), CALL_TIMEOUT)
+        self._send_now(self._send_room(room, body, volatile, message_id, elements),
+                       CALL_TIMEOUT)
 
-    async def _send_room(self, room: str, body: str, volatile: bool = False) -> None:
-        if not volatile:
+    async def _send_room(self, room: str, body: Optional[str], volatile: bool = False,
+                         message_id: str = "", elements=None) -> None:
+        if not volatile and not message_id and not elements:
             self._client.send_message(mto=room, mbody=body, mtype="groupchat")
             return
         msg = self._client.make_message(mto=room, mbody=body, mtype="groupchat")
-        msg.append(_muc.no_store_hint())
+        if message_id:
+            msg["id"] = message_id
+        for el in self._room_extras(message_id, elements):
+            msg.xml.append(el)
+        if volatile:
+            msg.append(_muc.no_store_hint())
         msg.send()
 
     def room_occupants(self, room: str) -> "tuple[str, str, list]":

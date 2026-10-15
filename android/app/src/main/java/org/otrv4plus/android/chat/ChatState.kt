@@ -435,6 +435,7 @@ class ChatState(
             is OtrEvent.MessageReceived -> receive(event)
             // Ticks: never a notification.
             is OtrEvent.MessageDelivered -> { markDelivered(event.peer, event.messageId); false }
+            is OtrEvent.RoomMessageAcked -> { ackRoom(event); false }
             is OtrEvent.MessageDisplayed -> { markSeenUpTo(event.peer, event.messageId); false }
             // Written by us elsewhere: stored, never announced.
             is OtrEvent.MessageSentElsewhere -> receiveElsewhere(event)
@@ -446,7 +447,7 @@ class ChatState(
             // A correction, deletion or reaction: shown, never announced.
             is OtrEvent.MessageChanged -> {
                 applyChange(event.peer, event.action, event.targetId, event.body,
-                            event.emojis, event.outgoing)
+                            event.emojis, event.outgoing, event.sender)
                 false
             }
             // Stored, never announced: a busy room would otherwise buzz the
@@ -830,6 +831,15 @@ class ChatState(
         GroupText.describe(event)?.let { note(it) }
     }
 
+    /** The room gave our message [OtrEvent.RoomMessageAcked.stanzaId]: know
+     *  it by that from now on, which is what others' reactions name. */
+    fun ackRoom(event: OtrEvent.RoomMessageAcked) {
+        val room = bare(event.room)
+        val m = store.messages(room).lastOrNull { it.outgoing && it.wireId == event.messageId }
+            ?: return
+        if (event.stanzaId.isNotEmpty()) store.update(m.copy(wireId = event.stanzaId))
+    }
+
     fun receiveRoom(event: OtrEvent.RoomMessageReceived): Boolean {
         val room = bare(event.room)
         rooms.add(room)
@@ -839,20 +849,26 @@ class ChatState(
         // A rejoin replays the room's history. What was said before the user
         // deleted this chat stays deleted: see DeletedConversations.
         if (deleted.predatesDeletion(room, at)) return false
+        // The same message live, replayed on join and in the archive: once.
+        if (event.messageId.isNotEmpty() && findByWireId(room, event.messageId) != null) return false
+        val quoted = if (event.replyTo.isEmpty()) "" else findByWireId(room, event.replyTo)?.let(::quoteOf).orEmpty()
         val added = store.append(
             Message(
                 id = MessageId.room(room, event.sender, at, event.body),
                 conversationId = room,
                 body = event.body,
-                outgoing = false,
+                outgoing = event.own,
+                wireId = event.messageId,
+                replyTo = event.replyTo,
+                replyPreview = quoted,
                 at = at,
                 // ENCRYPTED only when MLS decrypted it (an OTRv4Plus secure
                 // group); any other room is plaintext -- XEP-0045 has no
                 // end-to-end encryption, whatever the room's settings say.
                 security = if (event.encrypted) SecurityLabel.ENCRYPTED
                            else SecurityLabel.PLAINTEXT,
-                sendState = SendState.NONE,
-                sender = event.sender,
+                sendState = if (event.own) SendState.SENT else SendState.NONE,
+                sender = if (event.own) "" else event.sender,
             )
         )
         if (added) deleted.restore(room)
@@ -1249,22 +1265,25 @@ class ChatState(
      * on anyone's message, and replaces that reactor's previous set.
      */
     fun applyChange(peer: String, action: String, targetId: String, body: String,
-                    emojis: List<String>, outgoing: Boolean): Boolean {
+                    emojis: List<String>, outgoing: Boolean, sender: String = ""): Boolean {
         val jid = bare(peer)
         val target = findByWireId(jid, targetId) ?: return false
+        // In a room the author is a nickname: theirs may change only theirs.
+        val sameAuthor = target.outgoing == outgoing &&
+            (outgoing || sender.isEmpty() || target.sender == sender)
         return when (action) {
             "edit" -> {
-                if (target.outgoing != outgoing || target.retracted || body.isBlank()) return false
+                if (!sameAuthor || target.retracted || body.isBlank()) return false
                 store.update(target.copy(body = body, edited = true))
             }
             "retract" -> {
-                if (target.outgoing != outgoing) return false
+                if (!sameAuthor) return false
                 store.update(target.copy(body = "", retracted = true, reactions = emptyMap(),
                                          edited = false))
             }
             "react" -> {
                 if (target.retracted) return false
-                val who = if (outgoing) "me" else jid
+                val who = if (outgoing) "me" else sender.ifEmpty { jid }
                 val next = LinkedHashMap(target.reactions)
                 val clean = emojis.map { it.trim() }.filter { it.isNotEmpty() && it.length <= 32 }
                     .distinct().take(16)

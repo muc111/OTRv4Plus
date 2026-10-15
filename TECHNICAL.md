@@ -1788,6 +1788,16 @@ code, and `dake.rs` and `ratchet.rs` had none between them. RT-1 is precisely
 what one unit test catches — decrypt a corrupted frame, then a valid one, and
 assert the valid one still works.
 
+## Rooms (rc.68)
+
+Plain XEP-0045 rooms carry message ids (XEP-0359 origin-id; the room's
+stanza-id, accepted only with by = the room), replies, corrections,
+deletions and reactions with the standard XEP elements
+(`otrv4plus_roomsync`, `android_bridge/room_sync.py`), and are caught up
+from the room's own archive (XEP-0313, per-room cursor) after each join.
+The author rule is by nickname. Secure groups (MLS) never apply a
+plaintext action.
+
 ## Voice notes (rc.66)
 
 Recorded into memory, disguised on the device by `Rust/src/voice_mask.rs`

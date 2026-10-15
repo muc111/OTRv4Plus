@@ -276,7 +276,8 @@ def test_the_archive_shows_plaintext_only_and_never_twice():
 
 def test_results_for_someone_elses_query_or_archive_are_ignored():
     t, c, _ = transport()
-    bucket = t._sync()["queries"].setdefault("q9", [])
+    bucket = []
+    t._sync()["queries"]["q9"] = (bucket, ME)
     foreign = ET.fromstring(
         "<message xmlns='jabber:client' from='%s'><result xmlns='urn:xmpp:mam:2' "
         "queryid='q9' id='Z'/></message>" % BOB)

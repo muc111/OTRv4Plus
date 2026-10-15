@@ -1075,11 +1075,13 @@ class ChatViewModel : ViewModel() {
     var actionStatus by mutableStateOf<String?>(null)
         private set
 
-    /** Actions need a wire id, and are for one-to-one conversations. */
+    /** Actions need a wire id. One-to-one conversations and plain rooms
+     *  (standard XEPs); not yet secure groups, whose actions would have to
+     *  travel inside MLS. */
     fun canAct(m: Message): Boolean {
         val state = this.state ?: return false
         return m.wireId.isNotEmpty() && !m.retracted &&
-            m.security != SecurityLabel.SYSTEM && !state.isRoom(m.conversationId)
+            m.security != SecurityLabel.SYSTEM && !state.isSecureRoom(m.conversationId)
     }
 
     fun startReply(m: Message) { editing = null; replyingTo = m; actionsFor = null }

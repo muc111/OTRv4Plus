@@ -75,6 +75,7 @@ on:
       - "otrv4plus_actions.py"
       - "otrv4plus_termsync.py"
       - "otrv4plus_voicenote.py"
+      - "otrv4plus_roomsync.py"
       - "otrv4plus_mediapath.py"
       - "otrv4plus_mode.py"
       - "otrv4plus_muc.py"

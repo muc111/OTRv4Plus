@@ -454,7 +454,9 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "MessageChanged" -> OtrEvent.MessageChanged(
                     str("peer"), str("action"), str("target_id"), str("body"),
                     (e["emojis"] as? kotlinx.serialization.json.JsonArray).orEmpty().map { it.asStr() },
-                    flag("outgoing"), str("source"))
+                    flag("outgoing"), str("source"), str("sender"))
+                "RoomMessageAcked" -> OtrEvent.RoomMessageAcked(
+                    str("peer"), str("message_id"), str("stanza_id"))
                 "MessageSentElsewhere" -> OtrEvent.MessageSentElsewhere(
                     str("peer"), str("body"), num("timestamp"), str("message_id"), str("source"))
                 "MessageDisplayed" -> OtrEvent.MessageDisplayed(str("peer"), str("message_id"))
@@ -463,7 +465,9 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "RoomMessageReceived" -> OtrEvent.RoomMessageReceived(
                     str("peer"), str("sender"), str("body"), num("timestamp"),
                     encrypted = flag("encrypted"), senderIdentity = str("sender_identity"),
-                    verified = flag("verified"))
+                    verified = flag("verified"), messageId = str("message_id"),
+                    replyTo = str("reply_to"), source = str("source").ifBlank { "live" },
+                    own = flag("own"))
                 "GroupInvite" -> OtrEvent.GroupInvited(str("peer"), str("room"), flag("verified"))
                 "GroupChanged" -> OtrEvent.GroupChanged(
                     str("peer"), str("change"), e["epoch"].asLong(), str("detail"))

@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.68 — 2026-10-15 — rooms: replies, corrections, deletion, reactions, history (core 0.13.1)
+
+- **Ordinary group rooms now have reply, correct, delete for everyone and
+  react** (XEP-0461/-0308/-0424/-0444), on Android and the desktop, using
+  the standard elements so they work with Conversations, Gajim and Dino in
+  the same room. A correction or deletion only applies to a message from
+  the same nickname. Plain rooms are plaintext and controlled by their
+  server, which is said in the room.
+- **Room history from the room's archive (XEP-0313 on the MUC).** When you
+  join, what the room archived since you last saw it comes in (its newest
+  page the first time), without a sound and without duplicates. Your own
+  earlier lines show as yours.
+- Each room message is known by the id the room gave it (XEP-0359 stanza-id,
+  taken only from the room itself), which is what reactions and deletions
+  name; your own message takes that id when the room reflects it.
+- Secure (MLS) groups ignore all of these plaintext actions: a plaintext
+  action is never applied to an encrypted group's message.
+
 ## Android 0.7.0-experimental.rc.67 — 2026-10-15 — voice notes: Synthetic by default (core 0.13.1)
 
 - Voice notes now start in **Synthetic**, the setting a speaker
