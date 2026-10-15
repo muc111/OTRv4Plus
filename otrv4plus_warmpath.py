@@ -39,6 +39,26 @@ KEEP_SECONDS = 600.0
 BUILD_TIMEOUT = 240.0
 #: After a failed build, wait this long before the next request may retry.
 RETRY_AFTER = 30.0
+#: While held (signed in), how often the spare is checked and replaced.
+CHECK_SECONDS = 20.0
+
+
+def _alive(spare: "Spare") -> bool:
+    """Whether the router still holds the spare's session: SAM ends a
+    session by closing its control connection, which reads as EOF."""
+    ctrl = spare.control
+    if not isinstance(ctrl, socket.socket):
+        return True
+    try:
+        ctrl.setblocking(False)
+        try:
+            return ctrl.recv(1, socket.MSG_PEEK) != b""
+        except (BlockingIOError, InterruptedError):
+            return True
+        finally:
+            ctrl.setblocking(True)
+    except OSError:
+        return False
 
 
 class Spare:
@@ -113,7 +133,12 @@ class WarmPath:
         self._wanted_until = 0.0
         self._failed_at = 0.0
         self._endpoint: Optional[Tuple[str, int]] = None
-        self.stats = {"built": 0, "taken": 0, "expired": 0, "failed": 0}
+        #: Signed in: keep a spare ready for as long as the session lasts.
+        self._held = False
+        self._stop = threading.Event()
+        self._monitor: Optional[threading.Thread] = None
+        self.alive: Callable[[Spare], bool] = _alive
+        self.stats = {"built": 0, "taken": 0, "expired": 0, "failed": 0, "dead": 0}
 
     # -- asked by the app ---------------------------------------------------
 
@@ -123,7 +148,7 @@ class WarmPath:
         with self._lock:
             now = self._clock()
             self._endpoint = (sam_host, int(sam_port))
-            self._wanted_until = now + self._keep
+            self._wanted_until = max(self._wanted_until, now + self._keep)
             start = (self._spare is None and not self._building
                      and now - self._failed_at >= RETRY_AFTER)
             if start:
@@ -131,6 +156,61 @@ class WarmPath:
         if start:
             self._start_build()
         return self.state()
+
+    def hold(self, sam_host: str, sam_port: int, check: float = CHECK_SECONDS) -> str:
+        """Owner (2026-10-15): "prepare the phone tunnel as soon as user logs
+        in, and just keep it running in background". From sign-in until
+        `close`: a spare is built now, checked every [check] seconds (a
+        session the router dropped is replaced), and replaced at once when a
+        call takes it. Not tied to any conversation being open."""
+        with self._lock:
+            self._endpoint = (sam_host, int(sam_port))
+            self._held = True
+            self._wanted_until = float("inf")
+            self._stop.clear()
+            start_monitor = self._monitor is None or not self._monitor.is_alive()
+        self.check()
+        if start_monitor and check > 0:
+            def watch():
+                while not self._stop.wait(check):
+                    if not self._held:
+                        return
+                    self.check()
+            self._monitor = threading.Thread(target=watch, name="otrv4plus-warmpath-watch",
+                                             daemon=True)
+            self._monitor.start()
+        return self.state()
+
+    def check(self) -> None:
+        """Replace a dead spare; start a build if there is none and one is
+        wanted (and the last failure is RETRY_AFTER old)."""
+        with self._lock:
+            dead = self._spare
+        if dead is not None:
+            try:
+                ok = self.alive(dead)
+            except Exception:
+                ok = False
+            if ok:
+                dead = None
+            else:
+                with self._lock:
+                    if self._spare is dead:
+                        self._spare = None
+                        self.stats["dead"] += 1
+                    else:
+                        dead = None
+        if dead is not None:
+            dead.close()
+        with self._lock:
+            now = self._clock()
+            start = (self._endpoint is not None and self._spare is None
+                     and not self._building and now < self._wanted_until
+                     and now - self._failed_at >= RETRY_AFTER)
+            if start:
+                self._building = True
+        if start:
+            self._start_build()
 
     def state(self) -> str:
         """"ready", "warming" or "cold" (and expires a stale spare)."""
@@ -145,7 +225,10 @@ class WarmPath:
         still kept for (0 when cold). No destination."""
         state = self.state()
         with self._lock:
-            left = max(0.0, self._wanted_until - self._clock()) if state != "cold" else 0.0
+            if state == "cold" or self._held or self._wanted_until == float("inf"):
+                left = 0.0                        # held: no countdown to show
+            else:
+                left = max(0.0, self._wanted_until - self._clock())
         return {"state": state, "seconds_left": int(left)}
 
     # -- asked by a call ------------------------------------------------------
@@ -178,6 +261,8 @@ class WarmPath:
         with self._lock:
             spare, self._spare = self._spare, None
             self._wanted_until = 0.0
+            self._held = False
+        self._stop.set()
         if spare is not None:
             spare.close()
 

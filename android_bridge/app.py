@@ -2849,6 +2849,26 @@ class OtrApp:
         except Exception:
             return cold
 
+    def keep_call_path_ready(self) -> Dict[str, Any]:
+        """From sign-in until disconnect: keep the next call's I2P path built
+        and replace it when it dies or a call takes it
+        (`otrv4plus_warmpath.WarmPath.hold`). Owner, 2026-10-15: "prepare
+        the phone tunnel as soon as user logs in, and just keep it running".
+        Nothing where voice cannot run."""
+        cold = {"state": "cold", "seconds_left": 0}
+        if self._wiped or self.voice_unavailable_reason():
+            return cold
+        try:
+            if self.calls._ensure_manager() is None:
+                return cold
+            import otrv4plus_warmpath
+            host, port = self.sam_endpoint
+            otrv4plus_warmpath.WARM.hold(host, int(port))
+            _TRACE.record("calls", "call_path_held", "info")
+            return otrv4plus_warmpath.WARM.describe()
+        except Exception:
+            return cold
+
     def call_path_state(self) -> Dict[str, Any]:
         """The same answer as `warm_call_path`, without asking for a build."""
         try:

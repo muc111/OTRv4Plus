@@ -167,8 +167,8 @@ Reported on 2026-10-15, two phones (Android 15), app to app, through the
   the test call: the phone that joined sent 1088 frames and received 3.
   rc.74 adds a receive watchdog that rebuilds the silent leg (below);
   **re-test needed**;
-- **disguised voice notes**: every mode was understandable, and Synthetic
-  is now the default (rc.66-rc.67);
+- **voice notes in "My voice"**; Disguised and Synthetic whistled on the
+  phone and are rebuilt in rc.77 (re-test);
 - **location pins** (rc.73): the 📍 button, a GPS-only fix, and the pin
   received as a card;
 - the **bottom bar** on every main screen (rc.71).
@@ -211,10 +211,12 @@ Asserted on every run rather than assumed:
   pressed, so joining is quicker. Please send the **diagnostics report from
   BOTH phones** after a group call: the counters (\`peers\`, \`rx\`, \`tx\`,
   \`reopened\`) now print as numbers instead of labels.
-- **The phone's colours** (rc.76): open a verified chat or group and watch
-  the phone go red, amber, then green (usually under 2 minutes on a warm
-  router); a call placed while it is green should start without the
-  30-120 s wait, on both sides once both have the chat open.
+- **Disguised and Synthetic voice notes** (rc.77, rebuilt): no whistle;
+  record the same sentence in each mode and compare with "My voice".
+- **The phone's colours** (rc.77): the call path is built right after sign-in
+  and kept; the phone should turn green on BOTH phones within a few minutes
+  of signing in, in any chat, and a call placed while green should start
+  without the 30-120 s wait.
 - **The hang-up crash fix** (rc.75): hang up 1:1 and group calls on both
   phones, several times.
 - **The composer's 🎤 voice-note and 📎 file buttons** (rc.74): now shown

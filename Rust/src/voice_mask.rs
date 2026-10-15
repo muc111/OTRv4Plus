@@ -23,20 +23,26 @@
 //! ==========================================================
 //!   1. Resample to 16 kHz mono. Everything above 8 kHz -- where much of the
 //!      microphone's and the speaker's fine detail lives -- is gone.
-//!   2. Channel normalisation: the recording's long-term spectral tilt (the
-//!      microphone, the room, the distance) is measured and removed, and a
-//!      FIXED reference tilt put in its place.
+//!   2. Channel normalisation: the recording's long-term spectrum (the
+//!      microphone, the room, the distance) is replaced by a FIXED reference
+//!      (for Disguise and Synthetic, the standard long-term speech spectrum,
+//!      applied at the end of step 7).
 //!   3. A noise gate: room tone and background between words are removed.
-//!   4. Source/filter separation (20th-order LPC, 30 ms frames).
-//!   5. The filter -- the vocal tract -- is warped with the McAdams
-//!      coefficient (the VoicePrivacy Challenge baseline B2): every formant
-//!      moves, by a different amount, non-linearly.
-//!   6. The source is pitch-shifted and the speaking rate changed (WSOLA), so
-//!      rhythm and pitch both move, independently.
-//!   7. SYNTHETIC mode throws the source away entirely and drives the warped
-//!      vocal tract with a generated, monotone pulse train: no glottal pulse
-//!      shape, no breathiness, no jitter, no intonation of the speaker's is
-//!      left. It sounds like a vocoder. It is the strongest setting.
+//!   4. Short-time spectra (32 ms, 8 ms hop); each frame's smooth spectral
+//!      ENVELOPE (the vocal tract) by cepstral liftering.
+//!   5. The envelope is warped along frequency twice: the McAdams warp
+//!      (the VoicePrivacy Challenge baseline B2) and a bilinear vocal-tract-
+//!      length warp. Every formant moves, by a different amount,
+//!      non-linearly. (Until rc.76 the McAdams warp moved the poles of an
+//!      LPC filter, which rang like a whistle -- see "the spectral path".)
+//!   6. DISGUISE: the speaker's own harmonics, pitch-shifted (resample +
+//!      WSOLA), under the warped envelope; the speaking rate changed too.
+//!   7. SYNTHETIC throws the speaker's source away and puts a generated one
+//!      under the warped envelope: a monotone pulse train with a little
+//!      jitter, breath above ~3 kHz, noise where the speaker was unvoiced.
+//!      No glottal pulse shape, breathiness or intonation of the speaker's
+//!      is left. It sounds like a vocoder. It is the strongest setting.
+//!      Both end on a FIXED reference spectral balance.
 //!   8. Loudness is normalised, so level is no cue either.
 //!
 //! EVERY NOTE GETS ITS OWN, SECRET SETTINGS
@@ -111,6 +117,9 @@ struct Params {
     rate: f64,
     f0: f64,
     drift: f64,
+    /// The spectral path's second vocal-tract warp (bilinear all-pass
+    /// coefficient), on top of the McAdams warp.
+    warp: f64,
 }
 
 fn draw(mode: Mode, rng: &mut StdRng) -> Params {
@@ -119,19 +128,23 @@ fn draw(mode: Mode, rng: &mut StdRng) -> Params {
     } else {
         rng.gen_range(1.14..1.26)
     };
+    // rc.77: a little narrower than before (0.70..0.84 / 1.20..1.45): the
+    // extremes sounded like a cartoon, and the warped envelope now moves the
+    // voice more than the pitch has to.
     let pitch = if rng.gen_bool(0.5) {
-        rng.gen_range(0.70..0.84)
+        rng.gen_range(0.74..0.86)
     } else {
-        rng.gen_range(1.20..1.45)
+        rng.gen_range(1.18..1.38)
     };
     let scale = rng.gen_range(0.94..1.16);
     let gamma = rng.gen_range(0.975..0.99);
-    let rate = rng.gen_range(0.90..1.10);
+    let rate = rng.gen_range(0.92..1.08);
     let f0 = rng.gen_range(95.0..185.0);
     let drift = rng.gen_range(0.0..(2.0 * PI));
+    let warp = if rng.gen_bool(0.5) { 1.0 } else { -1.0 } * rng.gen_range(0.08..0.16);
     match mode {
-        Mode::Natural => Params { alpha: 1.0, scale: 1.0, gamma: 1.0, pitch: 1.0, rate: 1.0, f0, drift },
-        _ => Params { alpha, scale, gamma, pitch, rate, f0, drift },
+        Mode::Natural => Params { alpha: 1.0, scale: 1.0, gamma: 1.0, pitch: 1.0, rate: 1.0, f0, drift, warp: 0.0 },
+        _ => Params { alpha, scale, gamma, pitch, rate, f0, drift, warp },
     }
 }
 
@@ -527,6 +540,334 @@ fn normalise(x: &mut [f64]) {
     }
 }
 
+// -- the spectral path (Disguise, Synthetic) ------------------------------------
+//
+// Device report (2026-10-15, rc.76): "disguise and synthetic sound like a
+// whistle". Measured on the reference clip: Synthetic put 80 % of its energy
+// above 4 kHz (speech: 12 %), with narrow peaks there. The cause was the
+// LPC pole warp: McAdams with alpha > 1 and a scale up to 1.16 pushed
+// formant poles towards Nyquist, where they were clamped at radius 0.995 --
+// a resonator that rings -- and each 30 ms frame was filtered from a zero
+// state, so the ringing restarted every frame. A real phone microphone
+// (noise, room) made it worse than the clean test clips did.
+//
+// The spectral path cannot ring, because it never builds a resonator:
+//   1. STFT (32 ms, 8 ms hop). Each frame's ENVELOPE (the vocal tract) is a
+//      cepstrally smoothed log spectrum ("true envelope": lifted to the
+//      peaks), so it is smooth by construction.
+//   2. The envelope is warped along frequency: the McAdams warp (what was
+//      at angle phi moves to scale * phi^alpha), then a bilinear (all-pass)
+//      vocal-tract-length warp. Every formant moves, non-linearly.
+//   3. DISGUISE: the speaker's harmonics are pitch-shifted (resample +
+//      WSOLA), their own envelope divided out and the warped one put in.
+//      SYNTHETIC: a generated pulse train (monotone, slight drift) and
+//      noise, shaped the same way: none of the speaker's source remains.
+//   4. A FIXED reference balance: every note's long-term spectrum is
+//      pulled to the standard long-term speech spectrum (flat to 500 Hz,
+//      then -5 dB per octave), within +/- 12 dB. Brightness, microphone
+//      and the speaker's own spectral colour are not cues any more.
+// Settings are drawn per note as before and never leave this function.
+
+const SN: usize = 512;
+const SH: usize = 128;
+const BINS: usize = SN / 2 + 1;
+const LIFTER: usize = 28;
+
+/// In-place complex FFT (radix 2, [re].len() a power of two).
+fn fft(re: &mut [f64], im: &mut [f64], inverse: bool) {
+    let n = re.len();
+    let mut j = 0usize;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let ang = 2.0 * PI / len as f64 * if inverse { 1.0 } else { -1.0 };
+        let (wr, wi) = (ang.cos(), ang.sin());
+        for start in (0..n / len).map(|k| k * len) {
+            let (mut cr, mut ci) = (1.0, 0.0);
+            for k in 0..len / 2 {
+                let (a, b) = (start + k, start + k + len / 2);
+                let tr = re[b] * cr - im[b] * ci;
+                let ti = re[b] * ci + im[b] * cr;
+                re[b] = re[a] - tr;
+                im[b] = im[a] - ti;
+                re[a] += tr;
+                im[a] += ti;
+                let nr = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = nr;
+            }
+        }
+        len <<= 1;
+    }
+    if inverse {
+        for v in re.iter_mut().chain(im.iter_mut()) {
+            *v /= n as f64;
+        }
+    }
+}
+
+/// Spectrum of SN real samples: BINS (re, im) pairs.
+fn rfft(x: &[f64]) -> (Vec<f64>, Vec<f64>) {
+    let mut re = x.to_vec();
+    re.resize(SN, 0.0);
+    let mut im = vec![0.0; SN];
+    fft(&mut re, &mut im, false);
+    re.truncate(BINS);
+    im.truncate(BINS);
+    (re, im)
+}
+
+/// SN real samples from BINS (re, im) pairs (Hermitian completion).
+fn irfft(re: &[f64], im: &[f64]) -> Vec<f64> {
+    let mut r = vec![0.0; SN];
+    let mut i = vec![0.0; SN];
+    for k in 0..BINS {
+        r[k] = re[k];
+        i[k] = im[k];
+        if k > 0 && k < SN / 2 {
+            r[SN - k] = re[k];
+            i[SN - k] = -im[k];
+        }
+    }
+    fft(&mut r, &mut i, true);
+    r
+}
+
+fn sqrt_hann() -> Vec<f64> {
+    (0..SN).map(|i| (0.5 - 0.5 * (2.0 * PI * i as f64 / SN as f64).cos()).sqrt()).collect()
+}
+
+/// Frames of (re, im) spectra; the signal is padded by SN on each side.
+fn stft(x: &[f64], win: &[f64]) -> Vec<(Vec<f64>, Vec<f64>)> {
+    let mut padded = vec![0.0; SN];
+    padded.extend_from_slice(x);
+    padded.extend(std::iter::repeat_n(0.0, SN));
+    (0..(padded.len() - SN) / SH)
+        .map(|i| {
+            let f: Vec<f64> = (0..SN).map(|k| padded[i * SH + k] * win[k]).collect();
+            rfft(&f)
+        })
+        .collect()
+}
+
+fn istft(frames: &[(Vec<f64>, Vec<f64>)], n: usize, win: &[f64]) -> Vec<f64> {
+    let total = frames.len() * SH + SN;
+    let mut out = vec![0.0; total];
+    let mut norm = vec![0.0; total];
+    for (i, (re, im)) in frames.iter().enumerate() {
+        let f = irfft(re, im);
+        for k in 0..SN {
+            out[i * SH + k] += f[k] * win[k];
+            norm[i * SH + k] += win[k] * win[k];
+        }
+    }
+    (0..n).map(|k| {
+        let j = k + SN;
+        if j < total && norm[j] > 1e-6 { out[j] / norm[j] } else { 0.0 }
+    }).collect()
+}
+
+/// A frame's smooth log-magnitude envelope (cepstral, lifted to the peaks).
+fn log_envelope(re: &[f64], im: &[f64]) -> Vec<f64> {
+    let lm: Vec<f64> = (0..BINS).map(|k| (re[k].hypot(im[k]) + 1e-7).ln()).collect();
+    let smooth = |target: &[f64]| -> Vec<f64> {
+        let zero = vec![0.0; BINS];
+        let mut c = irfft(target, &zero);
+        for v in c.iter_mut().take(SN - LIFTER + 1).skip(LIFTER) {
+            *v = 0.0;
+        }
+        rfft(&c).0
+    };
+    let mut env = smooth(&lm);
+    for _ in 0..4 {
+        let lifted: Vec<f64> = lm.iter().zip(&env).map(|(a, b)| a.max(*b)).collect();
+        env = smooth(&lifted);
+    }
+    env
+}
+
+/// The envelope moved along frequency by the bilinear warp [a] (> 0:
+/// formants up, < 0: down). Ends stay put.
+fn warp_log_envelope(env: &[f64], a: f64) -> Vec<f64> {
+    (0..BINS).map(|k| {
+        let w = PI * k as f64 / (BINS - 1) as f64;
+        let src = w + 2.0 * (-a * w.sin()).atan2(1.0 + a * w.cos());
+        let pos = (src / PI * (BINS - 1) as f64).clamp(0.0, (BINS - 1) as f64);
+        let i = (pos as usize).min(BINS - 2);
+        let t = pos - i as f64;
+        env[i] * (1.0 - t) + env[i + 1] * t
+    }).collect()
+}
+
+/// The McAdams warp on the ENVELOPE: what was at angle phi moves to
+/// scale * phi^alpha. Read backwards: output angle w takes the envelope at
+/// (w / scale)^(1 / alpha). No pole is built, so nothing can ring.
+fn mcadams_log_envelope(env: &[f64], alpha: f64, scale: f64) -> Vec<f64> {
+    (0..BINS).map(|k| {
+        let w = PI * k as f64 / (BINS - 1) as f64;
+        let src = (w / scale).max(0.0).powf(1.0 / alpha);
+        let pos = (src / PI * (BINS - 1) as f64).clamp(0.0, (BINS - 1) as f64);
+        let i = (pos as usize).min(BINS - 2);
+        let t = pos - i as f64;
+        env[i] * (1.0 - t) + env[i + 1] * t
+    }).collect()
+}
+
+/// The note's long-term spectrum pulled to the standard speech spectrum.
+fn reference_balance(frames: &mut [(Vec<f64>, Vec<f64>)]) {
+    let energy: Vec<f64> = frames.iter()
+        .map(|(re, im)| re.iter().zip(im).map(|(a, b)| a * a + b * b).sum())
+        .collect();
+    let mut sorted = energy.clone();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let Some(&median) = sorted.get(sorted.len() / 2) else { return };
+    let mut lt = vec![1e-12; BINS];
+    for ((re, im), e) in frames.iter().zip(&energy) {
+        if *e > median {
+            for k in 0..BINS {
+                lt[k] += re[k] * re[k] + im[k] * im[k];
+            }
+        }
+    }
+    let smooth9 = |v: &[f64]| -> Vec<f64> {
+        (0..v.len()).map(|k| {
+            let lo = k.saturating_sub(4);
+            let hi = (k + 5).min(v.len());
+            v[lo..hi].iter().sum::<f64>() / (hi - lo) as f64
+        }).collect()
+    };
+    let lt = smooth9(&lt);
+    let reference: Vec<f64> = (0..BINS).map(|k| {
+        let f = k as f64 * RATE as f64 / SN as f64;
+        let db = if f < 500.0 { 0.0 } else { -5.0 * (f / 500.0).log2() };
+        10f64.powf(db / 10.0)
+    }).collect();
+    let scale = lt.iter().sum::<f64>() / reference.iter().sum::<f64>();
+    let gain_db: Vec<f64> = (0..BINS)
+        .map(|k| (10.0 * (reference[k] * scale / lt[k]).log10()).clamp(-12.0, 12.0))
+        .collect();
+    let gain_db = smooth9(&gain_db);
+    for (re, im) in frames.iter_mut() {
+        for k in 0..BINS {
+            let g = 10f64.powf(gain_db[k] / 20.0);
+            re[k] *= g;
+            im[k] *= g;
+        }
+    }
+}
+
+/// The source for SYNTHETIC: a monotone pulse train with a slow drift where
+/// the speaker was voiced, noise where not. None of the speaker's source.
+fn synthetic_excitation(x: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64> {
+    let n = x.len();
+    let frames = n / HOP + 1;
+    let mut voiced = vec![0.0; frames];
+    for (i, v) in voiced.iter_mut().enumerate() {
+        let s = i * HOP;
+        let end = (s + FRAME).min(n);
+        if end > s + 8 && voicing(&x[s..end]) > 0.3 {
+            *v = 1.0;
+        }
+    }
+    // Voicing per sample, smoothed over 25 ms so it does not click.
+    let raw: Vec<f64> = (0..n).map(|k| voiced[(k / HOP).min(frames - 1)]).collect();
+    let mut vv = vec![0.0; n];
+    let half = 200usize;
+    let mut acc = 0.0;
+    for k in 0..n + half {
+        if k < n {
+            acc += raw[k];
+        }
+        if k > 2 * half && k - 2 * half - 1 < n {
+            acc -= raw[k - 2 * half - 1];
+        }
+        if k >= half && k - half < n {
+            vv[k - half] = acc / (2 * half + 1) as f64;
+        }
+    }
+    // MIXED excitation, as real voices are: harmonic below ~3 kHz, breath
+    // above it. A pure pulse train is harmonic to 8 kHz -- clean lines up
+    // there read as a buzz or a whistle. Each period also varies by a
+    // little (jitter), as no glottis is a metronome.
+    let mut out = vec![0.0; n];
+    let mut phase = 0.0f64;
+    let mut glottal = 0.0f64;
+    let mut jitter = 1.0f64;
+    let (mut lp1, mut lp2, mut nlp1, mut nlp2) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let c = (-2.0 * PI * 3000.0 / RATE as f64).exp();
+    for (k, sample) in out.iter_mut().enumerate() {
+        let t = k as f64 / RATE as f64;
+        let f0 = params.f0 * jitter * (1.0 + 0.03 * (2.0 * PI * 0.3 * t + params.drift).sin());
+        phase += f0 / RATE as f64;
+        let pulse = if phase >= 1.0 {
+            phase -= 1.0;
+            jitter = 1.0 + rng.gen_range(-0.012..0.012);
+            1.0
+        } else {
+            0.0
+        };
+        glottal = pulse + 0.9 * glottal; // a soft glottal tilt
+        // Two one-pole low-passes at ~3 kHz: harmonics below, breath above.
+        lp1 = (1.0 - c) * glottal + c * lp1;
+        lp2 = (1.0 - c) * lp1 + c * lp2;
+        let noise: f64 = rng.gen_range(-1.0..1.0) * 0.3;
+        nlp1 = (1.0 - c) * noise + c * nlp1;
+        nlp2 = (1.0 - c) * nlp1 + c * nlp2;
+        let breath = noise - nlp2;
+        *sample = vv[k] * (lp2 + 0.6 * breath) + (1.0 - vv[k]) * noise;
+    }
+    out
+}
+
+fn spectral_mask(x: &[f64], params: &Params, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
+    let n = x.len();
+    let win = sqrt_hann();
+    let original = stft(x, &win);
+    let source = match mode {
+        Mode::Synthetic => synthetic_excitation(x, params, rng),
+        _ => {
+            let mut s = shift(x, params.pitch, 1.0);
+            s.resize(n, 0.0);
+            s
+        }
+    };
+    let carrier = stft(&source, &win);
+    let mut frames: Vec<(Vec<f64>, Vec<f64>)> = original.iter().zip(carrier.iter())
+        .map(|((xr, xi), (yr, yi))| {
+            // Two warps on the smooth envelope: McAdams (non-linear, the
+            // VoicePrivacy B2 transform) then a bilinear length warp.
+            // Measured with a speaker-recognition network (VOICE_NOTES.md):
+            // either alone left the speaker more recognisable.
+            let env = log_envelope(xr, xi);
+            let target = warp_log_envelope(&mcadams_log_envelope(&env, params.alpha, params.scale),
+                                           params.warp);
+            let own = log_envelope(yr, yi);
+            let mut re = yr.clone();
+            let mut im = yi.clone();
+            for k in 0..BINS {
+                let g = (target[k] - own[k]).clamp(-30.0, 30.0).exp();
+                re[k] *= g;
+                im[k] *= g;
+            }
+            (re, im)
+        })
+        .collect();
+    reference_balance(&mut frames);
+    let y = istft(&frames, n, &win);
+    if (params.rate - 1.0).abs() > 1e-3 { wsola(&y, params.rate) } else { y }
+}
+
 /// Mask one note. [pcm] is mono f64 at [rate]; returns mono f64 at [RATE].
 fn mask_f64(pcm: &[f64], rate: u32, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
     let params = draw(mode, rng);
@@ -548,6 +889,18 @@ fn mask_f64(pcm: &[f64], rate: u32, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
     let gains = gate(&x);
     for (v, g) in x.iter_mut().zip(gains.iter()) {
         *v *= g;
+    }
+    // Disguise and Synthetic: the spectral path (rc.77). Natural keeps the
+    // LPC clean-up below, unchanged.
+    if mode != Mode::Natural {
+        let mut y = spectral_mask(&x, &params, mode, rng);
+        x.zeroize();
+        trim(&mut y);
+        normalise(&mut y);
+        if y.iter().any(|v| !v.is_finite()) {
+            return Vec::new();
+        }
+        return y;
     }
     // Channel: remove the recording's own long-term tilt...
     let win = hann(FRAME);
@@ -832,5 +1185,75 @@ mod tests {
         let y = from_pcm(&mask(&to_pcm(&quiet), RATE, Mode::Disguise, Some([1u8; 32])).unwrap());
         let peak = frame_rms(&y).into_iter().fold(0.0, f64::max);
         assert!(peak > 0.05 && peak < 0.5, "{}", peak);
+    }
+
+    #[test]
+    fn fft_round_trip() {
+        let x: Vec<f64> = (0..SN).map(|n| ((n * 7919) % 101) as f64 / 50.0 - 1.0).collect();
+        let (re, im) = rfft(&x);
+        let back = irfft(&re, &im);
+        let err = x.iter().zip(&back).map(|(a, b)| (a - b).abs()).fold(0.0, f64::max);
+        assert!(err < 1e-9, "{}", err);
+        // A 1 kHz tone lands in its bin.
+        let tone: Vec<f64> = (0..SN).map(|n| (2.0 * PI * 1000.0 * n as f64 / RATE as f64).sin()).collect();
+        let (re, im) = rfft(&tone);
+        let peak = (0..BINS).max_by(|&a, &b| re[a].hypot(im[a]).partial_cmp(&re[b].hypot(im[b])).unwrap()).unwrap();
+        assert_eq!(peak, 32);
+    }
+
+    /// [speaker] plus breath, as a real voice has: white noise at about
+    /// -24 dB under the voice, in the same syllables (deterministic).
+    fn breathy(f0: f64, formants: &[f64], seconds: f64) -> Vec<f64> {
+        let mut x = speaker(f0, formants, seconds);
+        let mut state = 0x2545_f491_4f6c_dd1du64;
+        for v in x.iter_mut() {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            let noise = (state >> 11) as f64 / (1u64 << 53) as f64 * 2.0 - 1.0;
+            if *v != 0.0 {
+                *v += 0.03 * noise;
+            }
+        }
+        x
+    }
+
+    /// Share of the energy above 4 kHz, and how much of the energy above
+    /// 3 kHz sits in its 3 strongest bins (a whistle is one line there;
+    /// speech spreads it), over the louder frames, weighted by that energy.
+    fn whistle(y: &[f64]) -> (f64, f64) {
+        let win = sqrt_hann();
+        let frames = stft(y, &win);
+        let mut e: Vec<(f64, usize)> = frames.iter().enumerate()
+            .map(|(i, (re, im))| (re.iter().zip(im).map(|(a, b)| a * a + b * b).sum(), i)).collect();
+        e.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        let (mut hi, mut all, mut top, mut band_all) = (0.0, 0.0, 0.0, 0.0);
+        for &(_, i) in e.iter().take(e.len() * 4 / 10) {
+            let (re, im) = &frames[i];
+            let p: Vec<f64> = (0..BINS).map(|k| re[k] * re[k] + im[k] * im[k]).collect();
+            all += p.iter().sum::<f64>();
+            hi += p[128..].iter().sum::<f64>();
+            let mut band: Vec<f64> = p[96..].to_vec();
+            band.sort_by(|a, b| b.partial_cmp(a).unwrap());
+            top += band[..3].iter().sum::<f64>();
+            band_all += band.iter().sum::<f64>();
+        }
+        (hi / all, top / band_all)
+    }
+
+    #[test]
+    fn no_whistle() {
+        // Device report rc.76: Synthetic put 80 % of its energy above 4 kHz.
+        let x = breathy(130.0, &[650.0, 1500.0, 2600.0], 3.0);
+        for seed in 0..12u8 {
+            for mode in [Mode::Disguise, Mode::Synthetic] {
+                let y = from_pcm(&mask(&to_pcm(&x), RATE, mode, Some([seed; 32])).unwrap());
+                let (hf, peak) = whistle(&y);
+                assert!(hf < 0.25, "{:?} seed {}: {:.0} % above 4 kHz", mode, seed, hf * 100.0);
+                // Measured: speech 0.24, the rc.76 Synthetic whistle 0.56.
+                assert!(peak < 0.40, "{:?} seed {}: {:.2} of the 3-8 kHz energy in 3 lines",
+                        mode, seed, peak);
+            }
+        }
     }
 }

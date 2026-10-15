@@ -4,6 +4,43 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.77 — 2026-10-15 — disguised voices without the whistle; the call path from sign-in (core 0.13.1)
+
+- **Disguised and Synthetic voice notes no longer whistle.** Device report:
+  *"disguise and synthetic sound like a whistle, not like the samples"*.
+  Measured on the reference clip: Synthetic put 80 % of its energy above
+  4 kHz (speech: about 12 %); through a phone microphone and room, Disguise
+  did too (23-40 %, one note a near-pure tone). The cause was the vocal-
+  tract warp: it moved the poles of an LPC filter, and some random settings
+  pushed them towards 8 kHz with almost no damping, re-started every 30 ms
+  frame -- a resonator ringing.
+- **A new disguise, on the spectrum instead of a filter.** Each 32 ms
+  frame's smooth spectral envelope (the vocal tract) is warped along
+  frequency twice (McAdams, then vocal-tract length) -- every formant
+  moves -- and put over the speaker's
+  pitch-shifted harmonics (Disguised) or a generated source with jitter
+  and breath (Synthetic). A fixed reference balance (the standard long-term
+  speech spectrum) ends every note. Nothing can ring: no resonator is
+  built. Same reference clip, phone-like recording: 7-11 % of the energy
+  above 4 kHz, no dominant tone. A Rust test fails any setting that
+  whistles. Settings are still drawn per note and never leave the
+  function; "My voice" is unchanged.
+- **Measured against a speaker-recognition network** (VOICE_NOTES.md; EER,
+  50 % = guessing): Disguised 31 % (knows your voice) / 32 % (links two
+  notes); Synthetic 41 % / 37 %; word recognition 37 % / 46 %. rc.76 was
+  34/39 and 42/47 with 44/44: Synthetic is as strong against someone who
+  knows your voice; linking two notes is somewhat easier than before.
+  Two warps (McAdams + vocal-tract length) were chosen after eight
+  settings were measured; each alone left the speaker more recognisable.
+- **The call path from sign-in, kept as long as you are signed in.** Owner:
+  *"prepare the phone tunnel as soon as user logs in, and just keep it
+  running in background"*. In rc.76 it was built only while a callable
+  chat was open, and kept 10 minutes -- the phone that had not opened the
+  chat stayed red. Now it is built right after sign-in, checked every 20 s
+  (a session the router dropped is replaced), replaced at once when a call
+  takes it, and closed on Disconnect, Sign out and Wipe & Exit. The phone
+  shows green in any chat once it is ready.
+
 ## Android 0.7.0-experimental.rc.76 — 2026-10-15 — the phone: red, amber, green (core 0.13.1)
 
 - **One call button for contacts and secure groups: a phone**, coloured by

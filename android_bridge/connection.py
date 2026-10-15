@@ -620,6 +620,12 @@ class ConnectionController:
             except Exception:
                 _TRACE.record("welcome", "start_failed", "warning")
         self._rejoin_secure_rooms()
+        # The call path, built now and kept while signed in (the phone turns
+        # green without any chat being open). In the background: binding
+        # voice and building a tunnel must not hold up the sign-in.
+        keep = getattr(self._app, "keep_call_path_ready", None)
+        if keep is not None:
+            threading.Thread(target=keep, name="call-path-hold", daemon=True).start()
         self._last = {"ok": True, "stage": "connected", "code": "ok",
                       "detail": "Connected to %s as %s"
                                 % (self._profile.effective_server,
@@ -868,6 +874,12 @@ class ConnectionController:
         transport is exactly the shape that leaked a loop thread per attempt.
         """
         transport, self._transport = self._transport, None
+        # The call path goes with the connection it was built for.
+        try:
+            import otrv4plus_warmpath
+            otrv4plus_warmpath.WARM.close()
+        except Exception:
+            pass
         if transport is not None:
             try:
                 transport.close()

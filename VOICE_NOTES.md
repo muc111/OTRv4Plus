@@ -31,20 +31,34 @@ microphone ─► memory ─► voice mask (Rust) ─► Ogg Opus / WAV ─► e
   runs.
 * **The mask** (`Rust/src/voice_mask.rs`) runs on the device:
   1. resample to 16 kHz (nothing above 8 kHz survives);
-  2. measure and remove the recording's long-term spectral tilt (the
-     microphone, the room, the distance), then apply a fixed tilt;
-  3. a noise gate, so room tone between words goes;
-  4. source/filter split (20th-order LPC, 30 ms frames);
-  5. **vocal tract**: every formant moved by a McAdams warp (the
-     VoicePrivacy Challenge baseline B2) *and* a linear vocal-tract-length
-     change, plus slightly broader formants;
-  6. **voice source**: pitch moved (down 16–30 % or up 20–45 %) and
-     speaking rate changed (±10 %) with WSOLA;
-  7. **Synthetic** mode discards the speaker's source entirely and drives
-     the warped vocal tract with a generated monotone pulse train, so no
-     glottal pulse shape, breathiness, jitter or intonation of yours
-     remains. It sounds like a vocoder;
-  8. loudness normalised.
+  2. a high-pass filter and a noise gate, so room tone between words goes;
+  3. a short-time spectrum (32 ms frames, 8 ms apart). Each frame's
+     **envelope** (the vocal tract) is a smooth, cepstrally liftered outline
+     of the spectrum;
+  4. **vocal tract**: the envelope is moved along frequency twice: a
+     McAdams warp (the VoicePrivacy Challenge baseline B2) and a bilinear
+     vocal-tract-length warp, both random. Every formant moves, by a
+     different amount;
+  5. **voice source**: in **Disguised**, your harmonics, pitch-shifted
+     (down 14–26 % or up 18–38 %), under the warped envelope; in
+     **Synthetic**, a generated source instead (a monotone pulse train with
+     a little jitter, breath above ~3 kHz, noise where you were unvoiced),
+     so no glottal pulse shape, breathiness or intonation of yours remains;
+  6. a **fixed reference balance**: the note's long-term spectrum is pulled
+     to the standard long-term speech spectrum, so neither brightness, the
+     microphone nor your own spectral colour is a cue;
+  7. speaking rate changed (±8 %) with WSOLA, and loudness normalised.
+
+  **Changed in rc.77** (device report: *"disguise and synthetic sound like a
+  whistle"*). Until rc.76 step 3–4 warped the poles of an LPC filter. With
+  some of the random settings that pushed resonances towards 8 kHz with
+  almost no damping, and each 30 ms frame was filtered from scratch, so
+  they rang. On the reference clip Synthetic put 80 % of its energy above
+  4 kHz (speech: about 12 %); through a phone microphone and room, Disguise
+  did it too. The envelope warp cannot ring: it never builds a resonator.
+  A Rust test (`no_whistle`) now fails any setting that puts more than a
+  quarter of the energy above 4 kHz, or concentrates the 3–8 kHz energy in
+  a few lines. **My voice** (`natural`) is unchanged.
 * **Every note gets new, secret settings**, drawn from the OS random
   generator inside the Rust function. They are never returned, logged or
   stored. So there is no single transform to undo, and two notes by the
@@ -68,9 +82,21 @@ threshold: **50 % = coin toss, 0 % = perfect**.
 
 | mode | attacker who knows your real voice | linking two notes by voice | digit recognition (pocketsphinx) |
 |---|---|---|---|
-| My voice | 0 % | 0 % | 71 % |
-| Disguised | 34 % | 39 % | 44 % |
-| Synthetic | 42 % | 47 % | 44 % |
+| My voice | 0 % | 0 % | 72 % |
+| Disguised | 31 % | 32 % | 37 % |
+| Synthetic | 41 % | 37 % | 46 % |
+
+Measured for rc.77, on the new spectral mask (3 runs, 200 digits). For
+comparison, rc.66–rc.76 (the LPC mask that whistled on phones): Disguised
+34 % / 39 % / 44 %, Synthetic 42 % / 47 % / 44 %. **The trade, said
+plainly:** against an attacker who knows your real voice, Synthetic is as
+strong as before; linking two of your notes to each other became somewhat
+easier (part of the old figure came from the random distortion -- the
+whistle -- itself). Settings tried and rejected, by measurement: a bilinear
+warp alone (25–27 %), a McAdams warp alone (24–35 %, but the clearest), a
+smoother envelope or larger warps (as strong, but word recognition halved),
+a random spectral ripple, and a warp that drifts within the note (no
+gain).
 
 How to read it:
 

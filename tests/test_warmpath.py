@@ -134,3 +134,44 @@ def test_a_one_to_one_call_uses_the_spare_and_builds_nothing():
     finally:
         W.WARM = real
         loop.close()
+
+
+def test_held_from_sign_in_without_any_chat_and_without_a_countdown():
+    p, now, built = _path()
+    p.hold("127.0.0.1", 7656, check=0)
+    _settle(p)
+    now[0] += 10 * 3600                        # hours later, nothing looked at
+    assert p.describe() == {"state": "ready", "seconds_left": 0}
+    p.warm("127.0.0.1", 7656)                  # a chat's ask does not shorten it
+    now[0] += 3600
+    assert p.state() == "ready" and len(built) == 1
+
+
+def test_a_dead_session_is_replaced():
+    p, now, built = _path()
+    p.hold("127.0.0.1", 7656, check=0)
+    _settle(p)
+    p.alive = lambda spare: spare is not built[0]
+    p.check()
+    _settle(p)
+    assert built[0].control.closed and p.stats["dead"] == 1
+    assert p.state() == "ready" and len(built) == 2
+
+
+def test_taking_while_held_builds_the_next():
+    p, now, built = _path()
+    p.hold("127.0.0.1", 7656, check=0)
+    _settle(p)
+    p.take(("127.0.0.1", 7656))
+    _settle(p)
+    assert p.state() == "ready" and len(built) == 2
+
+
+def test_sign_out_stops_holding():
+    p, now, built = _path()
+    p.hold("127.0.0.1", 7656, check=0)
+    _settle(p)
+    p.close()
+    p.check()
+    _settle(p)
+    assert p.state() == "cold" and len(built) == 1
