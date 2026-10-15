@@ -44,7 +44,8 @@ from typing import Any, Dict, List, Optional
 
 __all__ = ["META_TLV", "encode_meta", "decode_meta", "ACTIONS",
            "action_elements", "parse_action", "valid_id", "clean_emojis",
-           "RETRACT_FALLBACK"]
+           "RETRACT_FALLBACK", "GROUP_PREFIX", "encode_group_message",
+           "decode_group_message"]
 
 #: OTRv4TLV.MESSAGE_META in the engine.
 META_TLV = 0x0021
@@ -146,6 +147,50 @@ def decode_meta(value: bytes) -> Optional[Dict[str, Any]]:
             return None
         out["reply"] = meta["reply"]
     return out
+
+
+# -- the secure-group carrier (inside MLS) ---------------------------------------
+#
+# In an OTRv4Plus SECURE GROUP every typed message is an MLS application
+# message whose plaintext is this envelope: the same MESSAGE_META the 1:1
+# TLV carries, and the text. MLS encrypts and signs it, so the room and its
+# server see neither the text nor which message an action names, and the
+# sender comes out of MLS (their leaf's credential), not from the room.
+
+#: Never shown: the dispatcher in android_bridge.groups routes it.
+GROUP_PREFIX = "\x00OTRv4GM1:"
+MAX_GROUP_TEXT = 60 * 1024
+
+
+def encode_group_message(meta: bytes, text: str = "") -> str:
+    """One secure-group message: [meta] from `encode_meta`, and its text."""
+    if decode_meta(meta) is None:
+        raise ValueError("bad meta")
+    if len(text) > MAX_GROUP_TEXT:
+        raise ValueError("text too long")
+    return GROUP_PREFIX + json.dumps({"m": json.loads(meta.decode("utf-8")), "t": text},
+                                     separators=(",", ":"), ensure_ascii=False)
+
+
+def decode_group_message(plaintext: str) -> Optional[tuple]:
+    """(meta as `decode_meta` gives it, text), or None if malformed -- and a
+    malformed one is dropped, never shown as text."""
+    if not isinstance(plaintext, str) or not plaintext.startswith(GROUP_PREFIX):
+        return None
+    raw = plaintext[len(GROUP_PREFIX):]
+    if len(raw) > MAX_GROUP_TEXT + MAX_META + 64:
+        return None
+    try:
+        env = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(env, dict) or not isinstance(env.get("t", ""), str):
+        return None
+    meta = decode_meta(json.dumps(env.get("m"), separators=(",", ":"),
+                                  ensure_ascii=False).encode("utf-8"))
+    if meta is None:
+        return None
+    return meta, env.get("t", "")
 
 
 # -- the plaintext carrier (standard XEPs) ---------------------------------------

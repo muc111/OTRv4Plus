@@ -604,6 +604,25 @@ class OtrApp:
         self._emit(RoomMessageReceived(peer=room, sender=nick, body=body,
                                        timestamp=timestamp))
 
+    def _group_action(self, room: str, action: str, target_id: str, body: str,
+                      emojis: Any, message_id: str) -> str:
+        """A correction, deletion or reaction in a SECURE GROUP: an MLS
+        application message (otrv4plus_actions envelope), never plaintext.
+        Every member checks that the MLS-authenticated sender of a correction
+        or deletion is the author of its target."""
+        if action == "edit" and not (body or "").strip():
+            return self.SEND_FAILED
+        message_id = message_id if _actions.valid_id(message_id) else _new_message_id()
+        try:
+            env = _actions.encode_group_message(
+                _actions.encode_meta(message_id, **{action: target_id},
+                                     emojis=_actions.clean_emojis(list(emojis or []))),
+                body if action == "edit" else "")
+            outcome = self._groups.send(room, env)
+        except Exception:
+            return self.SEND_FAILED
+        return self.SEND_QUEUED if outcome == "held" else self.SEND_ENCRYPTED
+
     def _room_action(self, room: str, action: str, target_id: str, body: str,
                      emojis: Any, message_id: str) -> str:
         """A correction, deletion or reaction in a PLAIN room, with the
@@ -1838,6 +1857,12 @@ class OtrApp:
         # typed then is held until the group is in sync (QUEUED).
         if self._groups is not None and self._groups.is_secure(peer):
             try:
+                # With its id (and what it replies to), inside MLS, so others
+                # can reply to, react to, and -- only we -- correct or delete it.
+                if _actions.valid_id(message_id):
+                    body = _actions.encode_group_message(
+                        _actions.encode_meta(message_id, reply=reply_to
+                                             if _actions.valid_id(reply_to) else ""), body)
                 outcome = self._groups.send(peer, body)
             except (GroupError, Exception):
                 return self.SEND_FAILED
@@ -2189,9 +2214,10 @@ class OtrApp:
         peer = self.canonical_peer(peer)
         if action not in _actions.ACTIONS or not _actions.valid_id(target_id):
             return self.SEND_FAILED
-        if self._transport is None or (
-                self._groups is not None and self._groups.is_secure(peer)):
+        if self._transport is None:
             return self.SEND_FAILED
+        if self._groups is not None and self._groups.is_secure(peer):
+            return self._group_action(peer, action, target_id, body, emojis, message_id)
         if peer in self._rooms:
             return self._room_action(peer, action, target_id, body, emojis, message_id)
         message_id = message_id if _actions.valid_id(message_id) else _new_message_id()

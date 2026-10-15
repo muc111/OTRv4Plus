@@ -944,6 +944,8 @@ sealed interface OtrEvent {
         val source: String,
         /** In a room: the nickname that acted; "" in a 1:1 chat. */
         val sender: String = "",
+        /** In a secure group: the MLS-authenticated JID that acted. */
+        val senderIdentity: String = "",
     ) : OtrEvent
 
     /** The room reflected our message [messageId] and gave it [stanzaId],

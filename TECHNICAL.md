@@ -1788,6 +1788,15 @@ code, and `dake.rs` and `ratchet.rs` had none between them. RT-1 is precisely
 what one unit test catches — decrypt a corrupted frame, then a valid one, and
 assert the valid one still works.
 
+## Secure-group message actions (rc.69)
+
+In a secure group a typed line is the MLS application plaintext
+`\x00OTRv4GM1:{"m": MESSAGE_META, "t": text}` (otrv4plus_actions); a reply,
+correction, deletion or reaction is the same envelope with the action in
+MESSAGE_META. The author rule binds to the MLS-authenticated sender JID
+(leaf credential), never the room nickname; KeyPackage credentials are
+checked against the JID that delivered them (`MlsClient::add_members_as`).
+
 ## Rooms (rc.68)
 
 Plain XEP-0045 rooms carry message ids (XEP-0359 origin-id; the room's

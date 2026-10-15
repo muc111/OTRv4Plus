@@ -1666,7 +1666,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     runCatching {
                         item.callAttr("get", "emojis")?.asList()?.map { it.toString() }
                     }.getOrNull() ?: emptyList(),
-                    flag("outgoing"), str("source"), str("sender"))
+                    flag("outgoing"), str("source"), str("sender"), str("sender_identity"))
 
             "RoomMessageAcked" ->
                 OtrEvent.RoomMessageAcked(str("peer"), str("message_id"), str("stanza_id"))

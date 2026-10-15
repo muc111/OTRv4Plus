@@ -1075,13 +1075,11 @@ class ChatViewModel : ViewModel() {
     var actionStatus by mutableStateOf<String?>(null)
         private set
 
-    /** Actions need a wire id. One-to-one conversations and plain rooms
-     *  (standard XEPs); not yet secure groups, whose actions would have to
-     *  travel inside MLS. */
+    /** Actions need a wire id: one-to-one conversations, plain rooms
+     *  (standard XEPs) and secure groups (inside MLS). */
     fun canAct(m: Message): Boolean {
-        val state = this.state ?: return false
-        return m.wireId.isNotEmpty() && !m.retracted &&
-            m.security != SecurityLabel.SYSTEM && !state.isSecureRoom(m.conversationId)
+        this.state ?: return false
+        return m.wireId.isNotEmpty() && !m.retracted && m.security != SecurityLabel.SYSTEM
     }
 
     fun startReply(m: Message) { editing = null; replyingTo = m; actionsFor = null }
@@ -1135,7 +1133,8 @@ class ChatViewModel : ViewModel() {
                     core.sendAction(jid, action, target.wireId, body, emojis, MessageId.newWireId())
                 }.getOrDefault(SendOutcome.FAILED)
             }
-            if (outcome == SendOutcome.ENCRYPTED || outcome == SendOutcome.PLAINTEXT) {
+            if (outcome == SendOutcome.ENCRYPTED || outcome == SendOutcome.PLAINTEXT ||
+                (outcome == SendOutcome.QUEUED && state.isSecureRoom(jid))) {
                 state.applyChange(jid, action, target.wireId, body, emojis, outgoing = true)
                 actionStatus = null
             } else {

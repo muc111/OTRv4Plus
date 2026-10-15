@@ -224,3 +224,31 @@ fn our_own_identity_is_never_added() {
     a.create_group(G1).unwrap();
     assert!(a.add_members(G1, &[a2.key_package().unwrap()]).is_err());
 }
+
+
+/// A KeyPackage must name the JID that delivered it. An invitee handing over
+/// one that names someone else is refused before anything changes -- in
+/// particular the real member's leaf is NOT removed as "stale".
+#[test]
+fn a_key_package_naming_someone_else_is_refused() {
+    let mut a = MlsClient::new(b"alice@one.example");
+    let mut b = MlsClient::new(b"bob@one.example");
+    let mut impostor = MlsClient::new(b"bob@one.example");
+    let mut other_server = MlsClient::new(b"bob@two.example");
+    a.create_group(b"gb").unwrap();
+    let kp = b.key_package().unwrap();
+    assert_eq!(MlsClient::key_package_identity(&kp).unwrap(), b"bob@one.example".to_vec());
+    // Delivered by bob: fine (JIDs compare without ASCII case).
+    let add = a.add_members_as(b"gb", &[kp], &[b"Bob@One.Example".to_vec()]).unwrap();
+    let w = welcome_of(a.process(b"gb", &add));
+    assert_eq!(b.join(&w).unwrap(), b"gb");
+    // Mallory delivers a KeyPackage that says "bob@one.example": refused.
+    let forged = impostor.key_package().unwrap();
+    assert!(a.add_members_as(b"gb", &[forged], &[b"mallory@one.example".to_vec()]).is_err());
+    // Same localpart, another server: refused.
+    let cross = other_server.key_package().unwrap();
+    assert!(a.add_members_as(b"gb", &[cross], &[b"bob@one.example".to_vec()]).is_err());
+    // Bob is still the member he was, with the key he joined with.
+    assert_eq!(a.member_fingerprint(b"gb", b"bob@one.example").unwrap(),
+               b.own_fingerprint(b"gb").unwrap());
+}

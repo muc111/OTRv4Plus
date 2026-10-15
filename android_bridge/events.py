@@ -331,6 +331,10 @@ class MessageChanged(Event):
     #: In a ROOM: the nickname that acted. The UI applies a correction or a
     #: deletion only to a message from the same nickname. "" in a 1:1 chat.
     sender: str = ""
+    #: In a SECURE GROUP: the bare JID MLS authenticated as the actor (its
+    #: leaf's credential, bound to the JID that delivered its KeyPackage).
+    #: There the rule is by this, never by nickname.
+    sender_identity: str = ""
 
 
 @dataclass(frozen=True)

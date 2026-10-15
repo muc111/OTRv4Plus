@@ -170,7 +170,12 @@ impl RustMlsClient {
         self.inner.lock().map(|c| c.has_pending_commit(group_id)).unwrap_or(false)
     }
 
-    fn add_members<'py>(&self, py: Python<'py>, group_id: &[u8], key_packages: Vec<Vec<u8>>)
+    /// Add members. `identities` (one per KeyPackage): each KeyPackage's
+    /// credential must name exactly that JID -- the one whose authenticated
+    /// OTRv4+ session delivered it -- or nothing is added.
+    #[pyo3(signature = (group_id, key_packages, identities=None))]
+    fn add_members<'py>(&self, py: Python<'py>, group_id: &[u8], key_packages: Vec<Vec<u8>>,
+                        identities: Option<Vec<Vec<u8>>>)
         -> PyResult<Bound<'py, PyBytes>>
     {
         if key_packages.is_empty() || key_packages.len() > MAX_BATCH {
@@ -179,8 +184,19 @@ impl RustMlsClient {
         for kp in &key_packages {
             bounded(kp, MAX_MESSAGE, "key package")?;
         }
-        let commit = self.with(|c| c.add_members(group_id, &key_packages))?;
+        let commit = match identities {
+            Some(ids) => self.with(|c| c.add_members_as(group_id, &key_packages, &ids))?,
+            None => self.with(|c| c.add_members(group_id, &key_packages))?,
+        };
         Ok(PyBytes::new(py, &commit))
+    }
+
+    /// The identity a KeyPackage's credential names (not yet validated).
+    #[staticmethod]
+    fn key_package_identity<'py>(py: Python<'py>, key_package: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        bounded(key_package, MAX_MESSAGE, "key package")?;
+        let who = MlsClient::key_package_identity(key_package).map_err(err)?;
+        Ok(PyBytes::new(py, &who))
     }
 
     fn remove_members<'py>(&self, py: Python<'py>, group_id: &[u8], identities: Vec<Vec<u8>>)

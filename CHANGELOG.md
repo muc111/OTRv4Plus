@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.69 — 2026-10-15 — secure groups: reply, correct, delete, react inside MLS (core 0.13.1)
+
+- **Encrypted (MLS) groups now have reply, correct, delete for everyone and
+  react**, on Android and the desktop. Each typed line and each action is
+  an MLS application message (an envelope carrying the same MESSAGE_META as
+  1:1 chats, `otrv4plus_actions.GROUP_PREFIX`): encrypted and signed by
+  MLS, so the room and its server see neither the text nor which message an
+  action names. There is no plaintext fallback, and plaintext corrections,
+  deletions and reactions arriving in a secure group are still ignored.
+- **Only the exact author may correct or delete -- by JID, never by
+  nickname.** The author of each group message is the bare JID MLS
+  authenticated (the sender's leaf credential), stored with the message.
+  A correction or deletion applies only when MLS authenticates the same
+  JID (user@server; another server's same localpart is someone else).
+  Checked when the action arrives and again by the app against the stored
+  author. Reactions are kept per JID.
+- **Security fix: a KeyPackage must name the JID that delivered it.** An
+  invitee could previously hand over a KeyPackage whose MLS credential
+  named another member; it would have been added under that name, and that
+  member's real leaf removed. Now the identity is checked in Python and
+  again in Rust (`add_members(..., identities=...)`) before anything is
+  added. Members added by earlier builds are not re-checked.
+- Message history format v4 (the author); v1-v3 still read.
+- All members of a secure group should update: earlier builds show a new
+  build's group lines as raw text. The terminal client shows them as text
+  and does not offer these actions (by design).
+
 ## Android 0.7.0-experimental.rc.68 — 2026-10-15 — rooms: replies, corrections, deletion, reactions, history (core 0.13.1)
 
 - **Ordinary group rooms now have reply, correct, delete for everyone and

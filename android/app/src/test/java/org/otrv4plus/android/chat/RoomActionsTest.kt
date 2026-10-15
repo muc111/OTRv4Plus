@@ -83,3 +83,77 @@ class RoomActionsTest {
         assertTrue(s.messages(room).last().outgoing)
     }
 }
+
+/** The same in a SECURE GROUP: bound to the MLS-authenticated JID, not a nickname. */
+class SecureGroupActionsTest {
+
+    private val room = "secret@conference.example.i2p"
+
+    private fun state(): ChatState {
+        val s = ChatState()
+        s.now = { 1_600_000_000_000L }
+        s.applyConnection(ConnectionStatus(stage = "connected", connected = true))
+        return s
+    }
+
+    private fun said(s: ChatState, nick: String, jid: String, body: String, ref: String) =
+        s.handle(OtrEvent.RoomMessageReceived(room, nick, body, 1_600_000_000.0, encrypted = true,
+                                              senderIdentity = jid, messageId = ref))
+
+    private fun change(s: ChatState, action: String, ref: String, nick: String, jid: String,
+                       body: String = "", emojis: List<String> = emptyList()) =
+        s.handle(OtrEvent.MessageChanged(room, action, ref, body, emojis, false, "live", nick, jid))
+
+    @Test
+    fun `the author's JID may correct and delete`() {
+        val s = state()
+        said(s, "bob", "bob@x.i2p", "teh", "B1")
+        assertEquals("bob@x.i2p", s.messages(room).single().author)
+        change(s, "edit", "B1", "bob", "Bob@X.i2p", "the")
+        assertEquals("the", s.messages(room).single().body)
+        change(s, "retract", "B1", "bob", "bob@x.i2p")
+        assertTrue(s.messages(room).single().retracted)
+    }
+
+    @Test
+    fun `a taken-over nickname, another JID, or the same localpart elsewhere cannot`() {
+        val s = state()
+        said(s, "bob", "bob@x.i2p", "mine", "B1")
+        change(s, "edit", "B1", "bob", "mallory@x.i2p", "forged")      // nickname takeover
+        change(s, "edit", "B1", "bobby", "bob@y.i2p", "forged")        // same localpart, other server
+        change(s, "edit", "B1", "bob", "", "forged")                   // no MLS identity at all
+        change(s, "retract", "B1", "bob", "carol@x.i2p")
+        val m = s.messages(room).single()
+        assertEquals("mine", m.body)
+        assertFalse(m.retracted)
+    }
+
+    @Test
+    fun `reactions are per JID and nobody may touch ours`() {
+        val s = state()
+        s.noteRoom(room)
+        said(s, "bob", "bob@x.i2p", "lunch?", "B1")
+        change(s, "react", "B1", "x", "carol@x.i2p", emojis = listOf("ok"))
+        change(s, "react", "B1", "x", "Carol@x.i2p", emojis = listOf("no"))
+        assertEquals(mapOf("carol@x.i2p" to listOf("no")), s.messages(room).single().reactions)
+        s.setDraft(room, "my line")
+        val ours = s.beginSend(room)!!
+        s.completeSend(ours, SendOutcome.ENCRYPTED)
+        change(s, "edit", ours.wireId, "me", "bob@x.i2p", "forged")
+        assertEquals("my line", s.messages(room).last().body)
+    }
+
+    @Test
+    fun `the author survives the codec, and v3 history still reads`() {
+        val m = Message(id = "r:1", conversationId = room, body = "b", outgoing = false, at = 1L,
+                        sendState = SendState.NONE, security = SecurityLabel.ENCRYPTED,
+                        sender = "bob", wireId = "B1", author = "bob@x.i2p")
+        assertEquals(m, MessageCodec.decode(MessageCodec.encode(m)))
+        assertEquals(listOf(m), MessageCodec.decodeAll(MessageCodec.encodeAll(listOf(m))))
+        val v3 = "3\u001f0\u001e" + listOf("m1", room, "0", "1", "NONE", "ENCRYPTED", "bob", "B1",
+                                            "", "", "", "", "old").joinToString("\u001f")
+        val old = MessageCodec.decodeAll(v3).single()
+        assertEquals("old", old.body)
+        assertEquals("", old.author)
+    }
+}

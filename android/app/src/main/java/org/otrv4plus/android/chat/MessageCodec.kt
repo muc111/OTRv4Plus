@@ -46,7 +46,8 @@ internal object MessageCodec {
      * body; "1" records (seven fields, no sender) still decode, so history
      * written by an older build survives the upgrade.
      */
-    private const val VERSION = "3"
+    private const val VERSION = "4"
+    private const val V3 = "3"
     private const val V2 = "2"
     private const val LEGACY_VERSION = "1"
     private const val SUB = '\u0002'
@@ -70,7 +71,7 @@ internal object MessageCodec {
         val header = parts.firstOrNull()
         if (!isHeader(header)) return emptyList()
         val version = header?.split(FIELD)?.firstOrNull()
-        val count = when (version) { LEGACY_VERSION -> 7; V2 -> 8; else -> 13 }
+        val count = when (version) { LEGACY_VERSION -> 7; V2 -> 8; V3 -> 13; else -> 14 }
         return parts.drop(1).mapNotNull { decodeFields(it, count) }
     }
 
@@ -83,7 +84,7 @@ internal object MessageCodec {
 
     private fun isHeader(header: String?): Boolean =
         header != null && header.split(FIELD).firstOrNull()
-            .let { it == VERSION || it == V2 || it == LEGACY_VERSION }
+            .let { it == VERSION || it == V3 || it == V2 || it == LEGACY_VERSION }
 
     fun encode(message: Message): String = listOf(
         escape(message.id),
@@ -100,6 +101,7 @@ internal object MessageCodec {
         escape(message.reactions.entries.joinToString(SUBREC.toString()) { (who, emoji) ->
             (listOf(who) + emoji).joinToString(SUB.toString()) { escape(it) }
         }),
+        escape(message.author),
         escape(message.body),
     ).joinToString(FIELD.toString())
 
@@ -124,8 +126,13 @@ internal object MessageCodec {
      */
     fun decode(line: String, legacy: Boolean = false): Message? =
         // Every field is escaped, so the raw separators count the fields
-        // exactly: 13 for a v3 record, 8 for v2 (7 when told it is v1).
-        decodeFields(line, if (legacy) 7 else if (line.count { it == FIELD } >= 12) 13 else 8)
+        // exactly: 14 for v4, 13 for v3, 8 for v2 (7 when told it is v1).
+        decodeFields(line, when {
+            legacy -> 7
+            line.count { it == FIELD } >= 13 -> 14
+            line.count { it == FIELD } >= 12 -> 13
+            else -> 8
+        })
 
     private fun decodeFields(line: String, count: Int): Message? {
         if (line.isBlank()) return null
@@ -146,6 +153,7 @@ internal object MessageCodec {
             replyTo = if (count < 13) "" else unescape(parts[9]),
             replyPreview = if (count < 13) "" else unescape(parts[10]),
             reactions = if (count < 13) emptyMap() else decodeReactions(unescape(parts[11])),
+            author = if (count < 14) "" else unescape(parts[12]),
             outgoing = parts[2] == "1",
             at = at,
             sendState = SendState.entries.firstOrNull { it.name == parts[4] }

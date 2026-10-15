@@ -304,7 +304,7 @@ class AppModel(
 
     fun canAct(m: Message): Boolean =
         m.wireId.isNotEmpty() && !m.retracted &&
-            m.security != org.otrv4plus.android.chat.SecurityLabel.SYSTEM && !chat.isSecureRoom(m.conversationId)
+            m.security != org.otrv4plus.android.chat.SecurityLabel.SYSTEM
 
     fun startReply(m: Message) { editing = null; replyingTo = m; changed() }
 
@@ -337,7 +337,8 @@ class AppModel(
                                     org.otrv4plus.android.chat.MessageId.newWireId())
                 }.getOrDefault(SendOutcome.FAILED)
             }
-            if (outcome == SendOutcome.ENCRYPTED || outcome == SendOutcome.PLAINTEXT) {
+            if (outcome == SendOutcome.ENCRYPTED || outcome == SendOutcome.PLAINTEXT ||
+                (outcome == SendOutcome.QUEUED && chat.isSecureRoom(jid))) {
                 chat.applyChange(jid, action, target.wireId, body, emojis, outgoing = true)
             } else {
                 chat.note(when (action) {

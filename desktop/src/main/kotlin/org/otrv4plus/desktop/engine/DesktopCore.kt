@@ -454,7 +454,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "MessageChanged" -> OtrEvent.MessageChanged(
                     str("peer"), str("action"), str("target_id"), str("body"),
                     (e["emojis"] as? kotlinx.serialization.json.JsonArray).orEmpty().map { it.asStr() },
-                    flag("outgoing"), str("source"), str("sender"))
+                    flag("outgoing"), str("source"), str("sender"), str("sender_identity"))
                 "RoomMessageAcked" -> OtrEvent.RoomMessageAcked(
                     str("peer"), str("message_id"), str("stanza_id"))
                 "MessageSentElsewhere" -> OtrEvent.MessageSentElsewhere(

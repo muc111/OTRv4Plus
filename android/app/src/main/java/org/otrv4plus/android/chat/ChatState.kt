@@ -447,7 +447,7 @@ class ChatState(
             // A correction, deletion or reaction: shown, never announced.
             is OtrEvent.MessageChanged -> {
                 applyChange(event.peer, event.action, event.targetId, event.body,
-                            event.emojis, event.outgoing, event.sender)
+                            event.emojis, event.outgoing, event.sender, event.senderIdentity)
                 false
             }
             // Stored, never announced: a busy room would otherwise buzz the
@@ -869,6 +869,7 @@ class ChatState(
                            else SecurityLabel.PLAINTEXT,
                 sendState = if (event.own) SendState.SENT else SendState.NONE,
                 sender = if (event.own) "" else event.sender,
+                author = if (event.encrypted) event.senderIdentity.lowercase() else "",
             )
         )
         if (added) deleted.restore(room)
@@ -1265,12 +1266,23 @@ class ChatState(
      * on anyone's message, and replaces that reactor's previous set.
      */
     fun applyChange(peer: String, action: String, targetId: String, body: String,
-                    emojis: List<String>, outgoing: Boolean, sender: String = ""): Boolean {
+                    emojis: List<String>, outgoing: Boolean, sender: String = "",
+                    senderIdentity: String = ""): Boolean {
         val jid = bare(peer)
         val target = findByWireId(jid, targetId) ?: return false
-        // In a room the author is a nickname: theirs may change only theirs.
-        val sameAuthor = target.outgoing == outgoing &&
-            (outgoing || sender.isEmpty() || target.sender == sender)
+        val secure = isSecureRoom(jid)
+        // A secure group's changes come out of MLS with the author's JID; one
+        // without it (or one from outside MLS) is never applied there.
+        if (secure && !outgoing && senderIdentity.isEmpty()) return false
+        val sameAuthor = target.outgoing == outgoing && when {
+            outgoing -> true
+            // Secure group: the EXACT bare JID MLS authenticated, user@server
+            // -- the stored author of the target must be that JID.
+            secure -> target.author.isNotEmpty() &&
+                target.author.equals(senderIdentity, ignoreCase = true)
+            // Plain room: the nickname (the room controls it).
+            else -> sender.isEmpty() || target.sender == sender
+        }
         return when (action) {
             "edit" -> {
                 if (!sameAuthor || target.retracted || body.isBlank()) return false
@@ -1283,7 +1295,9 @@ class ChatState(
             }
             "react" -> {
                 if (target.retracted) return false
-                val who = if (outgoing) "me" else sender.ifEmpty { jid }
+                val who = if (outgoing) "me"
+                          else if (secure) senderIdentity.lowercase()
+                          else sender.ifEmpty { jid }
                 val next = LinkedHashMap(target.reactions)
                 val clean = emojis.map { it.trim() }.filter { it.isNotEmpty() && it.length <= 32 }
                     .distinct().take(16)

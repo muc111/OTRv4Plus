@@ -433,6 +433,37 @@ impl MlsClient {
         self.hold(group_id, c, Some(w), None)
     }
 
+    /// The identity a KeyPackage's credential names. Only parsed here; it is
+    /// validated (signature, lifetime, suite) by `add_members`.
+    pub fn key_package_identity(bytes: &[u8]) -> Result<Vec<u8>> {
+        let msg = MlsMessageIn::tls_deserialize_exact(bytes).map_err(|_| MlsError::Malformed)?;
+        match msg.extract() {
+            MlsMessageBodyIn::KeyPackage(kp) => Ok(identity_of(&kp.unverified_credential().credential)),
+            _ => Err(MlsError::Malformed),
+        }
+    }
+
+    /// `add_members`, BOUND: each KeyPackage's credential must name exactly
+    /// the identity given for it -- the JID whose authenticated OTRv4+
+    /// session delivered it. Without this an invitee could hand over a
+    /// KeyPackage naming someone else ("alice@server"); `add_members` would
+    /// then remove Alice's real leaf as stale and add the impostor under
+    /// her name, and every "who sent this" check after it would be wrong.
+    /// JIDs compare without ASCII case (RFC 7622 local and domain parts).
+    pub fn add_members_as(&mut self, group_id: &[u8], key_packages: &[Vec<u8>],
+                          identities: &[Vec<u8>]) -> Result<Vec<u8>> {
+        if identities.len() != key_packages.len() {
+            return Err(MlsError::Refused("one identity per key package"));
+        }
+        for (bytes, want) in key_packages.iter().zip(identities) {
+            let who = Self::key_package_identity(bytes)?;
+            if want.is_empty() || !who.eq_ignore_ascii_case(want) {
+                return Err(MlsError::Refused("key package names someone else"));
+            }
+        }
+        self.add_members(group_id, key_packages)
+    }
+
     /// Commit removing the members with these identities.
     pub fn remove_members(&mut self, group_id: &[u8], identities: &[Vec<u8>]) -> Result<Vec<u8>> {
         self.live()?;

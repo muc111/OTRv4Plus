@@ -63,6 +63,14 @@ data class Message(
      * REPLACES their previous one, as the XEP says.
      */
     val reactions: Map<String, List<String>> = emptyMap(),
+    /**
+     * In a SECURE GROUP: the bare JID MLS authenticated as the author (their
+     * leaf's credential, which the member who added them checked against the
+     * JID that delivered their KeyPackage). Only this author may correct or
+     * delete the message -- never a nickname, which the room controls.
+     * Empty everywhere else.
+     */
+    val author: String = "",
 )
 
 /**

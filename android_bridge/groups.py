@@ -60,10 +60,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import otrv4plus_actions as _actions
 import otrv4plus_fragment as _fragment
 
-from .events import (ErrorOccurred, GroupChanged, GroupInvite, QueuedSent,
-                     RoomMessageReceived, SecurityState)
+from .events import (ErrorOccurred, GroupChanged, GroupInvite, MessageChanged,
+                     QueuedSent, RoomMessageReceived, SecurityState)
 
 __all__ = ["SecureGroups", "GroupError", "ROOM_PREFIX", "SIGNAL_PREFIX",
            "is_group_signal", "is_room_frame"]
@@ -140,6 +141,8 @@ class _Stats:
     undecryptable: int = 0
     plaintext_refused: int = 0
     malformed: int = 0
+    #: Corrections/deletions refused: not by the author of their target.
+    wrong_author: int = 0
 
 
 def _env_int(name: str, default: int, low: int, high: int) -> int:
@@ -489,6 +492,9 @@ class SecureGroups:
         #: room -> {jid: fingerprint hex} learned over OTRv4+, and whether
         #: that session was SMP-verified when it arrived.
         self._bound: Dict[str, Dict[str, Tuple[str, bool]]] = {}
+        #: room -> {message id: MLS identity of its author}, bounded, memory
+        #: only (the UI keeps the author with each stored message).
+        self._authors: Dict[str, "collections.OrderedDict[str, str]"] = {}
         self._invites: Dict[str, _Invite] = {}        # room -> invitation to us
         self._outgoing: Dict[Tuple[str, str], _Outgoing] = {}  # (room, peer)
         self._awaiting_welcome: Dict[str, str] = {}   # room -> inviter
@@ -851,6 +857,7 @@ class SecureGroups:
                 self._welcome_for.clear()
                 self._welcome_out.clear()
                 self._pending_binding.clear()
+                self._authors.clear()
                 self._reassembler.clear()
 
     def wipe(self) -> None:
@@ -1329,6 +1336,12 @@ class SecureGroups:
                 kp = _b64d(b64)
             except (ValueError, binascii.Error):
                 raise GroupError("malformed")
+            if not self._kp_names(client, kp, peer):
+                # A KeyPackage naming someone other than the JID whose
+                # authenticated session delivered it: never added (it would
+                # also have removed that person's real leaf).
+                self._outgoing.pop((room, peer), None)
+                raise GroupError("key_package_identity")
             if client.has_pending_commit(room.encode()):
                 # One of our commits (a rekey, another add) is out: add them
                 # once it settles, rather than refuse an invitee who did
@@ -1338,7 +1351,8 @@ class SecureGroups:
                     queued.append((peer, kp, verified))
                 return
             try:
-                commit = bytes(client.add_members(room.encode(), [kp]))
+                commit = bytes(client.add_members(room.encode(), [kp],
+                                                  identities=[peer.encode()]))
             except ValueError as exc:
                 raise GroupError("add_refused", str(exc)[:80])
             self._outgoing.pop((room, peer), None)
@@ -1349,6 +1363,19 @@ class SecureGroups:
             self.save()
         self._post_commit(room, commit)
 
+    @staticmethod
+    def _kp_names(client, kp: bytes, peer: str) -> bool:
+        """Whether KeyPackage [kp] names [peer] (ASCII case aside). Rust
+        checks again when adding (`add_members(identities=...)`)."""
+        reader = getattr(type(client), "key_package_identity", None)
+        if reader is None:
+            return True                     # older core: Rust's own check decides
+        try:
+            who = bytes(reader(kp)).decode("utf-8", errors="strict")
+        except Exception:
+            return False
+        return who.lower() == peer.lower() and bool(peer)
+
     def _add_queued(self, room: str) -> None:
         """Add the invitees whose KeyPackages waited for our commit."""
         with self._lock:
@@ -1358,7 +1385,8 @@ class SecureGroups:
                 return
             try:
                 commit = bytes(client.add_members(room.encode(),
-                                                  [kp for _p, kp, _v in queued]))
+                                                  [kp for _p, kp, _v in queued],
+                                                  identities=[p.encode() for p, _k, _v in queued]))
             except Exception:
                 for peer, _kp, _v in queued:
                     self._outgoing.pop((room, peer), None)
@@ -1927,6 +1955,10 @@ class SecureGroups:
                 # A group file's offer or piece: to its handler, never shown.
                 fcontrol = (sender, verified, text[len("\x00OTRv4GF1:"):])
                 event = None
+            elif kind == "application" and text.startswith(_actions.GROUP_PREFIX):
+                # A typed message with its id, or a reply / correction /
+                # deletion / reaction: all inside MLS.
+                event = self._group_message(room, nick, sender, verified, timestamp, text)
             elif kind == "application":
                 self.stats.shown += 1
                 event = RoomMessageReceived(peer=room, sender=nick, body=text,
@@ -1970,6 +2002,50 @@ class SecureGroups:
                 except Exception:
                     self._emit(ErrorOccurred(peer=room, code="epoch_listener_failed"))
         return True
+
+    #: Per group, the message ids seen and who (MLS identity) wrote each.
+    MAX_AUTHORS = 4000
+
+    def _group_message(self, room: str, nick: str, sender: str, verified: bool,
+                       timestamp: float, text: str):
+        """One MLS-authenticated envelope (otrv4plus_actions) -> its event.
+
+        [sender] is the identity MLS authenticated (the leaf's credential).
+        A correction or deletion is passed on only when its target, if this
+        session saw it, was written by that SAME identity; the UI checks
+        again against what it stored. Malformed: dropped, never shown."""
+        got = _actions.decode_group_message(text)
+        if got is None or not sender:
+            self.stats.malformed += 1
+            return None
+        meta, body = got
+        authors = self._authors.setdefault(room, collections.OrderedDict())
+        action = meta["action"]
+        if action in ("edit", "retract"):
+            author = authors.get(meta["target"])
+            if author is not None and author.lower() != sender.lower():
+                self.stats.wrong_author += 1
+                return None
+        if action:
+            if action == "edit" and not body.strip():
+                return None
+            self.stats.shown += 1
+            return MessageChanged(peer=room, action=action, target_id=meta["target"],
+                                  body=body if action == "edit" else "",
+                                  emojis=tuple(meta["emojis"]), outgoing=False,
+                                  source="live", sender=nick, sender_identity=sender)
+        if meta["id"] in authors:
+            return None                       # the same message again
+        authors[meta["id"]] = sender
+        while len(authors) > self.MAX_AUTHORS:
+            authors.popitem(last=False)
+        if not body:
+            return None
+        self.stats.shown += 1
+        return RoomMessageReceived(peer=room, sender=nick, body=body,
+                                   timestamp=timestamp, encrypted=True,
+                                   sender_identity=sender, verified=verified,
+                                   message_id=meta["id"], reply_to=meta["reply"])
 
     def _on_commit(self, room: str, ev: Dict[str, Any]) -> Optional[Any]:
         client = self._client
