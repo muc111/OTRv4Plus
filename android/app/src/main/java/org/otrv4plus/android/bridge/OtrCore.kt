@@ -39,6 +39,13 @@ interface OtrCore {
      */
     fun wipeCrypto(): Boolean
 
+    /**
+     * Wipe & Exit, opt-in: ask the server to delete this account (XEP-0077)
+     * over the live session. "deleted", "unconfirmed", "refused", "offline"
+     * or "unsupported". Never throws; bounded by a short timeout.
+     */
+    fun deleteServerAccount(): String = "unsupported"
+
     fun localFingerprint(): String
 
     fun securityState(peer: String): SecurityState

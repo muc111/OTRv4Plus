@@ -158,4 +158,16 @@ class WipeAndExitTest {
             assertTrue(phrase in body, "the confirmation does not say \"$phrase\"")
         }
     }
+
+    @Test
+    fun `the server account is deleted after every local secret and before the stream closes`() {
+        val order = WipeAndExit.ORDER
+        val server = order.indexOf(Step.DELETE_SERVER_ACCOUNT)
+        for (local in listOf(Step.DESTROY_CRYPTO, Step.CLEAR_NOTIFICATIONS,
+                             Step.CLEAR_MEMORY, Step.DESTROY_VAULT)) {
+            assertTrue(order.indexOf(local) < server, "$local")
+        }
+        assertTrue(server < order.indexOf(Step.STOP_SUBSYSTEMS))
+        assertTrue("cannot be undone" in WipeAndExit.DELETE_ACCOUNT_DETAIL)
+    }
 }

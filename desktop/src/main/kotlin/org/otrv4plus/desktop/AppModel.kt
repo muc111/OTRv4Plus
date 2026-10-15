@@ -846,9 +846,13 @@ class AppModel(
 
     // -- Wipe & Exit -------------------------------------------------------------------
 
+    /** Wipe & Exit's opt-in: also delete the account on the server. Off by default. */
+    var wipeDeletesAccount by mutableStateOf(false)
+
     fun wipeAndExit(onDone: () -> Unit) {
+        val deleteAccount = wipeDeletesAccount
         ui.launch {
-            withContext(Dispatchers.IO) { runCatching { core.wipe() } }
+            withContext(Dispatchers.IO) { runCatching { core.wipe(deleteAccount) } }
             chat.bindAccount(AccountScope.NONE)
             screen = Screen.WIPED
             changed()

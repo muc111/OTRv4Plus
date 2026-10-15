@@ -128,6 +128,42 @@ class AccountSyncMixin:
             self._acct()["blocked"].discard(bare)
         return sorted(self._acct()["blocked"])
 
+    # -- Wipe & Exit, opt-in: delete the account on the server (XEP-0077) ------
+
+    #: Never longer than this: a wipe must not wait on a slow tunnel.
+    ACCOUNT_DELETE_TIMEOUT = 10.0
+
+    async def _remove_account(self, timeout: float) -> None:
+        iq = self._client.make_iq_set()
+        query = ET.SubElement(iq.xml, "{jabber:iq:register}query")
+        ET.SubElement(query, "{jabber:iq:register}remove")
+        await iq.send(timeout=timeout)
+
+    def delete_account(self, timeout: Optional[float] = None) -> str:
+        """Ask the server to delete this account (XEP-0077 §3.2), over the
+        session already authenticated -- no stored password is needed.
+
+        "deleted"     the server confirmed it;
+        "unconfirmed" no answer in time (it may still have done it: servers
+                      close the stream right after deleting);
+        "refused"     the server said no (not allowed, not supported);
+        "offline"     not connected: nothing was asked.
+        Never raises."""
+        if not self.is_connected:
+            return "offline"
+        limit = float(timeout or self.ACCOUNT_DELETE_TIMEOUT)
+        try:
+            self._send_now(self._remove_account(limit), limit + 2)
+        except Exception as exc:
+            name = type(exc).__name__
+            if "IqError" in name:
+                _TRACE.record("wipe", "account_delete_refused", "warning")
+                return "refused"
+            _TRACE.record("wipe", "account_delete_unconfirmed", "warning", error=name)
+            return "unconfirmed"
+        _TRACE.record("wipe", "account_deleted", "info")
+        return "deleted"
+
     def block_contact(self, jid: str, report: str = "") -> "tuple[str, str, Any]":
         """Block [jid] on the server; [report] "spam"/"abuse" also reports it."""
         if not self._acct()["blocking"] and self.is_connected:

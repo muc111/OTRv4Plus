@@ -256,7 +256,10 @@ class Host:
             return self._status(self.controller.connect(str(args.get("password", ""))))
         if op in ("wipe", "wipe_crypto"):
             target = self.controller if self.controller is not None else self.app
-            result = plain(getattr(target, op)())
+            if op == "wipe":
+                result = plain(target.wipe(delete_account=bool(args.get("delete_account"))))
+            else:
+                result = plain(target.wipe_crypto())
             if op == "wipe":
                 self._stop.set()
             return result

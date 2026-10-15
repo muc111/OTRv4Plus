@@ -499,8 +499,18 @@ private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: Se
                 shape = RoundedCornerShape(24.dp),
             )
             Spacer(Modifier.width(8.dp))
-            FilledIconButton(onClick = { model.send(jid) }, enabled = text.isNotBlank() && canSend) {
-                Icon(Icons.AutoMirrored.Filled.Send, "Send")
+            // Nothing typed and a voice note allowed here (verified contact,
+            // or a secure group): the mic. Otherwise Send.
+            val voice = if (isRoom) model.chat.isSecureRoom(jid)
+                        else TransferUi.offer(security) is TransferUi.Offer.Available
+            if (text.isBlank() && voice) {
+                FilledIconButton(onClick = { model.openVoiceSheet() }, enabled = canSend) {
+                    Icon(Icons.Filled.Mic, "Record a voice note")
+                }
+            } else {
+                FilledIconButton(onClick = { model.send(jid) }, enabled = text.isNotBlank() && canSend) {
+                    Icon(Icons.AutoMirrored.Filled.Send, "Send")
+                }
             }
         }
     }

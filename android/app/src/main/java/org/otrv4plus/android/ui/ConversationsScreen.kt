@@ -57,7 +57,7 @@ fun ConversationsScreen(
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenProfile: () -> Unit = {},
-    onWipeAndExit: (() -> Unit)? = null,
+    onWipeAndExit: ((Boolean) -> Unit)? = null,
     theme: ThemeTokens.Mode = ThemeTokens.DEFAULT,
     onTheme: ((ThemeTokens.Mode) -> Unit)? = null,
 ) {
@@ -302,7 +302,9 @@ fun ConversationsScreen(
     }
 
     if (wiping && onWipeAndExit != null) {
-        WipeAndExitDialog(onWipe = onWipeAndExit, onDismiss = { wiping = false })
+        // Signed in here, so the server account can be deleted too (opt-in).
+        WipeAndExitDialog(onWipe = onWipeAndExit, onDismiss = { wiping = false },
+                          offerAccountDeletion = true)
     }
 
     if (choosingTheme && onTheme != null) {

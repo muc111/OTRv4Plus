@@ -241,3 +241,20 @@ no preview and no verification. That is server state, which a local wipe
 does not and cannot remove; removing a contact from the server roster is a
 separate, explicit action. Rooms are not rejoined: the app keeps no room
 bookmarks, locally or on the server.
+
+## Deleting the server account (opt-in, rc.70)
+
+The confirmation offers **"Also delete my account on the server"** while
+signed in, off by default. When ticked, step `DELETE_SERVER_ACCOUNT` runs
+after every local secret is gone (`DESTROY_CRYPTO`, `DESTROY_VAULT`) and
+before the stream closes (`STOP_SUBSYSTEMS`): the live, already
+authenticated session asks the server to remove the account (XEP-0077
+`<remove/>`), waiting at most ten seconds. No stored password is needed.
+The outcome -- deleted, unconfirmed, refused, offline -- is recorded and
+never stops or delays the rest of the wipe.
+
+What the server deletes is up to the server; Prosody removes the account,
+its roster, vCard, offline messages and (recent versions) its archive. It
+cannot reach copies other people already have, room archives, or server
+backups and logs. The account name may later be registered again by
+someone else; contacts' clients see a different key.

@@ -1025,6 +1025,18 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         false
     }
 
+    override fun deleteServerAccount(): String = try {
+        val ctl = controller
+        val a = app
+        when {
+            ctl != null -> ctl.callAttr("delete_server_account").toString()
+            a != null -> a.callAttr("delete_server_account").toString()
+            else -> "offline"
+        }
+    } catch (_: Throwable) {
+        "unconfirmed"
+    }
+
     override fun wipe(): WipeReport {
         val report: PyObject? = try {
             val ctl = controller

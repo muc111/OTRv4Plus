@@ -765,8 +765,30 @@ class OtrApp:
             raise GroupError("otr_required")
         self._send_protocol_or_raise(peer, frame, "group_send_failed")
 
-    def wipe(self) -> Dict[str, Any]:
+    def delete_server_account(self, timeout: Optional[float] = None) -> str:
+        """Wipe & Exit's opt-in last word to the server: delete this account
+        (XEP-0077). Runs on the live, already-authenticated session, AFTER the
+        keys are destroyed in Rust and BEFORE the transport closes. Returns
+        the transport's outcome ("deleted", "unconfirmed", "refused",
+        "offline") or "unsupported". Never raises; never blocks for long."""
+        transport = self._transport
+        if transport is None:
+            return "offline"
+        remove = getattr(transport, "delete_account", None)
+        if remove is None:
+            return "unsupported"
+        try:
+            return str(remove(timeout))
+        except Exception:
+            return "unconfirmed"
+
+    def wipe(self, delete_account: bool = False) -> Dict[str, Any]:
         """Wipe & Exit, Python side. Idempotent; the app is spent afterwards.
+
+        [delete_account]: the user also asked for the account to be deleted
+        on the server. Done after the Rust keys are gone (stage B) and before
+        the transport closes; reported as `server_account`, and never a
+        reason for the rest of the wipe to wait or stop.
 
         NOT `shutdown` with more steps. `shutdown` is a logout: sessions end,
         the facade stays usable for the next account, and pinned fingerprints
@@ -832,6 +854,10 @@ class OtrApp:
                 calls.shutdown()
             except Exception:
                 report["errors"].append("calls")
+
+        # The server, if asked: the account and what the server keeps for it.
+        report["server_account"] = (self.delete_server_account() if delete_account
+                                    else "not_requested")
 
         transport = self._transport
         self._transport = None

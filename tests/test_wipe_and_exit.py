@@ -534,7 +534,7 @@ class TestTheAndroidSideIsWired:
 
     def test_the_service_runs_every_step_through_the_plan(self):
         body = _body(_kt("connection", "OtrConnectionService.kt"),
-                     "private fun wipeAndExit()")
+                     "private fun wipeAndExit(deleteAccount: Boolean = false)")
         plan = _kt("security", "WipeAndExit.kt")
         steps = _body(plan, "enum class Step")
         for step in [s.strip().rstrip(",") for s in steps.strip("{}").split("\n")
@@ -545,7 +545,7 @@ class TestTheAndroidSideIsWired:
 
     def test_each_step_does_what_the_plan_says(self):
         body = _body(_kt("connection", "OtrConnectionService.kt"),
-                     "private fun wipeAndExit()")
+                     "private fun wipeAndExit(deleteAccount: Boolean = false)")
         for needle in ("core.wipeCrypto()", "core.wipe()", "KeystoreVault.destroy(context)",
                        "cancelAll()", "AppDataWipe.wipe(", "context.dataDir",
                        "getExternalFilesDirs", "externalCacheDirs", "killProcess",
@@ -554,6 +554,10 @@ class TestTheAndroidSideIsWired:
         # Rust destruction before the network-bound teardown, and the storage
         # sweep after it (so nothing writes behind it).
         assert body.index("core.wipeCrypto()") < body.index("core.wipe()")
+        # The server, only if asked: after the keys, before the stream closes.
+        assert body.index("core.wipeCrypto()") < body.index("core.deleteServerAccount()") \
+            < body.index("core.wipe()")
+        assert "if (deleteAccount) core.deleteServerAccount()" in body
         assert body.index("core.wipe()") < body.index("AppDataWipe.wipe(")
         # Stopped, THEN killed, so a sticky service is not restarted.
         assert body.index("stopSelf()") < body.index("killProcess")
@@ -591,11 +595,13 @@ class TestTheAndroidSideIsWired:
         # buttons in a row looked cluttered), with the one shared
         # confirmation (ui/WipeControl.kt) that carries the task removal.
         assert 'Text("Wipe & Exit"' in screen
-        assert "WipeAndExitDialog(onWipe = { model.wipeAndExit() }" in screen
+        assert "WipeAndExitDialog(onWipe = { model.wipeAndExit(it) }" in screen
         control = _kt("ui", "WipeControl.kt")
         assert "WipeAndExit.CONFIRM_BODY" in control
         assert "finishAndRemoveTask()" in control
-        assert control.index("onWipe()") < control.index("finishAndRemoveTask()")
+        assert control.index("onWipe(") < control.index("finishAndRemoveTask()")
+        # The server option is off by default, every time.
+        assert "var deleteAccount by rememberSaveable { mutableStateOf(false) }" in control
 
     def test_wipe_is_reachable_from_the_conversation_list(self):
         """In the list's menu, same confirmation, same teardown."""
@@ -603,7 +609,7 @@ class TestTheAndroidSideIsWired:
         assert 'Text("Wipe & Exit"' in screen
         assert "WipeAndExitDialog(onWipe = onWipeAndExit" in screen
         main = _kt("MainActivity.kt")
-        assert "onWipeAndExit = { connection.wipeAndExit() }" in main
+        assert "onWipeAndExit = { deleteAccount -> connection.wipeAndExit(deleteAccount) }" in main
 
     def test_the_plan_names_the_python_roots_this_module_destroys(self):
         from android_bridge import wipe as disk

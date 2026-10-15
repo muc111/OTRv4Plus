@@ -800,7 +800,14 @@ class ConnectionController:
         report["ok"] = not report.get("errors")
         return report
 
-    def wipe(self) -> Dict[str, Any]:
+    def delete_server_account(self, timeout: Optional[float] = None) -> str:
+        """See `OtrApp.delete_server_account` (Wipe & Exit, opt-in)."""
+        try:
+            return self._app.delete_server_account(timeout)
+        except Exception:
+            return "unconfirmed"
+
+    def wipe(self, delete_account: bool = False) -> Dict[str, Any]:
         """Wipe & Exit: stop any attempt, destroy everything, never reconnect.
 
         DISTINCT FROM `disconnect`, which ends a connection and leaves the
@@ -826,7 +833,7 @@ class ConnectionController:
         # loop thread BEFORE the loop goes.
         self._transport = None
         try:
-            report = dict(self._app.wipe())
+            report = dict(self._app.wipe(delete_account=bool(delete_account)))
         except Exception as exc:
             report = {"errors": ["app:%s" % type(exc).__name__]}
         if transport is not None:

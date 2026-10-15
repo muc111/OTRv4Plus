@@ -58,6 +58,7 @@ class WipePersistenceTest {
             Step.CLEAR_NOTIFICATIONS to { },
             Step.CLEAR_MEMORY to { p.chat.bindAccount(AccountScope.NONE) },
             Step.DESTROY_VAULT to { p.vault.clear() },
+            Step.DELETE_SERVER_ACCOUNT to { },
             Step.STOP_SUBSYSTEMS to duringEngine,
             Step.WIPE_APP_DATA to { },
             Step.EXIT to { },

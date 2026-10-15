@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.70 — 2026-10-15 — mic button; Wipe & Exit can delete the server account (core 0.13.1)
+
+- **Mic button in the message bar** (Android and desktop): with nothing
+  typed, Send becomes a microphone. It records a voice note that is
+  disguised on the device (Synthetic by default, see VOICE_NOTES.md) and
+  sent as an encrypted file. Offered wherever a file may be sent: a
+  verified contact, or a secure group.
+- **Wipe & Exit: "Also delete my account on the server"** -- a checkbox,
+  off by default, shown while signed in. Order: every key destroyed in Rust
+  first; then the server is asked to delete the account (XEP-0077) over the
+  live session, waiting at most ten seconds; then the connection closes and
+  the device storage is wiped. The outcome (deleted, unconfirmed, refused,
+  offline) is recorded; it never stops or delays the local wipe. It cannot
+  delete what contacts already received, room archives, or server backups.
+
 ## Android 0.7.0-experimental.rc.69 — 2026-10-15 — secure groups: reply, correct, delete, react inside MLS (core 0.13.1)
 
 - **Encrypted (MLS) groups now have reply, correct, delete for everyone and

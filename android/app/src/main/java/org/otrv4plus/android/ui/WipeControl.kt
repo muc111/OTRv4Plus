@@ -15,14 +15,15 @@ import org.otrv4plus.android.security.WipeAndExit
  * both run exactly the same thing. Nothing happens without the confirmation.
  */
 @Composable
-fun WipeAndExitButton(onWipe: () -> Unit) {
+fun WipeAndExitButton(onWipe: (Boolean) -> Unit, offerAccountDeletion: Boolean = false) {
     var confirm by rememberSaveable { mutableStateOf(false) }
     OutlinedButton(
         onClick = { confirm = true },
         colors = ButtonDefaults.outlinedButtonColors(
             contentColor = MaterialTheme.colorScheme.error),
     ) { Text("Wipe & Exit") }
-    if (confirm) WipeAndExitDialog(onWipe = onWipe, onDismiss = { confirm = false })
+    if (confirm) WipeAndExitDialog(onWipe = onWipe, onDismiss = { confirm = false },
+                                   offerAccountDeletion = offerAccountDeletion)
 }
 
 /**
@@ -31,17 +32,36 @@ fun WipeAndExitButton(onWipe: () -> Unit) {
  * (wipe first, then remove the task), wherever it is started from.
  */
 @Composable
-fun WipeAndExitDialog(onWipe: () -> Unit, onDismiss: () -> Unit) {
+fun WipeAndExitDialog(onWipe: (Boolean) -> Unit, onDismiss: () -> Unit,
+                      offerAccountDeletion: Boolean = false) {
     val activity = LocalContext.current as? android.app.Activity
+    // Off by default, every time the dialog opens.
+    var deleteAccount by rememberSaveable { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(WipeAndExit.CONFIRM_TITLE) },
-        text = { Text(WipeAndExit.CONFIRM_BODY) },
+        text = {
+            androidx.compose.foundation.layout.Column {
+                Text(WipeAndExit.CONFIRM_BODY)
+                if (offerAccountDeletion) {
+                    androidx.compose.foundation.layout.Row(
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        Checkbox(checked = deleteAccount, onCheckedChange = { deleteAccount = it })
+                        Text(WipeAndExit.DELETE_ACCOUNT_OPTION,
+                             color = MaterialTheme.colorScheme.error)
+                    }
+                    if (deleteAccount) {
+                        Text(WipeAndExit.DELETE_ACCOUNT_DETAIL,
+                             style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        },
         confirmButton = {
             TextButton(
                 onClick = {
                     onDismiss()
-                    onWipe()
+                    onWipe(offerAccountDeletion && deleteAccount)
                     activity?.finishAndRemoveTask()
                 },
                 colors = ButtonDefaults.textButtonColors(

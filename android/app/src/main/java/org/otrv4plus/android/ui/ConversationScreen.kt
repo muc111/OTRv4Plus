@@ -168,6 +168,11 @@ fun ConversationScreen(
                         ?.let { "Replying to: " + (it.body.lineSequence().firstOrNull() ?: "").take(60) },
                 onCancel = { model.cancelCompose(jid) },
                 status = model.actionStatus,
+                // The mic: a disguised, encrypted voice note. Offered where a
+                // file may be sent (verified contact, or a secure group whose
+                // members are all verified); nowhere else.
+                onVoice = if (model.transferOffer(jid) is TransferUi.Offer.Available)
+                              ({ model.openVoiceSheet() }) else null,
             )
         },
     ) { padding ->
@@ -744,12 +749,8 @@ private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = fals
 
     when (offer) {
         is TransferUi.Offer.Available ->
-            Row {
-                TextButton(onClick = { picker.launch(arrayOf("*/*")) }) {
-                    Text(if (group) "Send a file to the group" else "Send a file")
-                }
-                // A voice note is a file: the same gates, the same offer.
-                TextButton(onClick = { model.openVoiceSheet() }) { Text("Voice note") }
+            TextButton(onClick = { picker.launch(arrayOf("*/*")) }) {
+                Text(if (group) "Send a file to the group" else "Send a file")
             }
         is TransferUi.Offer.NeedsVerification ->
             TextButton(enabled = false, onClick = {}) {
@@ -1233,6 +1234,7 @@ private fun Composer(
     banner: String? = null,
     onCancel: () -> Unit = {},
     status: String? = null,
+    onVoice: (() -> Unit)? = null,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -1279,10 +1281,17 @@ private fun Composer(
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { onSend() }),
                 )
-                Button(
-                    onClick = onSend,
-                    enabled = enabled && draft.isNotBlank(),
-                ) { Text("Send") }
+                if (draft.isBlank() && onVoice != null) {
+                    // Nothing typed: the mic, as in every messenger.
+                    FilledIconButton(onClick = onVoice, enabled = enabled) {
+                        MicIcon(contentDescription = "Record a voice note")
+                    }
+                } else {
+                    Button(
+                        onClick = onSend,
+                        enabled = enabled && draft.isNotBlank(),
+                    ) { Text("Send") }
+                }
             }
         }
     }

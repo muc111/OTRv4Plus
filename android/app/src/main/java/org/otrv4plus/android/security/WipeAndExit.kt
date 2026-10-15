@@ -71,6 +71,12 @@ object WipeAndExit {
      *     CLEAR_NOTIFICATIONS, CLEAR_MEMORY, DESTROY_VAULT -- what is on
      *                         screen, in memory and sealed on disk (the vault
      *                         key is deleted: cryptographic erasure).
+     *     DELETE_SERVER_ACCOUNT -- ONLY if the user ticked it: ask the server
+     *                         to delete the account (XEP-0077) over the live
+     *                         session. After every local secret is gone, so a
+     *                         slow or absent network delays nothing that
+     *                         matters; bounded by a short timeout; its outcome
+     *                         is reported, never a reason to stop.
      *  C. STOP_SUBSYSTEMS  -- calls, SAM, the XMPP stream and I2P tunnel, the
      *                         loop thread; Python overwrites what it wrote.
      *                         Bounded by network timeouts, hence after B.
@@ -84,6 +90,7 @@ object WipeAndExit {
         CLEAR_NOTIFICATIONS,
         CLEAR_MEMORY,
         DESTROY_VAULT,
+        DELETE_SERVER_ACCOUNT,
         STOP_SUBSYSTEMS,
         WIPE_APP_DATA,
         EXIT,
@@ -172,6 +179,10 @@ object WipeAndExit {
         Store("Engine files and received files (overwritten, then unlinked)",
               "Python home: ~/.otrv4plus (files/, files/.incoming/)",
               Category.SENSITIVE_PERSISTENT, Step.STOP_SUBSYSTEMS),
+        Store("The account on the server: contact list, profile, offline messages "
+              + "and the server's history for it (ONLY when the user ticks it)",
+              "the XMPP server (XEP-0077)", Category.SENSITIVE_PERSISTENT,
+              Step.DELETE_SERVER_ACCOUNT),
         Store("Audio streams, SAM sessions, XMPP stream, I2P tunnel, loop thread",
               "Python transport", Category.SENSITIVE_EPHEMERAL, Step.STOP_SUBSYSTEMS),
         Store("The built-in I2P router's process, its tunnels and SAM sessions",
@@ -276,6 +287,16 @@ object WipeAndExit {
         "contacts will need to verify you again."
 
     const val CONFIRM = "Wipe and exit"
+
+    /** The opt-in, off by default. */
+    const val DELETE_ACCOUNT_OPTION = "Also delete my account on the server"
+    const val DELETE_ACCOUNT_DETAIL =
+        "Your account, contact list, profile and the history the server keeps " +
+        "for you are deleted on the server too -- after the keys on this " +
+        "device are destroyed. It cannot be undone, and the name may later be " +
+        "registered by someone else. Messages your contacts already received, " +
+        "and room archives, are not affected. Needs a connection: offline, " +
+        "only this device is wiped."
 
     const val CANCEL = "Cancel"
 }

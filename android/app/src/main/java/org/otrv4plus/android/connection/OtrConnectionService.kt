@@ -246,7 +246,7 @@ class OtrConnectionService : Service() {
         }
         when (intent?.action) {
             ACTION_WIPE -> {
-                wipeAndExit()
+                wipeAndExit(intent.getBooleanExtra(EXTRA_DELETE_ACCOUNT, false))
                 return START_NOT_STICKY
             }
             ACTION_STOP -> {
@@ -423,6 +423,10 @@ class OtrConnectionService : Service() {
     /** The last wipe's engine report, for the diagnostics that outlive it. */
     @Volatile
     var lastWipe: org.otrv4plus.android.bridge.WipeReport? = null
+
+    /** Wipe & Exit's server step: "not_requested", "deleted", "unconfirmed",
+     *  "refused", "offline" or "unsupported". */
+    var lastServerAccount: String = "not_requested"
         private set
 
     /**
@@ -439,7 +443,7 @@ class OtrConnectionService : Service() {
      * because the EXIT step ends the service and must not be racing the
      * cancellation that would cause.
      */
-    private fun wipeAndExit() {
+    private fun wipeAndExit(deleteAccount: Boolean = false) {
         if (!wipeStarted.compareAndSet(false, true)) return
         WipeAndExit.begin()
         goForeground()
@@ -474,6 +478,13 @@ class OtrConnectionService : Service() {
                 if (!KeystoreVault.destroy(context) && vault.inner is KeystoreVault) {
                     error("the vault key could not be confirmed deleted")
                 }
+            },
+            WipeAndExit.Step.DELETE_SERVER_ACCOUNT to {
+                // Only when asked; the keys are already gone (DESTROY_CRYPTO),
+                // and the stream is still up until STOP_SUBSYSTEMS.
+                lastServerAccount = if (deleteAccount) core.deleteServerAccount()
+                                    else "not_requested"
+                runCatching { core.note("wipe", "server_account", "info", lastServerAccount) }
             },
             WipeAndExit.Step.STOP_SUBSYSTEMS to {
                 val report = core.wipe()
@@ -1200,6 +1211,7 @@ class OtrConnectionService : Service() {
         const val ACTION_STOP = "org.otrv4plus.android.STOP"
         const val ACTION_LOGOUT = "org.otrv4plus.android.LOGOUT"
         const val ACTION_WIPE = "org.otrv4plus.android.WIPE"
+        const val EXTRA_DELETE_ACCOUNT = "delete_account"
         const val EXTRA_JID = "jid"
         const val EXTRA_PASSWORD = "password"
 
@@ -1247,9 +1259,10 @@ class OtrConnectionService : Service() {
          * Wipe & Exit. Destroys every session secret and every sensitive
          * record, then ends the process. See [WipeAndExit].
          */
-        fun wipeAndExit(context: Context) {
+        fun wipeAndExit(context: Context, deleteAccount: Boolean = false) {
             val intent = Intent(context, OtrConnectionService::class.java)
                 .setAction(ACTION_WIPE)
+                .putExtra(EXTRA_DELETE_ACCOUNT, deleteAccount)
             ContextCompat.startForegroundService(context, intent)
         }
 

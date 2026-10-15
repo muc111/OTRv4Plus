@@ -454,11 +454,11 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      * then end the process. The service does the work -- it outlives this
      * ViewModel, which is about to go with the Activity. See WipeAndExit.
      */
-    fun wipeAndExit() {
+    fun wipeAndExit(deleteAccount: Boolean = false) {
         login.cancelled()
         connectionFailure = null
         revision++
-        OtrConnectionService.wipeAndExit(getApplication())
+        OtrConnectionService.wipeAndExit(getApplication(), deleteAccount)
     }
 
     /** Sign out: stop, and forget the account and its history. */

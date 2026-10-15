@@ -246,17 +246,34 @@ fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
         }
     }
     if (confirmWipe) AlertDialog(
-        onDismissRequest = { confirmWipe = false },
+        onDismissRequest = { confirmWipe = false; model.wipeDeletesAccount = false },
         title = { Text("Wipe everything?") },
-        text = { Text("Your identity keys, every session and every received file on this device " +
-                      "are destroyed. Contacts will see a new key next time. This cannot be undone.") },
+        text = {
+            Column {
+                Text("Your identity keys, every session and every received file on this device " +
+                     "are destroyed. Contacts will see a new key next time. This cannot be undone.")
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    androidx.compose.material3.Checkbox(
+                        checked = model.wipeDeletesAccount,
+                        onCheckedChange = { model.wipeDeletesAccount = it })
+                    Text(org.otrv4plus.android.security.WipeAndExit.DELETE_ACCOUNT_OPTION,
+                         color = MaterialTheme.colorScheme.error)
+                }
+                if (model.wipeDeletesAccount) {
+                    Text(org.otrv4plus.android.security.WipeAndExit.DELETE_ACCOUNT_DETAIL,
+                         style = MaterialTheme.typography.bodySmall)
+                }
+            }
+        },
         confirmButton = {
             Button(onClick = { confirmWipe = false; onWipe() },
                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
                 Text("Wipe & Exit")
             }
         },
-        dismissButton = { TextButton(onClick = { confirmWipe = false }) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = { confirmWipe = false; model.wipeDeletesAccount = false }) {
+            Text("Cancel")
+        } },
     )
 }
 

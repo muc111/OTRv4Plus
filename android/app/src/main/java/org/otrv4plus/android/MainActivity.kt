@@ -330,7 +330,7 @@ class MainActivity : ComponentActivity() {
                                     profileOf = ""
                                     screen = Screen.PROFILE
                                 },
-                                onWipeAndExit = { connection.wipeAndExit() },
+                                onWipeAndExit = { deleteAccount -> connection.wipeAndExit(deleteAccount) },
                                 theme = themeMode,
                                 onTheme = { mode ->
                                     themeMode = mode

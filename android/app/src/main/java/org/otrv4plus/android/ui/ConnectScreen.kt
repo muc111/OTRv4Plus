@@ -188,7 +188,8 @@ fun ConnectScreen(
             }
         }
         if (wiping) {
-            WipeAndExitDialog(onWipe = { model.wipeAndExit() }, onDismiss = { wiping = false })
+            WipeAndExitDialog(onWipe = { model.wipeAndExit(it) }, onDismiss = { wiping = false },
+                              offerAccountDeletion = model.phase == org.otrv4plus.android.connection.LinkPhase.CONNECTED)
         }
 
         val ready = init?.ok == true

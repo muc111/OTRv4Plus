@@ -410,8 +410,12 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         (r?.get("errors") as? JsonArray).isNullOrEmpty()
     }.getOrDefault(false)
 
-    override fun wipe(): WipeReport = runCatching {
-        val r = call("wipe") as JsonObject
+    override fun wipe(): WipeReport = wipe(deleteAccount = false)
+
+    /** [deleteAccount]: also ask the server to delete the account (XEP-0077),
+     *  after the keys are destroyed (opt-in, see WipeAndExit). */
+    fun wipe(deleteAccount: Boolean): WipeReport = runCatching {
+        val r = call("wipe", "delete_account" to deleteAccount) as JsonObject
         WipeReport(
             sessions = r["sessions"].asInt(), handshakes = r["handshakes"].asInt(),
             identityKeys = r["identity_keys"].asInt(), filesDestroyed = r["files_destroyed"].asInt(),
