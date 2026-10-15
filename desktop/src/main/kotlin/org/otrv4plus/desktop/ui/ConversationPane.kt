@@ -99,6 +99,14 @@ fun ConversationPane(model: AppModel, jid: String) {
     var showMembers by remember(jid) { mutableStateOf(true) }
     var locationOpen by remember(jid) { mutableStateOf(false) }
     LaunchedEffect(jid, secure) { if (secure) model.refreshGroupNow(jid) }
+    // Build and keep the next call's I2P path while this conversation is
+    // open and a call could be made from it (10 minutes after the last ask).
+    LaunchedEffect(jid, isRoom, secure) {
+        while (true) {
+            model.refreshCallPath(if (isRoom) secure else model.callControl.enabled)
+            kotlinx.coroutines.delay(if (model.callPath == CallUi.Readiness.READY) 15_000L else 4_000L)
+        }
+    }
 
     Row(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).fillMaxHeight()) {
@@ -189,12 +197,19 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
             Spacer(Modifier.width(8.dp))
             val control = model.callControl
             if (control.visible) {
+                // A phone coloured by the call path: red, amber, green.
+                val tip = if (control.enabled) CallUi.readinessLabel(model.callPath, model.callPathSecondsLeft)
+                          else control.label
                 TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                           tooltip = { PlainTooltip { Text(control.label) } },
+                           tooltip = { PlainTooltip { Text(tip) } },
                            state = rememberTooltipState()) {
                     FilledIconButton(onClick = { model.call(jid) },
-                                     enabled = control.enabled && model.callPhase == CallState.IDLE) {
-                        Icon(Icons.Filled.Call, control.label)
+                                     enabled = control.enabled && model.callPhase == CallState.IDLE,
+                                     colors = androidx.compose.material3.IconButtonDefaults.filledIconButtonColors(
+                                         containerColor = androidx.compose.ui.graphics.Color(
+                                             CallUi.readinessColour(model.callPath)),
+                                         contentColor = androidx.compose.ui.graphics.Color.White)) {
+                        Icon(Icons.Filled.Call, tip)
                     }
                 }
             }

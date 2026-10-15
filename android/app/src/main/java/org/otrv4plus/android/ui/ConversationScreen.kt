@@ -80,6 +80,18 @@ fun ConversationScreen(
     // room can have. The bridge refuses all four for a room regardless.
     val room = model.isRoom(jid)
     LaunchedEffect(jid, room) { if (room) model.refreshOccupants(jid) }
+    // The phone's colour: while a conversation that can call is open, the
+    // next call's I2P path is built and kept (10 minutes after the last
+    // look); elsewhere its state is only read.
+    LaunchedEffect(jid, room) {
+        while (true) {
+            val callable = if (room) model.isSecureRoom(jid) &&
+                                     model.groupMembers(jid).any { !it.me && it.verified }
+                           else model.callGate(jid).first == CallUi.Gate.AVAILABLE
+            model.refreshCallPath(callable)
+            kotlinx.coroutines.delay(if (model.callPath == CallUi.Readiness.READY) 15_000L else 4_000L)
+        }
+    }
 
     // Scroll to the newest ONLY when the user is already near the bottom.
     // Yanking the view down while somebody is reading back through yesterday
@@ -927,8 +939,12 @@ private fun CallBar(model: ChatViewModel, jid: String) {
         val (gate, reason) = gateAndReason
         val control = CallUi.control(gate, reason)
         if (control.visible) {
-            TextButton(enabled = control.enabled,
-                       onClick = { act(answer = false) }) { Text(control.label) }
+            // A phone, coloured by whether the call's I2P path is built yet.
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 4.dp)) {
+                PhoneButton(model.callPath, model.callPathSecondsLeft,
+                            enabled = control.enabled, disabledReason = control.label,
+                            description = "Call") { act(answer = false) }
+            }
         }
     }
 
@@ -1551,8 +1567,10 @@ private fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                         // Callable once the checks are done and someone is
                         // verified: anyone not verified is simply not in it.
                         if (anyVerified && running == 0) {
-                            Button(onClick = { withMic("call") }) {
-                                Text("\uD83D\uDCDE Call the group")
+                            // The same phone as a 1:1 call, coloured by the path.
+                            PhoneButton(model.callPath, model.callPathSecondsLeft,
+                                        enabled = true, description = "Call the group") {
+                                withMic("call")
                             }
                         }
                         if (!verify.allVerified) {

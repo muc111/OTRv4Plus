@@ -412,6 +412,21 @@ class AppModel(
     var callControl by mutableStateOf(CallUi.Control(true, false, "Call"))
         private set
 
+    /** The phone's colour: whether the next call's I2P path is built. */
+    var callPath by mutableStateOf(CallUi.Readiness.COLD)
+        private set
+    var callPathSecondsLeft by mutableStateOf(0)
+        private set
+
+    /** Keep the next call's path built while a callable conversation is open. */
+    fun refreshCallPath(build: Boolean) {
+        ui.launch {
+            val (code, left) = withContext(Dispatchers.IO) { core.callPath(build) }
+            callPath = CallUi.Readiness.of(code)
+            callPathSecondsLeft = left
+        }
+    }
+
     private suspend fun refreshConversation(jid: String) {
         val c = chat.conversation(jid)
         // Automatic OTRv4+, exactly as the app: only for the open

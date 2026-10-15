@@ -218,6 +218,11 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     }.getOrNull()
     fun voiceUnavailableReason(): String =
         runCatching { call("voice_unavailable_reason").asStr() }.getOrDefault("")
+    /** The next call's I2P path (see the app's ChaquopyOtrCore.callPath). */
+    fun callPath(build: Boolean): Pair<String, Int> = runCatching {
+        val d = call(if (build) "warm_call_path" else "call_path_state") as JsonObject
+        d.str("state").ifBlank { "cold" } to (d.str("seconds_left").toIntOrNull() ?: 0)
+    }.getOrDefault("cold" to 0)
 
     // -- files ---------------------------------------------------------------------------
 

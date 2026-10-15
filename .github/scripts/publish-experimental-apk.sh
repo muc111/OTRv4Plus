@@ -211,6 +211,12 @@ Asserted on every run rather than assumed:
   pressed, so joining is quicker. Please send the **diagnostics report from
   BOTH phones** after a group call: the counters (\`peers\`, \`rx\`, \`tx\`,
   \`reopened\`) now print as numbers instead of labels.
+- **The phone's colours** (rc.76): open a verified chat or group and watch
+  the phone go red, amber, then green (usually under 2 minutes on a warm
+  router); a call placed while it is green should start without the
+  30-120 s wait, on both sides once both have the chat open.
+- **The hang-up crash fix** (rc.75): hang up 1:1 and group calls on both
+  phones, several times.
 - **The composer's 🎤 voice-note and 📎 file buttons** (rc.74): now shown
   in every encrypted conversation; until the contact (or every group member)
   is verified, a tap says what is needed instead of sending.

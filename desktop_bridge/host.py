@@ -134,6 +134,8 @@ APP_OPS: Dict[str, tuple] = {
     "smp_abort": ("peer",),
     "call_state": ("peer",),
     "call_gate": ("peer",),
+    "warm_call_path": (),
+    "call_path_state": (),
     "call_duration_seconds": ("peer",),
     "start_call": ("peer",),
     "answer_call": ("peer",),

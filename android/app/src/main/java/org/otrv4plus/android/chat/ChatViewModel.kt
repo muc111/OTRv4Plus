@@ -1432,6 +1432,29 @@ class ChatViewModel : ViewModel() {
         ) to (voiceReason ?: "voice has not been checked yet")
     }
 
+    /** The phone icon: whether the next call's I2P path is already built. */
+    var callPath by mutableStateOf(CallUi.Readiness.COLD)
+        private set
+    var callPathSecondsLeft by mutableStateOf(0)
+        private set
+
+    /**
+     * Keep the next call's path built while a conversation that can call is
+     * on screen (asked every few seconds by the screen; each ask renews the
+     * 10-minute window). [callable] is false where no call could be made --
+     * nothing is built for those, the state is only read.
+     */
+    fun refreshCallPath(callable: Boolean) {
+        val core = this.core ?: return
+        viewModelScope.launch {
+            val (code, left) = withContext(Dispatchers.IO) {
+                runCatching { core.callPath(build = callable) }.getOrDefault("cold" to 0)
+            }
+            callPath = CallUi.Readiness.of(code)
+            callPathSecondsLeft = left
+        }
+    }
+
     /** What the call control should be for [jid]. Never a security claim. */
     fun callOffer(jid: String): CallUi.Offer {
         observe()

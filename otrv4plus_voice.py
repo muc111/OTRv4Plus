@@ -3444,6 +3444,24 @@ class VoiceCallSession:
         """
         if session_timeout is None:
             session_timeout = SAM_SESSION_TIMEOUT
+        if self._transport_mode == VOICE_TRANSPORT_DATAGRAM:
+            # A path built before the call (otrv4plus_warmpath: the green
+            # phone) skips the 30-120 s tunnel build. A fresh transient
+            # destination like any other, used for this call only.
+            try:
+                import otrv4plus_warmpath as _warmpath
+                spare = _warmpath.WARM.take((self.sam_host, self.sam_port))
+            except Exception:
+                spare = None
+            if spare is not None:
+                self._dgram_sock = spare.sock
+                self._sam_control, self._sam_session_id = spare.control, spare.session_id
+                self._our_dest = spare.dest
+                try:
+                    self.stats["warm_path"] = 1
+                except Exception:
+                    pass
+                return self._our_dest
         sam_open = _HOST["sam_open"]
         sam_read_line = _HOST["sam_read_line"]
         sam_parse = _HOST["sam_parse"]

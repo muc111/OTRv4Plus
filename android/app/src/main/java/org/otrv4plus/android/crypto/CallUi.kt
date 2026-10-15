@@ -30,6 +30,38 @@ import org.otrv4plus.android.bridge.SecurityState
  */
 object CallUi {
 
+    /**
+     * The phone icon's colour: whether the next call's I2P path is built
+     * (`otrv4plus_warmpath`). Owner (2026-10-15): "a phone, red, which turns
+     * green when the tunnels are ready for audio calls". Amber while it is
+     * being built. A tap works in every colour -- red only means the call
+     * builds its tunnels after the tap (30-120 s) instead of before.
+     */
+    enum class Readiness { COLD, WARMING, READY;
+        companion object {
+            fun of(code: String): Readiness = when (code) {
+                "ready" -> READY
+                "warming" -> WARMING
+                else -> COLD
+            }
+        }
+    }
+
+    /** What is said beside the phone: short, and never a promise. */
+    fun readinessLabel(r: Readiness, secondsLeft: Int = 0): String = when (r) {
+        Readiness.READY -> "Ready" + if (secondsLeft > 0) " · ${(secondsLeft + 59) / 60} min" else ""
+        Readiness.WARMING -> "Preparing the call path…"
+        Readiness.COLD -> "Call (the path is built when you tap, 30-120 s)"
+    }
+
+    /** The colour, as ARGB, so Android and desktop draw the same thing. */
+    fun readinessColour(r: Readiness): Long = when (r) {
+        Readiness.READY -> 0xFF2E7D32      // green
+        Readiness.WARMING -> 0xFFF9A825    // amber
+        Readiness.COLD -> 0xFFC62828       // red
+    }
+
+
     /** What the call control should be, if anything. */
     sealed interface Offer {
         /** Verified, encrypted, and the device can do voice. Offer the call. */

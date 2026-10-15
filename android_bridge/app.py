@@ -457,6 +457,12 @@ class OtrApp:
                 self._group_calls.shutdown()
             except Exception:
                 _log.warning("group call teardown reported a problem")
+        # The call path built in advance (the green phone): its tunnels go too.
+        try:
+            import otrv4plus_warmpath
+            otrv4plus_warmpath.WARM.close()
+        except Exception:
+            pass
         if self._group_files is not None:
             self._group_files.close()
             self._group_files = None
@@ -2823,6 +2829,33 @@ class OtrApp:
         if reason:
             return answer("voice_unavailable", reason)
         return answer("available")
+
+    def warm_call_path(self) -> Dict[str, Any]:
+        """Build the next call's I2P path now, while a conversation that can
+        call is open (otrv4plus_warmpath), and say how far it is:
+        {"state": "cold" | "warming" | "ready", "seconds_left": n}. The phone
+        icon is red, amber or green from it. Kept 10 minutes after the last
+        ask; nothing is built where no call could be made."""
+        cold = {"state": "cold", "seconds_left": 0}
+        if self._wiped or self.voice_unavailable_reason():
+            return cold
+        try:
+            if self.calls._ensure_manager() is None:      # binds the SAM helpers
+                return cold
+            import otrv4plus_warmpath
+            host, port = self.sam_endpoint
+            otrv4plus_warmpath.WARM.warm(host, int(port))
+            return otrv4plus_warmpath.WARM.describe()
+        except Exception:
+            return cold
+
+    def call_path_state(self) -> Dict[str, Any]:
+        """The same answer as `warm_call_path`, without asking for a build."""
+        try:
+            import otrv4plus_warmpath
+            return otrv4plus_warmpath.WARM.describe()
+        except Exception:
+            return {"state": "cold", "seconds_left": 0}
 
     def voice_unavailable_reason(self) -> str:
         """Why voice cannot run on this device, or "" when it can.

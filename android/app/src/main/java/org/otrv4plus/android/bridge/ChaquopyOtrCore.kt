@@ -1327,6 +1327,18 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 (d.callAttr("get", "reason")?.toString() ?: "")
         }.getOrNull()
 
+    /**
+     * The next call's I2P path (`OtrApp.warm_call_path`): built in advance
+     * when [build] is true, otherwise only read. Returns the state code
+     * ("cold", "warming", "ready") and the seconds it is still kept for.
+     */
+    fun callPath(build: Boolean): Pair<String, Int> =
+        runCatching {
+            val d = requireApp().callAttr(if (build) "warm_call_path" else "call_path_state")
+            (d.callAttr("get", "state")?.toString() ?: "cold") to
+                (d.callAttr("get", "seconds_left")?.toInt() ?: 0)
+        }.getOrDefault("cold" to 0)
+
     fun voiceUnavailableReason(): String =
         runCatching {
             requireApp().callAttr("voice_unavailable_reason").toString()

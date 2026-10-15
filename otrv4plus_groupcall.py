@@ -272,6 +272,24 @@ class GroupCallMedia:
         return self._dest
 
     async def _create(self):
+        # A path built before the call (otrv4plus_warmpath) skips the tunnel
+        # build; a fresh destination like any other, for this call only.
+        try:
+            import otrv4plus_warmpath as _warmpath
+            spare = _warmpath.WARM.take((self._sam_host, self._sam_port))
+        except Exception:
+            spare = None
+        if spare is not None:
+            media = self
+
+            class _WarmProto(asyncio.DatagramProtocol):
+                def datagram_received(self, data, addr):
+                    media._on_datagram(data)
+
+            transport, _ = await self._loop.create_datagram_endpoint(
+                _WarmProto, sock=spare.sock)
+            self.stats["warm"] = self.stats.get("warm", 0) + 1
+            return spare.sock, transport, spare.control, spare.session_id, spare.dest
         host = _voice._HOST
         sam_open, read_line, parse = host["sam_open"], host["sam_read_line"], host["sam_parse"]
         if not all((sam_open, read_line, parse)):

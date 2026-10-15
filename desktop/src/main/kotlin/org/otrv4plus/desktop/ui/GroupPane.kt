@@ -109,9 +109,16 @@ fun GroupBar(model: AppModel, room: String) {
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         if (anyVerified && running == 0) {
-                            Button(onClick = { model.startGroupCall(room) }) {
+                            // The same phone as a 1:1 call, coloured by the path.
+                            Button(onClick = { model.startGroupCall(room) },
+                                   colors = androidx.compose.material3.ButtonDefaults.buttonColors(
+                                       containerColor = androidx.compose.ui.graphics.Color(
+                                           org.otrv4plus.android.crypto.CallUi.readinessColour(model.callPath)),
+                                       contentColor = androidx.compose.ui.graphics.Color.White)) {
                                 Icon(Icons.Filled.Call, null, Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp)); Text("Call the group")
+                                Spacer(Modifier.width(6.dp))
+                                Text("Call the group · " + org.otrv4plus.android.crypto.CallUi.readinessLabel(
+                                    model.callPath, model.callPathSecondsLeft))
                             }
                         }
                         if (!verify.allVerified) {

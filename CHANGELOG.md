@@ -4,6 +4,29 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.76 — 2026-10-15 — the phone: red, amber, green (core 0.13.1)
+
+- **One call button for contacts and secure groups: a phone**, coloured by
+  whether the call's I2P path is already built. **Red**: the path is built
+  after the tap (30-120 s). **Amber**: being built. **Green**: ready -- the
+  call skips the tunnel build. Beside it: "Ready · 9 min" and the like. A
+  tap works in every colour. Owner request: "a phone ... red ... which
+  turns green when the tunnels are ready for audio calls".
+- **The path is built before the call** (`otrv4plus_warmpath`): while a
+  conversation that can call is open (a verified contact, or a secure group
+  with a verified member), ONE I2P datagram session is built and kept, and
+  the next call -- 1:1 or group -- takes it instead of building its own.
+  Kept 10 minutes after the conversation was last open, then closed, so a
+  phone is not holding tunnels nobody uses; closed at once on Disconnect,
+  Sign out and Wipe & Exit. A taken path is replaced while the window is
+  open, so a second call is quick too.
+- **Nothing is weakened**: the prepared path is a fresh transient
+  destination exactly like the one a call builds, announced to nobody
+  until the call announces it (inside OTR or MLS), used for that one call
+  and never again; 3 hops each way as before. A path that took over 4
+  minutes to build counts as failed, and is retried after 30 s.
+- Desktop: the same phone and colours.
+
 ## Android 0.7.0-experimental.rc.75 — 2026-10-15 — no crash on hanging up; voice notes keep their length (core 0.13.1)
 
 - **Fixed: the app could crash when a call was hung up** (device report,

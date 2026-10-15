@@ -211,4 +211,16 @@ class CallUiTest {
         // would leave a button that did nothing and said nothing.
         assertTrue(CallUi.refusal("something_new")?.isNotBlank() == true)
     }
+
+    @Test
+    fun `the phone is red, amber or green by the call path`() {
+        assertEquals(CallUi.Readiness.READY, CallUi.Readiness.of("ready"))
+        assertEquals(CallUi.Readiness.WARMING, CallUi.Readiness.of("warming"))
+        assertEquals(CallUi.Readiness.COLD, CallUi.Readiness.of("cold"))
+        assertEquals(CallUi.Readiness.COLD, CallUi.Readiness.of("anything else"))
+        assertEquals("Ready · 10 min", CallUi.readinessLabel(CallUi.Readiness.READY, 600))
+        assertEquals("Ready · 1 min", CallUi.readinessLabel(CallUi.Readiness.READY, 5))
+        assertEquals(0xFF2E7D32, CallUi.readinessColour(CallUi.Readiness.READY))
+        assertEquals(0xFFC62828, CallUi.readinessColour(CallUi.Readiness.COLD))
+    }
 }

@@ -46,3 +46,28 @@ fun MicIcon(contentDescription: String, size: Dp = 22.dp) {
                  strokeWidth = stroke, cap = StrokeCap.Round)
     }
 }
+
+/**
+ * A telephone handset, drawn like [MicIcon]: a thick quarter-arc for the
+ * handle and a rounded pad at each end (ear and mouth). Takes the
+ * surrounding content colour.
+ */
+@Composable
+fun PhoneIcon(contentDescription: String, size: Dp = 22.dp) {
+    val color = LocalContentColor.current
+    Canvas(Modifier.size(size).semantics { this.contentDescription = contentDescription }) {
+        val w = this.size.width
+        val h = this.size.height
+        val r = w * 0.58f
+        val cx = w * 0.84f
+        val cy = h * 0.16f
+        // The handle: the lower-left quarter of a circle centred top-right.
+        drawArc(color, startAngle = 95f, sweepAngle = 80f, useCenter = false,
+                topLeft = Offset(cx - r, cy - r), size = Size(2 * r, 2 * r),
+                style = Stroke(width = w * 0.17f, cap = StrokeCap.Round))
+        // The ear (top) and mouth (bottom) pads.
+        val pad = w * 0.13f
+        drawCircle(color, radius = pad, center = Offset(cx - r * 0.98f, cy + r * 0.12f))
+        drawCircle(color, radius = pad, center = Offset(cx - r * 0.12f, cy + r * 0.98f))
+    }
+}
