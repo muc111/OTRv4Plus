@@ -686,7 +686,7 @@ class TestTheEngineHook:
         assert engine.OTRv4TLV.TIP > max(allocated)
 
     @pytest.mark.parametrize("forbidden", [0x0000, 0x0001, 0x0002, 0x0006,
-                                           0x0009, 0x0021, 0xFFFF])
+                                           0x0009, 0x0022, 0xFFFF])
     def test_the_registry_refuses_every_other_type(self, engine, forbidden):
         """Not a general extension point. Anything wider is how a forwarding
         hook becomes an unreviewed second protocol on the session."""

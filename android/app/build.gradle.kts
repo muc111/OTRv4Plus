@@ -411,6 +411,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_alerts.py",
             // Carbons, archive, receipts: imported by android_bridge.sync.
             "otrv4plus_sync.py",
+            "otrv4plus_actions.py",
             // Whether a conversation may send in the clear. Shared with the
             // terminal client and imported by android_bridge.app at module
             // scope, so the same rule applies: missing here is an ImportError

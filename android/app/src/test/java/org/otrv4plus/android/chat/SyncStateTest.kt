@@ -148,4 +148,48 @@ class SyncStateTest {
         assertEquals("old body", old.body)
         assertEquals("", old.wireId)
     }
+
+    @Test
+    fun `a contact can correct and delete their own message but never ours`() {
+        val s = state()
+        val mine = sent(s, "my words")
+        s.handle(OtrEvent.MessageReceived(bob, "teh", 1_600_000_000.0, "T1", "live"))
+        s.handle(OtrEvent.MessageChanged(bob, "edit", "T1", "the", emptyList(), false, "live"))
+        s.handle(OtrEvent.MessageChanged(bob, "edit", mine.wireId, "I owe Bob 100", emptyList(), false, "live"))
+        s.handle(OtrEvent.MessageChanged(bob, "retract", mine.wireId, "", emptyList(), false, "live"))
+        val byBody = s.messages(bob)
+        assertEquals("my words", byBody.first { it.outgoing }.body)
+        assertFalse(byBody.first { it.outgoing }.retracted)
+        val theirs = byBody.first { !it.outgoing }
+        assertEquals("the", theirs.body)
+        assertTrue(theirs.edited)
+        s.handle(OtrEvent.MessageChanged(bob, "retract", "T1", "", emptyList(), false, "live"))
+        assertTrue(s.messages(bob).first { !it.outgoing }.retracted)
+        assertEquals("", s.messages(bob).first { !it.outgoing }.body)
+    }
+
+    @Test
+    fun `reactions replace each reactor's set and an empty set removes it`() {
+        val s = state()
+        val m = sent(s, "lunch?")
+        s.handle(OtrEvent.MessageChanged(bob, "react", m.wireId, "", listOf("\uD83D\uDC4D"), false, "live"))
+        assertTrue(s.applyChange(bob, "react", m.wireId, "", s.toggledReaction(s.messages(bob).single(), "\u2764"), true))
+        assertEquals(mapOf(bob to listOf("\uD83D\uDC4D"), "me" to listOf("\u2764")), s.messages(bob).single().reactions)
+        s.handle(OtrEvent.MessageChanged(bob, "react", m.wireId, "", listOf("\uD83D\uDE02"), false, "live"))
+        s.handle(OtrEvent.MessageChanged(bob, "react", m.wireId, "", emptyList(), true, "carbon"))
+        assertEquals(mapOf(bob to listOf("\uD83D\uDE02")), s.messages(bob).single().reactions)
+    }
+
+    @Test
+    fun `a reply quotes what it answers, both ways`() {
+        val s = state()
+        s.handle(OtrEvent.MessageReceived(bob, "Are you coming tonight?\nbring food", 1_600_000_000.0, "Q1", "live"))
+        val question = s.messages(bob).single()
+        s.setDraft(bob, "yes")
+        val reply = s.beginSend(bob, question)!!
+        assertEquals("Q1", reply.replyTo)
+        assertEquals("Are you coming tonight?", reply.replyPreview)
+        s.handle(OtrEvent.MessageReceived(bob, "great", 1_600_000_100.0, "R2", "live", replyTo = reply.wireId))
+        assertEquals("yes", s.messages(bob).last().replyPreview)
+    }
 }

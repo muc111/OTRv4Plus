@@ -40,6 +40,7 @@ __all__ = [
     "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
     "GroupInvite", "GroupChanged",
     "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
+    "MessageChanged",
 ]
 
 
@@ -231,6 +232,9 @@ class MessageReceived(Event):
     timestamp: float = 0.0
     message_id: Optional[str] = None
     source: str = "live"
+    #: The id of the message this one replies to (XEP-0461, or inside the
+    #: OTR payload for an encrypted conversation), or "".
+    reply_to: str = ""
 
 
 @dataclass(frozen=True)
@@ -299,6 +303,22 @@ class MessageSentElsewhere(Event):
     timestamp: float = 0.0
     message_id: str = ""
     source: str = "carbon"
+
+
+@dataclass(frozen=True)
+class MessageChanged(Event):
+    """`peer`'s conversation: message `target_id` was corrected ("edit",
+    new text in `body`), deleted for everyone ("retract"), or reacted to
+    ("react", the reactor's whole set in `emojis`, empty to remove).
+    `outgoing`: the action is ours, from another device. The UI applies an
+    edit or a deletion only to a message by the same author (otrv4plus_actions)."""
+
+    action: str = ""
+    target_id: str = ""
+    body: str = ""
+    emojis: tuple = ()
+    outgoing: bool = False
+    source: str = "live"
 
 
 @dataclass(frozen=True)

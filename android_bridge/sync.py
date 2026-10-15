@@ -163,6 +163,26 @@ class SyncMixin:
             else:
                 msg.send()
 
+    def send_plain_action(self, peer: str, body: Optional[str], message_id: str,
+                          extras: List[ET.Element]) -> None:
+        """A PLAINTEXT message carrying a correction, deletion, reaction or
+        reply (otrv4plus_actions.action_elements). Never used for an
+        encrypted conversation: there the action is inside the OTR payload."""
+        if body is not None and S.is_protocol_body(body):
+            raise ValueError("not for OTR traffic")
+        extras = list(extras)
+        origin = ET.Element("{%s}origin-id" % S.NS["sid"])
+        origin.set("id", message_id)
+        extras.insert(0, origin)
+
+        async def go():
+            msg = self._build(peer, body, extras, message_id)
+            if msg is None:
+                self._client.send_message(mto=peer, mbody=body or "", mtype="chat")
+            else:
+                msg.send()
+        self._send_now(go(), 60)
+
     def send_receipt(self, to: str, message_id: str) -> None:
         if not message_id:
             return
@@ -287,6 +307,15 @@ class SyncMixin:
             sender = (xml.get("from") or "").split("/", 1)[0].lower()
             if not sender or sender == own:
                 return
+            # A plaintext deletion or reaction (XEP-0424/-0444): handled here,
+            # body or not (a deletion's body is only a fallback). Never an OTR
+            # frame: an encrypted conversation's actions are inside it.
+            if (xml.find("{urn:xmpp:message-retract:1}retract") is not None
+                    or xml.find("{urn:xmpp:reactions:0}reactions") is not None):
+                item = S.parse_message(xml, own, "live")
+                if item is not None and item.action in ("retract", "react") \
+                        and self._sync()["seen"].first_time(item):
+                    self._sync_emit("message", item=item)
             receipt = S.receipt_of(xml)
             if receipt:
                 self._sync_emit("receipt", peer=sender, message_id=receipt)
@@ -324,7 +353,10 @@ class SyncMixin:
             item = S.parse_message(stanza.xml, self._own_bare_jid(), "live")
         except Exception:
             return None
-        if item is not None:
+        # A deletion or reaction is the body-less handler's (_on_any_message),
+        # which records it; recording it here too would make that handler
+        # think it had been seen, depending on which ran first.
+        if item is not None and item.action not in ("retract", "react"):
             self._sync()["seen"].first_time(item)
         return item
 

@@ -323,13 +323,13 @@ private fun Messages(model: AppModel, jid: String, isRoom: Boolean, modifier: Mo
     LazyColumn(modifier.fillMaxWidth().padding(horizontal = 12.dp), state = listState,
                verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item { Spacer(Modifier.padding(4.dp)) }
-        items(messages, key = { it.id }) { m -> Bubble(m, isRoom) }
+        items(messages, key = { it.id }) { m -> Bubble(m, isRoom, model) }
         item { Spacer(Modifier.padding(4.dp)) }
     }
 }
 
 @Composable
-private fun Bubble(m: Message, isRoom: Boolean) {
+private fun Bubble(m: Message, isRoom: Boolean, model: AppModel) {
     if (m.security == SecurityLabel.SYSTEM) {
         Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
             Text(m.body, style = MaterialTheme.typography.labelSmall,
@@ -353,9 +353,33 @@ private fun Bubble(m: Message, isRoom: Boolean) {
                 Text(m.sender, style = MaterialTheme.typography.labelMedium,
                      color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.SemiBold)
             }
-            SelectionContainer {
+            if (m.replyTo.isNotEmpty() && !m.retracted) {
+                Text("\u21A9 " + m.replyPreview.ifBlank { "an earlier message" },
+                     style = MaterialTheme.typography.labelSmall, maxLines = 2,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     modifier = Modifier.padding(bottom = 4.dp))
+            }
+            if (m.retracted) {
+                Text("Message deleted", style = MaterialTheme.typography.bodyMedium,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+            } else SelectionContainer {
                 Text(m.body, color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer
                                      else MaterialTheme.colorScheme.onSurface)
+            }
+            if (m.reactions.isNotEmpty()) {
+                val counts = m.reactions.values.flatten().groupingBy { it }.eachCount()
+                Row(Modifier.padding(top = 2.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    counts.forEach { (emoji, n) ->
+                        Text(if (n > 1) "$emoji $n" else emoji,
+                             modifier = Modifier.clip(RoundedCornerShape(10.dp))
+                                 .background(if (emoji in m.reactions["me"].orEmpty())
+                                                 MaterialTheme.colorScheme.secondaryContainer
+                                             else MaterialTheme.colorScheme.surface)
+                                 .clickable { model.react(m, emoji) }
+                                 .padding(horizontal = 6.dp, vertical = 1.dp))
+                    }
+                }
             }
             Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
                 when (m.security) {
@@ -366,7 +390,8 @@ private fun Bubble(m: Message, isRoom: Boolean) {
                     else -> {}
                 }
                 Spacer(Modifier.width(4.dp))
-                Text(timeFormat.format(Date(m.at)) + when (m.sendState) {
+                if (model.canAct(m)) BubbleActions(m, model)
+                Text(timeFormat.format(Date(m.at)) + (if (m.edited) " · edited" else "") + when (m.sendState) {
                     SendState.SENDING -> " · sending"
                     SendState.QUEUED -> " · queued until encrypted"
                     SendState.FAILED -> " · not sent"
@@ -382,10 +407,54 @@ private fun Bubble(m: Message, isRoom: Boolean) {
     }
 }
 
+private val QUICK_REACTIONS = listOf("\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02",
+                                     "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83D\uDE4F")
+
+/** Reply, react, copy; correct and delete for everyone on our own. */
+@Composable
+private fun BubbleActions(m: Message, model: AppModel) {
+    var open by remember { mutableStateOf(false) }
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    Box {
+        Text("\u22EF", color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { open = true }
+                 .padding(horizontal = 6.dp))
+        androidx.compose.material3.DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            Row(Modifier.padding(horizontal = 8.dp)) {
+                QUICK_REACTIONS.forEach { e ->
+                    TextButton(onClick = { open = false; model.react(m, e) }) { Text(e) }
+                }
+            }
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Reply") },
+                onClick = { open = false; model.startReply(m) })
+            androidx.compose.material3.DropdownMenuItem(text = { Text("Copy") }, onClick = {
+                open = false; clipboard.setText(androidx.compose.ui.text.AnnotatedString(m.body)) })
+            if (m.outgoing) {
+                androidx.compose.material3.DropdownMenuItem(text = { Text("Correct") },
+                    onClick = { open = false; model.startEdit(m) })
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("Delete for everyone", color = MaterialTheme.colorScheme.error) },
+                    onClick = { open = false; model.retract(m) })
+            }
+        }
+    }
+}
+
 @Composable
 private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState) {
     val text = model.draft(jid)
     val canSend = model.chat.canSend()
+    val banner = model.editing?.takeIf { it.conversationId == jid }?.let { "Correcting your message" }
+        ?: model.replyingTo?.takeIf { it.conversationId == jid }
+            ?.let { "Replying to: " + it.body.lineSequence().firstOrNull().orEmpty().take(60) }
+    if (banner != null) {
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text(banner, style = MaterialTheme.typography.labelMedium,
+                 color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
+            TextButton(onClick = { model.cancelCompose(jid) }) { Text("Cancel") }
+        }
+    }
     Surface(tonalElevation = 2.dp) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(

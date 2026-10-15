@@ -158,6 +158,18 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         SendOutcome.fromName(call("send_user_text", "peer" to peer, "body" to body,
                                   "message_id" to messageId).asStr())
 
+    override fun sendReply(peer: String, body: String, messageId: String, replyTo: String): SendOutcome =
+        SendOutcome.fromName(call("send_user_text", "peer" to peer, "body" to body,
+                                  "message_id" to messageId, "reply_to" to replyTo).asStr())
+
+    override fun sendAction(peer: String, action: String, targetId: String, body: String,
+                            emojis: List<String>, messageId: String): SendOutcome =
+        runCatching {
+            SendOutcome.fromName(call("send_action", "peer" to peer, "action" to action,
+                                      "target_id" to targetId, "body" to body,
+                                      "emojis" to emojis, "message_id" to messageId).asStr())
+        }.getOrDefault(SendOutcome.FAILED)
+
     override fun markDisplayed(peer: String) {
         runCatching { call("mark_displayed", "peer" to peer) }
     }
@@ -416,7 +428,12 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                     str("peer"), SecurityState.fromLevel(int("security_level")))
                 "MessageReceived" -> OtrEvent.MessageReceived(
                     str("peer"), str("body"), num("timestamp"),
-                    messageId = str("message_id"), source = str("source").ifBlank { "live" })
+                    messageId = str("message_id"), source = str("source").ifBlank { "live" },
+                    replyTo = str("reply_to"))
+                "MessageChanged" -> OtrEvent.MessageChanged(
+                    str("peer"), str("action"), str("target_id"), str("body"),
+                    (e["emojis"] as? kotlinx.serialization.json.JsonArray).orEmpty().map { it.asStr() },
+                    flag("outgoing"), str("source"))
                 "MessageSentElsewhere" -> OtrEvent.MessageSentElsewhere(
                     str("peer"), str("body"), num("timestamp"), str("message_id"), str("source"))
                 "MessageDisplayed" -> OtrEvent.MessageDisplayed(str("peer"), str("message_id"))

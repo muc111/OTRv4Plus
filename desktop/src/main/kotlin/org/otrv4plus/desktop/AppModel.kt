@@ -296,14 +296,83 @@ class AppModel(
 
     fun close() { chat.closeConversation(); changed() }
 
+    // -- reply, correct, delete for everyone, react (otrv4plus_actions) --------
+
+    var replyingTo by mutableStateOf<Message?>(null)
+    var editing by mutableStateOf<Message?>(null)
+        private set
+
+    fun canAct(m: Message): Boolean =
+        m.wireId.isNotEmpty() && !m.retracted &&
+            m.security != org.otrv4plus.android.chat.SecurityLabel.SYSTEM && !chat.isRoom(m.conversationId)
+
+    fun startReply(m: Message) { editing = null; replyingTo = m; changed() }
+
+    fun startEdit(m: Message) {
+        if (!m.outgoing || !canAct(m)) return
+        replyingTo = null
+        editing = m
+        chat.setDraft(m.conversationId, m.body)
+        changed()
+    }
+
+    fun cancelCompose(jid: String) {
+        if (editing != null) chat.setDraft(jid, "")
+        editing = null
+        replyingTo = null
+        changed()
+    }
+
+    fun retract(m: Message) { if (m.outgoing && canAct(m)) act(m.conversationId, "retract", m, "", emptyList()) }
+
+    fun react(m: Message, emoji: String) {
+        if (canAct(m)) act(m.conversationId, "react", m, "", chat.toggledReaction(m, emoji))
+    }
+
+    private fun act(jid: String, action: String, target: Message, body: String, emojis: List<String>) {
+        ui.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    core.sendAction(jid, action, target.wireId, body, emojis,
+                                    org.otrv4plus.android.chat.MessageId.newWireId())
+                }.getOrDefault(SendOutcome.FAILED)
+            }
+            if (outcome == SendOutcome.ENCRYPTED || outcome == SendOutcome.PLAINTEXT) {
+                chat.applyChange(jid, action, target.wireId, body, emojis, outgoing = true)
+            } else {
+                chat.note(when (action) {
+                    "edit" -> "Could not correct the message: no secure session yet."
+                    "retract" -> "Could not delete the message for everyone."
+                    else -> "Could not send the reaction."
+                })
+            }
+            changed()
+        }
+    }
+
     fun send(jid: String) {
-        val message = chat.beginSend(jid) ?: return
+        editing?.let { target ->
+            if (target.conversationId == ChatState.bare(jid)) {
+                val text = chat.draft(jid).trim()
+                editing = null
+                chat.setDraft(jid, "")
+                if (text.isNotEmpty() && text != target.body) act(jid, "edit", target, text, emptyList())
+                changed()
+                return
+            }
+        }
+        val replyTo = replyingTo?.takeIf { it.conversationId == ChatState.bare(jid) && it.wireId.isNotEmpty() }
+        val message = chat.beginSend(jid, replyTo) ?: return
+        replyingTo = null
         pausedJob?.cancel()
         changed()
         ui.launch {
             val outcome = withContext(Dispatchers.IO) {
-                runCatching { core.sendUserText(jid, message.body, message.wireId) }
-                    .getOrDefault(SendOutcome.FAILED)
+                runCatching {
+                    if (message.replyTo.isNotEmpty())
+                        core.sendReply(jid, message.body, message.wireId, message.replyTo)
+                    else core.sendUserText(jid, message.body, message.wireId)
+                }.getOrDefault(SendOutcome.FAILED)
             }
             chat.completeSend(message, outcome)
             changed()

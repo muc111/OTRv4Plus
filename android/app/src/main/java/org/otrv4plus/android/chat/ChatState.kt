@@ -443,6 +443,12 @@ class ChatState(
                 false
             }
             is OtrEvent.HistorySynced -> false
+            // A correction, deletion or reaction: shown, never announced.
+            is OtrEvent.MessageChanged -> {
+                applyChange(event.peer, event.action, event.targetId, event.body,
+                            event.emojis, event.outgoing)
+                false
+            }
             // Stored, never announced: a busy room would otherwise buzz the
             // phone for every line strangers type. The unread count still
             // shows it.
@@ -876,6 +882,8 @@ class ChatState(
                          MessageId.inboundWire(jid, event.messageId, event.body)
                      else MessageId.inbound(jid, at, event.body),
                 wireId = event.messageId,
+                replyTo = event.replyTo,
+                replyPreview = findByWireId(jid, event.replyTo)?.let { quoteOf(it) }.orEmpty(),
                 conversationId = jid,
                 body = event.body,
                 outgoing = false,
@@ -1089,7 +1097,7 @@ class ChatState(
      * updates it in place. Appending the result as well is how an optimistic
      * echo and its own confirmation become two bubbles.
      */
-    fun beginSend(jid: String): Message? {
+    fun beginSend(jid: String, replyTo: Message? = null): Message? {
         @Suppress("NAME_SHADOWING") val jid = bare(jid)
         val body = draft(jid)
         if (body.isBlank()) return null
@@ -1105,6 +1113,8 @@ class ChatState(
         val message = Message(
             id = MessageId.outgoingWire(jid, wireId),
             wireId = wireId,
+            replyTo = replyTo?.wireId.orEmpty(),
+            replyPreview = replyTo?.let { quoteOf(it) }.orEmpty(),
             conversationId = jid,
             body = body,
             outgoing = true,
@@ -1217,6 +1227,58 @@ class ChatState(
         ))
         if (added) deleted.restore(jid)
         return false
+    }
+
+    // -- corrections, deletions, reactions, replies (otrv4plus_actions) ------
+
+    /** A short quote of [m] for a reply's header. */
+    fun quoteOf(m: Message): String =
+        if (m.retracted) "Message deleted" else m.body.lineSequence().firstOrNull().orEmpty().take(80)
+
+    /** The message with wire id [wireId] in [jid]'s conversation, if kept. */
+    fun findByWireId(jid: String, wireId: String): Message? =
+        if (wireId.isEmpty()) null
+        else store.messages(bare(jid)).lastOrNull { it.wireId == wireId }
+
+    /**
+     * Apply a change to message [targetId] in [peer]'s conversation.
+     *
+     * THE AUTHOR RULE. A correction or a deletion applies only to a message
+     * by the same author: theirs ([outgoing] false) to theirs, ours to ours.
+     * Without it a contact could "correct" what WE said. A reaction may be
+     * on anyone's message, and replaces that reactor's previous set.
+     */
+    fun applyChange(peer: String, action: String, targetId: String, body: String,
+                    emojis: List<String>, outgoing: Boolean): Boolean {
+        val jid = bare(peer)
+        val target = findByWireId(jid, targetId) ?: return false
+        return when (action) {
+            "edit" -> {
+                if (target.outgoing != outgoing || target.retracted || body.isBlank()) return false
+                store.update(target.copy(body = body, edited = true))
+            }
+            "retract" -> {
+                if (target.outgoing != outgoing) return false
+                store.update(target.copy(body = "", retracted = true, reactions = emptyMap(),
+                                         edited = false))
+            }
+            "react" -> {
+                if (target.retracted) return false
+                val who = if (outgoing) "me" else jid
+                val next = LinkedHashMap(target.reactions)
+                val clean = emojis.map { it.trim() }.filter { it.isNotEmpty() && it.length <= 32 }
+                    .distinct().take(16)
+                if (clean.isEmpty()) next.remove(who) else next[who] = clean
+                store.update(target.copy(reactions = next))
+            }
+            else -> false
+        }
+    }
+
+    /** What our own reaction set on [m] would become if [emoji] is tapped. */
+    fun toggledReaction(m: Message, emoji: String): List<String> {
+        val mine = m.reactions["me"].orEmpty()
+        return if (emoji in mine) mine - emoji else mine + emoji
     }
 
     /** jid -> (chat state, when) from XEP-0085. */

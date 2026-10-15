@@ -11,6 +11,7 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -161,6 +162,12 @@ fun ConversationScreen(
                 enabled = model.canSend(),
                 onChange = { model.setDraft(jid, it) },
                 onSend = { model.send(jid) },
+                banner = model.editing?.takeIf { it.conversationId == ChatState.bare(jid) }
+                    ?.let { "Correcting your message" }
+                    ?: model.replyingTo?.takeIf { it.conversationId == ChatState.bare(jid) }
+                        ?.let { "Replying to: " + (it.body.lineSequence().firstOrNull() ?: "").take(60) },
+                onCancel = { model.cancelCompose(jid) },
+                status = model.actionStatus,
             )
         },
     ) { padding ->
@@ -283,7 +290,7 @@ fun ConversationScreen(
                     contentPadding = PaddingValues(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    items(messages, key = { it.id }) { Bubble(it) }
+                    items(messages, key = { it.id }) { Bubble(it, model) }
                 }
             }
         }
@@ -994,7 +1001,7 @@ private fun SecurityLine(state: SecurityState, capability: String = "unknown") {
  * screen; the width cap is a fraction of the parent so it holds on any device.
  */
 @Composable
-private fun Bubble(message: Message) {
+private fun Bubble(message: Message, model: ChatViewModel) {
     val outgoing = message.outgoing
     Row(
         Modifier.fillMaxWidth(),
@@ -1022,14 +1029,53 @@ private fun Bubble(message: Message) {
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            SelectionContainer {
-                Text(message.body, style = MaterialTheme.typography.bodyMedium)
+            // A reply quotes what it answers (XEP-0461), as it was then.
+            if (message.replyTo.isNotEmpty() && !message.retracted) {
+                Surface(
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(6.dp),
+                    modifier = Modifier.padding(bottom = 4.dp),
+                ) {
+                    Text("\u21A9 " + message.replyPreview.ifBlank { "an earlier message" },
+                         style = MaterialTheme.typography.labelSmall,
+                         maxLines = 2, overflow = TextOverflow.Ellipsis,
+                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 3.dp))
+                }
+            }
+            if (message.retracted) {
+                Text("Message deleted", style = MaterialTheme.typography.bodyMedium,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+            } else {
+                SelectionContainer {
+                    Text(message.body, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            // Reactions (XEP-0444): each emoji once, with how many chose it.
+            if (message.reactions.isNotEmpty()) {
+                val counts = message.reactions.values.flatten().groupingBy { it }.eachCount()
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    modifier = Modifier.padding(top = 2.dp)) {
+                    counts.forEach { (emoji, n) ->
+                        val mine = emoji in message.reactions["me"].orEmpty()
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (mine) MaterialTheme.colorScheme.secondaryContainer
+                                    else MaterialTheme.colorScheme.surface,
+                            modifier = Modifier.clickable { model.react(message, emoji) },
+                        ) {
+                            Text(if (n > 1) "$emoji $n" else emoji,
+                                 style = MaterialTheme.typography.labelMedium,
+                                 modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp))
+                        }
+                    }
+                }
             }
             Row(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(formatTimestamp(message.at),
+                Text(formatTimestamp(message.at) + if (message.edited) " \u00B7 edited" else "",
                     style = MaterialTheme.typography.labelSmall)
                 statusWord(message)?.let {
                     Text(
@@ -1040,6 +1086,50 @@ private fun Bubble(message: Message) {
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                if (model.canAct(message)) MessageActions(message, model)
+            }
+        }
+    }
+}
+
+/** The quick reactions offered on every message, as in other messengers. */
+private val QUICK_REACTIONS = listOf("\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02",
+                                     "\uD83D\uDE2E", "\uD83D\uDE22", "\uD83D\uDE4F")
+
+/**
+ * Reply, react, copy -- and for our own messages, correct and delete for
+ * everyone. In an encrypted conversation each is sent inside the OTR
+ * payload; the server learns nothing about which message was acted on.
+ */
+@Composable
+private fun MessageActions(message: Message, model: ChatViewModel) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    Box {
+        Text("\u22EF", style = MaterialTheme.typography.labelLarge,
+             color = MaterialTheme.colorScheme.onSurfaceVariant,
+             modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                 .clickable { model.actionsFor = message.id }
+                 .padding(horizontal = 6.dp))
+        DropdownMenu(expanded = model.actionsFor == message.id,
+                     onDismissRequest = { model.actionsFor = null }) {
+            Row(Modifier.padding(horizontal = 8.dp)) {
+                QUICK_REACTIONS.forEach { emoji ->
+                    TextButton(onClick = { model.react(message, emoji) },
+                               contentPadding = PaddingValues(4.dp),
+                               modifier = Modifier.width(40.dp)) { Text(emoji) }
+                }
+            }
+            HorizontalDivider()
+            DropdownMenuItem(text = { Text("Reply") }, onClick = { model.startReply(message) })
+            DropdownMenuItem(text = { Text("Copy") }, onClick = {
+                clipboard.setText(androidx.compose.ui.text.AnnotatedString(message.body))
+                model.actionsFor = null
+            })
+            if (message.outgoing) {
+                DropdownMenuItem(text = { Text("Correct") }, onClick = { model.startEdit(message) })
+                DropdownMenuItem(
+                    text = { Text("Delete for everyone", color = MaterialTheme.colorScheme.error) },
+                    onClick = { model.retract(message) })
             }
         }
     }
@@ -1134,9 +1224,28 @@ private fun Composer(
     enabled: Boolean,
     onChange: (String) -> Unit,
     onSend: () -> Unit,
+    banner: String? = null,
+    onCancel: () -> Unit = {},
+    status: String? = null,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
+            // Replying to, or correcting, a message: said, with a way out.
+            banner?.let {
+                Row(Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text(it, style = MaterialTheme.typography.labelMedium,
+                         color = MaterialTheme.colorScheme.primary,
+                         maxLines = 1, overflow = TextOverflow.Ellipsis,
+                         modifier = Modifier.weight(1f))
+                    TextButton(onClick = onCancel) { Text("Cancel") }
+                }
+            }
+            status?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall,
+                     color = MaterialTheme.colorScheme.error,
+                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp))
+            }
             if (!enabled) {
                 Text(
                     "Not connected — you can type, but nothing will be sent.",

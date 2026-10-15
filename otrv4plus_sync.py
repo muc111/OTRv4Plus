@@ -175,6 +175,14 @@ class Item:
     mtype: str = "chat"
     receipt_request: bool = False
     markable: bool = False
+    #: A plaintext message's action (otrv4plus_actions.parse_action):
+    #: "edit", "retract" or "react", the id it acts on, the reaction set,
+    #: and the id it replies to. Never read from an OTR frame: an encrypted
+    #: message's actions travel inside it (MESSAGE_META).
+    action: str = ""
+    target: str = ""
+    emojis: tuple = ()
+    reply: str = ""
 
     @property
     def ref(self) -> str:
@@ -229,7 +237,12 @@ def parse_message(msg: ET.Element, own_bare: str, source: str = "live",
             stanza_id = (sid.get("id") or "")[:128]
             break
     origin = _child(msg, "sid", "origin-id")
+    import otrv4plus_actions as _actions
+    act = _actions.parse_action(msg) if not is_protocol_body(body) else {
+        "action": "", "target": "", "emojis": [], "reply": ""}
     return Item(
+        action=act["action"], target=act["target"], emojis=tuple(act["emojis"]),
+        reply=act["reply"],
         direction=direction, peer=peer, body=body,
         when=stamp if stamp is not None else (when if when is not None else time.time()),
         source=source, stanza_id=stanza_id,
@@ -312,6 +325,10 @@ def classify(item: Item) -> str:
     if item.source == "live":
         return ENGINE if item.direction == "in" else SKIP
     body = item.body or ""
+    # A deletion or a reaction is shown even with no body (or a fallback
+    # body, which is for clients that do not understand it).
+    if item.action in ("retract", "react") and not is_protocol_body(body):
+        return SHOW_OUT if item.direction == "out" else SHOW_IN
     if not body.strip():
         return SKIP
     if is_protocol_body(body):

@@ -84,6 +84,19 @@ interface OtrCore {
     fun sendUserText(peer: String, body: String, messageId: String): SendOutcome =
         sendUserText(peer, body)
 
+    /** [sendUserText] as a reply to the message [replyTo] (its wire id). */
+    fun sendReply(peer: String, body: String, messageId: String, replyTo: String): SendOutcome =
+        sendUserText(peer, body, messageId)
+
+    /**
+     * Correct ("edit", [body]), delete for everyone ("retract") or react
+     * ("react", [emojis]) to the message [targetId]. Encrypted inside OTR when
+     * the conversation is; never sent in the clear to a conversation that
+     * asked for OTR.
+     */
+    fun sendAction(peer: String, action: String, targetId: String, body: String,
+                   emojis: List<String>, messageId: String): SendOutcome = SendOutcome.FAILED
+
     /** The user is looking at [peer]'s conversation (a XEP-0333 read marker,
      *  if switched on). */
     fun markDisplayed(peer: String) {}
@@ -914,6 +927,21 @@ sealed interface OtrEvent {
     data class MessageReceived(
         val peer: String, val body: String, val timestamp: Double,
         val messageId: String = "", val source: String = "live",
+        /** The [messageId] this one replies to (XEP-0461 / MESSAGE_META), or "". */
+        val replyTo: String = "",
+    ) : OtrEvent
+
+    /**
+     * In [peer]'s conversation, message [targetId] was corrected ("edit", new
+     * text in [body]), deleted for everyone ("retract") or reacted to
+     * ("react": the reactor's whole set, empty to remove). [outgoing]: the
+     * action is ours, from another device. Applied by [ChatState] only to a
+     * message by the same author (otrv4plus_actions).
+     */
+    data class MessageChanged(
+        val peer: String, val action: String, val targetId: String,
+        val body: String, val emojis: List<String>, val outgoing: Boolean,
+        val source: String,
     ) : OtrEvent
 
     /** Our message [messageId] reached [peer]'s device (XEP-0184). */

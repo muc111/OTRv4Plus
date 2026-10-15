@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, List, Optional
 # Both clients classify and fragment
 # with this module and nothing has a second copy.
 import otrv4plus_fragment as _fragment
+import otrv4plus_actions as _actions
 
 from .trace import TRACE as _TRACE
 from .files import FileBridge, FileOutcome, is_file_signal
@@ -48,7 +49,7 @@ from otrv4plus_mode import OtrMode
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ChatStateChanged, ErrorOccurred, Event, EventSink, FingerprintChanged,
-    HistorySynced, MessageDelivered, MessageDisplayed, MessageReceived,
+    HistorySynced, MessageChanged, MessageDelivered, MessageDisplayed, MessageReceived,
     MessageSentElsewhere, OtrCapabilityChanged, QueuedSent, RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
     call_state_from_engine, security_state_from_level, smp_state_from_status,
@@ -80,16 +81,35 @@ def _is_trade_signal(body: Any) -> bool:
 
 class _Line(str):
     """A line in the outbox: the text, carrying the id it will be sent
-    with (XEP-0359), so a line that waited for a handshake still gets its
-    delivery receipt matched to the right bubble. A str, so everything that
-    reads the outbox as text still does."""
+    with (XEP-0359) and the message it replies to, so a line that waited
+    for a handshake still gets its receipt matched to the right bubble. A
+    str, so everything that reads the outbox as text still does."""
 
     message_id: str = ""
+    reply_to: str = ""
 
-    def __new__(cls, text: str, message_id: str = ""):
+    def __new__(cls, text: str, message_id: str = "", reply_to: str = ""):
         line = super().__new__(cls, text)
         line.message_id = message_id or ""
+        line.reply_to = reply_to or ""
         return line
+
+
+#: The app whose `receive_message` is running on this thread. The engine's
+#: TLV handlers are per process; this sends a frame's MESSAGE_META to the app
+#: that is decrypting it, however many apps a process holds.
+_RECEIVING = threading.local()
+
+
+def _dispatch_meta(peer: str, value: bytes) -> None:
+    app = getattr(_RECEIVING, "app", None)
+    if app is not None:
+        app._on_meta_tlv(peer, value)
+
+
+def _new_message_id() -> str:
+    import uuid
+    return uuid.uuid4().hex
 
 
 class BridgeError(RuntimeError):
@@ -303,6 +323,10 @@ class OtrApp:
         #: The user's choices: send "typing..." and read markers.
         self._chat_states_on = True
         self._read_markers_on = True
+        #: peer -> the MESSAGE_META the engine just decrypted with a frame
+        #: (otrv4plus_actions), read by `receive_message` in the same call.
+        self._meta_stash: Dict[str, Any] = {}
+        self._register_meta_handler()
         self._enable_guided_smp()
 
     #: How many peers' last-seen times to keep.
@@ -1184,12 +1208,50 @@ class OtrApp:
     #: The handshake ETA before any has been measured (I2P, two tunnels).
     HANDSHAKE_TYPICAL_SECONDS = 75
 
-    def _hold(self, peer: str, body: str, message_id: str = "") -> bool:
+    def _hold(self, peer: str, body: str, message_id: str = "",
+              reply_to: str = "") -> bool:
         box = self._outbox.setdefault(peer, [])
         if len(box) >= self.OUTBOX_MAX:
             return False
-        box.append(body if isinstance(body, _Line) else _Line(body, message_id))
+        box.append(body if isinstance(body, _Line) else _Line(body, message_id, reply_to))
         return True
+
+    # -- MESSAGE_META: ids and actions inside the OTR payload -----------------
+
+    def _register_meta_handler(self) -> None:
+        import sys
+        module = sys.modules.get(type(self._engine).__module__)
+        register = getattr(module, "register_tlv_handler", None)
+        if register is None:
+            return
+        try:
+            register(_actions.META_TLV, _dispatch_meta)
+        except Exception:
+            pass
+
+    def _on_meta_tlv(self, peer: str, value: bytes) -> None:
+        """Called by the engine while it decrypts a frame (same call, same
+        thread as `receive_message`), with the frame's MESSAGE_META."""
+        meta = _actions.decode_meta(value)
+        if meta is not None:
+            self._meta_stash[self.canonical_peer(peer)] = meta
+
+    def _encrypt_user(self, peer: str, body: str, message_id: str = "",
+                      reply_to: str = ""):
+        """(payload, should_send) for a typed line: with its MESSAGE_META
+        (id, reply) when a session is up, otherwise exactly what
+        `handle_outgoing_message` does (queueing included)."""
+        send_meta = getattr(self._engine, "send_text_with_tlv", None)
+        if message_id and send_meta is not None and _actions.valid_id(message_id):
+            try:
+                meta = _actions.encode_meta(
+                    message_id, reply=reply_to if _actions.valid_id(reply_to) else "")
+                frame = send_meta(peer, body, _actions.META_TLV, meta)
+            except Exception:
+                frame = None
+            if frame:
+                return frame, True
+        return self._engine.handle_outgoing_message(peer, body)
 
     def _send_user(self, peer: str, payload: str, message_id: str = "") -> None:
         """Send something a person typed, with its id when the transport
@@ -1223,7 +1285,9 @@ class OtrApp:
             while box:
                 body = box[0]
                 try:
-                    payload, ok = self._engine.handle_outgoing_message(peer, body)
+                    payload, ok = self._encrypt_user(
+                        peer, str(body), getattr(body, "message_id", ""),
+                        getattr(body, "reply_to", ""))
                     if not (ok and payload):
                         break
                     text = (payload.decode("utf-8", errors="replace")
@@ -1657,7 +1721,8 @@ class OtrApp:
     SEND_FAILED = "failed"
     SEND_PLAINTEXT = "plaintext"
 
-    def send_user_text(self, peer: str, body: str, message_id: str = "") -> str:
+    def send_user_text(self, peer: str, body: str, message_id: str = "",
+                       reply_to: str = "") -> str:
         """Send one typed line the way the terminal client does.
 
         Returns SEND_ENCRYPTED, SEND_QUEUED or SEND_FAILED.
@@ -1737,14 +1802,14 @@ class OtrApp:
         secure = self.security_state(peer) is not SecurityState.PLAINTEXT
         if secure and self._outbox.get(peer):
             # Behind what is already waiting, in order.
-            if not self._hold(peer, body, message_id):
+            if not self._hold(peer, body, message_id, reply_to):
                 return self.SEND_FAILED
             self._flush_outbox(peer)
             return self.SEND_QUEUED if self._outbox.get(peer) else self.SEND_ENCRYPTED
         if not secure and self._capability_enforced():
             capability = self.otr_capability(peer)
             if capability == "available" or self._mode.is_otr(peer):
-                if not self._hold(peer, body, message_id):
+                if not self._hold(peer, body, message_id, reply_to):
                     return self.SEND_FAILED
                 if capability == "available":
                     try:
@@ -1754,27 +1819,33 @@ class OtrApp:
                         pass
                 return self.SEND_QUEUED
             if capability in ("checking", "unknown", "offline"):
-                return self.SEND_QUEUED if self._hold(peer, body, message_id) else self.SEND_FAILED
+                return self.SEND_QUEUED if self._hold(peer, body, message_id, reply_to) else self.SEND_FAILED
 
         if self._mode.may_send_plaintext(
                 peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
             try:
-                self._send_user(peer, body, message_id)
+                plain = getattr(self._transport, "send_plain_action", None)
+                if reply_to and message_id and plain is not None and \
+                        _actions.valid_id(reply_to):
+                    # XEP-0461: a reply says which message it answers.
+                    plain(peer, body, message_id,
+                          _actions.action_elements("reply", reply_to))
+                else:
+                    self._send_user(peer, body, message_id)
             except Exception:
                 return self.SEND_FAILED
             self._touch(peer)
             return self.SEND_PLAINTEXT
 
         try:
-            payload, should_send = self._engine.handle_outgoing_message(
-                peer, body)
+            payload, should_send = self._encrypt_user(peer, body, message_id, reply_to)
         except Exception:
             return self.SEND_FAILED
 
         if not should_send:
             # No session yet. The OUTBOX holds it (the engine's own queue is
             # dropped when its handshake completes) and sends it then.
-            return self.SEND_QUEUED if self._hold(peer, body, message_id) else self.SEND_FAILED
+            return self.SEND_QUEUED if self._hold(peer, body, message_id, reply_to) else self.SEND_FAILED
         if not payload:
             return self.SEND_FAILED
 
@@ -1801,6 +1872,10 @@ class OtrApp:
         this returns text.
         """
         peer = self.canonical_peer(peer)
+        otr_in = _fragment.is_otr_protocol(payload)
+        # MESSAGE_META arrives through the engine's TLV handler DURING this
+        # call; anything left from an earlier frame is not this frame's.
+        self._meta_stash.pop(peer, None)
         # The PEER asking counts as asking. Marked before the engine runs, so
         # a message typed while a DAKE is arriving cannot slip out in the clear
         # in the gap between their first frame and a completed session.
@@ -1812,11 +1887,15 @@ class OtrApp:
         # post-call reading would always find them equal.
         before = self.security_state(peer)
         before_smp = self.smp_state(peer)
+        previous = getattr(_RECEIVING, "app", None)
+        _RECEIVING.app = self
         try:
             result = self._engine.handle_incoming_message(peer, payload)
         except Exception:
             self._emit(ErrorOccurred(peer=peer, code="decrypt_failed"))
             return None
+        finally:
+            _RECEIVING.app = previous
 
         if result is None:
             # Protocol frame (DAKE/SMP), not user text: surface any state change.
@@ -1921,6 +2000,24 @@ class OtrApp:
         # Measured through two real bridges: after four ordinary messages,
         # smp_start produced MessageReceived(body='') on the responder, and
         # each later SMP step produced another.
+        # An ACTION on an earlier message. Inside an encrypted conversation
+        # it came with the frame (MESSAGE_META, authenticated); in a plaintext
+        # one a correction rides on its XEP-0308 element. Never both: the
+        # elements outside an OTR frame are ignored.
+        tlv = self._meta_stash.pop(peer, None) if otr_in else None
+        action = None
+        if tlv is not None and tlv.get("action"):
+            action = (tlv["action"], tlv["target"], tuple(tlv.get("emojis") or ()))
+        elif not otr_in and meta is not None and getattr(meta, "action", "") == "edit":
+            action = ("edit", meta.target, ())
+        if action is not None:
+            self._touch(peer)
+            self._emit(MessageChanged(
+                peer=peer, action=action[0], target_id=action[1],
+                body=body if action[0] == "edit" else "", emojis=action[2],
+                outgoing=False, source="live"))
+            return body if action[0] == "edit" and body else None
+
         if body == "":
             self._touch(peer)
             after = self.security_state(peer)
@@ -1931,8 +2028,15 @@ class OtrApp:
 
         self._touch(peer)
         ref = getattr(meta, "ref", "") or None
+        reply_to = ""
+        if tlv is not None:
+            # The id the sender's client gave it, authenticated with it.
+            ref = tlv.get("id") or ref
+            reply_to = tlv.get("reply", "")
+        elif not otr_in and meta is not None:
+            reply_to = getattr(meta, "reply", "") or ""
         self._emit(MessageReceived(peer=peer, body=body, timestamp=self._clock(),
-                                   message_id=ref))
+                                   message_id=ref, reply_to=reply_to))
         if meta is not None and getattr(meta, "markable", False) and \
                 getattr(meta, "message_id", ""):
             if len(self._markable) < self.MAX_TRACKED_ACTIVITY or peer in self._markable:
@@ -1966,6 +2070,15 @@ class OtrApp:
             if peer in self._rooms:
                 return
             body = _sync.strip_whitespace_tag(item.body)
+            if getattr(item, "action", ""):
+                # A correction, deletion or reaction from a copy, or a live
+                # plaintext deletion/reaction (otrv4plus_actions).
+                self._emit(MessageChanged(
+                    peer=peer, action=item.action, target_id=item.target,
+                    body=body if item.action == "edit" else "",
+                    emojis=tuple(item.emojis), outgoing=item.direction == "out",
+                    source=item.source))
+                return
             if not body.strip():
                 return
             if item.direction == "out":
@@ -1975,7 +2088,8 @@ class OtrApp:
             else:
                 self._emit(MessageReceived(
                     peer=peer, body=body, timestamp=item.when,
-                    message_id=item.ref or None, source=item.source))
+                    message_id=item.ref or None, source=item.source,
+                    reply_to=getattr(item, "reply", "") or ""))
         elif kind == "receipt":
             self._emit(MessageDelivered(peer=self.canonical_peer(fields.get("peer", "")),
                                         message_id=str(fields.get("message_id", ""))))
@@ -1992,6 +2106,70 @@ class OtrApp:
                                         state=state))
         elif kind == "synced":
             self._emit(HistorySynced(count=int(fields.get("count", 0) or 0)))
+
+    def send_action(self, peer: str, action: str, target_id: str,
+                    body: str = "", emojis: Any = None, message_id: str = "") -> str:
+        """Correct ("edit", with the new text in [body]), delete for
+        everyone ("retract") or react to ("react", the whole set in
+        [emojis], empty to remove) our or their message [target_id].
+
+        Encrypted conversation: the action is inside the OTR payload
+        (MESSAGE_META), nothing about it outside. Plaintext conversation: the
+        standard XEP elements. A conversation that asked for OTR but has no
+        session yet gets NOTHING (no plaintext action, no queue): SEND_FAILED.
+        Rooms are not supported yet: SEND_FAILED."""
+        peer = self.canonical_peer(peer)
+        if action not in _actions.ACTIONS or not _actions.valid_id(target_id):
+            return self.SEND_FAILED
+        if self._transport is None or peer in self._rooms or (
+                self._groups is not None and self._groups.is_secure(peer)):
+            return self.SEND_FAILED
+        message_id = message_id if _actions.valid_id(message_id) else _new_message_id()
+        emojis = _actions.clean_emojis(list(emojis or []))
+        text = body if action == "edit" else ""
+        if action == "edit" and not text.strip():
+            return self.SEND_FAILED
+        if self.security_state(peer) is not SecurityState.PLAINTEXT:
+            send_meta = getattr(self._engine, "send_text_with_tlv", None)
+            if send_meta is None:
+                return self.SEND_FAILED
+            try:
+                meta = _actions.encode_meta(message_id, **{action: target_id},
+                                            emojis=emojis)
+                frame = send_meta(peer, text, _actions.META_TLV, meta)
+            except Exception:
+                return self.SEND_FAILED
+            if not frame:
+                return self.SEND_FAILED
+            frame = (frame.decode("utf-8", errors="replace")
+                     if isinstance(frame, (bytes, bytearray)) else str(frame))
+            try:
+                if action == "edit":
+                    self._send_user(peer, frame, message_id)
+                else:
+                    self._transport.send(peer, frame)
+            except Exception:
+                return self.SEND_FAILED
+            self._touch(peer)
+            return self.SEND_ENCRYPTED
+        if not self._mode.may_send_plaintext(peer, False):
+            return self.SEND_FAILED
+        # The rule plaintext messages follow: never in the clear to somebody
+        # who might speak OTRv4+ (send_user_text holds those until it knows).
+        if self._capability_enforced() and self.otr_capability(peer) != "unavailable":
+            return self.SEND_FAILED
+        plain = getattr(self._transport, "send_plain_action", None)
+        if plain is None:
+            return self.SEND_FAILED
+        try:
+            elements = _actions.action_elements(action, target_id, emojis)
+            out_body = (text if action == "edit" else
+                        _actions.RETRACT_FALLBACK if action == "retract" else None)
+            plain(peer, out_body, message_id, elements)
+        except Exception:
+            return self.SEND_FAILED
+        self._touch(peer)
+        return self.SEND_PLAINTEXT
 
     def mark_displayed(self, peer: str) -> bool:
         """The user is looking at [peer]'s conversation: tell them their

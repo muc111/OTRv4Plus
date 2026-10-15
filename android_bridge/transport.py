@@ -4000,6 +4000,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, Transport):
         # Its ids, recorded so the carbon and archive copies of the same
         # message are not shown again (android_bridge.sync).
         item = self.live_item(stanza)
+        if item is not None and item.action in ("retract", "react"):
+            # A plaintext deletion or reaction: android_bridge.sync handles
+            # it (its body, if any, is only a fallback for old clients).
+            return
         # Reassembly BEFORE the engine, and before any decision about what the
         # body is. A Termux peer fragments anything over 6000 bytes, which
         # includes every DAKE2 and every SMP frame; handing those to the

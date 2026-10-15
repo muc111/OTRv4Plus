@@ -1032,7 +1032,17 @@ class ChatViewModel : ViewModel() {
     fun send(jid: String) {
         val core = this.core ?: return
         val state = this.state ?: return
-        val message = state.beginSend(jid) ?: return
+        editing?.let { target ->
+            if (ChatState.bare(target.conversationId) == ChatState.bare(jid)) {
+                sendEdit(jid, target)
+                return
+            }
+        }
+        val replyTo = replyingTo?.takeIf {
+            ChatState.bare(it.conversationId) == ChatState.bare(jid) && it.wireId.isNotEmpty()
+        }
+        val message = state.beginSend(jid, replyTo) ?: return
+        replyingTo = null
         revision++
         // The message itself carries <active/>: no "paused" after it.
         pausedJob?.cancel()
@@ -1041,10 +1051,98 @@ class ChatViewModel : ViewModel() {
             val outcome = withContext(Dispatchers.IO) {
                 // getOrDefault, not a rethrow: a bridge failure is a failed
                 // send, and the exception's text may name what it was handling.
-                runCatching { core.sendUserText(jid, message.body, message.wireId) }
-                    .getOrDefault(SendOutcome.FAILED)
+                runCatching {
+                    if (message.replyTo.isNotEmpty())
+                        core.sendReply(jid, message.body, message.wireId, message.replyTo)
+                    else core.sendUserText(jid, message.body, message.wireId)
+                }.getOrDefault(SendOutcome.FAILED)
             }
             state.completeSend(message, outcome)
+            revision++
+        }
+    }
+
+    // -- reply, correct, delete for everyone, react (otrv4plus_actions) --------
+
+    /** The message the next send replies to, shown above the composer. */
+    var replyingTo by mutableStateOf<Message?>(null)
+    /** The message of ours being corrected: the composer holds its text. */
+    var editing by mutableStateOf<Message?>(null)
+        private set
+    /** The message whose action menu is open (its local id). */
+    var actionsFor by mutableStateOf<String?>(null)
+    /** Why the last action did not go, for a line under the composer. */
+    var actionStatus by mutableStateOf<String?>(null)
+        private set
+
+    /** Actions need a wire id, and are for one-to-one conversations. */
+    fun canAct(m: Message): Boolean {
+        val state = this.state ?: return false
+        return m.wireId.isNotEmpty() && !m.retracted &&
+            m.security != SecurityLabel.SYSTEM && !state.isRoom(m.conversationId)
+    }
+
+    fun startReply(m: Message) { editing = null; replyingTo = m; actionsFor = null }
+
+    fun startEdit(m: Message) {
+        if (!m.outgoing || !canAct(m)) return
+        replyingTo = null
+        editing = m
+        actionsFor = null
+        setDraft(m.conversationId, m.body)
+    }
+
+    fun cancelCompose(jid: String) {
+        if (editing != null) setDraft(jid, "")
+        editing = null
+        replyingTo = null
+    }
+
+    private fun sendEdit(jid: String, target: Message) {
+        val core = this.core ?: return
+        val state = this.state ?: return
+        val text = state.draft(jid).trim()
+        if (text.isEmpty() || text == target.body) { cancelCompose(jid); return }
+        state.setDraft(jid, "")
+        editing = null
+        revision++
+        act(core, jid, "edit", target, text, emptyList())
+    }
+
+    fun retract(m: Message) {
+        val core = this.core ?: return
+        if (!m.outgoing || !canAct(m)) return
+        actionsFor = null
+        act(core, m.conversationId, "retract", m, "", emptyList())
+    }
+
+    fun react(m: Message, emoji: String) {
+        val core = this.core ?: return
+        val state = this.state ?: return
+        if (!canAct(m)) return
+        actionsFor = null
+        act(core, m.conversationId, "react", m, "", state.toggledReaction(m, emoji))
+    }
+
+    private fun act(core: ChaquopyOtrCore, jid: String, action: String, target: Message,
+                    body: String, emojis: List<String>) {
+        val state = this.state ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    core.sendAction(jid, action, target.wireId, body, emojis, MessageId.newWireId())
+                }.getOrDefault(SendOutcome.FAILED)
+            }
+            if (outcome == SendOutcome.ENCRYPTED || outcome == SendOutcome.PLAINTEXT) {
+                state.applyChange(jid, action, target.wireId, body, emojis, outgoing = true)
+                actionStatus = null
+            } else {
+                actionStatus = when (action) {
+                    "edit" -> "Could not correct the message: no secure session yet."
+                    "retract" -> "Could not delete the message for everyone."
+                    else -> "Could not send the reaction."
+                }
+            }
             revision++
         }
     }

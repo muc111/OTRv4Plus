@@ -124,6 +124,8 @@ class Engine(
                     is String -> put(k, v)
                     is Boolean -> put(k, v)
                     is Number -> put(k, v)
+                    is List<*> -> put(k, kotlinx.serialization.json.JsonArray(
+                        v.map { kotlinx.serialization.json.JsonPrimitive(it?.toString() ?: "") }))
                     else -> put(k, v.toString())
                 }
             })

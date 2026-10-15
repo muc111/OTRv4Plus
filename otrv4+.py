@@ -1658,8 +1658,9 @@ def _is_smp_version_mismatch(exc: BaseException) -> bool:
 #: forwarding hook turns into an unreviewed second protocol.
 _TLV_HANDLERS: Dict[int, Callable[[str, bytes], None]] = {}
 
-#: The only types a client may register for.
-_HANDLER_TLV_TYPES = frozenset({0x0020})
+#: The only types a client may register for: TIP (0x0020) and MESSAGE_META
+#: (0x0021, ids/corrections/deletions/reactions/replies -- otrv4plus_actions).
+_HANDLER_TLV_TYPES = frozenset({0x0020, 0x0021})
 
 
 def register_tlv_handler(tlv_type: int, handler: Callable[[str, bytes], None]) -> None:
@@ -1707,6 +1708,13 @@ class OTRv4TLV:
     #: collide with a future spec type, and forward-compatible by the rule at
     #: the top of this class: a peer that does not know it ignores it.
     TIP = 0x0020
+
+    #: rc.65: MESSAGE META -- the id of a typed message, and what it does to
+    #: an earlier one (a correction, a deletion for everyone, a reaction, a
+    #: reply), carried INSIDE the encrypted, authenticated payload so the
+    #: server can neither forge nor redirect them. Same forward-compatibility
+    #: rule: an older peer ignores it and shows the text, if any.
+    MESSAGE_META = 0x0021
 
     SMP_TYPES = frozenset({SMP_MSG_1, SMP_MSG_2, SMP_MSG_3, SMP_MSG_4, SMP_ABORT, SMP_MSG_1Q})
 
@@ -8767,6 +8775,30 @@ class EnhancedSessionManager:
                 return None
             try:
                 return session.encrypt_with_tlvs("", [OTRv4TLV(tlv_type, value)])
+            except Exception as e:
+                self.tracer.trace(peer, "ERROR", "SEND-TLV", "FAILED", str(e)[:80])
+                return None
+
+    def send_text_with_tlv(self, peer: str, text: str, tlv_type: int,
+                           value: bytes) -> Optional[str]:
+        """Encrypt [text] with one feature TLV attached. Returns the wire
+        frame, or None.
+
+        `send_tlv` with a body: the same fail-closed rules (an ENCRYPTED
+        session must already exist; nothing is queued, nothing falls back to
+        plaintext) and the same allow-list of types. Used for a typed message
+        that carries its MESSAGE_META (its id, or the message it corrects or
+        replies to): the text and its meta are one authenticated payload.
+        """
+        if tlv_type not in _HANDLER_TLV_TYPES:
+            raise ValueError("TLV type 0x%04x is not open to callers"
+                             % tlv_type)
+        with self.lock:
+            session = self.sessions.get(peer)
+            if session is None or not session.is_encrypted():
+                return None
+            try:
+                return session.encrypt_with_tlvs(text, [OTRv4TLV(tlv_type, value)])
             except Exception as e:
                 self.tracer.trace(peer, "ERROR", "SEND-TLV", "FAILED", str(e)[:80])
                 return None

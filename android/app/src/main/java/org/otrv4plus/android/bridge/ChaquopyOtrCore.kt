@@ -1178,6 +1178,18 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             requireApp().callAttr("send_user_text", peer, body, messageId).toString())
     }
 
+    override fun sendReply(peer: String, body: String, messageId: String, replyTo: String): SendOutcome = wrap {
+        SendOutcome.fromName(
+            requireApp().callAttr("send_user_text", peer, body, messageId, replyTo).toString())
+    }
+
+    override fun sendAction(peer: String, action: String, targetId: String, body: String,
+                            emojis: List<String>, messageId: String): SendOutcome =
+        runCatching {
+            SendOutcome.fromName(requireApp().callAttr(
+                "send_action", peer, action, targetId, body, emojis.toTypedArray(), messageId).toString())
+        }.getOrDefault(SendOutcome.FAILED)
+
     override fun markDisplayed(peer: String) {
         runCatching { requireApp().callAttr("mark_displayed", peer) }
     }
@@ -1607,7 +1619,16 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     str("peer"), str("body"), num("timestamp"),
                     messageId = item.callAttr("get", "message_id")?.toString()
                         ?.takeIf { it != "None" } ?: "",
-                    source = str("source").ifBlank { "live" })
+                    source = str("source").ifBlank { "live" },
+                    replyTo = str("reply_to").takeIf { it != "None" } ?: "")
+
+            "MessageChanged" ->
+                OtrEvent.MessageChanged(
+                    str("peer"), str("action"), str("target_id"), str("body"),
+                    runCatching {
+                        item.callAttr("get", "emojis")?.asList()?.map { it.toString() }
+                    }.getOrNull() ?: emptyList(),
+                    flag("outgoing"), str("source"))
 
             "MessageSentElsewhere" ->
                 OtrEvent.MessageSentElsewhere(
