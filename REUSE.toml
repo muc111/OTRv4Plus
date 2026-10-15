@@ -86,6 +86,7 @@ path = [
     "VOICE_AUDIT_REPORT.md",
     "VOICE_LATENCY_BUDGET.md",
     "VOICE_MEDIA_PATH.md",
+    "VOICE_NOTES.md",
     "VOICE_PATH_INVESTIGATION.md",
     "VOICE_SOAK_TEST.md",
     "WHY.md",
