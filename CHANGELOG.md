@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.73 — 2026-10-15 — location pins (core 0.13.1)
+
+- **Share a location, encrypted.** A 📍 button in the composer, shown only
+  in an encrypted chat or a secure group. The pin travels as an ordinary
+  encrypted message (OTR, or MLS in a group): an open **Plus Code** (Open
+  Location Code, computed on the device) and an RFC 5870 `geo:` line, so a
+  client that knows nothing of pins still shows something readable.
+  No what3words, no web map, nothing looked up online.
+- **Pick it by GPS or by typing.** Android: "Use my position" asks the GPS
+  receiver only -- never the network or Google's fused provider, which send
+  nearby Wi-Fi and cell ids away -- with permission asked on that tap and
+  not before (best outdoors; gives up after 90 s). Or type a full Plus Code
+  (`9C3XGV4C+XV`) or coordinates (`51.5074, -0.1278`). Desktop: typed only.
+- **A received pin is a card**: code, coordinates, accuracy, and Copy. On
+  Android, "Open in maps app" hands it to another app only after saying that
+  an online map sends it to its servers, outside I2P.
+
 ## Android 0.7.0-experimental.rc.72 — 2026-10-15 — profile pictures from any photo (core 0.13.1)
 
 - **Fixed: choosing a profile picture failed for many photos.** The picture

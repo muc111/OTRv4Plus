@@ -21,6 +21,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.*
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -38,6 +40,7 @@ import androidx.core.content.ContextCompat
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
+import org.otrv4plus.android.chat.Location
 import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
@@ -173,6 +176,8 @@ fun ConversationScreen(
                 // members are all verified); nowhere else.
                 onVoice = if (model.transferOffer(jid) is TransferUi.Offer.Available)
                               ({ model.openVoiceSheet() }) else null,
+                // A location pin: only inside encryption (OTR, or a secure group).
+                onLocation = if (model.canShareLocation(jid)) ({ model.openLocation(jid) }) else null,
             )
         },
     ) { padding ->
@@ -673,6 +678,7 @@ private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = fals
     }
 
     VoiceNoteSheet(model, jid)
+    LocationSheet(model)
 
     model.viewing?.let { file ->
         FileViewerDialog(container = file.path, name = file.filename,
@@ -1054,8 +1060,15 @@ private fun Bubble(message: Message, model: ChatViewModel) {
                      color = MaterialTheme.colorScheme.onSurfaceVariant,
                      fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
             } else {
-                SelectionContainer {
-                    Text(message.body, style = MaterialTheme.typography.bodyMedium)
+                // A pin is shown as a card; anything else (or a pin a client
+                // mangled) as the text it is.
+                val pin = if (message.body.startsWith(Location.MARKER)) Location.parse(message.body) else null
+                if (pin != null) {
+                    LocationCard(pin)
+                } else {
+                    SelectionContainer {
+                        Text(message.body, style = MaterialTheme.typography.bodyMedium)
+                    }
                 }
             }
             // Reactions (XEP-0444): each emoji once, with how many chose it.
@@ -1235,6 +1248,7 @@ private fun Composer(
     onCancel: () -> Unit = {},
     status: String? = null,
     onVoice: (() -> Unit)? = null,
+    onLocation: (() -> Unit)? = null,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -1270,6 +1284,12 @@ private fun Composer(
                 verticalAlignment = Alignment.Bottom,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                onLocation?.let {
+                    IconButton(onClick = it, enabled = enabled,
+                               modifier = Modifier.semantics { contentDescription = "Share a location" }) {
+                        Text("📍")
+                    }
+                }
                 OutlinedTextField(
                     value = draft,
                     onValueChange = onChange,

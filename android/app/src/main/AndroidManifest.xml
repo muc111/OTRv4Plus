@@ -42,6 +42,15 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
     <!--
+      Location pins (chat/Location.kt). Asked only when the user taps "Use
+      GPS" in the pin sheet, never in the background. The app reads ONLY the
+      GPS_PROVIDER — satellite signals, received, nothing transmitted —
+      never the network/fused provider, which can send Wi-Fi and cell data to
+      Google. The pin is sent only inside an encrypted conversation.
+    -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+
+    <!--
       A call is a call. dataSync above covers the long-lived XMPP session; a
       live voice call is a different foreground type, and claiming the wrong
       one is exactly what the dataSync comment refuses to do.

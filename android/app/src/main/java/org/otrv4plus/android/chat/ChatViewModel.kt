@@ -1714,6 +1714,87 @@ class ChatViewModel : ViewModel() {
         runCatching { java.io.File(path).delete() }
     }
 
+    // -- location pins (Location.kt) --------------------------------------------
+    //
+    // A pin is a chat message (a geo: URI and a Plus Code), so it is encrypted
+    // like any other line; it is only offered where the conversation IS
+    // encrypted. Screen state lives here like the rest.
+
+    /** The conversation the pin sheet is open for, or null. */
+    var locationFor by mutableStateOf<String?>(null)
+        private set
+    var locationText by mutableStateOf("")
+        private set
+    var locationPin by mutableStateOf<Location.Pin?>(null)
+        private set
+    var locationStatus by mutableStateOf<String?>(null)
+        private set
+    var gpsBusy by mutableStateOf(false)
+        private set
+
+    /** Encrypted 1:1 conversation, or a secure group. Never a plain room. */
+    fun canShareLocation(jid: String): Boolean {
+        observe()
+        val state = this.state ?: return false
+        return if (state.isRoom(jid)) state.isSecureRoom(jid)
+               else state.conversation(jid).security != org.otrv4plus.android.bridge.SecurityState.PLAINTEXT
+    }
+
+    fun openLocation(jid: String) {
+        locationFor = ChatState.bare(jid)
+        locationText = ""
+        locationPin = null
+        locationStatus = if (canShareLocation(jid)) null else Location.NEEDS_ENCRYPTION
+        gpsBusy = false
+    }
+
+    fun closeLocation() {
+        locationFor = null
+        locationPin = null
+        locationText = ""
+        locationStatus = null
+        gpsBusy = false
+    }
+
+    fun typeLocation(text: String) {
+        locationText = text.take(200)
+        locationPin = Location.fromTyped(locationText)
+        locationStatus = Location.typedStatus(locationText, locationPin)
+    }
+
+    fun gpsStarted() { gpsBusy = true; locationStatus = "Waiting for satellites… (outdoors works best)" }
+
+    /** A GPS fix, or [failure] in our own words. */
+    fun gpsFinished(pin: Location.Pin?, failure: String?) {
+        gpsBusy = false
+        if (pin != null) {
+            locationPin = pin
+            locationText = pin.code
+            locationStatus = null
+        } else {
+            locationStatus = failure ?: "No GPS fix."
+        }
+    }
+
+    /** Send the pin as an ordinary (encrypted) message, through [send]. */
+    fun sendLocation() {
+        val state = this.state ?: return
+        val jid = locationFor ?: return
+        val pin = locationPin ?: return
+        if (!canShareLocation(jid)) { locationStatus = Location.NEEDS_ENCRYPTION; return }
+        val previous = state.draft(jid)
+        val keepEditing = editing
+        val keepReply = replyingTo
+        editing = null
+        replyingTo = null
+        state.setDraft(jid, Location.body(pin))
+        send(jid)
+        state.setDraft(jid, previous)
+        editing = keepEditing
+        replyingTo = keepReply
+        closeLocation()
+    }
+
     // -- voice notes ------------------------------------------------------------
     //
     // The sheet's state lives here, like every other piece of screen state.

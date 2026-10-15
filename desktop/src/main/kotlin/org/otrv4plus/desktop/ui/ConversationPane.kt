@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Groups
@@ -67,11 +68,13 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.bridge.CallState
 import org.otrv4plus.android.bridge.SecurityState
+import org.otrv4plus.android.chat.Location
 import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
@@ -94,6 +97,7 @@ fun ConversationPane(model: AppModel, jid: String) {
     var pendingFile by remember(jid) { mutableStateOf<String?>(null) }
     val secure = isRoom && model.chat.isSecureRoom(jid)
     var showMembers by remember(jid) { mutableStateOf(true) }
+    var locationOpen by remember(jid) { mutableStateOf(false) }
     LaunchedEffect(jid, secure) { if (secure) model.refreshGroupNow(jid) }
 
     Row(Modifier.fillMaxSize()) {
@@ -109,7 +113,7 @@ fun ConversationPane(model: AppModel, jid: String) {
             if (secure) GroupBar(model, jid)
             FileOffers(model, jid)
             Messages(model, jid, isRoom, Modifier.weight(1f))
-            Composer(model, jid, isRoom, c.security)
+            Composer(model, jid, isRoom, c.security, onLocation = { locationOpen = true })
         }
         if (secure && showMembers) {
             VerticalDivider()
@@ -119,6 +123,7 @@ fun ConversationPane(model: AppModel, jid: String) {
 
     if (!isRoom) model.verificationPrompt(jid)?.let { prompt -> SmpDialog(model, jid, prompt) }
     model.voiceSheet?.let { VoiceNoteDialog(model, jid, it) }
+    if (locationOpen) LocationDialog(model, jid, onClose = { locationOpen = false })
     pendingFile?.let { path ->
         MetadataDialog(path, onChoice = { strip ->
             pendingFile = null
@@ -388,9 +393,13 @@ private fun Bubble(m: Message, isRoom: Boolean, model: AppModel) {
                 Text("Message deleted", style = MaterialTheme.typography.bodyMedium,
                      color = MaterialTheme.colorScheme.onSurfaceVariant,
                      fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
-            } else SelectionContainer {
-                Text(m.body, color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer
-                                     else MaterialTheme.colorScheme.onSurface)
+            } else {
+                val pin = if (m.body.startsWith(Location.MARKER)) Location.parse(m.body) else null
+                if (pin != null) LocationCard(pin)
+                else SelectionContainer {
+                    Text(m.body, color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer
+                                         else MaterialTheme.colorScheme.onSurface)
+                }
             }
             if (m.reactions.isNotEmpty()) {
                 val counts = m.reactions.values.flatten().groupingBy { it }.eachCount()
@@ -466,7 +475,8 @@ private fun BubbleActions(m: Message, model: AppModel) {
 }
 
 @Composable
-private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState) {
+private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState,
+                     onLocation: () -> Unit) {
     val text = model.draft(jid)
     val canSend = model.chat.canSend()
     val banner = model.editing?.takeIf { it.conversationId == jid }?.let { "Correcting your message" }
@@ -482,6 +492,12 @@ private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: Se
     }
     Surface(tonalElevation = 2.dp) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            // A location pin: only inside encryption, and not mid-correction.
+            if (banner == null && locationAllowed(model, jid, isRoom, security)) {
+                IconButton(onClick = onLocation, enabled = canSend) {
+                    Icon(Icons.Filled.Place, "Share a location")
+                }
+            }
             OutlinedTextField(
                 value = text, onValueChange = { model.setDraft(jid, it) },
                 modifier = Modifier.weight(1f).onPreviewKeyEvent { e ->
@@ -628,4 +644,73 @@ private fun MetadataDialog(path: String, onChoice: (Boolean?) -> Unit) {
             }
         },
     )
+}
+
+private fun locationAllowed(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState): Boolean =
+    if (isRoom) model.chat.isSecureRoom(jid) else security != SecurityState.PLAINTEXT
+
+/**
+ * Share a pin, typed: a full Plus Code or coordinates. No GPS here -- a
+ * desktop has none, and asking the OS would mean a network location service.
+ */
+@Composable
+private fun LocationDialog(model: AppModel, jid: String, onClose: () -> Unit) {
+    var typed by remember { mutableStateOf("") }
+    val pin = Location.fromTyped(typed)
+    val allowed = locationAllowed(model, jid, model.chat.isRoom(jid), model.conversation(jid).security)
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("Share a location") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Sent encrypted, as a Plus Code and coordinates. Nothing is looked up online.",
+                     style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(typed, { typed = it }, singleLine = true,
+                                  label = { Text("Plus Code or coordinates") })
+                when {
+                    pin != null -> Text("${pin.code}  ·  ${Location.coordinates(pin)}",
+                                        fontFamily = FontFamily.Monospace,
+                                        style = MaterialTheme.typography.bodySmall)
+                    typed.isNotBlank() -> Text(Location.typedHint, style = MaterialTheme.typography.bodySmall,
+                                               color = MaterialTheme.colorScheme.error)
+                }
+                if (!allowed) Text(Location.NEEDS_ENCRYPTION, style = MaterialTheme.typography.bodySmall,
+                                   color = MaterialTheme.colorScheme.error)
+            }
+        },
+        confirmButton = {
+            Button(onClick = {
+                val p = pin ?: return@Button
+                // Through the ordinary send path, so it is encrypted exactly as
+                // text is; whatever was being typed is put back afterwards.
+                val kept = model.draft(jid)
+                // (chat.setDraft, not model.setDraft: no "typing" goes out.)
+                model.chat.setDraft(jid, Location.body(p))
+                model.send(jid)
+                model.chat.setDraft(jid, kept)
+                onClose()
+            }, enabled = allowed && pin != null) { Text("Send") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("Cancel") } },
+    )
+}
+
+/** A pin in a bubble: the code, the coordinates, and Copy. */
+@Composable
+private fun LocationCard(pin: Location.Pin) {
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Text(Location.MARKER, style = MaterialTheme.typography.labelLarge)
+        SelectionContainer {
+            Column {
+                Text(pin.code, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.titleMedium)
+                Text(Location.coordinates(pin) + (Location.accuracy(pin)?.let { "  $it" } ?: ""),
+                     fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        TextButton(onClick = {
+            clipboard.setText(androidx.compose.ui.text.AnnotatedString(
+                "${pin.code} (${Location.coordinates(pin)})"))
+        }) { Text("Copy") }
+    }
 }
