@@ -225,6 +225,27 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         runCatching {
             call("send_file", "peer" to peer, "path" to path, "strip_metadata" to stripMetadata).asStr()
         }.getOrElse { (it as? OtrBridgeException)?.code ?: "failed" }
+    // -- voice notes (otrv4plus_voicenote; the recording stays in Python) ---------------
+
+    fun voiceNoteStart(): String = runCatching { call("voice_note_start").asStr() }.getOrDefault("no_microphone")
+    fun voiceNoteStatus(): org.otrv4plus.android.chat.VoiceRecording = runCatching {
+        val d = call("voice_note_status") as JsonObject
+        org.otrv4plus.android.chat.VoiceRecording(d["recording"].asBool(), d["seconds"].asDouble(),
+                                                  d["level"].asDouble(), d.str("error"))
+    }.getOrDefault(org.otrv4plus.android.chat.VoiceRecording(false, 0.0, 0.0, ""))
+    fun voiceNoteStop(mode: String, directory: String): org.otrv4plus.android.chat.VoiceNoteFile = runCatching {
+        val d = call("voice_note_stop", "mode" to mode, "directory" to directory) as JsonObject
+        org.otrv4plus.android.chat.VoiceNoteFile(d.str("path"), d["seconds"].asDouble(),
+                                                 d.str("mode").ifBlank { mode }, d.str("error"))
+    }.getOrDefault(org.otrv4plus.android.chat.VoiceNoteFile("", 0.0, mode, "failed"))
+    fun voiceNoteCancel() { runCatching { call("voice_note_cancel") } }
+    fun voiceNoteDiscard(path: String) { runCatching { call("voice_note_discard", "path" to path) } }
+    /** Play a note (preview or received) through the engine's audio output. */
+    fun voiceNotePlay(path: String): String = runCatching {
+        (call("voice_note_play", "path" to path) as JsonObject).str("error")
+    }.getOrDefault("bad_file")
+    fun voiceNotePlayStop() { runCatching { call("voice_note_play_stop") } }
+
     fun acceptFile(id: String): String = runCatching { call("accept_file", "transfer_id" to id).asStr() }.getOrDefault("failed")
     fun declineFile(id: String): String = runCatching { call("decline_file", "transfer_id" to id).asStr() }.getOrDefault("failed")
     fun cancelFile(id: String): String = runCatching { call("cancel_file", "transfer_id" to id).asStr() }.getOrDefault("failed")

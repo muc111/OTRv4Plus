@@ -1788,6 +1788,15 @@ code, and `dake.rs` and `ratchet.rs` had none between them. RT-1 is precisely
 what one unit test catches — decrypt a corrupted frame, then a valid one, and
 assert the valid one still works.
 
+## Voice notes (rc.66)
+
+Recorded into memory, disguised on the device by `Rust/src/voice_mask.rs`
+(per-note random McAdams + vocal-tract-length warp, pitch and rate change,
+channel normalisation, optional synthetic source), written as metadata-free
+Ogg Opus and sent as an ordinary encrypted file. Fails closed without the
+mask. Design, measurements against a speaker-recognition network, and
+limits: [VOICE_NOTES.md](VOICE_NOTES.md).
+
 ## Honest caveats
 
 1. **Single author, no external review.** This is the big one. Code style is consistent, but the design choices (especially the hybrid SMP construction) have not been peer-reviewed by anyone with a cryptography background. "It reaches VERIFIED and passes its tests" is not the same as "it is secure."

@@ -24,6 +24,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AttachFile
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.CallEnd
 import androidx.compose.material.icons.filled.Groups
@@ -34,6 +35,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,6 +75,8 @@ import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
+import org.otrv4plus.android.chat.VoiceNotes
+import org.otrv4plus.android.chat.VoiceSheet
 import org.otrv4plus.android.crypto.CallUi
 import org.otrv4plus.android.crypto.HandshakeUi
 import org.otrv4plus.android.crypto.SecurityLevel
@@ -114,6 +118,7 @@ fun ConversationPane(model: AppModel, jid: String) {
     }
 
     if (!isRoom) model.verificationPrompt(jid)?.let { prompt -> SmpDialog(model, jid, prompt) }
+    model.voiceSheet?.let { VoiceNoteDialog(model, jid, it) }
     pendingFile?.let { path ->
         MetadataDialog(path, onChoice = { strip ->
             pendingFile = null
@@ -238,6 +243,14 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
                 Icon(Icons.Filled.AttachFile, "Send a file")
             }
         }
+        TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
+                   tooltip = { PlainTooltip { Text("Voice note, in a disguised voice") } },
+                   state = rememberTooltipState()) {
+            IconButton(onClick = { model.openVoiceSheet() },
+                       enabled = isRoom && model.chat.isSecureRoom(jid) || offer is TransferUi.Offer.Available) {
+                Icon(Icons.Filled.Mic, "Voice note")
+            }
+        }
     }
 }
 
@@ -300,7 +313,19 @@ private fun FileOffers(model: AppModel, jid: String) {
     }
     for (t in model.transfers.filter { it.peer.substringBefore('/') == jid }) {
         val row = TransferUi.row(t)
-        if (row.finished && !row.failed) continue
+        if (row.finished && !row.failed) {
+            // A received voice note: play it here (the engine decrypts it
+            // into memory and parses it as untrusted audio).
+            if (!t.outgoing && t.path.isNotEmpty() && VoiceNotes.looksLikeNote(t.filename)) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    Text("Voice note", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { model.playVoiceNote(t.path) }) { Text("Play") }
+                    TextButton(onClick = { model.stopPlaying() }) { Text("Stop") }
+                }
+            }
+            continue
+        }
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
             Text("${t.filename} — ${row.label}", style = MaterialTheme.typography.bodySmall,
                  color = if (row.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
@@ -513,6 +538,68 @@ private fun SmpDialog(model: AppModel, jid: String, prompt: Verification.Prompt)
 }
 
 /** The y/n/c the Termux client asks, as a dialog. */
+@Composable
+private fun VoiceNoteDialog(model: AppModel, jid: String, sheet: VoiceSheet) {
+    AlertDialog(
+        onDismissRequest = { if (sheet !is VoiceSheet.Recording) model.closeVoiceSheet() },
+        title = { Text("Voice note") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                when (sheet) {
+                    is VoiceSheet.Choosing, is VoiceSheet.Failed -> {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            for (mode in VoiceNotes.MODES) {
+                                FilterChip(selected = sheet.mode == mode, onClick = { model.chooseVoice(mode) },
+                                           label = { Text(VoiceNotes.label(mode)) })
+                            }
+                        }
+                        Text(VoiceNotes.detail(sheet.mode))
+                        Text(VoiceNotes.CAVEAT, style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (sheet is VoiceSheet.Failed) {
+                            Text(sheet.message, color = MaterialTheme.colorScheme.error,
+                                 style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                    is VoiceSheet.Recording -> {
+                        Text("Recording \u00b7 ${VoiceNotes.label(sheet.mode)} \u00b7 ${VoiceNotes.clock(sheet.seconds)}",
+                             style = MaterialTheme.typography.titleMedium)
+                        LinearProgressIndicator(progress = { sheet.level.toFloat().coerceIn(0f, 1f) },
+                                                modifier = Modifier.fillMaxWidth())
+                        Text("Your voice is disguised when you stop, on this computer.",
+                             style = MaterialTheme.typography.bodySmall)
+                    }
+                    is VoiceSheet.Making -> Text("Disguising your voice\u2026")
+                    is VoiceSheet.Ready -> {
+                        Text("${VoiceNotes.label(sheet.mode)} \u00b7 ${VoiceNotes.clock(sheet.seconds)}",
+                             style = MaterialTheme.typography.titleMedium)
+                        Text("This is exactly what they will hear.", style = MaterialTheme.typography.bodySmall)
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            OutlinedButton(onClick = { model.playVoiceNote(sheet.path) }) { Text("Play") }
+                            TextButton(onClick = { model.stopPlaying() }) { Text("Stop") }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            when (sheet) {
+                is VoiceSheet.Choosing, is VoiceSheet.Failed -> Button(onClick = { model.startVoiceNote() }) { Text("Record") }
+                is VoiceSheet.Recording -> Button(onClick = { model.stopVoiceNote() }) { Text("Stop") }
+                is VoiceSheet.Ready -> Button(onClick = { model.sendVoiceNote(jid) }) { Text("Send") }
+                is VoiceSheet.Making -> {}
+            }
+        },
+        dismissButton = {
+            if (sheet !is VoiceSheet.Making) {
+                TextButton(onClick = { model.closeVoiceSheet() }) {
+                    Text(if (sheet is VoiceSheet.Ready || sheet is VoiceSheet.Recording) "Discard" else "Close")
+                }
+            }
+        },
+    )
+}
+
 @Composable
 private fun MetadataDialog(path: String, onChoice: (Boolean?) -> Unit) {
     AlertDialog(

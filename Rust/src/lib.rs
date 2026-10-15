@@ -37,6 +37,7 @@ pub mod mls_group;        // OTRv4Plus group chat (MLS); see otrv4-mls       // 
 pub mod container;         // .otrv: files encrypted at rest and for export
 pub mod at_rest;          // Rust-owned at-rest secrets (SMP auto-respond store, identity DEK)
 pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
+pub mod voice_mask;       // voice notes: per-note random voice disguise
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
@@ -66,6 +67,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(filetransfer::file_transfer_sizes, m)?)?;
     m.add_function(wrap_pyfunction!(filetransfer::file_transfer_chunk_len, m)?)?;
     m.add_function(wrap_pyfunction!(filetransfer::file_transfer_format_version, m)?)?;
+    voice_mask::register(m)?;
     // Ring signature (Phase 5.3c)
     #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(ring_sig::py_ring_sign,   m)?)?;

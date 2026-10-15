@@ -1364,6 +1364,44 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             )
         }.getOrDefault(MetadataFinding.UNKNOWN)
 
+    // -- voice notes (otrv4plus_voicenote; the recording stays in Python) ------
+
+    /** Start recording. "ok", or an error code for [VoiceNotes.errorText]. */
+    fun voiceNoteStart(): String =
+        runCatching { requireApp().callAttr("voice_note_start").toString() }
+            .getOrDefault("no_microphone")
+
+    fun voiceNoteStatus(): org.otrv4plus.android.chat.VoiceRecording =
+        runCatching {
+            val d = requireApp().callAttr("voice_note_status")
+            org.otrv4plus.android.chat.VoiceRecording(
+                recording = d.callAttr("get", "recording")?.toBoolean() ?: false,
+                seconds = d.callAttr("get", "seconds")?.toDouble() ?: 0.0,
+                level = d.callAttr("get", "level")?.toDouble() ?: 0.0,
+                error = d.callAttr("get", "error")?.toString() ?: "",
+            )
+        }.getOrDefault(org.otrv4plus.android.chat.VoiceRecording(false, 0.0, 0.0, ""))
+
+    /** Stop, disguise and write the note under [directory]. */
+    fun voiceNoteStop(mode: String, directory: String): org.otrv4plus.android.chat.VoiceNoteFile =
+        runCatching {
+            val d = requireApp().callAttr("voice_note_stop", mode, directory)
+            org.otrv4plus.android.chat.VoiceNoteFile(
+                path = d.callAttr("get", "path")?.toString() ?: "",
+                seconds = d.callAttr("get", "seconds")?.toDouble() ?: 0.0,
+                mode = d.callAttr("get", "mode")?.toString() ?: mode,
+                error = d.callAttr("get", "error")?.toString() ?: "",
+            )
+        }.getOrDefault(org.otrv4plus.android.chat.VoiceNoteFile("", 0.0, mode, "failed"))
+
+    fun voiceNoteCancel() {
+        runCatching { requireApp().callAttr("voice_note_cancel") }
+    }
+
+    fun voiceNoteDiscard(path: String) {
+        runCatching { requireApp().callAttr("voice_note_discard", path) }
+    }
+
     /** Accept an offered transfer, by the id [transfers] reported. */
     fun acceptFile(transferId: String): String =
         runCatching {

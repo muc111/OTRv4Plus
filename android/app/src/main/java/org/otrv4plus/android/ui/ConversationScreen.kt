@@ -667,6 +667,8 @@ private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = fals
         )
     }
 
+    VoiceNoteSheet(model, jid)
+
     model.viewing?.let { file ->
         FileViewerDialog(container = file.path, name = file.filename,
                          materialize = { dir -> model.openReceivedTo(file.path, dir) },
@@ -742,8 +744,12 @@ private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = fals
 
     when (offer) {
         is TransferUi.Offer.Available ->
-            TextButton(onClick = { picker.launch(arrayOf("*/*")) }) {
-                Text(if (group) "Send a file to the group" else "Send a file")
+            Row {
+                TextButton(onClick = { picker.launch(arrayOf("*/*")) }) {
+                    Text(if (group) "Send a file to the group" else "Send a file")
+                }
+                // A voice note is a file: the same gates, the same offer.
+                TextButton(onClick = { model.openVoiceSheet() }) { Text("Voice note") }
             }
         is TransferUi.Offer.NeedsVerification ->
             TextButton(enabled = false, onClick = {}) {

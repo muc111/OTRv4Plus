@@ -493,6 +493,112 @@ class AppModel(
         }
     }
 
+    // -- voice notes (the recording stays in the Python host; see VoiceNotes) -----------
+
+    var voiceSheet by mutableStateOf<org.otrv4plus.android.chat.VoiceSheet?>(null)
+        private set
+    private var voiceMode = org.otrv4plus.android.chat.VoiceNotes.DISGUISE
+    private var voicePoll: Job? = null
+
+    fun openVoiceSheet() {
+        if (voiceSheet == null) voiceSheet = org.otrv4plus.android.chat.VoiceSheet.Choosing(voiceMode)
+    }
+
+    fun chooseVoice(mode: String) {
+        if (mode !in org.otrv4plus.android.chat.VoiceNotes.MODES) return
+        voiceMode = mode
+        val s = voiceSheet
+        if (s is org.otrv4plus.android.chat.VoiceSheet.Choosing || s is org.otrv4plus.android.chat.VoiceSheet.Failed) {
+            voiceSheet = org.otrv4plus.android.chat.VoiceSheet.Choosing(mode)
+        }
+    }
+
+    fun startVoiceNote() {
+        val mode = voiceSheet?.mode ?: voiceMode
+        ui.launch {
+            val started = withContext(Dispatchers.IO) { core.voiceNoteStart() }
+            if (started != "ok") {
+                voiceSheet = org.otrv4plus.android.chat.VoiceSheet.Failed(
+                    mode, org.otrv4plus.android.chat.VoiceNotes.errorText(started))
+                return@launch
+            }
+            voiceSheet = org.otrv4plus.android.chat.VoiceSheet.Recording(mode)
+            voicePoll?.cancel()
+            voicePoll = ui.launch {
+                while (voiceSheet is org.otrv4plus.android.chat.VoiceSheet.Recording) {
+                    val st = withContext(Dispatchers.IO) { core.voiceNoteStatus() }
+                    if (voiceSheet !is org.otrv4plus.android.chat.VoiceSheet.Recording) break
+                    if (!st.recording) {
+                        if (st.error.isNotEmpty()) {
+                            voiceSheet = org.otrv4plus.android.chat.VoiceSheet.Failed(
+                                mode, org.otrv4plus.android.chat.VoiceNotes.errorText("no_microphone"))
+                            withContext(Dispatchers.IO) { core.voiceNoteCancel() }
+                        } else stopVoiceNote()
+                        break
+                    }
+                    voiceSheet = org.otrv4plus.android.chat.VoiceSheet.Recording(mode, st.seconds, st.level)
+                    delay(200)
+                }
+            }
+        }
+    }
+
+    fun stopVoiceNote() {
+        val sheet = voiceSheet as? org.otrv4plus.android.chat.VoiceSheet.Recording ?: return
+        voicePoll?.cancel()
+        voiceSheet = org.otrv4plus.android.chat.VoiceSheet.Making(sheet.mode)
+        ui.launch {
+            // "" = the engine's private staging directory.
+            val note = withContext(Dispatchers.IO) { core.voiceNoteStop(sheet.mode, "") }
+            voiceSheet = if (note.error.isEmpty() && note.path.isNotEmpty())
+                org.otrv4plus.android.chat.VoiceSheet.Ready(note.mode, note.path, note.seconds)
+            else org.otrv4plus.android.chat.VoiceSheet.Failed(
+                sheet.mode, org.otrv4plus.android.chat.VoiceNotes.errorText(note.error))
+        }
+    }
+
+    /** Hear the ready note, or a received one ([path] of the container). */
+    fun playVoiceNote(path: String) {
+        ui.launch {
+            val err = withContext(Dispatchers.IO) { core.voiceNotePlay(path) }
+            if (err.isNotEmpty()) chat.note(org.otrv4plus.android.chat.VoiceNotes.errorText(err))
+            changed()
+        }
+    }
+
+    fun stopPlaying() { ui.launch { withContext(Dispatchers.IO) { core.voiceNotePlayStop() } } }
+
+    fun sendVoiceNote(jid: String) {
+        val ready = voiceSheet as? org.otrv4plus.android.chat.VoiceSheet.Ready ?: return
+        voiceSheet = null
+        // The engine deletes nothing it is handed; the note goes once offered.
+        ui.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                val o = core.sendFile(jid, ready.path, false)
+                core.voiceNoteDiscard(ready.path)
+                o
+            }
+            org.otrv4plus.android.crypto.TransferUi.refusal(outcome)?.let { chat.note(it) }
+            changed()
+        }
+    }
+
+    fun closeVoiceSheet() {
+        val sheet = voiceSheet
+        voiceSheet = null
+        voicePoll?.cancel()
+        ui.launch {
+            withContext(Dispatchers.IO) {
+                core.voiceNotePlayStop()
+                when (sheet) {
+                    is org.otrv4plus.android.chat.VoiceSheet.Recording -> core.voiceNoteCancel()
+                    is org.otrv4plus.android.chat.VoiceSheet.Ready -> core.voiceNoteDiscard(sheet.path)
+                    else -> {}
+                }
+            }
+        }
+    }
+
     fun acceptFile(id: String) = fileAction(id) { core.acceptFile(id) }
     fun declineFile(id: String) = fileAction(id) { core.declineFile(id) }
 

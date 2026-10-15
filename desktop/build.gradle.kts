@@ -48,6 +48,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/chat/RowSecurity.kt",
     "org/otrv4plus/android/chat/SavedContacts.kt",
     "org/otrv4plus/android/chat/SoundPolicy.kt",
+    "org/otrv4plus/android/chat/VoiceNotes.kt",
     "org/otrv4plus/android/connection/ConnectProblem.kt",
     "org/otrv4plus/android/connection/LinkPhase.kt",
     "org/otrv4plus/android/connection/LoginProgress.kt",

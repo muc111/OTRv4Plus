@@ -4545,6 +4545,110 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
 
         asyncio.ensure_future(_run())
 
+    def _cmd_voice(self, peer, args: str) -> None:
+        """/voice [disguise|synthetic|natural] -- record; /voice again (or
+        /voice stop) to finish; then /voice play, /voice send, /voice cancel.
+
+        The recording stays in memory and goes through the voice mask
+        (otrv4plus_voicenote) before anything is written; the note is then
+        sent as an ordinary encrypted file, with the same gates."""
+        import otrv4plus_voicenote as vn
+        words = args.split()
+        verb = words[0].lower() if words else ""
+        rec = getattr(self, "_vn_rec", None)
+        note = getattr(self, "_vn_note", None)
+
+        def drop_note():
+            if self._vn_note is not None:
+                try:
+                    os.unlink(self._vn_note["path"])
+                except OSError:
+                    pass
+                self._vn_note = None
+
+        if verb in vn.MODES or verb == "":
+            if rec is not None and rec.recording:
+                verb = "stop"
+            else:
+                mode = verb or vn.DEFAULT_MODE
+                if not vn.mask_available() and mode != "natural":
+                    print("[voice] the voice mask is not in this build; nothing "
+                          "was recorded (/voice natural sends your own voice)")
+                    return
+                self._vn_mode = mode
+                self._vn_rec = rec = vn.Recorder()
+                self._vn_note = None if note is None else (drop_note() or None)
+                try:
+                    rec.start()
+                except vn.VoiceNoteError as exc:
+                    print("[voice] cannot record: %s" % _sanitise(str(exc), 160))
+                    return
+                print("[voice] recording (%s) — /voice to stop, /voice cancel to "
+                      "discard. Max %d s." % (vn.describe_mode(mode), vn.MAX_SECONDS))
+                return
+        if verb == "stop":
+            if rec is None or not rec.recording:
+                print("[voice] not recording")
+                return
+            pcm, rate = rec.stop()
+            try:
+                self._vn_note = vn.make_note(pcm, rate, getattr(self, "_vn_mode", vn.DEFAULT_MODE),
+                                             _filetransfer.staging_dir())
+            except vn.VoiceNoteError as exc:
+                print("[voice] no note: %s" % {
+                    "too_short": "too short", "no_speech": "no speech heard",
+                    "unavailable": "the voice mask is not in this build",
+                }.get(exc.code, exc.code))
+                return
+            n = self._vn_note
+            print("[voice] note ready: %.1f s, %s. /voice play to hear it, /voice send "
+                  "to send, /voice cancel to discard." % (n["seconds"], vn.describe_mode(n["mode"])))
+        elif verb == "cancel":
+            if rec is not None:
+                rec.cancel()
+            drop_note()
+            print("[voice] discarded")
+        elif verb == "play":
+            target = " ".join(words[1:]) or (note or {}).get("path", "")
+            if not target:
+                print("[voice] no note to play")
+                return
+            try:
+                with open(os.path.expanduser(target), "rb") as f:
+                    data = f.read(vn.MAX_NOTE_BYTES + 1)
+                player = getattr(self, "_vn_player", None) or vn.Player()
+                self._vn_player = player
+                print("[voice] playing %.1f s" % player.play(data))
+            except (OSError, vn.VoiceNoteError) as exc:
+                print("[voice] cannot play: %s" % _sanitise(str(exc), 160))
+            except Exception as exc:
+                print("[voice] no audio output: %s" % _sanitise(str(exc), 160))
+        elif verb == "send":
+            if note is None:
+                print("[voice] record one first: /voice")
+                return
+            if not peer:
+                print("[voice] open a chat with a peer first")
+                return
+            groups = getattr(self, "_groups", None)
+            group = bool(groups is not None and groups.owns_room(peer))
+            if not group and self._file_transfer_ratchet(peer) is None:
+                print("[voice] no OTR session with %s — run /otr first"
+                      % _sanitise(peer, 128))
+                return
+            path, self._vn_note = note["path"], None
+
+            def discard():
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+
+            asyncio.ensure_future(self._offer_file(
+                peer, path, False, group=group, picked=False, discard=discard))
+        else:
+            print("usage: /voice [disguise|synthetic|natural] | stop | play | send | cancel")
+
     async def _offer_file(self, peer, chosen: str, strip: bool, *, group: bool,
                           picked: bool, discard) -> None:
         """Seal and offer, off the event loop (sealing reads the whole file
@@ -5619,6 +5723,9 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             "  /sendfile [path]     send a file (encrypted, verified peer; in a\n"
             "                       group, to the group). Asks y/n to remove\n"
             "                       hidden information (location, camera) first\n"
+            "  /voice [mode]        record a voice note in a disguised voice\n"
+            "                       (disguise, synthetic = strongest, natural);\n"
+            "                       /voice again to stop, then play|send|cancel\n"
             "  /transfer            show file transfer state (group files too)\n"
             + self.TS_HELP +
             "  /sound on|off        message and group-call sounds (y/n answers\n"
@@ -6215,6 +6322,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         # --- File transfer (XMPP only) ---
         elif lstrip.startswith("/sendfile"):
             self._cmd_sendfile(peer, lstrip[9:].strip())
+        elif lstrip == "/voice" or lstrip.startswith("/voice "):
+            self._cmd_voice(peer, lstrip[6:].strip())
         elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
             self._cmd_transfer(lstrip[9:].strip())
 

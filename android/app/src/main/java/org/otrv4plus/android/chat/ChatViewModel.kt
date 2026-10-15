@@ -1698,6 +1698,115 @@ class ChatViewModel : ViewModel() {
         runCatching { java.io.File(path).delete() }
     }
 
+    // -- voice notes ------------------------------------------------------------
+    //
+    // The sheet's state lives here, like every other piece of screen state.
+    // The recording itself never comes to Kotlin: see [VoiceNotes].
+
+    /** The open voice-note sheet, or null. */
+    var voiceSheet by mutableStateOf<VoiceSheet?>(null)
+        private set
+    private var voiceMode = VoiceNotes.DISGUISE
+    private var voicePoll: Job? = null
+
+    fun openVoiceSheet() {
+        if (voiceSheet == null) voiceSheet = VoiceSheet.Choosing(voiceMode)
+    }
+
+    fun chooseVoice(mode: String) {
+        if (mode !in VoiceNotes.MODES) return
+        voiceMode = mode
+        when (val s = voiceSheet) {
+            is VoiceSheet.Choosing -> voiceSheet = s.copy(mode = mode)
+            is VoiceSheet.Failed -> voiceSheet = VoiceSheet.Choosing(mode)
+            else -> {}
+        }
+    }
+
+    /** Start recording, once the microphone is ours to use. */
+    fun startVoiceNote(micGranted: Boolean) {
+        val core = this.core ?: return
+        val mode = voiceSheet?.mode ?: voiceMode
+        if (!micGranted) {
+            voiceSheet = VoiceSheet.Failed(mode, MicPermission.REFUSED)
+            return
+        }
+        viewModelScope.launch {
+            val started = withContext(Dispatchers.IO) { core.voiceNoteStart() }
+            if (started != "ok") {
+                voiceSheet = VoiceSheet.Failed(mode, VoiceNotes.errorText(started))
+                return@launch
+            }
+            voiceSheet = VoiceSheet.Recording(mode)
+            voicePoll?.cancel()
+            voicePoll = viewModelScope.launch {
+                while (voiceSheet is VoiceSheet.Recording) {
+                    val st = withContext(Dispatchers.IO) { core.voiceNoteStatus() }
+                    if (voiceSheet !is VoiceSheet.Recording) break
+                    if (!st.recording) {
+                        // The limit was reached, or the microphone failed.
+                        if (st.error.isNotEmpty()) {
+                            voiceSheet = VoiceSheet.Failed(mode, VoiceNotes.errorText("no_microphone"))
+                            core.voiceNoteCancel()
+                        } else {
+                            stopVoiceNote()
+                        }
+                        break
+                    }
+                    voiceSheet = VoiceSheet.Recording(mode, st.seconds, st.level)
+                    delay(200)
+                }
+            }
+        }
+    }
+
+    /** Stop and disguise. The note goes into the app's private cache. */
+    fun stopVoiceNote(cacheDir: java.io.File? = voiceDir) {
+        val core = this.core ?: return
+        val sheet = voiceSheet as? VoiceSheet.Recording ?: return
+        val dir = cacheDir ?: return
+        voicePoll?.cancel()
+        voiceSheet = VoiceSheet.Making(sheet.mode)
+        viewModelScope.launch {
+            val note = withContext(Dispatchers.IO) {
+                core.voiceNoteStop(sheet.mode, java.io.File(dir, "outbox").also { it.mkdirs() }.absolutePath)
+            }
+            voiceSheet = if (note.error.isEmpty() && note.path.isNotEmpty()) {
+                VoiceSheet.Ready(note.mode, note.path, note.seconds)
+            } else {
+                VoiceSheet.Failed(sheet.mode, VoiceNotes.errorText(note.error))
+            }
+        }
+    }
+
+    /** Where notes are written; set by the screen (it has the Context). */
+    var voiceDir: java.io.File? = null
+
+    /** Send the ready note as a file; the copy is deleted once offered. */
+    fun sendVoiceNote(jid: String) {
+        val ready = voiceSheet as? VoiceSheet.Ready ?: return
+        voiceSheet = null
+        sendFile(jid, ready.path, strip = false)
+    }
+
+    /** Close the sheet: stop any recording and delete any unsent note. */
+    fun closeVoiceSheet() {
+        val core = this.core
+        val sheet = voiceSheet
+        voiceSheet = null
+        voicePoll?.cancel()
+        viewModelScope.launch(Dispatchers.IO) {
+            when (sheet) {
+                is VoiceSheet.Recording -> core?.voiceNoteCancel()
+                is VoiceSheet.Ready -> {
+                    core?.voiceNoteDiscard(sheet.path)
+                    discardStaged(sheet.path)
+                }
+                else -> {}
+            }
+        }
+    }
+
     /** Incoming offers waiting for Accept or Decline. See [ChatState.pendingFileOffers]. */
     fun fileOffers(): List<OtrEvent.FileTransferChanged> {
         observe()
@@ -1766,6 +1875,17 @@ class ChatViewModel : ViewModel() {
         // The redraw timer, and nothing else. The conversation and the
         // connection belong to the service and outlive this.
         pollJob?.cancel()
+        // A voice note is the exception: the microphone is not left open,
+        // and an unsent note is not left in the cache, for a screen that is
+        // gone. (viewModelScope is already cancelled, so a plain thread.)
+        val core = this.core
+        val sheet = voiceSheet
+        if (sheet is VoiceSheet.Recording || sheet is VoiceSheet.Ready) {
+            Thread {
+                core?.voiceNoteCancel()
+                if (sheet is VoiceSheet.Ready) core?.voiceNoteDiscard(sheet.path)
+            }.start()
+        }
     }
 
     companion object {

@@ -472,6 +472,9 @@ class OtrApp:
             except Exception:
                 _log.warning("transfer teardown reported a problem")
             self._files_bridge = None
+        # A note being recorded is dropped, never kept for later.
+        self.voice_note_cancel()
+        self.voice_note_play_stop()
         # The secure groups: sealed to disk and let go, lock included, so the
         # next sign-in on this phone can open them again. Sign-out used to
         # leave them open, and the account's next sign-in found its group
@@ -713,6 +716,12 @@ class OtrApp:
             already = self._wiped
             self._wiped = True
         report: Dict[str, Any] = {"already_wiped": already, "errors": []}
+        # A note being recorded: the microphone off and the PCM overwritten.
+        try:
+            self.voice_note_cancel()
+            self.voice_note_play_stop()
+        except Exception:
+            report["errors"].append("voice_note")
 
         # STAGE B FIRST: every secret destroyed in Rust before anything that
         # can wait on the network. See `wipe_crypto`.
@@ -2740,6 +2749,106 @@ class OtrApp:
         `android_bridge.metadata` for exactly what counts and what is kept.
         """
         return self.files.inspect(path)
+
+    # -- voice notes -----------------------------------------------------------
+    #
+    # A voice note is recorded into memory, put through the voice mask
+    # (otrv4plus_voicenote, Rust/src/voice_mask.rs), written as a small
+    # metadata-free audio file, and then sent with `send_file` like any other
+    # file -- so the session and verification gates are the file gates.
+
+    def _voice(self):
+        rec = getattr(self, "_voice_recorder", None)
+        if rec is None:
+            import otrv4plus_voicenote as vn
+            rec = self._voice_recorder = vn.Recorder()
+        return rec
+
+    def voice_note_modes(self) -> Dict[str, Any]:
+        """The choices, and whether the mask is in this build."""
+        import otrv4plus_voicenote as vn
+        return {"modes": list(vn.MODES), "default": vn.DEFAULT_MODE,
+                "labels": {m: vn.describe_mode(m) for m in vn.MODES},
+                "mask_available": vn.mask_available(),
+                "max_seconds": vn.MAX_SECONDS}
+
+    def voice_note_start(self) -> str:
+        """Start recording. "ok", or why not."""
+        if self._wiped:
+            return "unavailable"
+        import otrv4plus_voicenote as vn
+        try:
+            self._voice().start()
+        except vn.VoiceNoteError as exc:
+            return exc.code
+        except Exception:
+            return "no_microphone"
+        return "ok"
+
+    def voice_note_status(self) -> Dict[str, Any]:
+        rec = getattr(self, "_voice_recorder", None)
+        if rec is None:
+            return {"recording": False, "seconds": 0.0, "level": 0.0, "error": ""}
+        return {"recording": rec.recording, "seconds": round(rec.seconds, 1),
+                "level": round(rec.level, 3), "error": rec.error}
+
+    def voice_note_stop(self, mode: str, directory: str) -> Dict[str, Any]:
+        """Stop, mask and write the note under [directory]. {"path", "seconds",
+        "mode", "format", "bytes"} or {"error": code}. The raw recording is
+        wiped either way; a masked note is never replaced by an unmasked one."""
+        import otrv4plus_voicenote as vn
+        rec = getattr(self, "_voice_recorder", None)
+        if rec is None:
+            return {"error": "too_short"}
+        pcm, rate = rec.stop()
+        try:
+            if not directory:
+                import otrv4plus_filetransfer as _ft
+                directory = _ft.staging_dir()
+            return vn.make_note(pcm, rate, mode, directory)
+        except vn.VoiceNoteError as exc:
+            return {"error": exc.code}
+        except Exception:
+            _log.warning("voice note could not be made")
+            return {"error": "bad_file"}
+
+    def voice_note_cancel(self) -> None:
+        rec = getattr(self, "_voice_recorder", None)
+        if rec is not None:
+            rec.cancel()
+
+    def voice_note_play(self, path: str) -> Dict[str, Any]:
+        """Play a note (a preview, or a received one) through the call audio
+        path. For hosts without a media player of their own (desktop)."""
+        import otrv4plus_voicenote as vn
+        try:
+            if path.endswith(".otrv"):
+                data = self.files.open_received(path)
+            else:
+                with open(path, "rb") as f:
+                    data = f.read(vn.MAX_NOTE_BYTES + 1)
+            player = getattr(self, "_voice_player", None)
+            if player is None:
+                player = self._voice_player = vn.Player()
+            return {"seconds": round(player.play(data), 1)}
+        except vn.VoiceNoteError as exc:
+            return {"error": exc.code}
+        except Exception:
+            return {"error": "bad_file"}
+
+    def voice_note_play_stop(self) -> None:
+        player = getattr(self, "_voice_player", None)
+        if player is not None:
+            player.stop()
+
+    def voice_note_discard(self, path: str) -> None:
+        """Delete a note that was not sent."""
+        name = os.path.basename(path or "")
+        if name.startswith("voice-note-"):
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
 
     def accept_file(self, transfer_id: str) -> str:
         """Accept an offered transfer. Returns a `FileOutcome` code."""

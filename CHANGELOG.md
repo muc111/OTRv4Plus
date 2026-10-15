@@ -4,6 +4,32 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.66 — 2026-10-15 — voice notes in a disguised voice (core 0.13.1)
+
+Owner request: "a voice note feature but with a security mind twist ...
+morph voice notes advanced enough where AI detection cannot identify or
+link voice note to specific user".
+
+- **Voice notes**, on Android, the desktop and the terminal (`/voice`), to
+  contacts and to secure groups. They are sent as encrypted files, with the
+  same verification gates.
+- **Your voice is disguised on the device before anything is saved.** The
+  real recording stays in memory and is wiped. A new Rust voice mask warps
+  every formant and the vocal-tract length, moves pitch and speaking rate,
+  removes the microphone's and room's colouring, and normalises loudness.
+  It uses fresh, secret random settings for every note, so there is no one
+  transform to undo and your notes do not sound like each other.
+  **Synthetic** replaces your vocal source with a generated one (the
+  strongest setting); **My voice** sends it unchanged.
+- **Fails closed:** without the mask, a disguised note is refused, never
+  sent in your own voice.
+- Measured against a speaker-recognition network on real speakers: from
+  0 % EER undisguised to 42 % / 47 % (synthetic) and 34 % / 39 %
+  (disguised), where 50 % is guessing. What you say can still identify
+  you, and no disguise can promise more. See VOICE_NOTES.md.
+- Notes are Ogg Opus (WAV where a build has no Opus encoder) with no
+  metadata and a random name. Received notes are parsed as untrusted input.
+
 ## Android 0.7.0-experimental.rc.65 — 2026-10-15 — a full XMPP messenger: other devices, history, ticks, typing, replies, reactions, blocking (core 0.13.1)
 
 Owner request: "of course we must add message carbons and server side
