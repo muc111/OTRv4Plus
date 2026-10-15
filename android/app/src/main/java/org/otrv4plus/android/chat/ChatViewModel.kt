@@ -694,6 +694,21 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** As [setOwnAvatar], with the picture made by [make] on a background
+     *  thread: the PNG, or our own sentence saying why not (never an
+     *  exception's text). */
+    fun setOwnAvatarFrom(make: () -> Pair<ByteArray?, String>) {
+        if (this.core == null) { avatarStatus = "Connect first."; return }
+        avatarStatus = "Preparing your picture…"
+        viewModelScope.launch {
+            val (png, refusal) = withContext(Dispatchers.Default) {
+                runCatching { make() }.getOrDefault(null to "That picture could not be used.")
+            }
+            if (png != null) setOwnAvatar(png)
+            else avatarStatus = refusal.ifBlank { "That picture could not be used." }
+        }
+    }
+
     fun removeOwnAvatar() {
         val core = this.core ?: return
         viewModelScope.launch {

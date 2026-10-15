@@ -439,3 +439,79 @@ class TestTheTransport:
         assert ctl.avatar_ids() == {"bob@x.i2p": hashlib.sha1(data).hexdigest()}
         assert base64.b64decode(got["rgba_b64"]) == got["rgba"]
         assert ctl.avatar_index() == ["bob@x.i2p\t" + hashlib.sha1(data).hexdigest()]
+
+
+# -- what an Android phone actually sends (device report 2026-10-15) ---------------
+
+def _android_like_png(w, h, colour, filt_cycle=(0, 1, 2, 3, 4), idat_parts=3):
+    """A PNG as Skia writes one: 8-bit RGB (colour 2) for an opaque photo or
+    RGBA (6), rows filtered with every filter type, IDAT split in several."""
+    import random
+    import struct
+    import zlib
+    rnd = random.Random(w * 31 + colour)
+    ch = 3 if colour == 2 else 4
+    rows = [bytes(rnd.randrange(256) for _ in range(w * ch)) for _ in range(h)]
+
+    def paeth(a, b, c):
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        return a if pa <= pb and pa <= pc else (b if pb <= pc else c)
+    raw = bytearray()
+    prev = bytes(w * ch)
+    for y, row in enumerate(rows):
+        f = filt_cycle[y % len(filt_cycle)]
+        out = bytearray()
+        for i, x in enumerate(row):
+            a = row[i - ch] if i >= ch else 0
+            b = prev[i]
+            c = prev[i - ch] if i >= ch else 0
+            pred = (0, a, b, (a + b) // 2, paeth(a, b, c))[f]
+            out.append((x - pred) & 0xFF)
+        raw += bytes([f]) + out
+        prev = row
+    z = zlib.compress(bytes(raw), 9)
+
+    def chunk(t, body):
+        return struct.pack(">I", len(body)) + t + body + struct.pack(">I", zlib.crc32(t + body) & 0xFFFFFFFF)
+    step = max(1, len(z) // idat_parts)
+    parts = [z[i:i + step] for i in range(0, len(z), step)]
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, colour, 0, 0, 0))
+    png += chunk(b"sRGB", b"\x00")                         # ancillary, as Skia adds
+    for p in parts:
+        png += chunk(b"IDAT", p)
+    png += chunk(b"IEND", b"")
+    expected = bytearray()
+    for row in rows:
+        for i in range(0, len(row), ch):
+            px = row[i:i + ch]
+            expected += px + (b"\xff" if ch == 3 else b"")
+    return png, bytes(expected)
+
+
+@pytest.mark.parametrize("colour", [2, 6])
+def test_our_own_96px_avatar_as_a_phone_encodes_it_is_accepted(colour):
+    from android_bridge import avatar as A
+    png, expected = _android_like_png(A.OWN_SIZE, A.OWN_SIZE, colour)
+    assert len(png) <= A.MAX_BYTES
+    w, h, rgba = A.decode_png(png)
+    assert (w, h) == (A.OWN_SIZE, A.OWN_SIZE)
+    assert rgba == expected
+
+
+def test_the_bridge_takes_the_phones_base64_and_publishes_it():
+    import base64
+    from android_bridge import avatar as A
+    from android_bridge.connection import ConnectionController
+    png, _ = _android_like_png(A.OWN_SIZE, A.OWN_SIZE, 2)
+    published = []
+
+    class T:
+        def publish_avatar(self, data):
+            A.decode_png(data)                     # the transport's own check
+            published.append(data)
+    c = ConnectionController.__new__(ConnectionController)
+    c._transport = T()
+    out = c.set_avatar_b64(base64.b64encode(png).decode())
+    assert out["ok"], out
+    assert published == [png]

@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.72 — 2026-10-15 — profile pictures from any photo (core 0.13.1)
+
+- **Fixed: choosing a profile picture failed for many photos.** The picture
+  was decoded with `BitmapFactory`, which cannot read HEIC/HEIF -- the
+  default camera format on many phones -- and ignored the photo's rotation.
+  Android 9+ now uses `ImageDecoder` (HEIC, JPEG, PNG, WebP, rotation
+  applied); 8.x keeps `BitmapFactory` and applies the EXIF rotation itself.
+  Decoded off the main thread, and a refusal now says why (too large, not
+  readable, not allowed). The picture is still re-encoded to a 96 x 96 PNG,
+  so nothing of the original file -- location, camera -- is published.
+
 ## Android 0.7.0-experimental.rc.71 — 2026-10-15 — the bottom bar on every main screen (core 0.13.1)
 
 - **Chats, People, Rooms and Profile always have the bottom bar** once

@@ -55,7 +55,14 @@ fun ProfileScreen(
     val picker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument()
     ) { uri ->
-        if (uri != null) model.setOwnAvatar(OwnAvatar.pngFrom(context, uri))
+        // Decoded off the main thread (a camera photo is megabytes); a
+        // refusal says why rather than "could not be used".
+        if (uri != null) model.setOwnAvatarFrom {
+            when (val made = OwnAvatar.make(context, uri)) {
+                is OwnAvatar.Made.Png -> made.bytes to ""
+                is OwnAvatar.Made.Refused -> null to made.reason
+            }
+        }
     }
 
     Column(
