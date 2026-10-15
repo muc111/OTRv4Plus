@@ -429,6 +429,14 @@ class GroupCallMedia:
                     stream.stop()
                 except Exception:
                     pass
+        # The audio threads end before anything they use is torn down (the
+        # streams themselves are safe to stop under them -- see
+        # AAudioStreamBase._io_call). Not from one of those threads.
+        current = threading.current_thread()
+        for t in self._threads:
+            if t is not current and t.is_alive():
+                t.join(timeout=2.0)
+        self._threads = []
         if self._transport is not None:
             self._transport.close()
             self._transport = None

@@ -270,3 +270,13 @@ def test_terminal_voice_command_records_masks_and_cleans_up(capsys, monkeypatch)
     assert not os.path.exists(path) and c._vn_note is None
     c._cmd_voice("bob@x", "send")
     assert "record one first" in capsys.readouterr().out
+
+
+def test_a_note_is_never_cut_down_to_a_fragment():
+    """1 note in 200 came out at a third of its length (or as "no speech"):
+    trim measured against one spike from the warped filter. Rust now measures
+    against the 95th percentile of frame levels."""
+    pcm = speech()
+    for mode in ("disguise", "synthetic"):
+        for _ in range(60):
+            assert len(vn.mask(pcm, 16000, mode)) / 2 / vn.RATE > 1.2

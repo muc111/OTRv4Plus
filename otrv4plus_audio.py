@@ -549,6 +549,12 @@ class AAudioStreamBase(AudioStream):
         self._stream = None
         self._closed = False
         self._lock = threading.Lock()
+        #: Held for every native read/write and for the close. AAudio forbids
+        #: AAudioStream_close while another thread is inside read or write on
+        #: the same stream: it frees the stream under them. Device report
+        #: (2026-10-15): the app crashed on hanging up a group call -- the
+        #: speaker thread was mid-write when the hang-up closed the stream.
+        self._io = threading.Lock()
         self._is_input = (direction == AAUDIO_DIRECTION_INPUT)
         self.disconnected = False
 
@@ -652,12 +658,37 @@ class AAudioStreamBase(AudioStream):
                 pass
             self._stream = None
 
+    def _io_call(self, fn, *args):
+        """One native read/write, never concurrent with the close. None when
+        the stream is closed (or closing): the caller treats it as nothing."""
+        with self._io_lock():
+            if self._closed or self._stream is None:
+                return None
+            return fn(self._stream, *args)
+
+    def _io_lock(self):
+        # Created in __init__; made here for a stream built without it.
+        io = self.__dict__.get("_io")
+        if io is None:
+            io = self.__dict__.setdefault("_io", threading.Lock())
+        return io
+
     def stop(self) -> None:
-        """Release the device.  Idempotent — teardown may run twice."""
+        """Release the device.  Idempotent — teardown may run twice.
+
+        requestStop first (thread-safe, and it makes a blocked read or write
+        return), then the close only once no read or write is in flight."""
         with self._lock:
             if self._closed:
                 return
             self._closed = True
+            stream = self._stream
+        if stream is not None:
+            try:
+                self._lib.AAudioStream_requestStop(stream)
+            except Exception:
+                pass
+        with self._io_lock():
             self._close_locked()
 
     def diagnostics(self) -> dict:
@@ -1307,10 +1338,12 @@ class AAudioCapture(AAudioStreamBase):
         if self._closed or self._stream is None:
             return None
         while len(self._pending) < FRAME_BYTES:
-            got = self._lib.AAudioStream_read(
-                self._stream, ctypes.byref(self._raw),
+            got = self._io_call(
+                self._lib.AAudioStream_read, ctypes.byref(self._raw),
                 ctypes.c_int32(self._chunk_frames),
                 ctypes.c_int64(int(timeout_ms) * 1000000))
+            if got is None:
+                return None                     # closed under us: hung up
             if got == AAUDIO_ERROR_DISCONNECTED:
                 # Route change, headset unplug, or the audio server dying.
                 # The AAudio equivalent of ERROR_DEAD_OBJECT: the stream is
@@ -1470,11 +1503,14 @@ class AAudioPlayback(AAudioStreamBase):
         written = 0
         while written < total:
             offset = written * SAMPLE_WIDTH * self._upmix
-            got = self._lib.AAudioStream_write(
-                self._stream,
+            got = self._io_call(
+                self._lib.AAudioStream_write,
                 ctypes.byref(buf, offset),
                 ctypes.c_int32(total - written),
                 ctypes.c_int64(int(timeout_ms) * 1000000))
+            if got is None:                     # closed under us: hung up
+                self.last_device_s = time.monotonic() - _t1
+                return False
             if got == AAUDIO_ERROR_DISCONNECTED:
                 self.disconnected = True
                 raise AudioError(AUDIO_DEVICE_DISCONNECTED,
@@ -1513,12 +1549,12 @@ class AAudioPlayback(AAudioStreamBase):
             buf = (ctypes.c_char * len(data)).from_buffer_copy(data)
             written = 0
             while written < total:
-                got = self._lib.AAudioStream_write(
-                    self._stream,
+                got = self._io_call(
+                    self._lib.AAudioStream_write,
                     ctypes.byref(buf, written * SAMPLE_WIDTH * self._upmix),
                     ctypes.c_int32(total - written),
                     ctypes.c_int64(200 * 1000000))
-                if got <= 0:
+                if got is None or got <= 0:
                     return
                 written += got
         except Exception:

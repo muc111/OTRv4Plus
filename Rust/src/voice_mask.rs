@@ -483,9 +483,23 @@ fn gate(x: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+/// The level speech is measured against: the 95th percentile of the frame
+/// levels, not the maximum. One unstable frame of the warped filter (a
+/// spike) used to set "loud", so trim cut away everything below 5% of the
+/// spike -- about 1 note in 200 came out at a third of its length, or was
+/// refused as "no speech".
+fn speech_peak(rms: &[f64]) -> f64 {
+    let mut sorted: Vec<f64> = rms.iter().copied().filter(|v| v.is_finite() && *v > 0.0).collect();
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)]
+}
+
 fn trim(x: &mut Vec<f64>) {
     let rms = frame_rms(x);
-    let peak = rms.iter().copied().fold(0.0, f64::max);
+    let peak = speech_peak(&rms);
     if peak <= 0.0 {
         x.clear();
         return;
@@ -501,7 +515,7 @@ fn trim(x: &mut Vec<f64>) {
 
 fn normalise(x: &mut [f64]) {
     let rms = frame_rms(x);
-    let peak = rms.iter().copied().fold(0.0, f64::max);
+    let peak = speech_peak(&rms);
     let active: Vec<f64> = rms.into_iter().filter(|&r| r > peak * 0.1).collect();
     if active.is_empty() {
         return;

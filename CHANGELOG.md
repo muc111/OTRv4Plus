@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.75 — 2026-10-15 — no crash on hanging up; voice notes keep their length (core 0.13.1)
+
+- **Fixed: the app could crash when a call was hung up** (device report,
+  Pixel, group call). Hanging up closed the AAudio stream while the
+  speaker or microphone thread was still inside a read or write on it;
+  AAudio frees the stream on close, so that thread touched freed memory and
+  the whole process died. Every native read and write now holds a lock the
+  close waits for, and the close first asks the stream to stop (which
+  returns a blocked read or write at once). Applies to 1:1 calls too, which
+  had the same order. A group call also waits for its audio threads now.
+- **Fixed: about 1 disguised voice note in 200 came out at a third of its
+  length, or was refused as "no speech".** One unstable frame of the voice
+  warp set the "loudest" level, and the silence trim then cut everything
+  quieter than 5% of it. The trim and the level now use the 95th percentile
+  of the note's loudness. 600 notes in a row: none refused, none shorter
+  than 1.7 s of a 2 s recording.
+
 ## Android 0.7.0-experimental.rc.74 — 2026-10-15 — group calls recover a silent leg; 🎤 and 📎 always visible (core 0.13.1)
 
 - **Group calls: one-way audio is noticed and repaired.** Device report: on
