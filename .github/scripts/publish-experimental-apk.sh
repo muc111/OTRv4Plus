@@ -86,95 +86,67 @@ esac
 cat > notes.md <<EOF
 # ⚠️ EXPERIMENTAL — a ${KIND}, not a release
 
-\`${APP}\` — built from \`${GITHUB_SHA}\`.
+\`${APP}\` — built from \`${GITHUB_SHA}\`. Android 8.0 or newer.
 
-A **release candidate** means every repository-level gate is closed: the
-secrets the terminal clients keep at rest are held by the Rust core, the
-dependency audit is clean, the documentation licence is decided, the icon's
-origin is recorded, and the release variant is built and its contents
-inspected on this run. It is still **not a release** and it is still
-EXPERIMENTAL: encrypted chat, identity verification, file transfer,
-two-way voice calls (app to app, and app to Termux), post-quantum secure
-groups of four members across the app and Termux, the built-in I2P router,
-group verification, disguised voice notes and location pins have been proved
-on handsets; group calls connect but are not yet reliable both ways, and the
-items below are still open.
+**Download \`${ROUT}\`** (below). The first sign-in takes a few minutes while
+the built-in I2P router joins the network.
 
 ---
 
-## Verified on a real device
+## Verified on a real device — ✅ what works
 
-Reported from a handset (Android 15, arm64-v8a) by the project owner,
-against the live server over I2P, with a Termux client as the peer:
+Reported from a handset: two Android 15 phones (arm64-v8a, a Pixel and a
+Xiaomi) by the project owner, against the project's server
+\`otrv4plus.i2p\`, over the **built-in I2P router** (no other I2P app
+installed), and with the Termux client.
 
-- **OTRv4+ end to end**: the DAKE completes between the handset and the
-  Termux client, and messages flow encrypted in both directions;
-- **identity verification (SMP)**: SMP completes to verified between the
-  handset and the Termux client, and the Termux client keeps the verified
-  state;
-- **encrypted file transfer** between the handset and the Termux client
-  completes, with the file's hashes checked on arrival;
-- **two-way voice calls between two handsets running this app** (accounts
-  Alice and Bob): both directions heard, over I2P;
-- **two-way voice calls between this app and the Termux client**, on two
-  phones in different rooms, over I2P, including on a poor route;
-- **OTRv4+ between two handsets running this app** completes; over I2P it
-  takes a minute or more, and this build shows the handshake's progress;
-- the APK installs and launches; Chaquopy starts CPython 3.12 and
-  \`import otrv4_core\` succeeds on the real ABI; \`EnhancedSessionManager\`
-  constructs (with a new identity on each launch, by design -- decision B1);
-- the SAM probe, the I2P tunnel, the XMPP connection and SASL authentication
-  complete against the live server;
-- **signing in**, the **roster** (real subscription and presence, without a
-  message having to arrive first), **adding a contact**, and **1:1
-  conversations** in both directions;
-- **rooms**: the MUC service is discovered without anything being typed, a
-  room can be created by name, and the app navigates into it.
+| Area | What was confirmed |
+|---|---|
+| Connection | Sign in and create an account over I2P; the built-in router starts and carries everything |
+| Contacts | Adding contacts, presence, the People list |
+| 1:1 chat | OTRv4+ end to end, app ↔ app and app ↔ Termux |
+| Identity check | SMP verification, app ↔ app and app ↔ Termux |
+| Files | Encrypted file transfer, hashes checked on arrival |
+| 1:1 calls | Two-way voice calls between two handsets running this app, and between this app and the Termux client |
+| Secure groups | Post-quantum MLS groups of up to four (app and Termux), group messages both ways |
+| Group check | Group verification with a shared passphrase |
+| Group calls | Two-way group voice calls |
+| Location | Location pins from GPS only, received as a card |
+| Voice notes | Voice notes in **My voice** |
+| Rooms | Room discovery, creating and joining a room |
+| App | Bottom bar on every main screen; the 📎 and 🎤 buttons in the composer |
+| Wipe | **Wipe & Exit, including deleting the account from the server** |
 
-Reported on 2026-10-02/03, on the project's new server \`otrv4plus.i2p\`:
+## NOT verified — 🧪 built, still to be tested on phones
 
-- **signing in to \`otrv4plus.i2p\`** from the app (server picked from the
-  list, dialled at its built-in .b32.i2p address) and from the **Termux
-  client** (\`--jid you@otrv4plus.i2p\`, no \`--server\` needed), once the
-  server's TLS certificate for the host was in place;
-- **OTRv4+ between the app and Termux** starts in the background with
-  \`/otr\` and needs no user input until somebody chooses to verify;
-- **a secure group (MLS), app to Termux**: Alice created the group in the
-  app, invited a Termux user over OTRv4+, the Termux user joined at epoch 1
-  and read Alice's group messages, decrypted by MLS.
+| Area | What to test | Since |
+|---|---|---|
+| Disguised voice notes | **Disguised** and **Synthetic** were rebuilt: no whistle, and every note's voice drawn from the phone's own random generator, changing through the note. Record the same sentence in all three modes and compare | rc.77–rc.78 |
+| Ready-to-call phone | The phone icon should turn **green on both phones** within a few minutes of signing in, in any chat; a call placed while green should start without the 30–120 s wait | rc.76–rc.77 |
+| Hang-up | No crash when hanging up 1:1 and group calls (the Pixel crashed in rc.74) | rc.75 |
+| Group-call recovery | If one side stops hearing the other, the call repairs itself (at most twice). Send the diagnostics report from **both** phones after a group call | rc.74 |
+| Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups | rc.68–rc.69 |
+| Room history | Earlier room messages loaded from the server archive | rc.68 |
+| Profile picture | A photo from the camera (HEIC, rotated) as your picture | rc.72 |
+| Group files | Sending a file to a secure group | rc.54 |
+| Location | "Open in maps app" (after the warning); typing a Plus Code | rc.73 |
+| Photos | The "hidden information" question strips a camera photo's location | — |
+| Staying connected | Background survival, reconnect after a network change | — |
+| Desktop app | The desktop (Linux/Qubes) client against the same server | — |
 
-Reported on 2026-10-05/10, on \`otrv4plus.i2p\`, two phones, each running the
-app and a Termux client (four accounts):
+## ⚠️ Known limits
 
-- **secure groups of three and four members**, on the **hybrid post-quantum
-  suite** (X448 + ML-KEM-1024 / Ed448 + ML-DSA-87): all four clients sent and
-  read each other's group messages, **app to Termux, Termux to app, Termux to
-  Termux and app to app**, through the stock-limited room (adaptive pacing);
-- **typing straight into a group** in Termux, short names (\`/group create
-  mls3\`, \`/group invite mls3 bob\`), and **messages typed while a group
-  resyncs or changes** waiting and then going, instead of being lost;
-- **re-inviting a member whose copy of the group had fallen behind**
-  (rc.39): the invitation shows, and the member reads the group again.
+- **A disguised voice is harder to recognise, not impossible.** Measured
+  against a speaker-recognition network (see \`VOICE_NOTES.md\`), Synthetic
+  is the strongest. What you *say* — words, accent, background — can still
+  identify you. Where it matters, type.
+- **I2P is slow to start.** Building tunnels takes 30–120 s; the first start
+  of the built-in router 2–5 minutes.
+- Secure groups made before rc.27 must be re-created to add members.
 
-Reported on 2026-10-15, two phones (Android 15), app to app, through the
-**built-in I2P router**:
-
-- **the built-in I2P router** (rc.45) starts on the phone and carries the
-  connection, chat and calls; no separate I2P app was installed;
-- **group verification with the group passphrase**: completes, members
-  shown verified;
-- **group voice calls** connect and audio flows -- **but only one way** on
-  the test call: the phone that joined sent 1088 frames and received 3.
-  rc.74 adds a receive watchdog that rebuilds the silent leg (below);
-  **re-test needed**;
-- **voice notes in "My voice"**; Disguised and Synthetic whistled on the
-  phone and are rebuilt in rc.77 (re-test);
-- **location pins** (rc.73): the 📍 button, a GPS-only fix, and the pin
-  received as a card;
-- the **bottom bar** on every main screen (rc.71).
-
-No cryptography runs in Kotlin or Python: every session, SMP and file key is
-held by the Rust core.
+The full gate list is \`ANDROID_XMPP_MILESTONE.md\` §7; the device-test
+procedures are \`ANDROID_MESSAGING_DEVICE_TEST.md\` and
+\`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\`.
 
 ## Verified by CI
 
@@ -200,58 +172,6 @@ Asserted on every run rather than assumed:
 - The bundled Python requirement list is the complete dependency closure,
   re-resolved on every run.
 - The Kotlin unit tests pass.
-
-## NOT verified, and the reason this is still experimental
-
-- **Group calls both ways** (rc.74, to re-test with two phones): each
-  phone now watches every participant's audio and, when one goes silent
-  without having paused, rebuilds its own I2P receive path and announces it
-  in the group (at most twice a call); a pause is announced so it is not
-  taken for a dead path; a ring builds the I2P session before Join is
-  pressed, so joining is quicker. Please send the **diagnostics report from
-  BOTH phones** after a group call: the counters (\`peers\`, \`rx\`, \`tx\`,
-  \`reopened\`) now print as numbers instead of labels.
-- **Disguised and Synthetic voice notes** (rc.77, rebuilt): no whistle;
-  record the same sentence in each mode and compare with "My voice".
-- **The phone's colours** (rc.77): the call path is built right after sign-in
-  and kept; the phone should turn green on BOTH phones within a few minutes
-  of signing in, in any chat, and a call placed while green should start
-  without the 30-120 s wait.
-- **The hang-up crash fix** (rc.75): hang up 1:1 and group calls on both
-  phones, several times.
-- **The composer's 🎤 voice-note and 📎 file buttons** (rc.74): now shown
-  in every encrypted conversation; until the contact (or every group member)
-  is verified, a tap says what is needed instead of sending.
-- **Opt-in server account deletion on Wipe & Exit** (rc.70), **profile
-  pictures from HEIC and rotated photos** (rc.72), **replies, corrections,
-  deletions and reactions** in plain rooms and secure groups (rc.68-rc.69),
-  and **room history from the server archive** (rc.68).
-- **Location pins on the desktop app** (typed Plus Code only) and opening a
-  pin in a maps app on Android.
-- **The built-in router's** Wipe & Exit removal of its data, and choosing an
-  already-running I2P app instead when there is one.
-- **Since rc.25, in use but not checked one by one**: automatic MLS rekeys
-  and per-group signing keys rotated at each, the re-send of a lost group
-  change, removal of members away for 72 hours, verification that survives
-  a rekey and a restart. Groups made before rc.27 must be re-created to add
-  members.
-- **Recent fixes awaiting a handset re-run**: signing out and in again
-  (rc.38), deleting a group for everyone and its end on members who were
-  away (rc.40-rc.41), encrypted groups listed on the Rooms screen (rc.41),
-  y/n invitations in Termux and member verification by 1:1 SMP (rc.42).
-- **Earlier additions not yet run on a handset**: the Profile screen
-  (vcard-temp) and avatars, the auto-created Welcome room, automatic
-  OTRv4+ only toward clients that advertise OTRv4Plus, the People list, file
-  progress with ETA, the in-app viewer, Wipe & Exit from the conversation
-  list, and the theme.
-- **Background survival, and reconnect** after a transient failure.
-- **The subscription banner**: what the app shows when somebody else asks to
-  see your presence.
-- **A plain room shared with a second account.** The locked-room path needs
-  two.
-- **Metadata stripping of a handset camera photo**, and a re-run of Wipe &
-  Exit: \`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\` lists every step, separating
-  what CI has verified from what needs hardware.
 
 ## The server (Prosody): what it needs
 

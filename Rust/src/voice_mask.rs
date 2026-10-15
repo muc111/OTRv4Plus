@@ -105,7 +105,7 @@ impl Mode {
 }
 
 /// One note's transform. Drawn per note; never leaves this module.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Zeroize)]
 struct Params {
     alpha: f64,
     /// A linear vocal-tract-length change on top of the McAdams warp.
@@ -843,15 +843,37 @@ fn spectral_mask(x: &[f64], params: &Params, mode: Mode, rng: &mut StdRng) -> Ve
         }
     };
     let carrier = stft(&source, &win);
-    let mut frames: Vec<(Vec<f64>, Vec<f64>)> = original.iter().zip(carrier.iter())
-        .map(|((xr, xi), (yr, yi))| {
+    // NOT ONE TRANSFORM PER NOTE: the warps also move, smoothly and at
+    // random, through the note -- a fresh random value every 0.25 s for
+    // each, interpolated. Owner (2026-10-15): "use true random entropy so AI
+    // can't reverse the audio". With only per-note settings, a note could in
+    // principle be undone by searching the few settings' ranges (they are in
+    // this open source); with a random path through them, drawn from the OS
+    // generator, there are dozens of unknowns per second of speech, and the
+    // smoothing, the envelope, the reference balance and (in Synthetic) the
+    // replaced source discard information that no setting brings back.
+    let frames_n = original.len().min(carrier.len());
+    let knot = (RATE as usize / 4) / SH; // frames per 0.25 s
+    let knots = frames_n / knot.max(1) + 2;
+    let path_a: Vec<f64> = (0..knots).map(|_| rng.gen_range(-1.0..1.0)).collect();
+    let path_w: Vec<f64> = (0..knots).map(|_| rng.gen_range(-1.0..1.0)).collect();
+    let along = |path: &[f64], fi: usize| -> f64 {
+        let pos = fi as f64 / knot.max(1) as f64;
+        let i = (pos as usize).min(path.len() - 2);
+        let t = pos - i as f64;
+        let s = 0.5 - 0.5 * (PI * t).cos();
+        path[i] * (1.0 - s) + path[i + 1] * s
+    };
+    let mut frames: Vec<(Vec<f64>, Vec<f64>)> = original.iter().zip(carrier.iter()).enumerate()
+        .map(|(fi, ((xr, xi), (yr, yi)))| {
+            let alpha = params.alpha * (1.0 + 0.03 * along(&path_a, fi));
+            let warp = params.warp + 0.025 * along(&path_w, fi);
             // Two warps on the smooth envelope: McAdams (non-linear, the
             // VoicePrivacy B2 transform) then a bilinear length warp.
             // Measured with a speaker-recognition network (VOICE_NOTES.md):
             // either alone left the speaker more recognisable.
             let env = log_envelope(xr, xi);
-            let target = warp_log_envelope(&mcadams_log_envelope(&env, params.alpha, params.scale),
-                                           params.warp);
+            let target = warp_log_envelope(&mcadams_log_envelope(&env, alpha, params.scale), warp);
             let own = log_envelope(yr, yi);
             let mut re = yr.clone();
             let mut im = yi.clone();
@@ -870,7 +892,14 @@ fn spectral_mask(x: &[f64], params: &Params, mode: Mode, rng: &mut StdRng) -> Ve
 
 /// Mask one note. [pcm] is mono f64 at [rate]; returns mono f64 at [RATE].
 fn mask_f64(pcm: &[f64], rate: u32, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
-    let params = draw(mode, rng);
+    let mut params = draw(mode, rng);
+    let y = mask_with_params(pcm, rate, mode, &params, rng);
+    // The settings are secret: not returned, not logged, and wiped here.
+    params.zeroize();
+    y
+}
+
+fn mask_with_params(pcm: &[f64], rate: u32, mode: Mode, params: &Params, rng: &mut StdRng) -> Vec<f64> {
     let mut x = resample(pcm, rate as f64, RATE as f64);
     if x.len() < FRAME {
         return Vec::new();
@@ -893,7 +922,7 @@ fn mask_f64(pcm: &[f64], rate: u32, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
     // Disguise and Synthetic: the spectral path (rc.77). Natural keeps the
     // LPC clean-up below, unchanged.
     if mode != Mode::Natural {
-        let mut y = spectral_mask(&x, &params, mode, rng);
+        let mut y = spectral_mask(&x, params, mode, rng);
         x.zeroize();
         trim(&mut y);
         normalise(&mut y);
@@ -940,7 +969,7 @@ fn mask_f64(pcm: &[f64], rate: u32, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
     // A new pitch and rate for the source; or a new source altogether.
     let mut src = shift(&source, params.pitch, params.rate);
     if mode == Mode::Synthetic {
-        src = synthetic_source(&src, &params, rng);
+        src = synthetic_source(&src, params, rng);
     }
     // ...the warped vocal tract over it, on the stretched time line.
     let mut y = vec![0.0; src.len() + FRAME];
@@ -971,9 +1000,19 @@ fn mask_f64(pcm: &[f64], rate: u32, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
     y
 }
 
-/// Mask s16le mono [pcm] at [rate]; s16le mono at [RATE]. [seed] (32 bytes)
-/// is for tests only; without it every call draws its own settings.
-pub fn mask(pcm: &[u8], rate: u32, mode: Mode, seed: Option<[u8; 32]>) -> Result<Vec<u8>, &'static str> {
+/// Mask s16le mono [pcm] at [rate]; s16le mono at [RATE]. Every call
+/// draws its own settings from the operating system's random generator
+/// (`getrandom`: the kernel CSPRNG, seeded from the device's hardware
+/// entropy) -- the same source as every encryption key in this core. There
+/// is no way to choose them: production has no seed parameter at all.
+pub fn mask(pcm: &[u8], rate: u32, mode: Mode) -> Result<Vec<u8>, &'static str> {
+    mask_with(pcm, rate, mode, None)
+}
+
+/// [mask], with a fixed seed for the unit tests. Outside `cfg(test)` a seed
+/// is ignored and the OS generator is used, so no build can be made to
+/// give every note the same voice by passing one.
+fn mask_with(pcm: &[u8], rate: u32, mode: Mode, seed: Option<[u8; 32]>) -> Result<Vec<u8>, &'static str> {
     if !pcm.len().is_multiple_of(2) {
         return Err("PCM is not whole 16-bit samples");
     }
@@ -984,10 +1023,12 @@ pub fn mask(pcm: &[u8], rate: u32, mode: Mode, seed: Option<[u8; 32]>) -> Result
         return Err("voice note too long");
     }
     let mut seed = match seed {
-        Some(s) => s,
-        None => {
+        Some(s) if cfg!(test) => s,
+        _ => {
+            // Fail closed: a note is refused, never masked with weak or
+            // predictable settings, if the OS cannot supply randomness.
             let mut s = [0u8; 32];
-            OsRng.fill_bytes(&mut s);
+            OsRng.try_fill_bytes(&mut s).map_err(|_| "no system randomness")?;
             s
         }
     };
@@ -1008,20 +1049,17 @@ pub fn mask(pcm: &[u8], rate: u32, mode: Mode, seed: Option<[u8; 32]>) -> Result
     Ok(out)
 }
 
-/// Python: `voice_mask(pcm, sample_rate, mode, seed=None) -> bytes`.
+/// Python: `voice_mask(pcm, sample_rate, mode) -> bytes`. No seed: the
+/// settings are always the OS generator's (see [mask]).
 /// [mode] is "natural", "disguise" or "synthetic". Returns 16 kHz s16le
 /// mono; empty if there was no speech.
 #[pyfunction]
-#[pyo3(signature = (pcm, sample_rate, mode, seed=None))]
-pub fn voice_mask<'py>(py: Python<'py>, pcm: &[u8], sample_rate: u32, mode: &str,
-                       seed: Option<&[u8]>) -> PyResult<Bound<'py, PyBytes>> {
+#[pyo3(signature = (pcm, sample_rate, mode))]
+pub fn voice_mask<'py>(py: Python<'py>, pcm: &[u8], sample_rate: u32, mode: &str)
+                       -> PyResult<Bound<'py, PyBytes>> {
     let mode = Mode::parse(mode).ok_or_else(|| PyValueError::new_err("unknown voice mode"))?;
-    let seed = match seed {
-        None => None,
-        Some(s) => Some(<[u8; 32]>::try_from(s).map_err(|_| PyValueError::new_err("seed is 32 bytes"))?),
-    };
     let pcm = pcm.to_vec();
-    let out = py.detach(move || mask(&pcm, sample_rate, mode, seed)).map_err(PyValueError::new_err)?;
+    let out = py.detach(move || mask(&pcm, sample_rate, mode)).map_err(PyValueError::new_err)?;
     Ok(PyBytes::new(py, &out))
 }
 
@@ -1138,8 +1176,8 @@ mod tests {
     fn natural_keeps_the_voice_disguise_moves_it() {
         let x = speaker(120.0, &[600.0, 1700.0], 3.0);
         let seed = [7u8; 32];
-        let nat = from_pcm(&mask(&to_pcm(&x), RATE, Mode::Natural, Some(seed)).unwrap());
-        let dis = from_pcm(&mask(&to_pcm(&x), RATE, Mode::Disguise, Some(seed)).unwrap());
+        let nat = from_pcm(&mask_with(&to_pcm(&x), RATE, Mode::Natural, Some(seed)).unwrap());
+        let dis = from_pcm(&mask_with(&to_pcm(&x), RATE, Mode::Disguise, Some(seed)).unwrap());
         assert!((pitch(&nat) - 120.0).abs() < 8.0, "natural pitch {}", pitch(&nat));
         let moved = (pitch(&dis) / 120.0).ln().abs();
         assert!(moved > 0.12, "disguised pitch {}", pitch(&dis));
@@ -1150,8 +1188,8 @@ mod tests {
     #[test]
     fn every_note_draws_its_own_settings() {
         let x = speaker(140.0, &[500.0, 1500.0], 2.0);
-        let a = mask(&to_pcm(&x), RATE, Mode::Disguise, None).unwrap();
-        let b = mask(&to_pcm(&x), RATE, Mode::Disguise, None).unwrap();
+        let a = mask_with(&to_pcm(&x), RATE, Mode::Disguise, None).unwrap();
+        let b = mask_with(&to_pcm(&x), RATE, Mode::Disguise, None).unwrap();
         assert_ne!(a, b);
         let pa = from_pcm(&a);
         let pb = from_pcm(&b);
@@ -1163,8 +1201,8 @@ mod tests {
         let low = speaker(90.0, &[600.0, 1700.0], 3.0);
         let high = speaker(220.0, &[600.0, 1700.0], 3.0);
         let seed = [3u8; 32];
-        let a = from_pcm(&mask(&to_pcm(&low), RATE, Mode::Synthetic, Some(seed)).unwrap());
-        let b = from_pcm(&mask(&to_pcm(&high), RATE, Mode::Synthetic, Some(seed)).unwrap());
+        let a = from_pcm(&mask_with(&to_pcm(&low), RATE, Mode::Synthetic, Some(seed)).unwrap());
+        let b = from_pcm(&mask_with(&to_pcm(&high), RATE, Mode::Synthetic, Some(seed)).unwrap());
         // Same settings, very different speakers' pitch: the same output pitch.
         let (pa, pb) = (pitch(&a), pitch(&b));
         assert!((pa / pb).ln().abs() < 0.1, "{} vs {}", pa, pb);
@@ -1172,17 +1210,17 @@ mod tests {
 
     #[test]
     fn silence_and_bad_input() {
-        assert!(mask(&[0u8; 32_000], RATE, Mode::Disguise, None).unwrap().len() < 32_000);
-        assert!(mask(&[1u8; 3], RATE, Mode::Disguise, None).is_err());
-        assert!(mask(&[0u8; 100], 1000, Mode::Disguise, None).is_err());
+        assert!(mask_with(&[0u8; 32_000], RATE, Mode::Disguise, None).unwrap().len() < 32_000);
+        assert!(mask_with(&[1u8; 3], RATE, Mode::Disguise, None).is_err());
+        assert!(mask_with(&[0u8; 100], 1000, Mode::Disguise, None).is_err());
         let too_long = vec![0u8; (RATE as usize * (MAX_SECONDS + 1)) * 2];
-        assert!(mask(&too_long, RATE, Mode::Disguise, None).is_err());
+        assert!(mask_with(&too_long, RATE, Mode::Disguise, None).is_err());
     }
 
     #[test]
     fn level_is_normalised() {
         let quiet: Vec<f64> = speaker(130.0, &[700.0, 1100.0], 2.0).iter().map(|v| v * 0.05).collect();
-        let y = from_pcm(&mask(&to_pcm(&quiet), RATE, Mode::Disguise, Some([1u8; 32])).unwrap());
+        let y = from_pcm(&mask_with(&to_pcm(&quiet), RATE, Mode::Disguise, Some([1u8; 32])).unwrap());
         let peak = frame_rms(&y).into_iter().fold(0.0, f64::max);
         assert!(peak > 0.05 && peak < 0.5, "{}", peak);
     }
@@ -1247,7 +1285,7 @@ mod tests {
         let x = breathy(130.0, &[650.0, 1500.0, 2600.0], 3.0);
         for seed in 0..12u8 {
             for mode in [Mode::Disguise, Mode::Synthetic] {
-                let y = from_pcm(&mask(&to_pcm(&x), RATE, mode, Some([seed; 32])).unwrap());
+                let y = from_pcm(&mask_with(&to_pcm(&x), RATE, mode, Some([seed; 32])).unwrap());
                 let (hf, peak) = whistle(&y);
                 assert!(hf < 0.25, "{:?} seed {}: {:.0} % above 4 kHz", mode, seed, hf * 100.0);
                 // Measured: speech 0.24, the rc.76 Synthetic whistle 0.56.

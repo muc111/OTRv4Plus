@@ -59,10 +59,28 @@ microphone ─► memory ─► voice mask (Rust) ─► Ogg Opus / WAV ─► e
   A Rust test (`no_whistle`) now fails any setting that puts more than a
   quarter of the energy above 4 kHz, or concentrates the 3–8 kHz energy in
   a few lines. **My voice** (`natural`) is unchanged.
-* **Every note gets new, secret settings**, drawn from the OS random
-  generator inside the Rust function. They are never returned, logged or
-  stored. So there is no single transform to undo, and two notes by the
-  same person do not share a disguised voice either.
+* **Every note gets new, secret settings, from real randomness.** They are
+  drawn inside the Rust function from the operating system's random
+  generator (`getrandom`: the kernel's cryptographic generator, which the
+  phone keeps seeded from its hardware entropy sources) -- the same source
+  every encryption key in this app comes from. Since rc.78:
+  * **no caller can choose them**: the Python function has no seed
+    parameter, and in a non-test build a seed is ignored even inside Rust;
+  * **if the OS cannot supply randomness, the note is refused** -- never
+    masked with weak or predictable settings;
+  * **the voice also changes through the note**: the vocal-tract warps move
+    along a random path, with a fresh random value every quarter second, so
+    a note is not one transform that could be undone by searching a few
+    settings' ranges (which are in this open source);
+  * the settings are **wiped from memory** after the note; they are never
+    returned, logged or stored.
+
+  What randomness cannot do: the steps that make a note hard to reverse
+  are the ones that DISCARD information -- the smoothed envelope, the fixed
+  reference balance and, in Synthetic, the speaker's source replaced
+  outright. Those cannot be undone with any settings. The randomness makes
+  sure an attacker does not know which transform was used, and that two
+  notes by the same person do not share a disguised voice.
 * **Fail closed.** If the mask is missing from a build, a disguised note is
   refused. It is never quietly sent in your own voice. "My voice"
   (`natural`) is a separate, explicit choice.
@@ -83,10 +101,17 @@ threshold: **50 % = coin toss, 0 % = perfect**.
 | mode | attacker who knows your real voice | linking two notes by voice | digit recognition (pocketsphinx) |
 |---|---|---|---|
 | My voice | 0 % | 0 % | 72 % |
-| Disguised | 31 % | 32 % | 37 % |
-| Synthetic | 41 % | 37 % | 46 % |
+| Disguised | 28 % | 30 % | 36 % |
+| Synthetic | 40 % | 34 % | 43 % |
 
-Measured for rc.77, on the new spectral mask (3 runs, 200 digits). For
+Measured for rc.78 (3 runs, 200 digits). rc.77, without the random path
+through each note, measured 31/32/37 and 41/37/46 -- the same within this
+test's run-to-run spread (single runs of one setting ranged over about
+10 points). The random path is there against a different attack, undoing
+a note by estimating its settings, which this network does not attempt;
+it does not make the voiceprint harder to match, and is not claimed to.
+
+rc.77 was measured on the new spectral mask the same way. For
 comparison, rc.66–rc.76 (the LPC mask that whistled on phones): Disguised
 34 % / 39 % / 44 %, Synthetic 42 % / 47 % / 44 %. **The trade, said
 plainly:** against an attacker who knows your real voice, Synthetic is as

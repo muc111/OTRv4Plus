@@ -280,3 +280,16 @@ def test_a_note_is_never_cut_down_to_a_fragment():
     for mode in ("disguise", "synthetic"):
         for _ in range(60):
             assert len(vn.mask(pcm, 16000, mode)) / 2 / vn.RATE > 1.2
+
+
+def test_no_caller_can_choose_the_settings():
+    """Owner (2026-10-15): "true random entropy". The settings come only from
+    the OS generator inside Rust: the Python API has no seed to pass."""
+    import otrv4_core
+    pcm = speech()
+    with pytest.raises(TypeError):
+        otrv4_core.voice_mask(pcm, 16000, "disguise", b"\x00" * 32)
+    with pytest.raises(TypeError):
+        otrv4_core.voice_mask(pcm, 16000, "disguise", seed=b"\x00" * 32)
+    # Two notes from the same recording never come out the same.
+    assert otrv4_core.voice_mask(pcm, 16000, "disguise") != otrv4_core.voice_mask(pcm, 16000, "disguise")

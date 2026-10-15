@@ -4,6 +4,32 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.78 — 2026-10-15 — voice-note randomness hardened; a clear release page (core 0.13.1)
+
+- **Voice-note settings come only from the OS random generator, and cannot
+  be chosen.** Owner: *"we must use true random entropy to ensure AI can't
+  reverse the audio files"*. The settings were already drawn from
+  `getrandom` (the kernel's cryptographic generator, seeded from the
+  phone's hardware entropy); now the Python function has **no seed
+  parameter**, a seed is ignored in any non-test build, and a note is
+  **refused** if the OS cannot supply randomness (it used to panic).
+- **The disguise changes through the note**: the two vocal-tract warps
+  follow a random path with a fresh value every 0.25 s, so a note is not a
+  single transform that could be undone by searching a few settings'
+  ranges. The settings are wiped from memory after each note.
+- What makes a note hard to reverse is what the mask DISCARDS (the smoothed
+  envelope, the fixed reference balance, the replaced source in Synthetic);
+  randomness keeps the transform unknown and every note's voice different.
+  Re-measured (EER, 50 % = guessing): Disguised 28 % / 30 %, Synthetic
+  40 % / 34 % -- rc.77's figures within run-to-run spread. The random path
+  guards against undoing a note by estimating its settings; it does not
+  make the voiceprint itself harder to match, and is not claimed to.
+- **The release page says plainly what works and what is still to be
+  tested**: a table of what the owner confirmed on two phones (now including
+  Wipe & Exit with server account deletion, file transfer, group calls both
+  ways and location pins), a table of what is built and awaiting a phone
+  test, and the known limits.
+
 ## Android 0.7.0-experimental.rc.77 — 2026-10-15 — disguised voices without the whistle; the call path from sign-in (core 0.13.1)
 
 - **Disguised and Synthetic voice notes no longer whistle.** Device report:
