@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.71 — 2026-10-15 — the bottom bar on every main screen (core 0.13.1)
+
+- **Chats, People, Rooms and Profile always have the bottom bar** once
+  signed in, with the current one highlighted: one tap between them from
+  anywhere at the top level. Chats shows an unread badge, People waiting
+  requests, Rooms group invitations.
+- **Inside a conversation the bar is hidden**, so the history and the
+  keyboard get the whole screen; back returns to the tab the chat was
+  opened from (Chats, People or Rooms). A contact's profile, About and
+  Debug stay full-screen with Back.
+- Back from People, Rooms or Profile goes to Chats; back from Chats to the
+  connection screen, as before. Tab screens no longer show a Back button.
+
 ## Android 0.7.0-experimental.rc.70 — 2026-10-15 — mic button; Wipe & Exit can delete the server account (core 0.13.1)
 
 - **Mic button in the message bar** (Android and desktop): with nothing

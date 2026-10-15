@@ -41,6 +41,8 @@ fun ProfileScreen(
     ownJid: String,
     jid: String = "",
     onBack: () -> Unit,
+    /** False when shown as a tab (our own profile): the bottom bar is the way out. */
+    showBack: Boolean = true,
 ) {
     val own = jid.isBlank()
     val context = LocalContext.current
@@ -59,13 +61,18 @@ fun ProfileScreen(
     Column(
         Modifier
             .fillMaxSize()
+            // Edge to edge (MainActivity): inset from the status and
+            // navigation bars like every non-Scaffold screen.
+            .systemBarsPadding()
             .verticalScroll(rememberScrollState())
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("Back") }
-            Spacer(Modifier.width(8.dp))
+            if (showBack) {
+                TextButton(onClick = onBack) { Text("Back") }
+                Spacer(Modifier.width(8.dp))
+            }
             Text(
                 if (own) "Your profile" else "Profile",
                 style = MaterialTheme.typography.titleLarge,

@@ -49,8 +49,13 @@ def test_people_is_one_tap_from_the_chat_list():
     """A tab of the bottom navigation (owner, 2026-10-14: the old row of six
     buttons read as clutter), labelled with the live count, and a badge for
     requests waiting on the user."""
-    bar = CHATS[CHATS.index("bottomBar = {"):CHATS.index("floatingActionButton")]
-    assert "onClick = onOpenPeople" in bar
+    # Owner, 2026-10-15: the bar is on every top-level screen (MainNavBar.kt),
+    # not only the chat list.
+    import os
+    bar = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "android", "app", "src", "main", "java", "org", "otrv4plus",
+                            "android", "ui", "MainNavBar.kt")).read()
+    assert "onSelect(MainTab.PEOPLE)" in bar
     assert "OnlineUsers.peopleButton(model.directory)" in bar
     assert "model.pendingSubscriptions.size" in bar
 
@@ -75,3 +80,21 @@ def test_creating_the_welcome_room_is_warned_first():
     assert "OnlineUsers.WELCOME_CREATE_WARNING" in PEOPLE[:create + 1] or \
         "WELCOME_CREATE_WARNING" in PEOPLE
     assert "confirmWelcome = true" in PEOPLE
+
+
+def test_the_bottom_bar_is_on_every_tab_and_never_in_a_chat():
+    """Owner, 2026-10-15: always there for switching once signed in, except
+    inside a conversation, which keeps the whole height for its history."""
+    import os
+    import re
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    main = open(os.path.join(root, "android", "app", "src", "main", "java", "org",
+                             "otrv4plus", "android", "MainActivity.kt")).read()
+    for tab in ("MainTab.CHATS", "MainTab.PEOPLE", "MainTab.ROOMS", "MainTab.PROFILE"):
+        assert "MainTabs(%s, chat, ::selectTab)" % tab in main, tab
+    convo = main[main.index("Screen.CONVERSATION -> {"):main.index("Screen.CONVERSATIONS -> {")]
+    assert "MainTabs(" not in convo, "a conversation must not carry the bottom bar"
+    assert "screen = lastTab" in convo, "leaving a chat returns to the tab it came from"
+    chats = open(os.path.join(root, "android", "app", "src", "main", "java", "org",
+                              "otrv4plus", "android", "ui", "ConversationsScreen.kt")).read()
+    assert not re.search(r"\bNavigationBar\s*\{", chats), "one bar, in MainNavBar.kt"

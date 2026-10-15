@@ -30,6 +30,8 @@ import org.otrv4plus.android.ui.ThemeStore
 import org.otrv4plus.android.ui.ConnectScreen
 import org.otrv4plus.android.ui.ConversationScreen
 import org.otrv4plus.android.ui.ConversationsScreen
+import org.otrv4plus.android.ui.MainTab
+import org.otrv4plus.android.ui.MainTabs
 import org.otrv4plus.android.ui.DevShellScreen
 import org.otrv4plus.android.ui.PeopleScreen
 import org.otrv4plus.android.ui.ProfileScreen
@@ -218,6 +220,25 @@ class MainActivity : ComponentActivity() {
                     var openJid by rememberSaveable { mutableStateOf<String?>(null) }
                     // Whose profile the Profile screen shows; blank = ours.
                     var profileOf by rememberSaveable { mutableStateOf("") }
+                    // The tab a conversation was opened from, so leaving the
+                    // conversation goes back there (Chats, People or Rooms).
+                    var lastTab by rememberSaveable { mutableStateOf(Screen.CONVERSATIONS) }
+
+                    // The bottom navigation, on the four top-level screens only.
+                    fun selectTab(tab: MainTab) {
+                        val target = when (tab) {
+                            MainTab.CHATS -> Screen.CONVERSATIONS
+                            MainTab.PEOPLE -> Screen.PEOPLE
+                            MainTab.ROOMS -> Screen.ROOMS
+                            MainTab.PROFILE -> { profileOf = ""; Screen.PROFILE }
+                        }
+                        lastTab = target
+                        screen = target
+                    }
+                    fun openChat(jid: String) {
+                        openJid = jid
+                        screen = Screen.CONVERSATION
+                    }
 
                     // One place that hands the core over, and it is idempotent:
                     // a second attach with the same core is a no-op, so a
@@ -244,17 +265,29 @@ class MainActivity : ComponentActivity() {
 
                     when (screen) {
                         Screen.PROFILE -> {
-                            // Our own profile from the list; a contact's from
-                            // their conversation (profileOf holds whose).
-                            val back = if (profileOf.isBlank()) Screen.CONVERSATIONS
-                                       else Screen.CONVERSATION
-                            BackHandler { screen = back }
-                            ProfileScreen(
-                                model = chat,
-                                ownJid = connection.status.jid,
-                                jid = profileOf,
-                                onBack = { screen = back },
-                            )
+                            // Our own profile is a tab (bottom bar, back to
+                            // Chats); a contact's is opened from their
+                            // conversation and goes back to it, full screen.
+                            if (profileOf.isBlank()) {
+                                BackHandler { selectTab(MainTab.CHATS) }
+                                MainTabs(MainTab.PROFILE, chat, ::selectTab) {
+                                    ProfileScreen(
+                                        model = chat,
+                                        ownJid = connection.status.jid,
+                                        jid = "",
+                                        onBack = { selectTab(MainTab.CHATS) },
+                                        showBack = false,
+                                    )
+                                }
+                            } else {
+                                BackHandler { screen = Screen.CONVERSATION }
+                                ProfileScreen(
+                                    model = chat,
+                                    ownJid = connection.status.jid,
+                                    jid = profileOf,
+                                    onBack = { screen = Screen.CONVERSATION },
+                                )
+                            }
                         }
 
                         Screen.ABOUT -> {
@@ -290,9 +323,12 @@ class MainActivity : ComponentActivity() {
                                 // list, not a blank conversation.
                                 screen = Screen.CONVERSATIONS
                             } else {
+                                // No bottom bar in a conversation: the history
+                                // and the keyboard get the whole height. Back
+                                // returns to the tab it was opened from.
                                 BackHandler {
                                     chat.closeConversation()
-                                    screen = Screen.CONVERSATIONS
+                                    screen = lastTab
                                 }
                                 LaunchedEffect(jid) { chat.open(jid) }
                                 ConversationScreen(
@@ -300,7 +336,7 @@ class MainActivity : ComponentActivity() {
                                     jid = jid,
                                     onBack = {
                                         chat.closeConversation()
-                                        screen = Screen.CONVERSATIONS
+                                        screen = lastTab
                                     },
                                     onOpenProfile = { who ->
                                         profileOf = who
@@ -315,68 +351,66 @@ class MainActivity : ComponentActivity() {
                             // WITHOUT disconnecting: the core and its socket
                             // belong to the ViewModel and outlive this.
                             BackHandler { screen = Screen.CONNECT }
-                            ConversationsScreen(
-                                model = chat,
-                                onOpen = { jid ->
-                                    openJid = jid
-                                    screen = Screen.CONVERSATION
-                                },
-                                onOpenConnection = { screen = Screen.CONNECT },
-                                onOpenRooms = { screen = Screen.ROOMS },
-                                onOpenPeople = { screen = Screen.PEOPLE },
-                                onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
-                                onOpenAbout = { screen = Screen.ABOUT },
-                                onOpenProfile = {
-                                    profileOf = ""
-                                    screen = Screen.PROFILE
-                                },
-                                onWipeAndExit = { deleteAccount -> connection.wipeAndExit(deleteAccount) },
-                                theme = themeMode,
-                                onTheme = { mode ->
-                                    themeMode = mode
-                                    ThemeStore.save(this@MainActivity, mode)
-                                },
-                            )
+                            MainTabs(MainTab.CHATS, chat, ::selectTab) {
+                                ConversationsScreen(
+                                    model = chat,
+                                    onOpen = ::openChat,
+                                    onOpenConnection = { screen = Screen.CONNECT },
+                                    onOpenRooms = { selectTab(MainTab.ROOMS) },
+                                    onOpenPeople = { selectTab(MainTab.PEOPLE) },
+                                    onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
+                                    onOpenAbout = { screen = Screen.ABOUT },
+                                    onOpenProfile = { selectTab(MainTab.PROFILE) },
+                                    onWipeAndExit = { deleteAccount -> connection.wipeAndExit(deleteAccount) },
+                                    theme = themeMode,
+                                    onTheme = { mode ->
+                                        themeMode = mode
+                                        ThemeStore.save(this@MainActivity, mode)
+                                    },
+                                )
+                            }
                         }
 
                         Screen.PEOPLE -> {
-                            BackHandler { screen = Screen.CONVERSATIONS }
-                            PeopleScreen(
-                                model = chat,
-                                onBack = { screen = Screen.CONVERSATIONS },
-                                onOpenChat = { jid ->
-                                    openJid = jid
-                                    screen = Screen.CONVERSATION
-                                },
-                            )
+                            BackHandler { selectTab(MainTab.CHATS) }
+                            MainTabs(MainTab.PEOPLE, chat, ::selectTab) {
+                                PeopleScreen(
+                                    model = chat,
+                                    onBack = { selectTab(MainTab.CHATS) },
+                                    onOpenChat = ::openChat,
+                                    showBack = false,
+                                )
+                            }
                         }
 
                         Screen.ROOMS -> {
-                            BackHandler { screen = Screen.CONVERSATIONS }
-                            RoomsScreen(
-                                model = roomsModel,
-                                // Seeded from the account's localpart, which
-                                // is what people pick anyway. Editable: a
-                                // nickname in a room is not an identity claim
-                                // and the app should not imply it is.
-                                defaultNick = connection.status.jid
-                                    .substringBefore('@'),
-                                onBack = { screen = Screen.CONVERSATIONS },
-                                // Only fires once the server has confirmed the
-                                // join or create. Previously nothing carried
-                                // that outcome anywhere, so a successful
-                                // create left the user on the Rooms screen
-                                // with no way to reach the room it had just
-                                // made -- reported as "it never progresses to
-                                // the next view".
-                                onOpenRoom = { room ->
-                                    // A room from here on: group chat, not
-                                    // an OTR conversation with the room JID.
-                                    chat.noteRoom(room)
-                                    openJid = room
-                                    screen = Screen.CONVERSATION
-                                },
-                            )
+                            BackHandler { selectTab(MainTab.CHATS) }
+                            MainTabs(MainTab.ROOMS, chat, ::selectTab) {
+                                RoomsScreen(
+                                    model = roomsModel,
+                                    // Seeded from the account's localpart, which
+                                    // is what people pick anyway. Editable: a
+                                    // nickname in a room is not an identity claim
+                                    // and the app should not imply it is.
+                                    defaultNick = connection.status.jid
+                                        .substringBefore('@'),
+                                    onBack = { selectTab(MainTab.CHATS) },
+                                    showBack = false,
+                                    // Only fires once the server has confirmed the
+                                    // join or create. Previously nothing carried
+                                    // that outcome anywhere, so a successful
+                                    // create left the user on the Rooms screen
+                                    // with no way to reach the room it had just
+                                    // made -- reported as "it never progresses to
+                                    // the next view".
+                                    onOpenRoom = { room ->
+                                        // A room from here on: group chat, not
+                                        // an OTR conversation with the room JID.
+                                        chat.noteRoom(room)
+                                        openChat(room)
+                                    },
+                                )
+                            }
                         }
 
                         Screen.CONNECT -> ConnectScreen(

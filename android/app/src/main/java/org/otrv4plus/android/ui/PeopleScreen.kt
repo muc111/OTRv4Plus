@@ -37,6 +37,8 @@ fun PeopleScreen(
     model: ChatViewModel,
     onBack: () -> Unit,
     onOpenChat: (String) -> Unit,
+    /** False when shown as a tab: the bottom bar is the way out. */
+    showBack: Boolean = true,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var showing by rememberSaveable { mutableStateOf<String?>(null) }
@@ -50,7 +52,7 @@ fun PeopleScreen(
         topBar = {
             TopAppBar(
                 title = { Text(OnlineUsers.directoryTitle(all)) },
-                navigationIcon = { TextButton(onClick = onBack) { Text("Back") } },
+                navigationIcon = { if (showBack) TextButton(onClick = onBack) { Text("Back") } },
                 actions = {
                     TextButton(onClick = { model.refreshDiscovery(force = true) }) {
                         Text("Refresh")

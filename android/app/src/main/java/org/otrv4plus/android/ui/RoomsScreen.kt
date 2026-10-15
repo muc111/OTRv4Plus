@@ -46,6 +46,8 @@ fun RoomsScreen(
     onBack: () -> Unit = {},
     /** Called with the room JID once a join or create is confirmed. */
     onOpenRoom: (String) -> Unit = {},
+    /** False when shown as a tab: the bottom bar is the way out. */
+    showBack: Boolean = true,
 ) {
     val busy = model.busy
     val last = model.last
@@ -475,7 +477,9 @@ fun RoomsScreen(
             }
         }
 
-        Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onBack) { Text("Back") }
+        if (showBack) {
+            Spacer(Modifier.height(8.dp))
+            TextButton(onClick = onBack) { Text("Back") }
+        }
     }
 }

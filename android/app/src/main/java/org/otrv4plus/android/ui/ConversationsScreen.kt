@@ -141,35 +141,8 @@ fun ConversationsScreen(
                 },
             )
         },
-        // The four places a messenger has, one tap each. Text glyphs rather
-        // than icon fonts: this app ships no icon library.
-        bottomBar = {
-            NavigationBar {
-                NavigationBarItem(selected = true, onClick = {},
-                                  icon = { Text("\uD83D\uDCAC") }, label = { Text("Chats") })
-                NavigationBarItem(
-                    selected = false, onClick = onOpenPeople,
-                    icon = {
-                        val waiting = model.pendingSubscriptions.size
-                        if (waiting > 0) BadgedBox(badge = { Badge { Text("$waiting") } }) { Text("\uD83D\uDC65") }
-                        else Text("\uD83D\uDC65")
-                    },
-                    label = { Text(if (model.canSend()) OnlineUsers.peopleButton(model.directory) else "People",
-                                   maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                )
-                NavigationBarItem(
-                    selected = false, onClick = onOpenRooms,
-                    icon = {
-                        val invites = model.groupInvites().size
-                        if (invites > 0) BadgedBox(badge = { Badge { Text("$invites") } }) { Text("#") }
-                        else Text("#")
-                    },
-                    label = { Text("Rooms") },
-                )
-                NavigationBarItem(selected = false, onClick = onOpenProfile,
-                                  icon = { Text("\uD83D\uDC64") }, label = { Text("Profile") })
-            }
-        },
+        // The bottom navigation is MainTabs' (MainNavBar.kt), shared by the
+        // four top-level screens.
         floatingActionButton = {
             if (model.canSend()) {
                 ExtendedFloatingActionButton(onClick = { showAdd = true }) { Text("+  New chat") }

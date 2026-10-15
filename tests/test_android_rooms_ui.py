@@ -278,7 +278,9 @@ class TestTheBridge:
 class TestItIsReachable:
 
     def test_the_conversation_list_offers_rooms(self):
-        assert 'Text("Rooms")' in code_of(LIST)
+        # The bottom bar, shared by every top-level screen (MainNavBar.kt).
+        nav = os.path.join(os.path.dirname(LIST), "MainNavBar.kt")
+        assert 'Text("Rooms")' in code_of(nav)
 
     def test_main_activity_has_a_rooms_screen(self):
         text = code_of(MAIN)
