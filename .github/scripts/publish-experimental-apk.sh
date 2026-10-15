@@ -111,7 +111,7 @@ installed), and with the Termux client.
 | Secure groups | Post-quantum MLS groups, group messages both ways — **tested with four members** (two phones, each with the app and Termux). No size limit is set; larger groups are not yet tested |
 | Group check | Group verification with a shared passphrase |
 | Group calls | Two-way group voice calls |
-| Location | Location pins from GPS only, received as a card |
+| Location | Location pins from GPS only, received as a card (rc.73; since rc.80 only to verified contacts and groups) |
 | Voice notes | Voice notes in **My voice** |
 | Rooms | Room discovery, creating and joining a room |
 | App | Bottom bar on every main screen; the 📎 and 🎤 buttons in the composer |
@@ -129,7 +129,7 @@ installed), and with the Termux client.
 | Room history | Earlier room messages loaded from the server archive | rc.68 |
 | Profile picture | A photo from the camera (HEIC, rotated) as your picture | rc.72 |
 | Group files | Sending a file to a secure group | rc.54 |
-| Location | "Open in maps app" (after the warning); typing a Plus Code | rc.73 |
+| Location | Only sent once the contact (or every group member) is verified — before that 📍 explains and the GPS never starts; a mock-location app's position; typing a Plus Code; "Open in maps app" | rc.73–rc.80 |
 | Photos | The "hidden information" question strips a camera photo's location | — |
 | Staying connected | Background survival, reconnect after a network change | — |
 | Desktop app | The desktop (Linux/Qubes) client against the same server | — |

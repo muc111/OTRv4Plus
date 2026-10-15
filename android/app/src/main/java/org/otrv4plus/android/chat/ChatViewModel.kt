@@ -1757,18 +1757,33 @@ class ChatViewModel : ViewModel() {
         private set
 
     /** Encrypted 1:1 conversation, or a secure group. Never a plain room. */
-    fun canShareLocation(jid: String): Boolean {
+    /** Null when a location may go to [jid]; otherwise why not (see
+     *  [Location.shareRefusal]: verified, not merely encrypted). */
+    fun locationRefusal(jid: String): String? {
         observe()
-        val state = this.state ?: return false
-        return if (state.isRoom(jid)) state.isSecureRoom(jid)
-               else state.conversation(jid).security != org.otrv4plus.android.bridge.SecurityState.PLAINTEXT
+        val offer = transferOffer(jid)
+        return Location.shareRefusal(
+            encrypted = offer !is TransferUi.Offer.NeedsEncryption,
+            verified = offer is TransferUi.Offer.Available,
+            group = isRoom(jid),
+        )
     }
 
+    fun canShareLocation(jid: String): Boolean = locationRefusal(jid) == null
+
+    /** 📍: the sheet where sharing is allowed; elsewhere only the reason.
+     *  The sheet -- and with it the GPS -- is never opened before. */
     fun openLocation(jid: String) {
+        val refusal = locationRefusal(jid)
+        if (refusal != null) {
+            actionStatus = refusal
+            return
+        }
+        actionStatus = null
         locationFor = ChatState.bare(jid)
         locationText = ""
         locationPin = null
-        locationStatus = if (canShareLocation(jid)) null else Location.NEEDS_ENCRYPTION
+        locationStatus = null
         gpsBusy = false
     }
 
@@ -1805,7 +1820,7 @@ class ChatViewModel : ViewModel() {
         val state = this.state ?: return
         val jid = locationFor ?: return
         val pin = locationPin ?: return
-        if (!canShareLocation(jid)) { locationStatus = Location.NEEDS_ENCRYPTION; return }
+        locationRefusal(jid)?.let { locationStatus = it; return }
         val previous = state.draft(jid)
         val keepEditing = editing
         val keepReply = replyingTo

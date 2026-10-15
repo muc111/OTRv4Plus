@@ -508,7 +508,7 @@ private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: Se
     Surface(tonalElevation = 2.dp) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             // A location pin: only inside encryption, and not mid-correction.
-            if (banner == null && locationAllowed(model, jid, isRoom, security)) {
+            if (banner == null && encryptedHere(model, jid, isRoom, security)) {
                 IconButton(onClick = onLocation, enabled = canSend) {
                     Icon(Icons.Filled.Place, "Share a location")
                 }
@@ -536,7 +536,7 @@ private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: Se
                         else TransferUi.offer(security) is TransferUi.Offer.Available
             // Shown in every encrypted conversation so it can be found;
             // usable once the contact (or every group member) is verified.
-            if (text.isBlank() && locationAllowed(model, jid, isRoom, security)) {
+            if (text.isBlank() && encryptedHere(model, jid, isRoom, security)) {
                 FilledIconButton(onClick = { model.openVoiceSheet() }, enabled = canSend && voice) {
                     Icon(Icons.Filled.Mic, "Record a voice note")
                 }
@@ -663,8 +663,19 @@ private fun MetadataDialog(path: String, onChoice: (Boolean?) -> Unit) {
     )
 }
 
-private fun locationAllowed(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState): Boolean =
+/** An encrypted conversation: where the 📍 and 🎤 are shown at all. */
+private fun encryptedHere(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState): Boolean =
     if (isRoom) model.chat.isSecureRoom(jid) else security != SecurityState.PLAINTEXT
+
+/** Null when a location may go here; otherwise why not. Verified, not merely
+ *  encrypted: see Location.shareRefusal. */
+private fun locationRefusal(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState): String? {
+    val verified = if (isRoom) {
+        val others = model.groupMembers[jid].orEmpty().filter { !it.me }
+        others.isNotEmpty() && others.all { it.verified }
+    } else TransferUi.offer(security) is TransferUi.Offer.Available
+    return Location.shareRefusal(encryptedHere(model, jid, isRoom, security), verified, isRoom)
+}
 
 /**
  * Share a pin, typed: a full Plus Code or coordinates. No GPS here -- a
@@ -674,7 +685,8 @@ private fun locationAllowed(model: AppModel, jid: String, isRoom: Boolean, secur
 private fun LocationDialog(model: AppModel, jid: String, onClose: () -> Unit) {
     var typed by remember { mutableStateOf("") }
     val pin = Location.fromTyped(typed)
-    val allowed = locationAllowed(model, jid, model.chat.isRoom(jid), model.conversation(jid).security)
+    val refusal = locationRefusal(model, jid, model.chat.isRoom(jid), model.conversation(jid).security)
+    val allowed = refusal == null
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("Share a location") },
@@ -691,8 +703,9 @@ private fun LocationDialog(model: AppModel, jid: String, onClose: () -> Unit) {
                     typed.isNotBlank() -> Text(Location.typedHint, style = MaterialTheme.typography.bodySmall,
                                                color = MaterialTheme.colorScheme.error)
                 }
-                if (!allowed) Text(Location.NEEDS_ENCRYPTION, style = MaterialTheme.typography.bodySmall,
-                                   color = MaterialTheme.colorScheme.error)
+                refusal?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
             }
         },
         confirmButton = {

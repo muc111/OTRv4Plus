@@ -192,8 +192,11 @@ fun ConversationScreen(
                               ({ model.requestVoice(jid) }) else null,
                 onAttach = if (model.transferOffer(jid) !is TransferUi.Offer.NeedsEncryption)
                                ({ model.requestFile(jid) }) else null,
-                // A location pin: only inside encryption (OTR, or a secure group).
-                onLocation = if (model.canShareLocation(jid)) ({ model.openLocation(jid) }) else null,
+                // A location pin: shown in every encrypted conversation, sent
+                // only once the contact (or every group member) is verified;
+                // until then a tap explains and the GPS is never started.
+                onLocation = if (model.transferOffer(jid) !is TransferUi.Offer.NeedsEncryption)
+                                 ({ model.openLocation(jid) }) else null,
             )
         },
     ) { padding ->

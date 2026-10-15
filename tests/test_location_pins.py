@@ -30,13 +30,30 @@ def test_only_fine_location_and_never_in_the_background():
     assert "ACCESS_COARSE_LOCATION" not in manifest
 
 
-def test_pins_are_offered_only_where_encrypted():
+def test_pins_go_only_where_the_identity_is_verified():
+    """Owner (2026-10-15): "GPS location should be behind verification".
+    Encrypted is not enough; the sheet (and the GPS) does not open before."""
     vm = _src(ANDROID / "java/org/otrv4plus/android/chat/ChatViewModel.kt")
-    assert "fun canShareLocation" in vm
-    screen = _src(UI / "ConversationScreen.kt")
-    assert "if (model.canShareLocation(jid))" in screen
+    open_fn = vm[vm.index("fun openLocation"):vm.index("fun closeLocation")]
+    assert "locationRefusal(jid)" in open_fn and "return" in open_fn
+    assert open_fn.index("return") < open_fn.index("locationFor =")
+    refusal = vm[vm.index("fun locationRefusal"):vm.index("fun canShareLocation")]
+    assert "TransferUi.Offer.Available" in refusal
+    send = vm[vm.index("fun sendLocation"):]
+    assert "locationRefusal(jid)" in send[:400]
     desktop = _src(ROOT / "desktop/src/main/kotlin/org/otrv4plus/desktop/ui/ConversationPane.kt")
-    assert "security != SecurityState.PLAINTEXT" in desktop
+    assert "Location.shareRefusal(" in desktop and "enabled = allowed && pin != null" in desktop
+
+
+def test_a_set_or_mocked_location_is_never_refused():
+    """Owner: "mock GPS location should be allowed". A mock-location app
+    feeds the same GPS provider; nothing may inspect or reject it, and the
+    typed path stays."""
+    sheet = _src(UI / "LocationSheet.kt")
+    for check in ("isMock", "isFromMockProvider", "MOCK"):
+        assert check not in sheet, check
+    assert "Location.SET_HINT" in sheet
+    assert "fun fromTyped" in _src(ANDROID / "java/org/otrv4plus/android/chat/Location.kt")
 
 
 def test_no_web_map_or_lookup_service():

@@ -155,6 +155,8 @@ fun LocationSheet(model: ChatViewModel) {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text("Sent encrypted, as a Plus Code and coordinates. Nothing is looked up online.",
                      style = MaterialTheme.typography.bodySmall)
+                Text(Location.SET_HINT, style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 OutlinedButton(onClick = { useGps() }, enabled = allowed && !model.gpsBusy,
                                modifier = Modifier.fillMaxWidth()) {
                     Text(if (model.gpsBusy) "Finding satellites…" else "Use my position (GPS only)")

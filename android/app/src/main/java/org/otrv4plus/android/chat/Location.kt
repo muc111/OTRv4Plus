@@ -106,6 +106,34 @@ object Location {
     /** Why sending is refused where it is. */
     const val NEEDS_ENCRYPTION =
         "A location is only sent in an encrypted conversation."
+
+    /**
+     * Owner (2026-10-15): "GPS location should be behind verification to
+     * avoid accidentally leaking users' GPS". Encrypted is not enough: an
+     * encrypted conversation nobody has verified is encrypted to whoever
+     * answered. A location goes only where a file may: a contact verified
+     * with SMP, or a secure group whose other members are all verified. The
+     * sheet does not even open before that, so the GPS is never started.
+     * Null when sharing is allowed; otherwise what to say.
+     */
+    fun shareRefusal(encrypted: Boolean, verified: Boolean, group: Boolean): String? = when {
+        !encrypted -> NEEDS_ENCRYPTION
+        verified -> null
+        group -> "A location goes only to a group whose members are all verified."
+        else -> "A location goes only to a contact verified with SMP (Verify, above)."
+    }
+
+    /**
+     * A location the user SETS rather than reads from the satellites is
+     * always allowed: a typed Plus Code or coordinates, or a fix from a
+     * mock-location app (Android: Developer options, "Select mock location
+     * app"), which Android delivers through the same GPS provider this app
+     * reads. Nothing here inspects or rejects a mocked fix, and the receiver
+     * is not told how a pin was made.
+     */
+    const val SET_HINT =
+        "To share somewhere else, type a Plus Code or coordinates, or use a " +
+        "mock-location app (Developer options): the app accepts its position."
 }
 
 /**

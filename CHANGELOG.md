@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.80 — 2026-10-15 — locations only to verified people; set or mocked locations welcome (core 0.13.1)
+
+- **A location goes only to a verified contact or group.** Owner: *"GPS
+  location should be behind verification to avoid accidentally leaking
+  users' GPS"*. Until now any encrypted conversation could receive a pin --
+  encrypted to whoever answered, verified or not. Now the same rule as files
+  and voice notes: a contact verified with SMP, or a secure group whose
+  other members are all verified. 📍 is still shown in every encrypted
+  conversation; before verification a tap says what is needed, and the
+  location sheet -- and with it the GPS -- does not open at all. Sending
+  checks again. Desktop the same.
+- **A location you set is always allowed.** Typed Plus Codes and
+  coordinates, as before, and a **mock-location app** (Android: Developer
+  options, "Select mock location app"): Android delivers its position
+  through the same GPS provider the app reads, and the app does not inspect
+  or reject a mocked fix -- a test keeps it that way. The sheet says so.
+  The receiver is not told how a pin was made.
+
 ## Android 0.7.0-experimental.rc.79 — 2026-10-15 — release page: group size stated plainly (core 0.13.1)
 
 - **"Up to four" was what was tested, not a limit.** The release page now

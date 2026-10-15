@@ -63,4 +63,13 @@ class LocationTest {
         assertNull(Location.typedStatus("", null))
         assertEquals(Location.typedHint, Location.typedStatus("GV4C+XV London", null))
     }
+
+    @Test
+    fun `a location goes only where the identity is verified`() {
+        assertEquals(Location.NEEDS_ENCRYPTION, Location.shareRefusal(encrypted = false, verified = false, group = false))
+        assertTrue(Location.shareRefusal(encrypted = true, verified = false, group = false)!!.contains("SMP"))
+        assertTrue(Location.shareRefusal(encrypted = true, verified = false, group = true)!!.contains("verified"))
+        assertNull(Location.shareRefusal(encrypted = true, verified = true, group = false))
+        assertNull(Location.shareRefusal(encrypted = true, verified = true, group = true))
+    }
 }
