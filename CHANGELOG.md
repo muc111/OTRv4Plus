@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.79 — 2026-10-15 — release page: group size stated plainly (core 0.13.1)
+
+- **"Up to four" was what was tested, not a limit.** The release page now
+  says: a secure group has no member limit (16 can be added at once);
+  larger groups are untested and will be slow on a server with default
+  room limits; group calls take at most 5.
+- A "connection lost" report against rc.78 turned out to be a firewall on
+  the phone blocking the app, not the app: nothing changed for it.
+
 ## Android 0.7.0-experimental.rc.78 — 2026-10-15 — voice-note randomness hardened; a clear release page (core 0.13.1)
 
 - **Voice-note settings come only from the OS random generator, and cannot

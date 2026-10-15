@@ -108,7 +108,7 @@ installed), and with the Termux client.
 | Identity check | SMP verification, app ↔ app and app ↔ Termux |
 | Files | Encrypted file transfer, hashes checked on arrival |
 | 1:1 calls | Two-way voice calls between two handsets running this app, and between this app and the Termux client |
-| Secure groups | Post-quantum MLS groups of up to four (app and Termux), group messages both ways |
+| Secure groups | Post-quantum MLS groups, group messages both ways — **tested with four members** (two phones, each with the app and Termux). No size limit is set; larger groups are not yet tested |
 | Group check | Group verification with a shared passphrase |
 | Group calls | Two-way group voice calls |
 | Location | Location pins from GPS only, received as a card |
@@ -142,6 +142,13 @@ installed), and with the Termux client.
   identify you. Where it matters, type.
 - **I2P is slow to start.** Building tunnels takes 30–120 s; the first start
   of the built-in router 2–5 minutes.
+- **Group size.** A secure group has no member limit (up to 16 can be
+  added at once), but only four have been tested. Every member receives
+  every group change through the server room, and post-quantum keys make
+  those changes large, so big groups (hundreds) will be slow on a server
+  with the default room rate limits — see the server section below.
+- **Group calls take at most 5 people**: each phone sends its audio to
+  every other phone directly over I2P.
 - Secure groups made before rc.27 must be re-created to add members.
 
 The full gate list is \`ANDROID_XMPP_MILESTONE.md\` §7; the device-test
