@@ -44,8 +44,10 @@ __all__ = ["MODES", "DEFAULT_MODE", "RATE", "MAX_SECONDS", "MIN_SECONDS",
            "VoiceNoteError", "mask", "encode", "decode", "write_note",
            "Recorder", "Player", "mask_available", "describe_mode"]
 
-MODES = ("disguise", "synthetic", "natural")
-DEFAULT_MODE = "disguise"
+# Synthetic first and by default: measured, it is the one a speaker
+# recogniser matches least (VOICE_NOTES.md); owner chose it 2026-10-15.
+MODES = ("synthetic", "disguise", "natural")
+DEFAULT_MODE = "synthetic"
 RATE = 16000
 MAX_SECONDS = 300
 MIN_SECONDS = 0.5
@@ -57,7 +59,7 @@ MAX_NOTE_BYTES = 16 * 1024 * 1024
 
 _DESCRIPTIONS = {
     "disguise": "Disguised: a different voice for every note",
-    "synthetic": "Synthetic: robot-like, strongest disguise",
+    "synthetic": "Synthetic: robot-like, strongest disguise (default)",
     "natural": "Natural: your own voice",
 }
 

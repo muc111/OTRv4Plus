@@ -4546,7 +4546,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         asyncio.ensure_future(_run())
 
     def _cmd_voice(self, peer, args: str) -> None:
-        """/voice [disguise|synthetic|natural] -- record; /voice again (or
+        """/voice [synthetic|disguise|natural] -- record (synthetic by default); /voice again (or
         /voice stop) to finish; then /voice play, /voice send, /voice cancel.
 
         The recording stays in memory and goes through the voice mask
@@ -4647,7 +4647,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             asyncio.ensure_future(self._offer_file(
                 peer, path, False, group=group, picked=False, discard=discard))
         else:
-            print("usage: /voice [disguise|synthetic|natural] | stop | play | send | cancel")
+            print("usage: /voice [synthetic|disguise|natural] | stop | play | send | cancel")
 
     async def _offer_file(self, peer, chosen: str, strip: bool, *, group: bool,
                           picked: bool, discard) -> None:
@@ -5724,7 +5724,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             "                       group, to the group). Asks y/n to remove\n"
             "                       hidden information (location, camera) first\n"
             "  /voice [mode]        record a voice note in a disguised voice\n"
-            "                       (disguise, synthetic = strongest, natural);\n"
+            "                       (synthetic = default and strongest,\n"
+            "                       disguise, natural);\n"
             "                       /voice again to stop, then play|send|cancel\n"
             "  /transfer            show file transfer state (group files too)\n"
             + self.TS_HELP +

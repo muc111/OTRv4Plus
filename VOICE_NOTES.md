@@ -90,12 +90,15 @@ How to read it:
 
 ## Where it is
 
+* **Synthetic is the default** (owner's choice after listening, 2026-10-15):
+  all three were easy to understand, and Synthetic is the one the
+  recogniser matches least.
 * Android: in a conversation, **Voice note** (next to *Send a file*).
-  Choose Disguised / Synthetic / My voice, then Record → Stop → Play →
+  Choose Synthetic / Disguised / My voice, then Record → Stop → Play →
   Send or Discard. A received note opens in the in-app player like any
   audio file.
 * Desktop: the microphone button in the conversation header; received
   notes get **Play**.
-* Terminal: `/voice [disguise|synthetic|natural]`, then `/voice` to stop,
+* Terminal: `/voice [synthetic|disguise|natural]` (synthetic if omitted), then `/voice` to stop,
   then `/voice play`, `/voice send` or `/voice cancel`.
 * Groups: the same, to a secure group, over MLS.

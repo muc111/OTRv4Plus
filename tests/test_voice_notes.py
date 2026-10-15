@@ -238,7 +238,7 @@ def test_modes_are_described_for_the_ui():
     from android_bridge.app import OtrApp
     app = OtrApp.__new__(OtrApp)
     info = app.voice_note_modes()
-    assert info["default"] == "disguise" and info["mask_available"]
+    assert info["default"] == "synthetic" and info["mask_available"]
     assert set(info["labels"]) == set(vn.MODES)
 
 

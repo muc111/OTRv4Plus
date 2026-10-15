@@ -4,6 +4,14 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.67 — 2026-10-15 — voice notes: Synthetic by default (core 0.13.1)
+
+- Voice notes now start in **Synthetic**, the setting a speaker
+  recogniser matched least (42 % / 47 % EER against 34 % / 39 % for
+  Disguised, 50 % = guessing). Owner listened to all three and found
+  them all easy to understand. Disguised and My voice are still one tap
+  away; the terminal's `/voice` records Synthetic unless told otherwise.
+
 ## Android 0.7.0-experimental.rc.66 — 2026-10-15 — voice notes in a disguised voice (core 0.13.1)
 
 Owner request: "a voice note feature but with a security mind twist ...

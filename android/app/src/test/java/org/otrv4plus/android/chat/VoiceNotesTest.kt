@@ -9,8 +9,9 @@ import kotlin.test.assertTrue
 class VoiceNotesTest {
 
     @Test
-    fun `the disguise is the first choice and every choice is explained`() {
-        assertEquals(VoiceNotes.DISGUISE, VoiceNotes.MODES.first())
+    fun `the strongest disguise is the first choice and the default`() {
+        assertEquals(VoiceNotes.SYNTHETIC, VoiceNotes.MODES.first())
+        assertEquals(VoiceNotes.SYNTHETIC, VoiceNotes.DEFAULT)
         for (mode in VoiceNotes.MODES) {
             assertTrue(VoiceNotes.label(mode).isNotBlank())
             assertTrue(VoiceNotes.detail(mode).isNotBlank())

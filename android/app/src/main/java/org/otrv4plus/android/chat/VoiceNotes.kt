@@ -19,7 +19,10 @@ object VoiceNotes {
     const val SYNTHETIC = "synthetic"
     const val NATURAL = "natural"
 
-    val MODES = listOf(DISGUISE, SYNTHETIC, NATURAL)
+    /** Synthetic first, and the default: it is the one a speaker recogniser
+     *  matches least (VOICE_NOTES.md). */
+    val MODES = listOf(SYNTHETIC, DISGUISE, NATURAL)
+    const val DEFAULT = SYNTHETIC
 
     fun label(mode: String): String = when (mode) {
         DISGUISE -> "Disguised"
@@ -29,8 +32,8 @@ object VoiceNotes {
     }
 
     fun detail(mode: String): String = when (mode) {
-        DISGUISE -> "A different, random voice for every note."
-        SYNTHETIC -> "A generated, robot-like voice. The strongest disguise."
+        DISGUISE -> "A different, random voice for every note. More natural, easier for AI to match."
+        SYNTHETIC -> "A generated, robot-like voice. The hardest for AI to match."
         NATURAL -> "Your own voice, unchanged."
         else -> ""
     }

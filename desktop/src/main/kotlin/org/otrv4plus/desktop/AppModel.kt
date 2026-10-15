@@ -497,7 +497,7 @@ class AppModel(
 
     var voiceSheet by mutableStateOf<org.otrv4plus.android.chat.VoiceSheet?>(null)
         private set
-    private var voiceMode = org.otrv4plus.android.chat.VoiceNotes.DISGUISE
+    private var voiceMode = org.otrv4plus.android.chat.VoiceNotes.DEFAULT
     private var voicePoll: Job? = null
 
     fun openVoiceSheet() {

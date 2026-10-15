@@ -1706,7 +1706,7 @@ class ChatViewModel : ViewModel() {
     /** The open voice-note sheet, or null. */
     var voiceSheet by mutableStateOf<VoiceSheet?>(null)
         private set
-    private var voiceMode = VoiceNotes.DISGUISE
+    private var voiceMode = VoiceNotes.DEFAULT
     private var voicePoll: Job? = null
 
     fun openVoiceSheet() {
