@@ -609,6 +609,7 @@ and is terminated by a single `0x00` byte.
 | 0x0007 | SMP_MSG_1Q | SMP message 1 with question | §6 |
 | 0x0009 | EXTRA_SYMMETRIC_KEY | key request context | §4.4 |
 | 0x0020 | TIP | address relay payload | §5.6.2 |
+| 0x0021 | MESSAGE_META | message id, correction, deletion, reaction, reply | §5.6.3 |
 
 `0x0008` is **not allocated** by this specification. OTRv4 assigns it to a
 client-profile TLV; OTRv4+ carries the client profile in the DAKE (§3) and
@@ -647,6 +648,33 @@ This TLV carries no key material and is protected by the data message's AEAD
 like any other TLV. It is an application-layer courtesy, not part of the
 security construction: an implementation MAY omit it entirely and remain
 conformant.
+
+#### 5.6.3 MESSAGE_META (0x0021)
+
+Carried with a typed message (or alone, with an empty body, for a deletion
+or a reaction). The value is UTF-8 JSON, at most 2048 bytes:
+
+```
+{"v": 1,
+ "id": <the message's own id>,
+ "edit" | "retract" | "react": <id of the message acted on>,   // at most one
+ "emoji": [<string, <= 32 chars>, ...],                       // react: <= 16
+ "reply": <id of the message replied to>}                     // optional
+```
+
+Ids are 1-128 characters from `[A-Za-z0-9._:+/=-]`. A receiver MUST drop a
+value that is malformed, carries two actions, or exceeds a bound -- the body
+is then shown as ordinary text. A receiver MUST apply `edit` and `retract`
+only to a message by the same author as the frame that carries them; a
+`react` replaces the sender's previous set on that message, and an empty
+set removes it.
+
+Inside the data message's AEAD, these are as authentic as the text and
+invisible to the server, unlike their XMPP counterparts (XEP-0308, -0424,
+-0444, -0461), which an implementation MUST NOT attach to an encrypted
+message. An implementation MAY omit this TLV and remain conformant; a peer
+that does not know it shows the text, which for a correction or a reply is
+the intended fallback.
 
 ---
 

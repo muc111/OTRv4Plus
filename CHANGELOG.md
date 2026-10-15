@@ -4,6 +4,47 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.65 — 2026-10-15 — a full XMPP messenger: other devices, history, ticks, typing, replies, reactions, blocking (core 0.13.1)
+
+Owner request: "of course we must add message carbons and server side
+message history xep-0313 and anything else conversations app uses".
+
+- **Your other devices (XEP-0280 carbons).** What you send and receive on
+  another device appears here too. A copy is accepted only from your own
+  account. Encrypted messages belong to the device whose session they are
+  in and are marked so the server does not copy them; plaintext copies show.
+- **Server history (XEP-0313).** On connect, what arrived while this device
+  was away (the newest page the first time). Shown without a sound. OTR
+  ciphertext is marked so the server does not archive it.
+- **Ticks (XEP-0184, XEP-0333).** Sent ✓, delivered ✓✓, read ✓✓ read.
+- **"typing…" (XEP-0085).**
+- Receipts, read markers and typing are only answered to contacts who already
+  see your presence. Read receipts and typing can each be switched off
+  (⋮ menu on Android, Settings › Privacy on the desktop).
+- **Reply, correct, delete for everyone, react (XEP-0461/-0308/-0424/-0444).**
+  A ⋯ on each message. In an encrypted conversation these travel INSIDE the
+  OTR payload (a new MESSAGE_META TLV), so the server can neither read nor
+  forge nor redirect them; older clients ignore the TLV and show the text.
+  Plaintext conversations use the standard XEP elements, so they work with
+  Conversations and other clients. A correction or deletion only ever
+  applies to a message by the same author.
+- **Blocking (XEP-0191) with "report as spam" (XEP-0377)**, on the server,
+  for every device.
+- **Rooms follow you (XEP-0402 bookmarks).** Rooms you join are bookmarked
+  privately (never published where the server would not keep them private)
+  and joined on every device and after every reconnect -- plain rooms were
+  not rejoined at all before. Secure groups are never bookmarked.
+- **Rooms that forget you are rejoined (XEP-0410)**, checked every ten
+  minutes; useful when an I2P tunnel rebuild drops the room's view of you.
+- **Battery (XEP-0352).** The server is told when the app is in the
+  background.
+- **Terminal client:** messages from other devices ("[other device]"),
+  history on connect ("[history]"), /reply, /edit, /retract, /react, and
+  /block <jid> spam (server-side when supported, as well as this session).
+- Fixed: outgoing message ids restarted at 1 after an app restart and could
+  collide with stored history, so a new message could be dropped from it.
+- History format v3 (v1 and v2 still read).
+
 ## Android 0.7.0-experimental.rc.64 — 2026-10-14 — Off The Record v4 Plus: automatic I2P, tidier screens, sounds, y/n answers (core 0.13.1)
 
 Owner request: no router dropdown, the full name on screen, a less

@@ -936,6 +936,23 @@ The XMPP harness received a full production hardening pass. Every change is in `
 | XEP-0198 | Stream management — stanza acks; graceful degradation if server lacks support |
 | XEP-0199 | XMPP Ping — available for `/ping <jid>` on demand |
 
+**Multi-device and messenger XEPs (rc.65).** Shared rules in `otrv4plus_sync`
+and `otrv4plus_actions`; the app's half in `android_bridge/sync.py` and
+`android_bridge/account_sync.py`, the terminal's in `otrv4plus_termsync.py`.
+
+| XEP | What it does here |
+|-----|-------------------|
+| XEP-0280 | Carbons. Accepted only from our own bare JID. Plaintext copies are shown; OTR frames are marked `<private/>`/`<no-copy/>` and a copied frame is never given to the engine. |
+| XEP-0313 | Archive catch-up on connect, after a per-account cursor (newest page first time). Plaintext only; OTR frames carry `<no-permanent-store/>`. |
+| XEP-0359 | Every typed message has a random origin-id = id; a stanza-id is trusted only from our own server. |
+| XEP-0184 / XEP-0333 | Delivered and read ticks; answered only to contacts with a presence subscription from us. Read markers can be switched off. |
+| XEP-0085 | Typing, same rule, can be switched off. |
+| XEP-0352 | Client state indication from app visibility. |
+| XEP-0191 / XEP-0377 | Server-side blocking, optional spam report; pushes accepted only from our own server. |
+| XEP-0402 | Private (whitelist) room bookmarks with autojoin; not published if publish-options are not honoured; never for secure groups. |
+| XEP-0410 | Room self-ping every 10 min; `not-acceptable` -> rejoin. |
+| XEP-0308 / XEP-0424 / XEP-0444 / XEP-0461 | Correct, delete for everyone, react, reply -- in PLAINTEXT conversations only. Encrypted conversations carry the same inside the OTR payload as the MESSAGE_META TLV (0x0021): `{"v":1,"id":...,"edit"|"retract"|"react":target,"emoji":[...],"reply":...}`, sent with the fail-closed `send_text_with_tlv`. The author rule (a correction or deletion only applies to that author's message) is enforced where messages are shown. |
+
 XEP-0198 registration is wrapped in `try/except`; if the server does not advertise stream management the plugin silently disables, the session continues, and no exception surfaces to the user.
 
 **Automatic reconnect (I2P-aware).** On disconnect, the client waits with exponential backoff (5 s base, 300 s ceiling) then re-establishes the I2P SAM tunnel via `start_i2p_sam_forwarder` before reconnecting slixmpp. SAM parameters are stored as `_sam_params` before the first connect so they are available to the reconnect loop. A `_shutting_down` flag prevents reconnect loops on `/quit`, Ctrl+C, or authentication failure. `--no-reconnect` disables the feature entirely.

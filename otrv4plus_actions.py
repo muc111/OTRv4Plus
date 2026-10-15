@@ -197,3 +197,52 @@ def parse_action(msg: ET.Element) -> Dict[str, Any]:
     if el is not None and valid_id(el.get("id")):
         out["reply"] = el.get("id")
     return out
+
+
+# -- one engine handler for every client in the process --------------------------
+#
+# The engine's TLV handlers are per process and per type. The app and the
+# terminal client (and tests holding several of either) share this one: the
+# frame's MESSAGE_META goes to whoever is decrypting it ON THIS THREAD.
+
+import threading as _threading
+
+_CURRENT = _threading.local()
+
+
+def _dispatch(peer: str, value: bytes) -> None:
+    receiver = getattr(_CURRENT, "receiver", None)
+    if receiver is not None:
+        receiver(peer, value)
+
+
+def install(engine) -> bool:
+    """Register the shared handler with [engine]'s module. True if it is."""
+    import sys
+    module = sys.modules.get(type(engine).__module__)
+    register = getattr(module, "register_tlv_handler", None)
+    if register is None:
+        return False
+    try:
+        register(META_TLV, _dispatch)
+        return True
+    except Exception:
+        return False
+
+
+class receiving:
+    """`with receiving(callback): engine.handle_incoming_message(...)` --
+    MESSAGE_META decrypted inside goes to `callback(peer, value)`."""
+
+    def __init__(self, callback):
+        self._callback = callback
+        self._previous = None
+
+    def __enter__(self):
+        self._previous = getattr(_CURRENT, "receiver", None)
+        _CURRENT.receiver = self._callback
+        return self
+
+    def __exit__(self, *exc):
+        _CURRENT.receiver = self._previous
+        return False

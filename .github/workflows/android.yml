@@ -73,6 +73,7 @@ on:
       - "otrv4plus_alerts.py"
       - "otrv4plus_sync.py"
       - "otrv4plus_actions.py"
+      - "otrv4plus_termsync.py"
       - "otrv4plus_mediapath.py"
       - "otrv4plus_mode.py"
       - "otrv4plus_muc.py"

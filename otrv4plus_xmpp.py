@@ -161,6 +161,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import otrv4plus_address as _address
 import otrv4plus_alerts as _alerts
+from otrv4plus_termsync import TermSyncMixin as _TermSyncMixin
+
+
+def _live_item(client, msg):
+    """otrv4plus_sync's view of a live plaintext message (its ids, reply,
+    correction), or None."""
+    try:
+        import otrv4plus_sync as _sync_mod
+        return _sync_mod.parse_message(msg.xml, client._ts_own(), "live")
+    except Exception:
+        return None
 import otrv4plus_caps as _caps
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_fragment as _frag
@@ -1623,7 +1634,7 @@ def _make_groups(host):
     return _og.TermuxGroups(host, _xmpp_state_path("groups"), printer=print)
 
 
-class OTRv4PlusXMPP(ClientXMPP):
+class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
     def __init__(self, jid, password, peer=None, debug=False):
@@ -1993,6 +2004,13 @@ class OTRv4PlusXMPP(ClientXMPP):
         print(f"\n[connected] {self.boundjid.full}")
         print(f"[version]   Off The Record v4 Plus (OTRv4+) XMPP {XMPP_VERSION}")
         self._remember_server_alias()
+        # Carbons, the archive, blocking, replies and reactions
+        # (otrv4plus_termsync): installed once, then synced in the background.
+        try:
+            self._ts_install()
+            asyncio.ensure_future(self._ts_after_session())
+        except Exception:
+            pass
         if self.peer:
             self.send_presence_subscription(pto=self.peer)
             print(f"[subscribe] requested presence from {self.peer}")
@@ -3040,6 +3058,14 @@ class OTRv4PlusXMPP(ClientXMPP):
                   "it is only accepted inside an OTR session"
                   % _sanitise(peer, 128))
         else:
+            item = _live_item(self, msg) if hasattr(self, "_ts_reply_prefix") else None
+            reply = self._ts_reply_prefix(peer, item.reply) if item is not None else ""
+            if item is not None and item.action == "edit":
+                self._ts_show_action(peer, "edit", item.target, body, [])
+                return
+            if item is not None:
+                self._ts_remember(peer, item.ref, body, False)
+            body = reply + body
             print(f"[plain] {_sanitise(peer, 128)}: {_sanitise(body)}")
 
     def _on_groupchat(self, msg):
@@ -3117,9 +3143,15 @@ class OTRv4PlusXMPP(ClientXMPP):
 
         loop = asyncio.get_event_loop()
         try:
-            out = await loop.run_in_executor(
-                self._otr_executor, self.otr.handle_incoming_message, peer, body
-            )
+            # Decrypted together with its MESSAGE_META (otrv4plus_termsync).
+            decrypt = getattr(self, "_ts_decrypt", None)
+            if decrypt is not None:
+                out, meta = await loop.run_in_executor(
+                    self._otr_executor, decrypt, peer, body)
+            else:
+                out = await loop.run_in_executor(
+                    self._otr_executor, self.otr.handle_incoming_message, peer, body)
+                meta = None
         except Exception as e:
             print(f"[otr error] from {peer}: {e}")
             return
@@ -3136,6 +3168,16 @@ class OTRv4PlusXMPP(ClientXMPP):
         # finished: the OTR worker never waits for a human.
         self._check_smp_secret_required(peer)
         self._expire_stale_smp_consent()
+
+        # A correction, deletion or reaction, authenticated inside the frame.
+        if meta is not None and meta.get("action"):
+            text = (out.decode("utf-8", errors="replace")
+                    if isinstance(out, (bytes, bytearray)) else (out or ""))
+            self._ts_show_action(peer, meta["action"], meta["target"], text,
+                                 meta.get("emojis") or [])
+            self._report_smp(peer)
+            self._check_dake_complete(peer)
+            return
 
         if out:
             out_b = out.encode("utf-8") if isinstance(out, str) else out
@@ -3198,7 +3240,12 @@ class OTRv4PlusXMPP(ClientXMPP):
 
                 smp_ok = (peer, "SUCCEEDED") in self._smp_reported
                 peer_s = _sanitise(peer, 128)
-                text_s = _sanitise(text)
+                if meta is not None and hasattr(self, "_ts_reply_prefix"):
+                    reply = self._ts_reply_prefix(peer, meta.get("reply", ""))
+                    self._ts_remember(peer, meta.get("id", ""), text, False)
+                else:
+                    reply = ""
+                text_s = reply + _sanitise(text)
                 # The prefix carries the security state; see `_otr_prefix`.
                 # The message body is _sanitise'd either way -- a peer's text
                 # is never printed raw, verified or not.
@@ -5131,7 +5178,12 @@ class OTRv4PlusXMPP(ClientXMPP):
             return
 
         try:
-            msg, should_send = self.otr.handle_outgoing_message(peer, text)
+            # With its MESSAGE_META (an id for /edit, /retract, reactions).
+            encrypt = getattr(self, "_ts_encrypt", None)
+            if encrypt is not None:
+                msg, should_send, mid = encrypt(peer, text)
+            else:
+                (msg, should_send), mid = self.otr.handle_outgoing_message(peer, text), ""
         except Exception as e:
             print(f"[otr error] send to {peer}: {e}")
             return
@@ -5139,6 +5191,8 @@ class OTRv4PlusXMPP(ClientXMPP):
             self.send_otr_fragmented(
                 peer, msg if isinstance(msg, str) else msg.decode()
             )
+            if mid and hasattr(self, "_ts_remember"):
+                self._ts_remember(peer, mid, text, True)
             self._echo_sent(peer, text)
         elif not should_send:
             hold = getattr(self, "_hold", None)
@@ -5549,7 +5603,8 @@ class OTRv4PlusXMPP(ClientXMPP):
             "  /pending             show pending subscription requests\n"
             "  /accept <jid>        accept a subscription request\n"
             "  /deny <jid>          deny a subscription request\n"
-            "  /block <jid>         block inbound from JID (session)\n"
+            "  /block <jid> [spam]  block (and on the server, every device, when\n"
+            "                       it can; spam also reports them)\n"
             "  /unblock <jid>       unblock JID\n"
             "  /blocked             list blocked JIDs\n"
             "  /ping <jid>          XMPP ping (XEP-0199)\n"
@@ -5565,6 +5620,7 @@ class OTRv4PlusXMPP(ClientXMPP):
             "                       group, to the group). Asks y/n to remove\n"
             "                       hidden information (location, camera) first\n"
             "  /transfer            show file transfer state (group files too)\n"
+            + self.TS_HELP +
             "  /sound on|off        message and group-call sounds (y/n answers\n"
             "                       a ringing call or an offered file)\n"
             "  /trade               list open trades\n"
@@ -5970,6 +6026,9 @@ class OTRv4PlusXMPP(ClientXMPP):
         lstrip = line.strip()
 
         # --- TUI toggle ---
+        ts_command = getattr(self, "_ts_command", None)
+        if ts_command is not None and ts_command(lstrip, peer):
+            return True
         if lstrip in ("/sound", "/sound on", "/sound off"):
             if lstrip != "/sound":
                 self._alerts().enabled = lstrip == "/sound on"

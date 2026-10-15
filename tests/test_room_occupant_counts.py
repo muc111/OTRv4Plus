@@ -125,8 +125,12 @@ class TestListing:
         finally:
             t.close()
         assert code == "ok" and len(rooms) == len(many)
-        assert len(disco.info_asked) == T.XmppTransport.ROOM_INFO_LIMIT
-        assert disco.peak <= T.XmppTransport.ROOM_INFO_PARALLEL
+        # Rooms only: our own server and account are also asked, once each,
+        # whether they offer carbons and the archive (android_bridge.sync).
+        asked_rooms = [j for j in disco.info_asked if "@" + MUC_SERVICE in j]
+        assert len(asked_rooms) == T.XmppTransport.ROOM_INFO_LIMIT
+        # The two account-feature questions may overlap the room lookups.
+        assert disco.peak <= T.XmppTransport.ROOM_INFO_PARALLEL + 2
 
     def test_the_counts_cross_to_kotlin_as_plain_values(self):
         disco = CountingDisco([room(1)], {room(1)[0]: "3"})

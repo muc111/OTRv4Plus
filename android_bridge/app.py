@@ -95,18 +95,6 @@ class _Line(str):
         return line
 
 
-#: The app whose `receive_message` is running on this thread. The engine's
-#: TLV handlers are per process; this sends a frame's MESSAGE_META to the app
-#: that is decrypting it, however many apps a process holds.
-_RECEIVING = threading.local()
-
-
-def _dispatch_meta(peer: str, value: bytes) -> None:
-    app = getattr(_RECEIVING, "app", None)
-    if app is not None:
-        app._on_meta_tlv(peer, value)
-
-
 def _new_message_id() -> str:
     import uuid
     return uuid.uuid4().hex
@@ -1219,15 +1207,9 @@ class OtrApp:
     # -- MESSAGE_META: ids and actions inside the OTR payload -----------------
 
     def _register_meta_handler(self) -> None:
-        import sys
-        module = sys.modules.get(type(self._engine).__module__)
-        register = getattr(module, "register_tlv_handler", None)
-        if register is None:
-            return
-        try:
-            register(_actions.META_TLV, _dispatch_meta)
-        except Exception:
-            pass
+        # One handler per process, shared with the terminal client; the frame's
+        # meta goes to whoever is decrypting it (otrv4plus_actions.receiving).
+        _actions.install(self._engine)
 
     def _on_meta_tlv(self, peer: str, value: bytes) -> None:
         """Called by the engine while it decrypts a frame (same call, same
@@ -1887,15 +1869,12 @@ class OtrApp:
         # post-call reading would always find them equal.
         before = self.security_state(peer)
         before_smp = self.smp_state(peer)
-        previous = getattr(_RECEIVING, "app", None)
-        _RECEIVING.app = self
         try:
-            result = self._engine.handle_incoming_message(peer, payload)
+            with _actions.receiving(self._on_meta_tlv):
+                result = self._engine.handle_incoming_message(peer, payload)
         except Exception:
             self._emit(ErrorOccurred(peer=peer, code="decrypt_failed"))
             return None
-        finally:
-            _RECEIVING.app = previous
 
         if result is None:
             # Protocol frame (DAKE/SMP), not user text: surface any state change.
