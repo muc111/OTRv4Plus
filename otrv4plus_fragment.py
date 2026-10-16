@@ -52,7 +52,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 __all__ = [
     "MAX_FRAGMENT", "FRAGMENT_PREFIX", "MAX_FRAGMENTS",
-    "MAX_INFLIGHT", "MAX_BUFFER_BYTES", "MAX_TOTAL_BYTES",
+    "MAX_INFLIGHT", "MAX_INFLIGHT_PER_PEER", "MAX_BUFFER_BYTES", "MAX_TOTAL_BYTES",
     "fragment", "is_fragment", "Reassembler",
 ]
 
@@ -67,24 +67,21 @@ FRAGMENT_PREFIX = "?OTRv4F|"
 #: Ceiling on `total`. A payload needing more than this is not a message.
 MAX_FRAGMENTS = 4096
 
-#: How many reassembly sets may be in flight at once, across all peers.
+#: How many reassembly sets one peer may have in flight. A peer -- a contact,
+#: or one nickname in a room -- normally has one; a few cover a burst.
 #:
-#: KNOWN WEAKNESS, carried over unchanged from the terminal client and
-#: deliberately NOT fixed during the extraction that created this module.
-#:
-#: This budget is global, not per-peer, and eviction takes the oldest set
-#: first. So any peer who can send you stanzas can open MAX_INFLIGHT+1 partial
-#: sets of their own and evict somebody else's in-progress reassembly. The
-#: victim's DAKE2 -- which is fragmented, because a DAKE2 always is -- then
-#: never completes, and the handshake fails. Sixty-five small stanzas is not a
-#: flood, so the receive path's rate limiting mitigates this only partly.
-#:
-#: Demonstrated in tests/test_fragment_wire_format.py; see
-#: TestKnownWeaknessCrossPeerEviction. It was found while moving this code and
-#: reported rather than redesigned, because changing the eviction policy is a
-#: protocol-behaviour decision and not part of an extraction. A per-peer budget
-#: would be the obvious remedy.
-MAX_INFLIGHT = 64
+#: FIXED (2026-10-16), formerly a known weakness: the budget was 64 sets
+#: shared by everyone, evicted oldest-first. A peer could open 65 sets and
+#: evict another peer's half-received DAKE2. The owner's 100-user stress test
+#: hit it without an attacker: ~90 members' two-piece messages interleaved in
+#: the room, more than 64 were in flight, and ~65% of messages were silently
+#: dropped. A peer over its own budget now loses ITS oldest set, never
+#: anyone else's.
+MAX_INFLIGHT_PER_PEER = 16
+
+#: How many sets may be in flight across all peers. Past it, the peer holding
+#: the most sets loses its oldest one, so a flood costs the flooder first.
+MAX_INFLIGHT = 1024
 
 #: Cap on one reassembly set, and on all of them together. Without these a
 #: peer could hold memory open by starting sets and never finishing them.
@@ -255,6 +252,19 @@ class Reassembler:
         """
         self._buffers.clear()
 
+    def _evict_from_busiest(self, by_bytes: bool = False) -> None:
+        """Drop the oldest set of the peer holding the most sets (or bytes)."""
+        load: Dict[str, int] = {}
+        for (who, _m, _t), buf in self._buffers.items():
+            load[who] = load.get(who, 0) + (buf["bytes"] if by_bytes else 1)
+        busiest = max(load, key=lambda w: load[w])
+        for k in self._buffers:
+            if k[0] == busiest:
+                del self._buffers[k]
+                self._debug("[otr-recv] reassembly budget full; dropped the "
+                            "oldest set from %s" % busiest)
+                return
+
     # -- the work ------------------------------------------------------------
 
     def feed(self, peer: str, body: str) -> Optional[str]:
@@ -280,11 +290,15 @@ class Reassembler:
                 "[otr-recv] fragment index out of range from %s; dropping" % peer)
             return None
 
-        # Evict oldest entries when inflight set count is exceeded.
-        while len(self._buffers) > MAX_INFLIGHT:
-            del self._buffers[next(iter(self._buffers))]
-
         key = (peer, msg_id, total)
+        if key not in self._buffers:
+            # Room for a new set: first within this peer's own budget, then
+            # within the shared one -- taken from whoever holds the most.
+            mine = [k for k in self._buffers if k[0] == peer]
+            while len(mine) >= MAX_INFLIGHT_PER_PEER:
+                del self._buffers[mine.pop(0)]
+            while len(self._buffers) >= MAX_INFLIGHT:
+                self._evict_from_busiest()
         buf = self._buffers.setdefault(
             key, {"parts": {}, "total": total, "bytes": 0})
         # Adjust byte tally for a resent fragment so a peer cannot inflate it.
@@ -300,11 +314,11 @@ class Reassembler:
                 "[otr-recv] reassembly from %s exceeded %d bytes; dropping"
                 % (peer, MAX_BUFFER_BYTES))
             return None
-        agg = sum(b["bytes"] for b in self._buffers.values())
-        while agg > MAX_TOTAL_BYTES and self._buffers:
-            k = next(iter(self._buffers))
-            agg -= self._buffers[k]["bytes"]
-            del self._buffers[k]
+        while (sum(b["bytes"] for b in self._buffers.values()) > MAX_TOTAL_BYTES
+               and self._buffers):
+            self._evict_from_busiest(by_bytes=True)
+        if key not in self._buffers:
+            return None
 
         have = len(buf["parts"])
         self._debug(

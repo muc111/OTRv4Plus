@@ -330,22 +330,31 @@ class TestMalformedInput:
 
 class TestCleanupAndBounds:
     """There is no time-based timeout -- partial sets are bounded by count and
-    by bytes, and evicted oldest-first. Tested as it is, not as it might be."""
+    by bytes. Each peer has its own budget; past the shared one, the busiest
+    peer loses its oldest set."""
 
-    def test_too_many_in_flight_sets_are_evicted(self):
+    def test_one_peers_sets_are_bounded(self):
         r = frag.Reassembler()
-        for i in range(frag.MAX_INFLIGHT + 20):
+        for i in range(frag.MAX_INFLIGHT_PER_PEER + 20):
             r.feed(PEER, "?OTRv4F|%08x|1|2|chunk" % i)
-        assert r.pending() <= frag.MAX_INFLIGHT + 1, (
+        assert r.pending() == frag.MAX_INFLIGHT_PER_PEER, (
             "in-flight sets are unbounded, so a peer can hold memory open")
 
-    def test_eviction_takes_the_oldest_first(self):
+    def test_a_peer_over_budget_loses_its_own_oldest(self):
         r = frag.Reassembler()
-        for i in range(frag.MAX_INFLIGHT + 5):
+        for i in range(frag.MAX_INFLIGHT_PER_PEER + 5):
             r.feed(PEER, "?OTRv4F|%08x|1|2|chunk" % i)
         remaining = {key[1] for key in r.buffers}
         assert "00000000" not in remaining
-        assert "%08x" % (frag.MAX_INFLIGHT + 4) in remaining
+        assert "%08x" % (frag.MAX_INFLIGHT_PER_PEER + 4) in remaining
+
+    def test_the_shared_budget_is_bounded_too(self):
+        r = frag.Reassembler()
+        peers = frag.MAX_INFLIGHT // frag.MAX_INFLIGHT_PER_PEER + 10
+        for p in range(peers):
+            for i in range(frag.MAX_INFLIGHT_PER_PEER):
+                r.feed("p%d@x.i2p" % p, "?OTRv4F|%08x|1|2|x" % i)
+        assert r.pending() <= frag.MAX_INFLIGHT
 
     def test_an_oversized_set_is_dropped(self):
         """One fragment claiming more than the per-set cap."""
@@ -362,36 +371,21 @@ class TestCleanupAndBounds:
         r.clear()
         assert r.pending() == 0
 
-    def test_the_bounds_are_what_they_were(self):
-        """Moved, not retuned."""
+    def test_the_bounds(self):
         assert frag.MAX_FRAGMENTS == 4096
-        assert frag.MAX_INFLIGHT == 64
+        assert frag.MAX_INFLIGHT_PER_PEER == 16
+        assert frag.MAX_INFLIGHT == 1024
         assert frag.MAX_BUFFER_BYTES == 8 * 1024 * 1024
         assert frag.MAX_TOTAL_BYTES == 32 * 1024 * 1024
 
 
-class TestKnownWeaknessCrossPeerEviction:
-    """One peer can evict another peer's in-progress reassembly.
+class TestCrossPeerEvictionIsFixed:
+    """Formerly TestKnownWeaknessCrossPeerEviction: one peer could evict
+    another's in-progress reassembly with 65 small stanzas. The owner's
+    100-user stress test (2026-10-16) hit the same limit without an
+    attacker, dropping ~65% of a busy room's messages."""
 
-    NOT A PASSING GRADE. This test characterises behaviour that is wrong, so
-    that it is visible and so that fixing it is a deliberate act rather than an
-    accident. It was found while extracting this module and reported rather
-    than redesigned: changing the eviction policy is a protocol-behaviour
-    decision, not part of a refactor that had to preserve the wire format.
-
-    The mechanism: `MAX_INFLIGHT` is a budget shared across all peers, and
-    eviction takes the oldest set first. A peer who can send you stanzas opens
-    65 partial sets and your correspondent's half-received DAKE2 is gone. Their
-    handshake then fails, repeatably, and nothing on either side says why.
-
-    Sixty-five small stanzas is not a flood, so the receive path's rate limiting
-    does not close this.
-
-    **If you fix this, this test will fail.** That is the intent. Replace it
-    with one asserting the victim's frame survives.
-    """
-
-    def test_a_flooding_peer_evicts_another_peers_partial_set(self):
+    def test_a_flooding_peer_cannot_evict_another_peers_partial_set(self):
         victim, attacker = "alice@good.i2p", "mallory@bad.i2p"
         original = payload_of(13000, "V")
         parts, _seq = frag.fragment(original, 0)
@@ -399,25 +393,27 @@ class TestKnownWeaknessCrossPeerEviction:
         r = frag.Reassembler()
         r.feed(victim, parts[0])
         r.feed(victim, parts[1])
-        assert r.pending() == 1
-
         for i in range(frag.MAX_INFLIGHT + 5):
             r.feed(attacker, "?OTRv4F|%08x|1|2|x" % i)
+        assert r.feed(victim, parts[2]) == original
 
-        assert not [k for k in r.buffers if k[0] == victim], (
-            "the victim's set survived -- if this is now true, the weakness "
-            "has been fixed and this test should be replaced")
-        assert r.feed(victim, parts[2]) is None, (
-            "the victim's frame reassembled, so the weakness is fixed")
+    def test_a_busy_room_with_many_senders_loses_nothing(self):
+        """~90 members, each with a two-piece message, all interleaved."""
+        senders = ["room@muc.x/u%03d" % i for i in range(150)]
+        sets = {s: frag.fragment(payload_of(5000, s[-1]), i, frag.ROOM_FRAGMENT)[0]
+                for i, s in enumerate(senders)}
+        assert all(len(p) == 2 for p in sets.values())
+        r = frag.Reassembler()
+        for s in senders:
+            assert r.feed(s, sets[s][0]) is None
+        done = [r.feed(s, sets[s][1]) for s in senders]
+        assert all(d is not None for d in done)
 
-    def test_the_budget_is_global_rather_than_per_peer(self):
-        """The property the weakness reduces to, stated directly."""
+    def test_the_budget_is_per_peer(self):
         r = frag.Reassembler()
         for i in range(10):
             r.feed("peer%d@x.i2p" % i, "?OTRv4F|%08x|1|2|x" % i)
-        assert r.pending() == 10, (
-            "ten peers with one partial set each consume ten of one shared "
-            "budget; a per-peer budget would be the obvious remedy")
+        assert r.pending() == 10
 
 
 class TestTheHooksCannotBreakReassembly:

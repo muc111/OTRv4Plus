@@ -88,15 +88,31 @@ Nothing is fetched from the internet.
 | Prosody, adding 16 people to a group of 81-90 | **100% of one core for about 4 minutes**, memory 60 MB → 180 MB (peak 260 MB). The commit (~270 KB) goes to ~90 occupants and each new member gets a ~900 KB Welcome. |
 | Prosody memory after the run | Stayed at ~180 MB (Lua keeps what it allocated); a restart returns it |
 | Errors | No room errors, no disconnects |
-| Latency and delivery | Up to 49 members: 100% delivered, p95 under 1 s. From 65 members, latency rose to ~23 s and delivery fell to ~35%. |
+| Latency and delivery | Up to 49 members: 100% delivered, p95 under 1 s. From 65 members, latency rose to ~23 s and delivery fell to ~35% (both explained below). |
 
-**That last row measured the test, not the server.** Prosody was idle
-between bursts that came every ~25 s, the same as the latency. The test
-process was the bottleneck: every bot decrypted every chat line, even with
-`--observers 10`, which is ~10 000 post-quantum MLS decryptions per burst in
-one Python process. Fixed after this run: non-observers now skip chat
-lines, and the **harness lag** column shows when the test process itself
-is the bottleneck. Run it again to measure Prosody alone.
+**Why delivery fell: a real bug, now fixed (rc.93).** The CSV showed no
+undecryptable messages outside the minutes when members were added, so the
+lines were not failing to decrypt: they were never put back together. A chat
+line here is two pieces (post-quantum signatures make it ~6.5 KB). The
+receiving side held at most 64 half-received messages **shared by every
+sender**, and dropped the oldest when full. With ~90 members' pieces
+interleaved, about two thirds were thrown away. The app uses the same code,
+one per connection, so a busy secure group, or catching up on history after
+reconnecting, could lose messages silently. Each sender now has its own
+budget of 16 and the shared limit is 1024; a sender over budget loses only
+its own oldest piece. This also closes the documented weakness where one
+contact could push out another's half-received handshake.
+
+**The ~23 s latency was the test process.** Prosody idled between bursts
+every ~25 s. Every bot decrypted every chat line, even with
+`--observers 10`: ~10 000 post-quantum MLS decryptions per burst in one
+Python process. Non-observers now skip chat lines, and the **harness lag**
+column shows when the test process is the bottleneck.
+
+**Undecryptable bursts at group changes** (48, 2400, 2784): chat sent just
+before a change arrived after it, and the new epoch cannot read the old one.
+With 23 s of lag many lines were in flight; in normal use it is the few
+seconds around adding someone.
 
 **What it means for real groups:** adding many people at once to a large
 group is the expensive operation for the server. The app adds people one at

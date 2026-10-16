@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.93 — 2026-10-16 — busy groups no longer drop messages (core 0.13.1)
+
+- **Fixed: messages that arrive in pieces could be silently dropped when
+  many people sent at once.** Found by the owner's 100-user server test:
+  delivery fell to ~35% once ~65 members were talking. A secure-group line
+  is two pieces (post-quantum signatures). The receiving side kept at most
+  64 half-received messages shared by every sender and threw away the
+  oldest when full. Each sender now has its own budget (16), the shared
+  limit is 1024, and a sender over budget loses only its own oldest piece.
+  Same fix in the app, the desktop app and the terminal client. It also
+  closes a documented weakness: a contact could push out someone else's
+  half-received OTRv4+ handshake by sending 65 small fragments.
+- **Stress test:** non-observer bots no longer decrypt chat (the test was
+  measuring itself), and each minute shows undecryptable messages and the
+  test's own loop lag. `STRESS_TEST.md` records the first run on the T450.
+
 ## Android 0.7.0-experimental.rc.92 — 2026-10-16 — "already signed in on another device" (core 0.13.1)
 
 - **New: a server that allows one session per account is understood.** With
