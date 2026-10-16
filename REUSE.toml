@@ -108,6 +108,10 @@ path = [
     "desktop/docs/unverified.jpg",
     "desktop/docs/group.jpg",
     "desktop/docs/profile.jpg",
+    "android/docs/android-1-chats.png",
+    "android/docs/android-2-chat.png",
+    "android/docs/android-3-group.png",
+    "android/docs/android-4-people.png",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"

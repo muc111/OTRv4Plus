@@ -25,7 +25,7 @@ for what that covers and what it does not.
 |---|---|
 | ![A verified conversation](desktop/docs/chat.jpg) | ![An encrypted group, its verification and members](desktop/docs/group.jpg) |
 
-Rendered by the desktop app's tests with made-up accounts. Android shares the layout and theme.
+<p><img src="android/docs/android-1-chats.png" width="180" alt="Android: chats"> <img src="android/docs/android-2-chat.png" width="180" alt="Android: a verified conversation"> <img src="android/docs/android-3-group.png" width="180" alt="Android: an encrypted group"> <img src="android/docs/android-4-people.png" width="180" alt="Android: people"><br><sub>Android, left to right: chats, a verified conversation, an encrypted group, people. Both apps' screenshots are rendered by their tests from made-up accounts.</sub></p>
 
 ## Android app (experimental)
 
