@@ -78,6 +78,7 @@ path = [
     "SMP_UX_AUDIT.md",
     "SPEC.md",
     "SPEC_GROUP.md",
+    "STRESS_TEST.md",
     "TRADE.md",
     "TRANSPORT_AUDIT.md",
     "TRANSPORT_POLICY.md",

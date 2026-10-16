@@ -1039,8 +1039,10 @@ fn mask_with(pcm: &[u8], rate: u32, mode: Mode, seed: Option<[u8; 32]>) -> Resul
     let mut rng = StdRng::from_seed(seed);
     seed.zeroize();
     let mut input: Vec<f64> = pcm
-        .chunks_exact(2)
-        .map(|b| i16::from_le_bytes([b[0], b[1]]) as f64 / 32768.0)
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|b| i16::from_le_bytes(*b) as f64 / 32768.0)
         .collect();
     let mut y = mask_f64(&input, rate, mode, &mut rng);
     input.zeroize();
@@ -1111,7 +1113,7 @@ mod tests {
     }
 
     fn from_pcm(b: &[u8]) -> Vec<f64> {
-        b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f64 / 32768.0).collect()
+        b.as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c) as f64 / 32768.0).collect()
     }
 
     fn pitch(x: &[f64]) -> f64 {

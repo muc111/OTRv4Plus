@@ -73,7 +73,7 @@ impl OpusEncoder {
         if pcm.len() % 2 != 0 {
             return Err(PyValueError::new_err("PCM is not whole 16-bit samples"));
         }
-        let samples: Vec<i16> = pcm.chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        let samples: Vec<i16> = pcm.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();
         let out = self.inner.encode(&samples, frame_size).map_err(err)?;
         Ok(PyBytes::new(py, &out))
     }
