@@ -8016,6 +8016,13 @@ async def _audio_selftest_async():
                   "headphones." % _aud.ECHO_CANCEL_COMMAND)
 
 def main():
+    # Not in --help on purpose: a server load test, for that server's admins
+    # (the server enforces it -- see otrv4plus_stresstest).
+    # Loaded by name so the APK, which ships this file, need not carry it.
+    if "--stresstest" in sys.argv[1:]:
+        import importlib
+        stress = importlib.import_module("otrv4plus_stresstest")
+        sys.exit(stress.main([a for a in sys.argv[1:] if a != "--stresstest"]))
     # Device provisioning deliberately runs AFTER argument parsing, so that
     # --skip-setup, --force-setup and --sam-host/--sam-port are honoured.
     # Running it before argparse would make those flags unreachable.

@@ -1,0 +1,119 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+"""The server load test's group logic, with an in-memory room (no server)."""
+import random
+
+import pytest
+
+core = pytest.importorskip("otrv4_core")
+if not hasattr(core, "RustMlsClient"):
+    pytest.skip("this core was built without the mls feature", allow_module_level=True)
+
+import otrv4plus_stresstest as st  # noqa: E402
+
+ROOM = "stress-test@conference.x.i2p"
+
+
+class Clock:
+    def __init__(self):
+        self.t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _swarm(n, interval=30.0, observers=0):
+    clock = Clock()
+    bots = [st.Bot(i, "stress-t-%03d@x.i2p" % i, core) for i in range(n)]
+    if observers:
+        for b in bots[observers:]:
+            b.observe = False
+    room_log, directs = [], []
+
+    def send_room(bot, body):
+        room_log.append((st.Swarm.nick(bot), body))
+
+    def send_direct(bot, to, body):
+        directs.append((bot.jid, to, body))
+
+    sw = st.Swarm(core, ROOM, bots, send_room=send_room, send_direct=send_direct,
+                  interval=interval, clock=clock, rng=random.Random(7), say=lambda _m: None)
+
+    def pump():
+        # The room reflects every body to every occupant, in order; direct
+        # messages go to their one recipient.
+        while room_log or directs:
+            while room_log:
+                nick, body = room_log.pop(0)
+                for b in bots:
+                    sw.on_room(b, nick, body)
+            while directs:
+                frm, to, body = directs.pop(0)
+                sw.on_direct(sw.by_jid[to], frm, body)
+    return sw, bots, clock, pump
+
+
+def test_the_group_forms_in_batches_and_everyone_hears_everyone():
+    sw, bots, clock, pump = _swarm(9)
+    sw.create()
+    waiting = bots[1:]
+    while waiting:
+        assert sw.add_batch(waiting[:4])
+        waiting = waiting[4:]
+        pump()
+    assert all(b.member for b in bots)
+    assert sw.stats.commits == 2 and sw.stats.join_refused == 0
+    # Two minutes of chatter.
+    for _ in range(240):
+        clock.t += 0.5
+        sw.tick()
+        pump()
+    s = sw.stats
+    assert s.sent > 0
+    assert s.delivered == s.expected, (s.delivered, s.expected)
+    assert s.undecryptable == 0
+    row = sw.minute_row(120, online=9)
+    assert row["members"] == 9 and row["delivery_pct"] == 100.0
+    assert sw.stats.sent == 0            # reset for the next minute
+
+
+def test_the_chat_is_ciphertext_and_reads_like_people():
+    sw, bots, clock, pump = _swarm(3)
+    sw.create()
+    sw.add_batch(bots[1:])
+    seen = []
+    orig = sw.send_room
+    sw.send_room = lambda bot, body: (seen.append(body), orig(bot, body))
+    pump()
+    for _ in range(200):
+        clock.t += 0.5
+        sw.tick()
+        pump()
+    assert seen and all(b.startswith((st.ROOM_PREFIX, "?OTRv4F|")) for b in seen)
+    assert not any("news" in b or "Did you see" in b for b in seen)
+    assert "?" in st.chatter(random.Random(1)) or "." in st.chatter(random.Random(1))
+
+
+def test_observers_limit_who_decrypts():
+    sw, bots, clock, pump = _swarm(5, observers=2)
+    sw.create()
+    sw.add_batch(bots[1:])
+    pump()
+    for _ in range(200):
+        clock.t += 0.5
+        sw.tick()
+        pump()
+    assert sw.stats.delivered == sw.stats.expected > 0
+
+
+def test_the_flag_is_hidden_and_admin_only_by_design():
+    import otrv4plus_xmpp
+    src = open(otrv4plus_xmpp.__file__).read()
+    assert '"--stresstest" in sys.argv' in src
+    assert 'import_module("otrv4plus_stresstest")' in src    # not in the APK
+    ap = st.build_parser()
+    assert ap.parse_args(["--admin", "a@x"]).keep is False   # cleans up by default
+    # Accounts come from the server's admin command, which the server
+    # refuses to anyone but its admins.
+    assert st.ADMIN_ADD.endswith("admin#add-user")
+    assert "getpass" in open(st.__file__).read()
