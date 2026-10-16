@@ -4022,6 +4022,17 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         self._run(self._publish_avatar(png, w, h), 2 * AVATAR_TIMEOUT + 10)
         self._avatars.set_own(self._profile.jid, png)
 
+    @staticmethod
+    def _avatar_info(avatar_id: str, png: bytes, w: int, h: int) -> Dict[str, str]:
+        """The XEP-0084 <info/> attributes, as TEXT. Device report
+        (2026-10-16): with numbers here slixmpp's serializer raised a
+        TypeError while writing the metadata stanza, so it was never sent --
+        the picture itself reached the server (the server log shows it
+        stored), the announcement never did, and the app waited out its
+        timeout: "The server did not answer over I2P in time"."""
+        return {"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": str(len(png)),
+                "width": str(w), "height": str(h)}
+
     async def _publish_avatar(self, png: bytes, w: int, h: int) -> None:
         import hashlib
         plugin = self._client["xep_0084"]
@@ -4030,8 +4041,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         try:
             await plugin.publish_avatar(png, timeout=AVATAR_TIMEOUT)
             await plugin.publish_avatar_metadata(
-                [{"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": len(png),
-                  "width": w, "height": h}], timeout=AVATAR_TIMEOUT)
+                [self._avatar_info(avatar_id, png, w, h)], timeout=AVATAR_TIMEOUT)
         except Exception as exc:
             raise _avatar_publish_error(exc) from None
 

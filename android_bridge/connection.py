@@ -1707,10 +1707,28 @@ class ConnectionController:
             value = None
             _TRACE.record("muc", name, "error", code=code)
         else:
-            _TRACE.record("muc", name, "info" if code == "ok" else "warning",
-                          code=code)
+            if name in self._QUIET_POLLS and code == "ok":
+                # Polled every 10 s by the UI: recorded only when the answer
+                # changes, so the report's last events are not all this
+                # (device report, 2026-10-16). The admin answer itself is
+                # recorded -- a yes/no, nothing identifying.
+                summary = (bool(value) if name == "server_admin"
+                           else len(value or ()))
+                last = self.__dict__.setdefault("_quiet_last", {})
+                if last.get(name) != summary:
+                    last[name] = summary
+                    if name == "server_admin":
+                        _TRACE.record("muc", name, "info", code=code, admin=summary)
+                    else:
+                        _TRACE.record("muc", name, "info", code=code, count=summary)
+            else:
+                _TRACE.record("muc", name, "info" if code == "ok" else "warning",
+                              code=code)
         return {"ok": code == "ok", "code": code, "detail": detail,
                 "value": value}
+
+    #: Room calls the UI polls; traced only when their answer changes.
+    _QUIET_POLLS = frozenset({"owned_rooms", "server_admin"})
 
     def _roster_call(self, name: str, *args) -> Dict[str, Any]:
         # Every roster operation is traced, because "Add Contact did nothing"

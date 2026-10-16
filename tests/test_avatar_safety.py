@@ -675,3 +675,21 @@ def test_any_picture_is_fitted_to_the_limit():
     assert w == h == 60
     small = png(40, 40, 6)                          # already fine: untouched
     assert A_.fit(small) == small
+
+
+def test_the_metadata_stanza_actually_serialises():
+    """Device report (2026-10-16): the avatar's metadata announcement was
+    built with integer attributes, slixmpp could not write it, and it never
+    left the phone -- every picture "timed out" while the server had stored
+    it. This builds the real slixmpp stanza from what the transport passes
+    and writes it out."""
+    pytest.importorskip("slixmpp")
+    from slixmpp.plugins.xep_0084.stanza import MetaData
+    from android_bridge.transport import XmppTransport
+    data = png(96, 96, 6)
+    info = XmppTransport._avatar_info("a" * 40, data, 96, 96)
+    m = MetaData()
+    m.add_info(info["id"], info["type"], info["bytes"],
+               height=info.get("height", ""), width=info.get("width", ""), url="")
+    xml = str(m)
+    assert 'bytes="%d"' % len(data) in xml and 'width="96"' in xml

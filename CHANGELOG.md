@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.89 — 2026-10-16 — profile pictures publish (the real cause) (core 0.13.1)
+
+- **Found with the server log: the picture reached the server every time;
+  its announcement never left the phone.** A profile picture is two
+  requests: the image, then the metadata that tells contacts about it. The
+  Prosody debug log showed the image stored and answered within a second
+  (13:09:12, 13:11:14) and no second request at all. The metadata was built
+  with numbers for size, width and height, and slixmpp's serializer raised a
+  TypeError writing them, so the stanza was never sent and the app waited
+  out its timeout -- "The server did not answer over I2P in time". They are
+  now text; a new test builds and writes the real slixmpp stanza.
+  rc.85-rc.88's changes (longer timeout, the reason shown, fitting to 8 KB,
+  the smaller retry) stay; none of them was this.
+- **Diagnostics are readable again.** The 10-second owned-rooms and
+  server-admin polls filled the report's last events; they are now recorded
+  only when their answer changes, and the admin answer (yes/no) is shown.
+
 ## Android 0.7.0-experimental.rc.88 — 2026-10-16 — a server admin can moderate every room again (core 0.13.1)
 
 - **Device report: signed in as Alice, the server admin, "there is no
