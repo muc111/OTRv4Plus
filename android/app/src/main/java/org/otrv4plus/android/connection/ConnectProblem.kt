@@ -44,6 +44,17 @@ object ConnectProblem {
             "minutes if it just lost its connection. If it isn't you, " +
             "change your password."
 
+    /** The server closed this session for a newer sign-in of the account
+     *  (transport.REPLACED_CODE). Never retried by itself: a retry would sign
+     *  the other device out, and that one would do the same back. */
+    const val SIGNED_IN_ELSEWHERE = "signed_in_elsewhere"
+
+    const val SIGNED_IN_ELSEWHERE_TEXT =
+        "Signed out: this account signed in on another device, and the " +
+            "server keeps only the newest sign-in. Connect again to use it " +
+            "here (that signs the other device out). If it wasn't you, " +
+            "change your password."
+
     /** Transient failures in a row before one is shown as an error. */
     const val PERSISTENT_AFTER = 3
 
@@ -53,6 +64,7 @@ object ConnectProblem {
         "i2p_destination_changed", "i2p_name_invalid",
         "tls_required", "certificate_failure", "no_safe_auth_mechanism",
         "route_refused", "malformed_server", "bad_transport", "no_server",
+        SIGNED_IN_ELSEWHERE,
     )
 
     /** Codes I2P produces on its way up; retrying is the remedy. */
@@ -120,6 +132,7 @@ object ConnectProblem {
         "tls_required", "certificate_failure" ->
             "The server's encryption could not be verified, so nothing was sent."
         "profile_incomplete" -> "Fill in the address and password."
+        SIGNED_IN_ELSEWHERE -> SIGNED_IN_ELSEWHERE_TEXT
         else -> "The connection needs your attention ($code)."
     }
 

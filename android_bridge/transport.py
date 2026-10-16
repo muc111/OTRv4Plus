@@ -819,6 +819,15 @@ SESSION_LIMIT_TEXT = (
     "it just lost its connection. If it is not yours, change the password.")
 
 
+#: Shown when the server closed our session for a newer sign-in of the same
+#: account. Retrying would push that one out, so the app stops and says so.
+REPLACED_CODE = "signed_in_elsewhere"
+REPLACED_TEXT = (
+    "Signed out: this account signed in on another device, and the server "
+    "keeps only the newest sign-in. Connect again to use it here (that signs "
+    "the other device out). If it was not you, change your password.")
+
+
 def _is_session_limit(condition: str, text: str) -> bool:
     """mod_c2s_limit_sessions refuses with policy-violation and the text
     "Too many active connections to this account"; other policy refusals
@@ -4019,6 +4028,25 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         client.add_event_handler("presence_unavailable",
                                  lambda p: self._presence(p, False))
         client.add_event_handler("disconnected", self._on_disconnected)
+        client.add_event_handler("stream_error", self._on_live_stream_error)
+
+    def _on_live_stream_error(self, stanza) -> None:
+        """The server ended a signed-in stream with an error.
+
+        `conflict` is the one that matters: this account signed in elsewhere
+        and the server closed THIS session for the newer one (Prosody's
+        resource conflict, or mod_otrv4plus_one_session). Reconnecting would
+        throw the other session out in turn, so the drop that follows is
+        reported as "replaced", which stops the reconnect loop.
+        """
+        try:
+            cond = str(stanza["condition"] or "")
+        except Exception:
+            cond = ""
+        _TRACE.record("transport", "live_stream_error", "warning",
+                      condition=cond or "unknown")
+        if cond == "conflict":
+            self._replaced = True
 
     def _note_inbound(self, stanza):
         """Record that the stream delivered something. Returns it unchanged.
@@ -4518,6 +4546,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         self._caps.clear()
         self._welcome.clear()
         self._room_nicks.clear()
+        if getattr(self, "_replaced", False):
+            self._replaced = False
+            self._emit_state("replaced")
+            return
         self._emit_state("disconnected")
 
     def _emit_state(self, state: str) -> None:

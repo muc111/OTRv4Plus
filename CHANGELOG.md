@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.95 — 2026-10-16 — reconnecting after a drop, and a Disconnect that shows (core 0.13.1)
+
+- **Fixed: after the connection dropped, signing back in was refused** with
+  "This account is already signed in on another device" (owner report). The
+  server kept the phone's dead session for minutes, and the one-session
+  module refused every new sign-in while it did. The new server module
+  `prosody/mod_otrv4plus_one_session.lua` lets the **newest** sign-in win
+  and signs the older one out. That also stops someone with a stolen
+  password locking you out by signing in first. Setup is in
+  SECURITY_SESSIONS.md; it replaces `mod_c2s_limit_sessions`.
+- **A device signed out that way stops and says so**: "Signed out: this
+  account signed in on another device… If it wasn't you, change your
+  password." It does not reconnect by itself, so two devices cannot keep
+  throwing each other out. Connect signs in again. Android, desktop and
+  the terminal client.
+- **Fixed: Disconnect and Sign out looked as if they did nothing.** The
+  screen kept saying connected while the teardown ran in the background
+  (up to ~15 s over I2P). It now changes the moment you press.
+- **Rooms:** a refusal the server calls "forbidden" no longer says "You are
+  banned"; banned is one reason, the server's rules are another.
+- **Stress test:** its rooms are created non-persistent and destroyed at
+  the end. STRESS_TEST.md has the console lines that removed the 97 left
+  over from earlier runs, and the capacity figures (about 1,000 users on
+  the T450).
+- **Desktop on Ubuntu/Debian:** one line builds it from source and installs
+  it (`desktop/install.sh`); CI runs it on a clean Ubuntu 24.04.
+
 ## Android 0.7.0-experimental.rc.94 — 2026-10-16 — invite several people at once (core 0.13.1)
 
 - **New: "Invite people online…" in a secure group** (Android and desktop).

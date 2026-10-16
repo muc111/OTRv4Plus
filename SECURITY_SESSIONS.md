@@ -34,19 +34,30 @@ as you on the server. Treat it as urgent.
 ## Allowing only one session per account (Prosody)
 
 This has to be enforced by the server; a client cannot stop another client
-signing in. Prosody's community module
-[`mod_c2s_limit_sessions`](https://modules.prosody.im/mod_c2s_limit_sessions)
-limits how many resources one account may have connected. Its option is
-`max_resources`, which defaults to 10.
+signing in. Use this repository's module
+[`prosody/mod_otrv4plus_one_session.lua`](prosody/mod_otrv4plus_one_session.lua):
+one session per account, and **the newest sign-in wins**. The older session
+is signed out with the stream error `conflict`.
 
-On the server: `prosodyctl install` needs `luarocks`. Without it, the
-module is a single file. Fetch it into a plugin folder:
+Why the newest wins: over I2P, a phone that drops its connection leaves its
+old session on the server for minutes. When the first session won (the
+community module `mod_c2s_limit_sessions`), reconnecting was refused by your
+own dead session: *"This account is already signed in on another device"*
+(T450, 2026-10-16). It also meant that anyone who signed in first with your
+password locked **you** out. Now you always get back in, and they are the
+one signed out.
+
+Two devices cannot keep pushing each other out. The app, the desktop app
+and the terminal client do **not** reconnect after being signed out this
+way. They say: *"Signed out: this account signed in on another device…
+If it wasn't you, change your password."* Pressing Connect signs in again,
+which signs the other device out.
+
+Install (the plugin folder must be in `plugin_paths`; it is on the T450):
 
 ```bash
 sudo mkdir -p /usr/local/lib/prosody/custom_modules
-cd /usr/local/lib/prosody/custom_modules
-sudo wget -O mod_c2s_limit_sessions.lua \
-  https://hg.prosody.im/prosody-modules/raw-file/tip/mod_c2s_limit_sessions/mod_c2s_limit_sessions.lua
+sudo cp ~/OTRv4Plus/prosody/mod_otrv4plus_one_session.lua /usr/local/lib/prosody/custom_modules/
 ```
 
 In `prosody.cfg.lua`, before any `VirtualHost`:
@@ -56,29 +67,13 @@ plugin_paths = { "/usr/local/lib/prosody/modules", "/usr/local/lib/prosody/custo
 max_resources = 1
 ```
 
-Add `"c2s_limit_sessions";` inside the existing `modules_enabled` list.
+Add `"otrv4plus_one_session";` to `modules_enabled`, and take out
+`"c2s_limit_sessions";` if it is there; the two must not run together.
 Then run `sudo prosodyctl check config && sudo systemctl restart prosody`.
 
-**What it does** (read from the module's source): at resource bind it counts
-the account's sessions. When there are already `max_resources`, it refuses
-the **new** one with `policy-violation`, "Too many active connections to
-this account". The session already signed in stays. The app, the desktop
-app and the terminal client then say *"This account is already signed in on
-another device"* instead of a generic connection error. The terminal stops;
-the apps keep retrying.
-
-Because the first session wins, if someone else signs in first, **you** are
-locked out. Change the password on the server (`sudo prosodyctl passwd
-alice@server`), then end their session (`sudo prosodyctl shell`, then
-`c2s:close("alice@server")`).
-
-**The trade-off over I2P.** When a phone loses its connection, the server can
-keep the old session for several minutes before timing it out. With
-`max_resources = 1`, the reconnect can be refused until then. The app keeps
-retrying, so it gets back in, just later. `max_resources = 2` avoids that
-delay and still blocks a third device, while the app's warning shows the
-second. As an admin you also need a free slot to run the stress test (see
-`STRESS_TEST.md`) from another machine.
+`max_resources = 2` allows two devices, and a third signs the oldest out.
+To run the stress test as the admin from another machine (`STRESS_TEST.md`),
+you need that second slot, or the test signs your app out.
 
 ## If you see the warning and it is not you
 

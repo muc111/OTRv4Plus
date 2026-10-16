@@ -610,6 +610,12 @@ class OtrConnectionService : Service() {
         watcher = null
         enter(LinkPhase.DISCONNECTING,
               if (explicit) "the user asked to stop" else "teardown")
+        // The screens read `status`, and nothing else wrote it after a
+        // disconnect: it kept saying connected, so Disconnect and Sign out
+        // looked as though they had done nothing (owner report, 2026-10-16)
+        // while the teardown ran -- up to ~15 s over I2P. Not connected from
+        // the tap: nothing is sent from here on.
+        status = status.copy(connected = false, stage = "idle")
         // Off the main thread: this crosses into Python and blocks.
         //
         // AND OFF `scope`, for the same reason the engine teardown is. Both
@@ -626,7 +632,10 @@ class OtrConnectionService : Service() {
         teardown.launch {
             withContext(Dispatchers.IO) {
                 runCatching { core.cancelConnect() }
-                runCatching { core.disconnect() }
+                runCatching { core.disconnect() }.getOrNull()?.let {
+                    // Unless a new attempt has started meanwhile.
+                    if (phase == LinkPhase.DISCONNECTING) status = it
+                }
                 // After the engine has closed its SAM sessions. Only on a
                 // stop the user asked for: a dropped stream reconnects, and
                 // through the same router.
@@ -826,6 +835,15 @@ class OtrConnectionService : Service() {
             } ?: continue
             status = current
             if (!current.connected) {
+                // Replaced by a newer sign-in of this account: stop, and say
+                // so. Reconnecting would sign that device out, and it would
+                // do the same back.
+                if (current.code == ConnectProblem.SIGNED_IN_ELSEWHERE) {
+                    failure = current.code
+                    reconnect.onFailure(current.code)
+                    enter(LinkPhase.FAILED, "needs the user: ${current.code}")
+                    return
+                }
                 // The transport's own flag went false. Python has already
                 // recorded WHY -- keepalive, or slixmpp closing the stream --
                 // so this line is where the two halves meet.

@@ -352,6 +352,20 @@ class ConnectionController:
 
     def _on_transport_state(self, state: str, _server: str) -> None:
         """Translate a transport state into a stage, and never invent one."""
+        if state == "replaced":
+            # Another sign-in of this account took the server's only slot
+            # (transport.REPLACED_TEXT). A failure the user must act on, not
+            # a drop to reconnect from: reconnecting would push them out.
+            from .transport import REPLACED_CODE, REPLACED_TEXT
+            try:
+                self._app.note_presence_lost()
+            except Exception:
+                _log.warning("could not clear presence on a transport drop")
+            forget = getattr(self._app, "forget_rooms", None)
+            if forget is not None:
+                forget()
+            self._fail(REPLACED_CODE, REPLACED_TEXT)
+            return
         stage = self._TRANSPORT_STAGE.get(state, state)
         if stage not in self.STAGES:
             # A transport state this controller has no stage for. Dropping it

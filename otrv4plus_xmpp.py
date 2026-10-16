@@ -2547,6 +2547,13 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         "unsupported-version": "the server requires a different XMPP version.",
         "invalid-namespace": "protocol mismatch — is this an XMPP server?",
         "see-other-host": "the server redirected to another host.",
+        # Replaced by a newer sign-in of this account (the server keeps only
+        # the newest). Reconnecting would sign that one out in turn.
+        "conflict": "signed out: this account signed in somewhere else, and "
+                    "the server keeps only the newest sign-in.\n"
+                    "  Start the client again to use it here (that signs the "
+                    "other one out).\n"
+                    "  If it was not you, change your password.",
     }
 
     def _on_stream_error(self, error):
@@ -2575,8 +2582,11 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
 
         self._shutting_down = True          # stop the reconnect loop
         print("\n[fatal] %s" % self._FATAL_STREAM_ERRORS[matched])
-        print("[fatal] Not retrying — this cannot succeed without a change "
-              "to your arguments or the server configuration.\n")
+        if matched == "conflict":
+            print()
+        else:
+            print("[fatal] Not retrying — this cannot succeed without a change "
+                  "to your arguments or the server configuration.\n")
         try:
             self.disconnect()
         except Exception:
