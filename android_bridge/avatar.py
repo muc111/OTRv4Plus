@@ -50,7 +50,8 @@ from collections import OrderedDict
 from typing import Dict, List, Optional, Tuple
 
 __all__ = ["AvatarError", "Avatar", "decode_png", "AvatarBook",
-           "MAX_BYTES", "MAX_DIMENSION", "OWN_SIZE", "PNG_TYPE"]
+           "MAX_BYTES", "MAX_DIMENSION", "OWN_SIZE", "PNG_TYPE",
+           "SMALL_SIZE", "encode_png", "shrink"]
 
 #: Largest avatar accepted, in bytes. Real avatars are a few kilobytes; the
 #: app publishes OWN_SIZE x OWN_SIZE.
@@ -60,6 +61,9 @@ MAX_DIMENSION = 256
 #: The size the app scales its own avatar to before publishing.
 OWN_SIZE = 96
 PNG_TYPE = "image/png"
+#: A second, much smaller try when the first publish got no answer
+#: (device report, 2026-10-16: "The server did not answer over I2P in time").
+SMALL_SIZE = 48
 #: base64 of MAX_BYTES, with slack for line breaks a server may add.
 MAX_B64_CHARS = (MAX_BYTES + 2) // 3 * 4 + 1024
 #: How many contacts' avatars are kept.
@@ -257,6 +261,58 @@ def decode_png(data: bytes) -> Tuple[int, int, bytes]:
                 raise AvatarError("bad_palette")
             rgba[4 * i:4 * i + 4] = entry
     return w, h, bytes(rgba)
+
+
+def encode_png(width: int, height: int, rgba: bytes) -> bytes:
+    """A plain 8-bit PNG of [rgba]: RGB when every pixel is opaque (smaller),
+    else RGBA. Filter 0, zlib level 9. Only our own picture is encoded."""
+    rgba = bytes(rgba)
+    if len(rgba) != width * height * 4:
+        raise AvatarError("bad_size")
+    opaque = all(a == 255 for a in rgba[3::4])
+    channels = 3 if opaque else 4
+    rows = bytearray()
+    for y in range(height):
+        row = rgba[y * width * 4:(y + 1) * width * 4]
+        if opaque:
+            packed = bytearray(width * 3)
+            packed[0::3], packed[1::3], packed[2::3] = row[0::4], row[1::4], row[2::4]
+            row = bytes(packed)
+        rows += b"\x00" + row
+
+    def chunk(kind: bytes, body: bytes) -> bytes:
+        return (struct.pack(">I", len(body)) + kind + body
+                + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
+
+    header = struct.pack(">IIBBBBB", width, height, 8, 6 if channels == 4 else 2, 0, 0, 0)
+    return (_SIGNATURE + chunk(b"IHDR", header)
+            + chunk(b"IDAT", zlib.compress(bytes(rows), 9)) + chunk(b"IEND", b""))
+
+
+def shrink(png: bytes, size: int = SMALL_SIZE) -> bytes:
+    """[png] scaled down to [size] x [size] (box average) and re-encoded.
+    Never larger than the original."""
+    w, h, rgba = decode_png(png)
+    if w <= size and h <= size:
+        return bytes(png)
+    out = bytearray(size * size * 4)
+    for ty in range(size):
+        y0, y1 = ty * h // size, max(ty * h // size + 1, (ty + 1) * h // size)
+        for tx in range(size):
+            x0, x1 = tx * w // size, max(tx * w // size + 1, (tx + 1) * w // size)
+            acc = [0, 0, 0, 0]
+            n = 0
+            for y in range(y0, y1):
+                base = y * w * 4
+                for x in range(x0, x1):
+                    i = base + x * 4
+                    acc[0] += rgba[i]; acc[1] += rgba[i + 1]
+                    acc[2] += rgba[i + 2]; acc[3] += rgba[i + 3]
+                    n += 1
+            o = (ty * size + tx) * 4
+            out[o:o + 4] = bytes(v // n for v in acc)
+    small = encode_png(size, size, bytes(out))
+    return small if len(small) < len(png) else bytes(png)
 
 
 def _clean_id(value) -> str:

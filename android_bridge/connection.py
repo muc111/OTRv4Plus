@@ -1507,10 +1507,16 @@ class ConnectionController:
             elif code == "avatar_refused":
                 detail = ("The picture could not be used (%s)."
                           % getattr(exc, "detail", ""))
+            elif code == "timeout" and getattr(exc, "detail", "") == "dropped":
+                detail = ("The connection to the server dropped while the "
+                          "picture was being sent: the server or the I2P path "
+                          "would not carry it. Try again once reconnected -- "
+                          "a smaller copy is sent next time.")
             elif code == "timeout":
-                detail = ("The server did not answer in time over I2P, so the "
-                          "picture may not be saved. Try again in a minute -- "
-                          "a fresh I2P path is often slow at first.")
+                detail = ("The server did not answer in time over I2P, even "
+                          "for a smaller copy. Its log will say why (Prosody: "
+                          "look for \"pep\" or \"stanza size\" at that time). "
+                          "Try again in a minute.")
             elif code == "avatar_server_refused":
                 cond = str(getattr(exc, "detail", ""))[:64]
                 if cond in ("not-acceptable", "policy-violation",
@@ -1529,6 +1535,10 @@ class ConnectionController:
                           % (getattr(exc, "detail", "") or code))
             return {"ok": False, "code": code, "detail": detail, "value": None}
         _TRACE.record("avatar", "published", "info")
+        if getattr(transport, "avatar_sent_small", False):
+            return {"ok": True, "code": "ok", "value": None,
+                    "detail": "Your picture is updated (sent smaller, 48 x 48: "
+                              "the full size got no answer over I2P)."}
         return {"ok": True, "code": "ok", "detail": "", "value": None}
 
     def set_avatar_b64(self, text: str) -> Dict[str, Any]:

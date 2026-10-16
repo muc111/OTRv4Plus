@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.86 — 2026-10-16 — an unanswered picture is sent again, smaller (core 0.13.1)
+
+- **Device report on rc.85: "The server did not answer over I2P in time"**
+  -- with messages working. Whatever is in the way (the server's stanza
+  limit or the I2P stream on one ~25 KB stanza), the server never answered
+  the full picture. Now, if the stream is still up, a **48 x 48 copy**
+  (re-encoded here, a few KB: a worst-case photo goes from 28 KB to 6.5 KB)
+  is sent at once, and the app says "sent smaller". If the stream dropped
+  during the send, the message says so and the next try is small from the
+  start. The diagnostics report records size, whether the stream dropped,
+  and which copy went.
+
 ## Android 0.7.0-experimental.rc.85 — 2026-10-16 — profile pictures: a real reason, and time to upload (core 0.13.1)
 
 - **Device report: pictures still failed, with PEP on the server.** Two

@@ -708,7 +708,8 @@ class ChatViewModel : ViewModel() {
             }
             avatarStatus = when {
                 outcome == null -> "Your picture could not be published."
-                outcome.ok -> "Your picture is updated. Contacts see it when they next connect."
+                outcome.ok -> outcome.detail.ifBlank {
+                    "Your picture is updated. Contacts see it when they next connect." }
                 else -> outcome.detail.ifBlank { "Your picture could not be published." }
             }
             lastAvatars = 0L

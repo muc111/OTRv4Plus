@@ -802,7 +802,7 @@ class AppModel(
             val png = withContext(Dispatchers.Default) { Avatars.ownPng(java.io.File(path)) }
             if (png == null) { chat.note("That picture could not be read."); changed(); return@launch }
             val r = withContext(Dispatchers.IO) { core.setAvatar(png) }
-            chat.note(if (r.ok) "Your picture is published." else r.detail.ifBlank { "The picture was not published (${r.code})." })
+            chat.note(if (r.ok) r.detail.ifBlank { "Your picture is published." } else r.detail.ifBlank { "The picture was not published (${r.code})." })
             refreshAvatars()
             changed()
         }

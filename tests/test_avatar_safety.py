@@ -502,6 +502,58 @@ class TestTheTransport:
         t.publish_avatar(good)
         assert plugin.published == [("data", len(good)), ("meta", "image/png")]
 
+    def test_an_unanswered_picture_is_sent_again_smaller(self):
+        """Device report (2026-10-16, rc.85): "The server did not answer
+        over I2P in time". The connection stayed up: the full picture got no
+        answer, so a 48 x 48 copy goes at once -- and says so."""
+        slixmpp = pytest.importorskip("slixmpp")
+        from slixmpp.exceptions import IqTimeout
+        from android_bridge import avatar as A_
+        from android_bridge.connection import ConnectionController
+        t, plugin, _asyncio = self._transport("")
+        self._real_run(t)
+        sizes = []
+        calls = [0]
+
+        async def publish(data, timeout=None):
+            sizes.append(len(data))
+            calls[0] += 1
+            if calls[0] == 1:
+                raise IqTimeout(slixmpp.stanza.Iq())
+            plugin.published.append(("data", len(data)))
+
+        plugin.published.clear()
+        plugin.publish_avatar = publish
+        big = png(96, 96, 6)
+        ctl = ConnectionController.__new__(ConnectionController)
+        ctl._transport = t
+        out = ctl.set_avatar(big)
+        assert out["ok"] and "smaller" in out["detail"]
+        assert sizes[0] == len(big) and sizes[1] < len(big)
+        w, h, _ = A_.decode_png(A_.shrink(big))
+        assert (w, h) == (A_.SMALL_SIZE, A_.SMALL_SIZE)
+        # Learned: the next picture goes small straight away.
+        sizes.clear()
+        assert ctl.set_avatar(big)["ok"] and sizes == [len(A_.shrink(big))]
+
+    def test_a_dropped_stream_is_named_and_the_next_try_is_small(self):
+        slixmpp = pytest.importorskip("slixmpp")
+        from slixmpp.exceptions import IqTimeout
+        from android_bridge.connection import ConnectionController
+        t, plugin, _asyncio = self._transport("")
+        self._real_run(t)
+
+        async def publish(data, timeout=None):
+            t._disconnects = getattr(t, "_disconnects", 0) + 1   # the stream went
+            raise IqTimeout(slixmpp.stanza.Iq())
+
+        plugin.publish_avatar = publish
+        ctl = ConnectionController.__new__(ConnectionController)
+        ctl._transport = t
+        out = ctl.set_avatar(png(96, 96, 6))
+        assert out["code"] == "timeout" and "dropped" in out["detail"]
+        assert t._avatar_small_next
+
     def test_the_controller_hands_raw_pixels_not_the_file(self):
         from android_bridge.connection import ConnectionController
         data = png(5, 4, 6)
@@ -592,3 +644,15 @@ def test_the_bridge_takes_the_phones_base64_and_publishes_it():
     out = c.set_avatar_b64(base64.b64encode(png).decode())
     assert out["ok"], out
     assert published == [png]
+
+
+def test_our_encoder_round_trips_through_the_hardened_decoder():
+    from android_bridge import avatar as A_
+    for colour in (6, 2):
+        data = png(96, 96, colour)
+        w, h, rgba = A_.decode_png(data)
+        again = A_.encode_png(w, h, rgba)
+        assert A_.decode_png(again) == (w, h, rgba)
+    small = A_.shrink(png(96, 96, 6))
+    assert A_.decode_png(small)[:2] == (48, 48)
+    assert A_.shrink(png(40, 40, 6)) == png(40, 40, 6)     # already small

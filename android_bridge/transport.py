@@ -3944,13 +3944,50 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         try:
             if len(png) > _avatar.MAX_BYTES:
                 raise _avatar.AvatarError("too_large")
-            w, h, _rgba = _avatar.decode_png(png)
+            _avatar.decode_png(png)
         except _avatar.AvatarError as exc:
             raise TransportError("avatar_refused", exc.code)
         # Two round trips, each with its own AVATAR_TIMEOUT, and a little
         # over for the loop. Failures are already classified (see
         # _avatar_publish_error): a server without PEP (XEP-0163) is
         # "pep_unavailable", any other refusal names its condition.
+        #
+        # Device report (2026-10-16, rc.85): "The server did not answer over
+        # I2P in time" -- messages fine, the picture never answered. Either
+        # the server or the I2P path will not carry a stanza that size. So:
+        # after an unanswered try, a much smaller copy (SMALL_SIZE, a few KB)
+        # is sent at once if the stream is still up, or on the next attempt
+        # if it dropped; and the report says which happened.
+        self.avatar_sent_small = False
+        dropped_before = getattr(self, "_disconnects", 0)
+        small_first = getattr(self, "_avatar_small_next", False)
+        first = _avatar.shrink(png) if small_first else png
+        try:
+            self._publish_avatar_png(first)
+            self.avatar_sent_small = small_first and len(first) < len(png)
+            return
+        except TransportError as exc:
+            if exc.code != "timeout":
+                raise
+            dropped = getattr(self, "_disconnects", 0) != dropped_before
+            _TRACE.record("avatar", "publish_unanswered", "warning",
+                          bytes=len(first), dropped=dropped,
+                          small=small_first)
+            self._avatar_small_next = True
+            if small_first or dropped or not self.is_connected:
+                raise TransportError("timeout", "dropped" if dropped else "no_answer")
+        small = _avatar.shrink(png)
+        if len(small) >= len(png):
+            raise TransportError("timeout", "no_answer")
+        self._publish_avatar_png(small)
+        self.avatar_sent_small = True
+        _TRACE.record("avatar", "published_small", "info", bytes=len(small))
+
+    #: True when the last successful publish was the smaller copy.
+    avatar_sent_small = False
+
+    def _publish_avatar_png(self, png: bytes) -> None:
+        w, h, _rgba = _avatar.decode_png(png)
         self._run(self._publish_avatar(png, w, h), 2 * AVATAR_TIMEOUT + 10)
         self._avatars.set_own(self._profile.jid, png)
 
@@ -4296,6 +4333,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         # a healthy session".
         _TRACE.record("transport", "stream_closed_by_slixmpp", "warning",
                       quiet_for=round(self._stream_quiet_for()))
+        self._disconnects = getattr(self, "_disconnects", 0) + 1
         self._connected.clear()
         # Every resource's presence is unknown now; capability goes with it,
         # and so does who was in the Welcome room.
