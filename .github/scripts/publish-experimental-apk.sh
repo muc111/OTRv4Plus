@@ -114,9 +114,16 @@ installed), and with the Termux client.
 | Group calls | Two-way group voice calls (re-confirmed rc.89) |
 | Location | Location pins from GPS only, received as a card (rc.73; since rc.80 only to verified contacts and groups — re-confirmed rc.89) |
 | Profile picture | Setting a profile picture from a phone photo; contacts receive it (rc.89 — the server log shows both the picture and its announcement stored and delivered) |
-| Moderation | Signed in as the server admin, Delete shows on every room (rc.88) |
-| Voice notes | Voice notes in **My voice** |
-| Rooms | Room discovery, creating and joining a room |
+| Moderation | Signed in as the server admin, Delete shows on every room (rc.88); an ordinary member sees Leave only (rc.83) |
+| Voice notes | Voice notes in **My voice** and **Synthetic** (rc.81: no whistle, a random voice per note; Disguised removed) |
+| Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
+| Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
+| Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
+| Joining a group | After accepting an invitation the room shows *setting up end-to-end encryption* until it is ready, never "not encrypted" (rc.81) |
+| Verification | A moving progress bar on both phones while verifying, 1:1 and groups (rc.81) |
+| Calls | The phone icon turns green once the call path is ready; no crash on hang-up; a group call that goes one-way repairs itself (rc.74–rc.77) |
+| Sign-in | The first connection says it is **setting up (2–5 minutes, normal)**, never "Connection lost" (rc.82) |
+| Background | The app stays connected in the background |
 | App | Bottom bar on every main screen; the 📎 and 🎤 buttons in the composer |
 | Wipe | **Wipe & Exit, including deleting the account from the server** |
 
@@ -124,21 +131,10 @@ installed), and with the Termux client.
 
 | Area | What to test | Since |
 |---|---|---|
-| Synthetic voice notes | **Synthetic** was rebuilt: no whistle, every note's voice drawn from the phone's own random generator, changing through the note. **Disguised is gone** (rc.81): the choice is Synthetic or My voice. Record the same sentence in both and compare | rc.77–rc.81 |
-| Picture formats | Choose a profile picture in **any format** — JPEG, PNG, WebP, HEIC, AVIF, GIF, BMP — any size: it is converted and fitted to the app's limit (at most 96 x 96 and 8 KB) | rc.87 |
 | Group status and call limit | A group's line reads **"Encrypted Chat \| 5/6 users verified"** and updates as members are verified; a group of **6 or more has no call button** ("Text only") | rc.84 |
-| Delete buttons | An ordinary member (not the creator, not an admin) sees **Leave only**, no Delete | rc.83 |
-| Sign-in wording | While the built-in router sets up the first connection the screen says it is **setting up (2–5 minutes, normal)**, never "Connection lost" | rc.82 |
-| Verification progress | A moving bar on **both** phones (and the desktop and terminal) from the moment verification starts until it ends, 1:1 and groups | rc.81 |
-| Joining a secure group | After accepting an invitation the room shows *setting up end-to-end encryption* with a bar, never "not encrypted"; typing is held until it is ready | rc.81 |
-| Ready-to-call phone | The phone icon should turn **green on both phones** within a few minutes of signing in, in any chat; a call placed while green should start without the 30–120 s wait | rc.76–rc.77 |
-| Hang-up | No crash when hanging up 1:1 and group calls (the Pixel crashed in rc.74) | rc.75 |
-| Group-call recovery | If one side stops hearing the other, the call repairs itself (at most twice). Send the diagnostics report from **both** phones after a group call | rc.74 |
-| Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups | rc.68–rc.69 |
-| Room history | Earlier room messages loaded from the server archive | rc.68 |
 | Location | Before verification 📍 explains and the GPS never starts; a mock-location app's position; typing a Plus Code; "Open in maps app" | rc.73–rc.80 |
 | Photos | The "hidden information" question strips a camera photo's location | — |
-| Staying connected | Background survival, reconnect after a network change | — |
+| Network change | Reconnecting by itself after switching between Wi-Fi and mobile data | — |
 | Desktop app | The desktop (Linux/Qubes) client against the same server | — |
 
 ## ⚠️ Known limits

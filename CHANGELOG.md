@@ -19,8 +19,12 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   the smaller retry) stay; none of them was this.
 - **Confirmed on the phones (owner, 2026-10-16):** profile pictures
   publish and reach contacts, files to a secure group, two-way group calls,
-  GPS location pins, and Delete for the server admin. The release page's
-  "Verified" table is updated.
+  GPS location pins, and Delete for the server admin. Later the same day:
+  Synthetic voice notes, picture formats, Leave-only for ordinary members,
+  the sign-in wording, verification progress bars, joining a secure group,
+  the green phone icon, hang-up and group-call recovery, message actions,
+  room history and background survival. The release page's "Verified"
+  table is updated; five items remain to test.
 - **Diagnostics are readable again.** The 10-second owned-rooms and
   server-admin polls filled the report's last events; they are now recorded
   only when their answer changes, and the admin answer (yes/no) is shown.
