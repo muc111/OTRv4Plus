@@ -3381,6 +3381,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             await self._configure_new_room(room)
         self._room_nicks[str(room).split("/", 1)[0].lower()] = nick
         if password:
+            # Kept (memory only): for a rejoin, and for the invitations of a
+            # password-protected secure group (groups.ROOMPW).
+            self.remember_room_password(room, password)
+        if password:
             protected = False
             try:
                 info = await self._client["xep_0030"].get_info(

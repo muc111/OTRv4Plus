@@ -212,6 +212,10 @@ fun ConversationsScreen(
                 }
             }
 
+            // A password-protected group's room (device report, 2026-10-16:
+            // the join failed with "not_authorized" and nothing asked).
+            model.groupPasswordFor?.let { room -> GroupRoomPasswordPrompt(model, room) }
+
             if (BuildConfig.DEV_DIAGNOSTICS && model.droppedEvents > 0) {
                 Text(
                     "${model.droppedEvents} update(s) were dropped while the " +
@@ -726,5 +730,36 @@ private fun DeleteChatDialog(
             }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text(ChatDeletion.CANCEL) } },
+    )
+}
+
+/** The room password for a secure group whose invitation did not carry it.
+ *  Held only in this dialog; it goes to the room when joining. */
+@Composable
+private fun GroupRoomPasswordPrompt(model: ChatViewModel, room: String) {
+    var password by androidx.compose.runtime.remember(room) {
+        androidx.compose.runtime.mutableStateOf("")
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { model.groupPasswordFor = null },
+        title = { Text("Room password") },
+        text = {
+            Column {
+                Text(org.otrv4plus.android.chat.GroupText.outcome("group_password_needed").orEmpty(),
+                     style = MaterialTheme.typography.bodySmall)
+                androidx.compose.material3.OutlinedTextField(
+                    value = password, onValueChange = { password = it },
+                    singleLine = true, label = { Text(room) },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = password.isNotEmpty(),
+                       onClick = { model.acceptGroupInvite(room, password); password = "" }) {
+                Text("Join")
+            }
+        },
+        dismissButton = { TextButton(onClick = { model.groupPasswordFor = null }) { Text("Cancel") } },
     )
 }

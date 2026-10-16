@@ -198,6 +198,12 @@ class RowSecurityTest {
         val members = listOf(m("me@x", me = true), m("a@x", verified = true),
                              m("b@x", verified = true), m("c@x"))
         assertEquals(3 to 4, GroupText.verifiedCount(members))
+        // Alone, or nobody verified yet: 0/n (device report, 2026-10-16:
+        // a new group read "1/1 verified").
+        assertEquals(0 to 1, GroupText.verifiedCount(listOf(m("me@x", me = true))))
+        assertEquals(0 to 3, GroupText.verifiedCount(listOf(m("me@x", me = true), m("a@x"), m("b@x"))))
+        assertEquals(3 to 3, GroupText.verifiedCount(listOf(m("me@x", me = true),
+            m("a@x", verified = true), m("b@x", verified = true))))
     }
 
     @Test

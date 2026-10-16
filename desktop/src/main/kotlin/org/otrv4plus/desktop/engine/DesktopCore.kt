@@ -296,7 +296,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         return names(r["value"]) to r["supported"].asBool()
     }
     fun createSecureGroup(room: String) = controller("create_secure_group", "room" to room, "password" to "")
-    fun acceptGroupInvite(room: String) = controller("accept_group_invite", "room" to room)
+    fun acceptGroupInvite(room: String, password: String = "") =
+        controller("accept_group_invite", "room" to room, "password" to password)
     fun declineGroupInvite(room: String) = controller("decline_group_invite", "room" to room)
     fun inviteToGroup(room: String, peer: String) = controller("invite_to_group", "room" to room, "peer" to peer)
     fun startGroupVerify(room: String, passphrase: String) =

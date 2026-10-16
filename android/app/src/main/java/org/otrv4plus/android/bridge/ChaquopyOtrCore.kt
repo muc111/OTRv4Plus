@@ -595,8 +595,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
-    fun acceptGroupInvite(room: String): RoomOutcome {
-        val result = call("accept_group_invite", room) ?: return notPrepared()
+    /** [password]: the room's, when the user typed it (the inviter's, sent
+     *  with the invitation, is used otherwise). */
+    fun acceptGroupInvite(room: String, password: String = ""): RoomOutcome {
+        val result = call("accept_group_invite", room, password) ?: return notPrepared()
         return outcomeOf(result)
     }
 

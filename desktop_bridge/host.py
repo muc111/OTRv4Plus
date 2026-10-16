@@ -80,7 +80,7 @@ CONTROLLER_OPS: Dict[str, tuple] = {
     "group_members": ("room",),
     "group_invites": (),
     "invite_to_group": ("room", "peer"),
-    "accept_group_invite": ("room",),
+    "accept_group_invite": ("room", "password"),
     "decline_group_invite": ("room",),
     "leave_secure_group": ("room",),
     "start_group_verify": ("room", "passphrase"),

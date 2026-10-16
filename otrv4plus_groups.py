@@ -864,11 +864,16 @@ class TermuxGroups:
             return "member"
 
     async def _join(self, room: str, *, create: bool,
-                    rejoin: bool = False) -> bool:
-        """Enter `room`. True when this join CREATED it (XEP-0045 status 201)."""
+                    rejoin: bool = False, password: str = "") -> bool:
+        """Enter `room`. True when this join CREATED it (XEP-0045 status 201).
+        [password]: a password-protected group's room, as its inviter sent it."""
         muc = self.host.plugin["xep_0045"]
         nick = self._nick()
-        joined = await muc.join_muc_wait(room, nick, timeout=JOIN_TIMEOUT)
+        if password:
+            joined = await muc.join_muc_wait(room, nick, password=password,
+                                             timeout=JOIN_TIMEOUT)
+        else:
+            joined = await muc.join_muc_wait(room, nick, timeout=JOIN_TIMEOUT)
         self._nicks[room] = nick
         created = _room_was_created(joined)
         if create or (created and not rejoin):
@@ -1422,10 +1427,14 @@ class TermuxGroups:
     async def _accept(self, room: str) -> None:
         """Join the room, then answer the invitation over OTRv4+."""
         try:
-            await self._join(room, create=False)
+            await self._join(room, create=False,
+                             password=self.groups.invite_password(room))
         except Exception as exc:
-            self._print("[group] could not join the room %s (%s)"
-                        % (room[:64], type(exc).__name__))
+            self._print("[group] could not join the room %s (%s)%s"
+                        % (room[:64], type(exc).__name__,
+                           "" if self.groups.invite_password(room) else
+                           " -- if the room has a password, the inviter's app "
+                           "must send it with the invitation"))
             return
         try:
             self.groups.accept(room)

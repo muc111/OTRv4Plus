@@ -1234,11 +1234,25 @@ class ConnectionController:
             result["code"] = "waiting_for_otr"
         return result
 
-    def accept_group_invite(self, room: str) -> Dict[str, Any]:
-        """Join the room, then answer the invitation over OTRv4+."""
+    def accept_group_invite(self, room: str, password: str = "") -> Dict[str, Any]:
+        """Join the room, then answer the invitation over OTRv4+.
+
+        A password-protected room uses the password the inviter sent with the
+        invitation, or [password] when the user typed one. Without either,
+        `group_password_needed` asks the UI to prompt (device report,
+        2026-10-16: the join just failed with "not_authorized")."""
         nick = self._profile.jid.split("@", 1)[0]
-        joined = self.join_room(room, nick)
+        try:
+            pw = password or self._app.groups.invite_password(room)
+        except Exception:
+            pw = password
+        joined = self.join_room(room, nick, pw) if pw else self.join_room(room, nick)
         if not joined.get("ok"):
+            if joined.get("code") == "not_authorized":
+                return dict(joined, code="group_password_needed",
+                            detail=("This group's room has a password. Enter it "
+                                    "(ask whoever invited you)." if not pw else
+                                    "That password was not accepted. Try again."))
             return joined
         return self._group_call(self._app.groups.accept, room)
 

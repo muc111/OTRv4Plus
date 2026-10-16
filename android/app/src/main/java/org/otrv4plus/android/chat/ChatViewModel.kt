@@ -216,6 +216,7 @@ class ChatViewModel : ViewModel() {
 
     private fun groupCall(label: String,
                           onOk: (org.otrv4plus.android.bridge.RoomOutcome) -> Unit = {},
+                          onFail: (org.otrv4plus.android.bridge.RoomOutcome) -> Unit = {},
                           op: (ChaquopyOtrCore) -> org.otrv4plus.android.bridge.RoomOutcome) {
         val c = core ?: return
         val state = this.state ?: return
@@ -225,7 +226,7 @@ class ChatViewModel : ViewModel() {
                     org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "")
                 }
             }
-            if (outcome.ok) onOk(outcome)
+            if (outcome.ok) onOk(outcome) else onFail(outcome)
             GroupText.outcome(outcome.code)?.let { state.note("$label: $it") }
             revision++
         }
@@ -307,10 +308,18 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    fun acceptGroupInvite(room: String) {
+    /** A password-protected group's room whose password the user must type
+     *  (the inviter's did not come, or was refused). Null: no prompt. */
+    var groupPasswordFor by mutableStateOf<String?>(null)
+
+    fun acceptGroupInvite(room: String, password: String = "") {
         state?.clearGroupInvite(room)
+        groupPasswordFor = null
         // A secure group being set up from this moment, never an ordinary room.
-        groupCall("Joining $room", onOk = { state?.noteJoiningSecure(room) }) { it.acceptGroupInvite(room) }
+        groupCall("Joining $room", onOk = { state?.noteJoiningSecure(room) },
+                  onFail = { if (it.code == "group_password_needed") groupPasswordFor = room }) {
+            it.acceptGroupInvite(room, password)
+        }
     }
 
     fun declineGroupInvite(room: String) {

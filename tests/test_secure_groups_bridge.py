@@ -237,3 +237,58 @@ def test_a_group_still_joining_sends_nothing_in_the_clear(pair):
                for e in bsink.events)
     assert b.send_action(ROOM, "react", "0" * 32, "", ["+1"], "") == OtrApp.SEND_FAILED
     assert muc.bodies[n:] == []
+
+
+def test_a_password_protected_rooms_password_travels_with_the_invitation(pair):
+    """Device report (2026-10-16): invited to a password-protected secure
+    group, the invitee's join failed with "not_authorized" and nothing asked.
+    The inviter now sends the room password inside the OTRv4+ session; it is
+    held in memory only, and used to join."""
+    muc, A, B = pair
+    a, aw, asink, a_jid = A
+    b, bw, bsink, b_jid = B
+    a.note_room_joined(ROOM)
+    a.groups.create(ROOM)
+    a.groups.room_password_source = lambda room: "s3cret pw" if room == ROOM else ""
+    a.groups.invite(ROOM, b_jid)
+    assert b.groups.invite_password(ROOM) == "s3cret pw"
+    # Over the encrypted session, never in the clear.
+    assert all("s3cret" not in frame for frame in aw.private)
+    # Not in the saved group state.
+    b.groups.save()
+    saved = bytes(b.groups._client.app_data()).decode("utf-8", "replace") \
+        if hasattr(b.groups._client, "app_data") else ""
+    assert "s3cret" not in saved
+
+
+def test_accepting_uses_the_sent_password_or_asks_for_one():
+    from android_bridge.connection import ConnectionController
+    calls = []
+
+    class Groups:
+        def __init__(self, pw):
+            self.pw = pw
+
+        def invite_password(self, room):
+            return self.pw
+
+        def accept(self, room):
+            calls.append(("accept", room))
+
+    def make(pw, join_result):
+        ctl = ConnectionController.__new__(ConnectionController)
+        ctl._profile = type("P", (), {"jid": "bob@x.i2p"})()
+        ctl._app = type("A", (), {"groups": Groups(pw)})()
+        ctl.join_room = lambda room, nick, password="": (calls.append(("join", password)),
+                                                         join_result)[1]
+        ctl._group_call = lambda fn, room: (fn(room), {"ok": True, "code": "ok"})[1]
+        return ctl
+
+    out = make("s3cret", {"ok": True}).accept_group_invite(ROOM)
+    assert out["ok"] and ("join", "s3cret") in calls
+    calls.clear()
+    out = make("", {"ok": False, "code": "not_authorized"}).accept_group_invite(ROOM)
+    assert out["code"] == "group_password_needed" and "password" in out["detail"]
+    calls.clear()
+    out = make("", {"ok": True}).accept_group_invite(ROOM, password="typed")
+    assert ("join", "typed") in calls

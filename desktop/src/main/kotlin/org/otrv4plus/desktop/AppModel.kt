@@ -650,11 +650,23 @@ class AppModel(
         outcome { core.createSecureGroup(room.trim()) }
         chat.noteRoom(room.trim())
     }
-    fun acceptGroupInvite(room: String) {
+    /** A password-protected group's room the user must type the password
+     *  for (the inviter's did not come, or was refused). */
+    var groupPasswordFor by mutableStateOf<String?>(null)
+
+    fun acceptGroupInvite(room: String, password: String = "") {
         chat.clearGroupInvite(room)
-        outcome { core.acceptGroupInvite(room) }
-        // A secure group being set up from this moment, never an ordinary room.
-        chat.noteJoiningSecure(room)
+        groupPasswordFor = null
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.acceptGroupInvite(room, password) }
+            when {
+                // A secure group being set up from now, never an ordinary room.
+                r.ok -> chat.noteJoiningSecure(room)
+                r.code == "group_password_needed" -> groupPasswordFor = room
+                else -> chat.note(r.detail.ifBlank { "That did not work (${r.code})." })
+            }
+            changed()
+        }
     }
     fun declineGroupInvite(room: String) {
         chat.clearGroupInvite(room)

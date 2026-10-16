@@ -4,6 +4,26 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.90 — 2026-10-16 — password-protected groups can be joined; "0/1 verified" (core 0.13.1)
+
+- **Fixed: invited to a password-protected secure group, the invitee could
+  not get in** ("the group operation did not complete (not_authorized)",
+  and nothing asked for the password). The inviter now sends the room's
+  password with the invitation, inside the same OTRv4+ session
+  (`ROOMPW`, a separate signal, so an older app just ignores it); the
+  invitee keeps it in memory only and joins with it. If it is missing or
+  refused, the app and the desktop app **ask for it** and try again. The
+  terminal client uses it too. The creator's app now remembers the
+  password of a room it created (memory only) so it can send it.
+- **Fixed: a new group read "Encrypted Chat | 1/1 users verified"** before
+  anyone was added or verified. You were counted as verified from the
+  start; now you count once a verification you took part in succeeds, so a
+  new group reads 0/1 and the number rises as members are verified.
+- **New: a server load test for admins** (`--stresstest` in the terminal
+  client; `STRESS_TEST.md`). It measured the secure-group ceiling at about
+  100 members (the Welcome grows ~9.4 KB per member; the core caps MLS
+  messages at 1 MiB), which the release page now states.
+
 ## Android 0.7.0-experimental.rc.89 — 2026-10-16 — profile pictures publish (the real cause) (core 0.13.1)
 
 - **Found with the server log: the picture reached the server every time;

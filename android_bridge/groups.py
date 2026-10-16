@@ -29,6 +29,10 @@ WIRE
 ====
 Room body:      ?OTRv4MLS1:<base64 MLS message>       (fragmented if large)
 Over OTRv4+:    ?OTRv4-MLS:INVITE:<room>|<our fingerprint hex>
+                ?OTRv4-MLS:ROOMPW:<room>|<base64 room password>   (only when
+                the room has one; right after the INVITE, so the invitee can
+                enter a password-protected room. A separate signal: an older
+                client counts it as unknown and goes on.)
                 ?OTRv4-MLS:KP:<room>|<base64 KeyPackage>
                 ?OTRv4-MLS:WELCOME:<room>|<base64 Welcome>|<our fingerprint hex>
                 (the fingerprint as of the Welcome: our signing key is per
@@ -126,6 +130,9 @@ class _Invite:
     #: We already hold this group: accepting replaces our copy (a device
     #: whose group stopped working, invited back by a member).
     rejoin: bool = False
+    #: The room's password, sent by the inviter over the same OTRv4+
+    #: session (ROOMPW). Memory only: never in the saved state.
+    password: str = ""
 
 
 @dataclass
@@ -1125,7 +1132,41 @@ class SecureGroups:
             self._outgoing[(room, peer)] = _Outgoing(room=room, at=self._clock())
             self.save()
         self._send_private(peer, "%sINVITE:%s|%s" % (SIGNAL_PREFIX, room, fp))
+        # Device report (2026-10-16): a password-protected group's invitee
+        # could not enter its room ("not_authorized"). The password goes the
+        # same way as the invitation: inside the OTRv4+ session.
+        try:
+            password = str(self.room_password_source(room) or "")
+        except Exception:
+            password = ""
+        if password:
+            self._send_private(peer, "%sROOMPW:%s|%s" % (
+                SIGNAL_PREFIX, room, _b64e(password.encode("utf-8"))))
         self._emit(GroupChanged(peer=room, change="invite_sent", detail=peer))
+
+    #: Where `invite` reads a room's password; set by the app (the
+    #: transport remembers the passwords of rooms it entered, in memory).
+    room_password_source: Callable[[str], str] = staticmethod(lambda _room: "")
+
+    def invite_password(self, room: str) -> str:
+        """The password the inviter sent for [room], or ""."""
+        with self._lock:
+            inv = self._invites.get(room)
+            return inv.password if inv is not None else ""
+
+    def _on_room_password(self, peer: str, arg: str) -> None:
+        room, _, b64 = arg.partition("|")
+        try:
+            password = _b64d(b64).decode("utf-8")
+        except (ValueError, binascii.Error, UnicodeDecodeError):
+            self.stats.malformed += 1
+            return
+        with self._lock:
+            inv = self._invites.get(room)
+            # Only from the member who invited us to that room.
+            if inv is None or inv.peer != peer or len(password) > 256:
+                return
+            inv.password = password
 
     def accept(self, room: str) -> None:
         """Answer an invitation: send a KeyPackage to the inviter over OTRv4+."""
@@ -1191,6 +1232,8 @@ class SecureGroups:
                 self._on_decline(peer, arg)
             elif kind == "FP":
                 self._on_fingerprint(peer, arg, verified)
+            elif kind == "ROOMPW":
+                self._on_room_password(peer, arg)
             else:
                 self.stats.malformed += 1
         except GroupError as exc:

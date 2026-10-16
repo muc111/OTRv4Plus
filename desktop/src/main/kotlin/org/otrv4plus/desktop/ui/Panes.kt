@@ -125,6 +125,7 @@ fun RoomsPane(model: AppModel) {
                 }
             }
         }
+        model.groupPasswordFor?.let { room -> GroupRoomPasswordDialog(model, room) }
         val rooms = (model.groups + model.conversations().map { it.jid }.filter { model.chat.isRoom(it) }).distinct()
         if (rooms.isEmpty()) {
             Text("No rooms yet. An encrypted group is end-to-end encrypted with MLS " +
@@ -300,5 +301,32 @@ fun TextPrompt(title: String, hint: String, confirm: String, onDone: (String?) -
                                    modifier = Modifier.fillMaxWidth()) },
         confirmButton = { Button(onClick = { onDone(value.trim()) }, enabled = value.isNotBlank()) { Text(confirm) } },
         dismissButton = { TextButton(onClick = { onDone(null) }) { Text("Cancel") } },
+    )
+}
+
+/** The room password for a secure group whose invitation did not carry it. */
+@androidx.compose.runtime.Composable
+private fun GroupRoomPasswordDialog(model: AppModel, room: String) {
+    var password by androidx.compose.runtime.remember(room) { androidx.compose.runtime.mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { model.groupPasswordFor = null },
+        title = { Text("Room password") },
+        text = {
+            Column {
+                Text(org.otrv4plus.android.chat.GroupText.outcome("group_password_needed").orEmpty(),
+                     style = MaterialTheme.typography.bodySmall)
+                androidx.compose.material3.OutlinedTextField(
+                    value = password, onValueChange = { password = it }, singleLine = true,
+                    label = { Text(room) },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation())
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(enabled = password.isNotEmpty(),
+                onClick = { model.acceptGroupInvite(room, password); password = "" }) { Text("Join") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { model.groupPasswordFor = null }) { Text("Cancel") }
+        },
     )
 }

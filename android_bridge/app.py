@@ -702,7 +702,17 @@ class OtrApp:
                 peer_security=self.security_state,
                 state_dir=os.path.expanduser(self.GROUP_STATE_DIR),
                 clock=self._clock)
+            # A password-protected group's room: its password goes to an
+            # invitee with the invitation (groups.ROOMPW).
+            self._groups.room_password_source = self._room_password
         return self._groups
+
+    def _room_password(self, room: str) -> str:
+        source = getattr(self._transport, "room_password", None)
+        try:
+            return str(source(room) or "") if source is not None else ""
+        except Exception:
+            return ""
 
     def open_groups(self, account: str) -> bool:
         """Open this account's secure groups. False when this build has no

@@ -41,16 +41,24 @@ object GroupText {
 
     /**
      * The group's security line. Owner (2026-10-16): "Encrypted Chat | 5/6
-     * users verified". Verified counts us (we know who we are) and every
-     * member whose key we verified; [total] is everyone in the group.
+     * users verified". [total] is everyone in the group.
      */
     fun securityLine(verified: Int, total: Int): String =
         if (total <= 0) "Encrypted Chat"
         else "Encrypted Chat | $verified/$total users verified"
 
-    /** [verified]/[total] from the member list. */
-    fun verifiedCount(members: List<org.otrv4plus.android.bridge.GroupMember>): Pair<Int, Int> =
-        members.count { it.me || it.verified } to members.size
+    /**
+     * [verified]/[total] from the member list: each member whose key we
+     * verified (SMP or the group passphrase), and us once a verification we
+     * took part in has succeeded. Owner (2026-10-16): a new group read
+     * "1/1 verified" before anyone was added or verified -- it is 0/1 until
+     * a verification completes, and then counts up as each member does.
+     */
+    fun verifiedCount(members: List<org.otrv4plus.android.bridge.GroupMember>): Pair<Int, Int> {
+        val others = members.count { !it.me && it.verified }
+        val us = if (others > 0) members.count { it.me } else 0
+        return (others + us) to members.size
+    }
 
     /** Between accepting an invitation and the group's keys arriving.
      *  Device report (2026-10-16): the room was shown as unencrypted then. */
@@ -199,6 +207,8 @@ object GroupText {
         "no_verified_member" -> "Nobody in this group is verified yet: verify the group first."
         "call_in_progress" -> "You are already in a group call."
         "group_too_large" -> TEXT_ONLY
+        "group_password_needed" -> "This group's room has a password. Enter it to join " +
+            "(ask whoever invited you)."
         "no_call" -> "Nobody is calling in this group."
         "call_audio_unavailable" -> "The call could not use the microphone or speaker."
         "forbidden", "not_allowed" -> "Only the group's creator (the room's owner) can " +
