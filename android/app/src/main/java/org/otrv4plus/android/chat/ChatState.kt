@@ -90,6 +90,7 @@ class ChatState(
         rooms.clear()
         joiningRooms.clear()
         ownedRooms.clear()
+        serverAdmin = false
         contacts.clear()
         drafts.clear()
         openConversation = null
@@ -844,7 +845,14 @@ class ChatState(
         jids.forEach { ownedRooms.add(bare(it)) }
     }
 
-    fun canDeleteRoom(jid: String): Boolean = bare(jid) in ownedRooms
+    /** A server admin may delete any room (owner, 2026-10-16: "no delete
+     *  button for users' groups for me to moderate"). */
+    var serverAdmin: Boolean = false
+        private set
+
+    fun noteServerAdmin(admin: Boolean) { serverAdmin = admin }
+
+    fun canDeleteRoom(jid: String): Boolean = serverAdmin || bare(jid) in ownedRooms
 
     fun noteSecureRooms(jids: Collection<String>) {
         secureRooms.clear()

@@ -3757,6 +3757,35 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             code, detail = _muc.classify(exc)
             return (code, detail, [])
 
+    #: XEP-0133 (service administration) command nodes. A server lists
+    #: them in its ad-hoc commands (XEP-0050) only to its admins.
+    ADMIN_COMMAND_PREFIX = "http://jabber.org/protocol/admin#"
+
+    def server_admin(self) -> "tuple[str, str, bool]":
+        """Whether this account administers its server. Owner (2026-10-16):
+        logged in as the server admin, "there is no delete button for users'
+        groups for me to moderate" -- rc.83 offered Delete only for rooms we
+        are in as owner. Read from the server's command list (Prosody's
+        mod_admin_adhoc lists XEP-0133 commands to admins only); asked once
+        per connection. The service still decides every destroy."""
+        cached = getattr(self, "_server_admin", None)
+        if cached is not None:
+            return ("ok", _muc.CODES["ok"], cached)
+        code, detail, value = self._room_call(self._ask_server_admin())
+        if code == "ok":
+            self._server_admin = bool(value)
+            return (code, detail, bool(value))
+        return (code, detail, False)
+
+    async def _ask_server_admin(self) -> bool:
+        disco = self._client["xep_0030"]
+        domain = str(self._client.boundjid.domain)
+        items = await disco.get_items(jid=domain,
+                                      node="http://jabber.org/protocol/commands",
+                                      timeout=CALL_TIMEOUT)
+        return any(str(node or "").startswith(self.ADMIN_COMMAND_PREFIX)
+                   for _jid, node, _name in items["disco_items"].get_items())
+
     def joined_rooms(self) -> "tuple[str, str, list]":
         """The rooms this session is in, as slixmpp has them."""
         try:
@@ -4336,6 +4365,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         _TRACE.record("transport", "stream_closed_by_slixmpp", "warning",
                       quiet_for=round(self._stream_quiet_for()))
         self._disconnects = getattr(self, "_disconnects", 0) + 1
+        self._server_admin = None            # asked again on the next stream
         self._connected.clear()
         # Every resource's presence is unknown now; capability goes with it,
         # and so does who was in the Welcome room.

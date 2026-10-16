@@ -657,6 +657,14 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
     }
 
+    /** Whether this account administers its server (XEP-0133 commands
+     *  listed to it); null when the server did not say. */
+    fun serverAdmin(): Boolean? {
+        val result = call("server_admin") ?: return null
+        if (!outcomeOf(result).ok) return null
+        return result.callAttr("get", "value")?.toBoolean()
+    }
+
     fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
         val result = call("destroy_room", room, reason) ?: return notPrepared()
         return outcomeOf(result)

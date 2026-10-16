@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.88 — 2026-10-16 — a server admin can moderate every room again (core 0.13.1)
+
+- **Device report: signed in as Alice, the server admin, "there is no
+  delete button for users' groups for me to moderate".** rc.83 showed
+  Delete only for rooms we are in as owner -- an admin moderating other
+  people's rooms is in none of them. The engine now asks the server once
+  per connection whether this account administers it: Prosody lists the
+  XEP-0133 administration commands (`admin_adhoc`, on by default) only to
+  its admins. An admin sees Delete on every room in the directory, on a room
+  typed by address, and "Delete group for everyone" in a group's panel; the
+  server still decides each one. Everyone else is unchanged (creator only).
+
 ## Android 0.7.0-experimental.rc.87 — 2026-10-16 — any picture format, converted to fit (core 0.13.1)
 
 - **Owner: "we should be able to select any image format and it should

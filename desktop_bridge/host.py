@@ -74,6 +74,7 @@ CONTROLLER_OPS: Dict[str, tuple] = {
     "room_occupants": ("room",),
     "joined_rooms": (),
     "owned_rooms": (),
+    "server_admin": (),
     "create_secure_group": ("room", "password"),
     "secure_groups": (),
     "group_members": ("room",),

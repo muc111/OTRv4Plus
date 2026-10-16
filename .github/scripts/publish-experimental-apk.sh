@@ -125,7 +125,7 @@ installed), and with the Termux client.
 | Picture formats | Choose a profile picture in **any format** — JPEG, PNG, WebP, HEIC, AVIF, GIF, BMP — any size: it is converted and fitted to the app's limit (at most 96 x 96 and 8 KB) | rc.87 |
 | Profile picture upload | Set a picture: it should publish (a minute or two over I2P). If the full size gets no answer, a **48 x 48 copy is sent automatically** and the app says so. If it still fails, the message names why (connection dropped, no answer, or the server's refusal) — please send that text and the Prosody log lines from that minute | rc.85–rc.86 |
 | Group status and call limit | A group's line reads **"Encrypted Chat \| 5/6 users verified"** and updates as members are verified; a group of **6 or more has no call button** ("Text only") | rc.84 |
-| Delete buttons | "Delete group for everyone" and room "Delete" appear **only for the creator (or a server admin)**; other members see Leave only | rc.83 |
+| Delete buttons | "Delete group for everyone" and room "Delete" appear **only for the creator or a server admin**; other members see Leave only. Signed in as the **server admin**, Delete shows on every room in Rooms (needs Prosody's `admin_adhoc` module, on by default) | rc.83–rc.88 |
 | Sign-in wording | While the built-in router sets up the first connection the screen says it is **setting up (2–5 minutes, normal)**, never "Connection lost" | rc.82 |
 | Verification progress | A moving bar on **both** phones (and the desktop and terminal) from the moment verification starts until it ends, 1:1 and groups | rc.81 |
 | Joining a secure group | After accepting an invitation the room shows *setting up end-to-end encryption* with a bar, never "not encrypted"; typing is held until it is ready | rc.81 |

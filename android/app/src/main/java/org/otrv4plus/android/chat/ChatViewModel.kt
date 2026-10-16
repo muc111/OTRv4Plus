@@ -249,6 +249,8 @@ class ChatViewModel : ViewModel() {
             rooms.forEach { refreshGroupMembers(it) }
             withContext(Dispatchers.IO) { runCatching { c.ownedRooms() }.getOrNull() }
                 ?.let { state.noteOwnedRooms(it) }
+            withContext(Dispatchers.IO) { runCatching { c.serverAdmin() }.getOrNull() }
+                ?.let { state.noteServerAdmin(it) }
         }
         viewModelScope.launch {
             val (list, supported) = withContext(Dispatchers.IO) {

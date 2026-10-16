@@ -189,6 +189,8 @@ class AppModel(
             groupMembers = groupMembers + members.filterValues { it.isNotEmpty() }
             withContext(Dispatchers.IO) { runCatching { core.ownedRooms() }.getOrNull() }
                 ?.let { chat.noteOwnedRooms(it) }
+            withContext(Dispatchers.IO) { runCatching { core.serverAdmin() }.getOrNull() }
+                ?.let { chat.noteServerAdmin(it) }
         }
         changed()
     }

@@ -71,6 +71,10 @@ class RoomsViewModel : ViewModel() {
     /** Rooms we own (creator or server admin): the only ones offered "Delete". */
     val ownedRooms = mutableStateListOf<String>()
 
+    /** This account administers the server: Delete on every room. */
+    var serverAdmin by mutableStateOf(false)
+        private set
+
     /** Ask the engine which secure groups this account holds. Cheap: no network. */
     fun refreshSecureGroups() {
         val c = core ?: return
@@ -83,6 +87,9 @@ class RoomsViewModel : ViewModel() {
             val owned = withContext(Dispatchers.IO) { runCatching { c.ownedRooms() }.getOrNull() }
             ownedRooms.clear()
             owned?.let { list -> ownedRooms.addAll(list.map { it.lowercase() }) }
+            serverAdmin = withContext(Dispatchers.IO) {
+                runCatching { c.serverAdmin() }.getOrNull()
+            } ?: serverAdmin
         }
     }
 
@@ -403,6 +410,7 @@ class RoomsViewModel : ViewModel() {
      */
     fun canDelete(typed: String): Boolean {
         val jid = resolve(typed.trim())?.lowercase() ?: return false
+        if (serverAdmin) return true
         return jid in ownedRooms ||
             joined.entries.any { it.key.equals(jid, ignoreCase = true) && it.value.destroy }
     }

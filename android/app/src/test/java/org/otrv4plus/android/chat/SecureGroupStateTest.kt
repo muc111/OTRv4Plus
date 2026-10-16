@@ -89,6 +89,18 @@ class SecureGroupStateTest {
     }
 
     @Test
+    fun `a server admin may delete any room`() {
+        // Owner (2026-10-16): as the server admin, "no delete button for
+        // users' groups for me to moderate".
+        val s = state()
+        assertFalse(s.canDeleteRoom("someone-elses@conference.x"))
+        s.noteServerAdmin(true)
+        assertTrue(s.canDeleteRoom("someone-elses@conference.x"))
+        s.bindAccount(AccountScope.of("other@otrv4plus.i2p"))
+        assertFalse(s.canDeleteRoom("someone-elses@conference.x"))
+    }
+
+    @Test
     fun `a join that never completes stops reading as joining`() {
         val s = state()
         s.handle(OtrEvent.GroupChanged(room, "joining", 0, ""))

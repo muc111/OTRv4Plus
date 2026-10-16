@@ -689,6 +689,43 @@ class TestOwnedRooms:
             t.close()
 
 
+class TestServerAdmin:
+    """Owner (2026-10-16): logged in as the server admin, "there is no
+    delete button for users' groups for me to moderate". An admin is told
+    apart by the XEP-0133 commands the server lists to it."""
+
+    DOMAIN = JID.split("@", 1)[1]
+
+    def _admin(self, nodes):
+        entries = [(self.DOMAIN, n, "cmd") for n in nodes]
+        return FakeDisco(items={self.DOMAIN: entries})
+
+    def test_an_admin_is_recognised(self):
+        disco = self._admin(["http://jabber.org/protocol/admin#add-user",
+                             "ping"])
+        t, _ = build(disco=disco)
+        try:
+            assert t.server_admin() == ("ok", muc.CODES["ok"], True)
+            t.server_admin()
+            assert len(disco.asked) == 1          # asked once per stream
+        finally:
+            t.close()
+
+    def test_an_ordinary_user_is_not(self):
+        t, _ = build(disco=self._admin(["ping", "uptime"]))
+        try:
+            assert t.server_admin()[2] is False
+        finally:
+            t.close()
+
+    def test_no_answer_is_not_admin(self):
+        t, _ = build(disco=FakeDisco(fail=IqError("service-unavailable")))
+        try:
+            assert t.server_admin()[2] is False
+        finally:
+            t.close()
+
+
 # ── everything answers, nothing raises ───────────────────────────────────────
 
 class TestNoRoomCallEverRaises:
@@ -702,6 +739,7 @@ class TestNoRoomCallEverRaises:
         lambda t: t.destroy_room(ROOM),
         lambda t: t.room_standing(ROOM, NICK),
         lambda t: t.owned_rooms(),
+        lambda t: t.server_admin(),
         lambda t: t.joined_rooms(),
     ])
     def test_a_disconnected_transport_answers_rather_than_throwing(self, call):
