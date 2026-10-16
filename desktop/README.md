@@ -96,24 +96,32 @@ disk.
 
 ## Install on Ubuntu or Debian
 
-There is no ready-made package yet; build it from this repository.
+Ubuntu 24.04+ or Debian 13+. Everything is built from source on your
+machine; nothing prebuilt is downloaded except the toolchains. One line:
 
-1. Build the engine first: steps 1 and 2 of the terminal client in the main
-   [README](../README.md#termux-ubuntu-and-other-linux-terminal-clients)
-   (they end with `BUILD OK`).
-2. Install Java 21: `sudo apt install openjdk-21-jdk`
-3. Build the app; the Gradle wrapper fetches the right Gradle by itself:
-   ```bash
-   cd ~/OTRv4Plus/desktop
-   ../android/gradlew -p . desktopLib
-   ```
-4. Run it from the repository root:
-   ```bash
-   cd ~/OTRv4Plus
-   OTRV4PLUS_ENGINE=".venv/bin/python -s -m desktop_bridge.host" \
-     java -cp 'desktop/build/desktop-lib/*' org.otrv4plus.desktop.MainKt
-   ```
-   For I2P, have `i2pd` running (`sudo apt install i2pd`).
+```bash
+sudo apt install -y git && git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+```
+
+Already have the clone? `bash ~/OTRv4Plus/desktop/install.sh`. Running it
+again later pulls and rebuilds; keys and settings in `~/.otrv4plus` stay.
+`--no-run` installs without starting the app.
+
+[`install.sh`](install.sh) is short; read it first if you like. It:
+
+1. installs `git python3 python3-venv build-essential curl libopus0
+   pulseaudio-utils openjdk-21-jdk i2pd` with apt (asks for sudo);
+2. installs Rust with rustup if `cargo` is missing (the distributions'
+   `rustc` is too old);
+3. runs `Rust/build.sh`: the Rust core and the engine's `.venv`, ending with
+   `BUILD OK`;
+4. builds the app with the Gradle wrapper (`desktopLib`); every jar is
+   checked against `gradle/verification-metadata.xml`;
+5. adds `~/.local/bin/otrv4plus-desktop` and an "OTRv4+" menu entry, then
+   starts the app.
+
+For I2P the router must be running: `sudo systemctl enable --now i2pd`.
+CI runs the same script on a clean Ubuntu 24.04 (`desktop.yml`, `install`).
 
 ## Build and run
 

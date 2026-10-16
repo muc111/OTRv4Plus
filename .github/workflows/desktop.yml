@@ -109,3 +109,24 @@ jobs:
         with:
           name: desktop-test-report
           path: desktop/build/reports/tests/
+
+  # The README's one-liner, end to end, on a clean Ubuntu: apt packages,
+  # the Rust core and engine (build.sh), the app, the launcher.
+  install:
+    name: desktop/install.sh on a clean Ubuntu 24.04
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the installer (no GUI start)
+        run: bash desktop/install.sh --no-run
+
+      - name: The launcher and the app are in place
+        run: |
+          set -eu
+          test -x "$HOME/.local/bin/otrv4plus-desktop"
+          test -f "$HOME/.local/share/applications/otrv4plus-desktop.desktop"
+          ls desktop/build/desktop-lib/*.jar | head -3
+          ls desktop/build/desktop-lib/*.jar | wc -l
+          # The engine the launcher starts imports cleanly.
+          .venv/bin/python -s -c "import desktop_bridge.host"

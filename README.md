@@ -132,12 +132,12 @@ Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
 
 ### Desktop app (Ubuntu, Debian, Qubes OS)
 
-The Android app's screens on a Linux desktop; the keys stay in a separate
-engine process. **No ready-made download yet** (Releases has the APK only).
-Ubuntu/Debian: build the engine (steps 1-2 below), then follow
-[desktop/README.md](desktop/README.md#install-on-ubuntu-or-debian) (Java 21,
-one build command, one run command). Qubes OS 4.2: offline, reproducible,
-signed packages, guide in [qubes/README.md](qubes/README.md).
+Built from source on your machine. **Ubuntu 24.04+ / Debian 13+**, one line (re-run to update):
+
+```bash
+sudo apt install -y git && git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+```
+What it installs: [desktop/README.md](desktop/README.md#install-on-ubuntu-or-debian). Qubes OS 4.2: [qubes/README.md](qubes/README.md).
 
 ### Termux, Ubuntu and other Linux (terminal clients)
 
