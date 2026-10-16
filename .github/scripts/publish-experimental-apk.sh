@@ -83,6 +83,24 @@ case "$VERSION" in
     *)      TAG="android-experimental"; KIND="development build" ;;
 esac
 
+# The screens job's images (made-up data), when it produced them. Attached to
+# the release and shown in its notes; a release without them is still a
+# release.
+SHOTS=()
+SHOTS_MD=""
+for f in screens/android-*.png; do
+    [ -f "$f" ] || continue
+    SHOTS+=("$f")
+    name=$(basename "$f")
+    SHOTS_MD="${SHOTS_MD}<img src=\"https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${name}\" width=\"230\" alt=\"${name%.png}\"> "
+done
+if [ -n "$SHOTS_MD" ]; then
+    SHOTS_MD="${SHOTS_MD}
+
+<sub>The app's real screens, drawn by CI from made-up conversations (the app blocks screenshots on a phone).</sub>
+"
+fi
+
 cat > notes.md <<EOF
 # ⚠️ EXPERIMENTAL — a ${KIND}, not a release
 
@@ -91,6 +109,7 @@ cat > notes.md <<EOF
 **Download \`${ROUT}\`** (below). The first sign-in takes a few minutes while
 the built-in I2P router joins the network.
 
+${SHOTS_MD}
 ---
 
 ## Verified on a real device — ✅ what works
@@ -298,7 +317,7 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     gh release delete "$TAG" --yes --cleanup-tag
 fi
 
-gh release create "$TAG" "$ROUT" "$OUT" "$MANIFEST" \
+gh release create "$TAG" "$ROUT" "$OUT" "$MANIFEST" "${SHOTS[@]}" \
     --title "Android ${VERSION} — ${KIND} (experimental)" \
     --notes-file notes.md \
     --prerelease \

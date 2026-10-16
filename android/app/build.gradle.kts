@@ -12,6 +12,9 @@ val rustCoreVersion: String = rootProject.projectDir.parentFile
     .first { it.trimStart().startsWith("version") }
     .substringAfter('"').substringBefore('"')
 
+/** -Pscreens: render the Android screenshots (see src/screens). */
+val renderScreens = project.hasProperty("screens")
+
 // Where the generated copy of NOTICE lands before it is packaged as an asset.
 // Declared here because the `android { sourceSets }` block below reads it.
 val noticeAssetDir: Provider<Directory> =
@@ -236,6 +239,16 @@ android {
             jniLibs.srcDir("i2pd/jniLibs")
             assets.srcDir("i2pd/assets")
         }
+        // The release page's screenshots (src/screens): compiled only with
+        // -Pscreens, by the `screens` CI job. Without the switch neither the
+        // unit tests nor either APK changes.
+        if (renderScreens) {
+            getByName("test") { java.srcDir("src/screens/java") }
+        }
+    }
+
+    if (renderScreens) {
+        testOptions { unitTests { isIncludeAndroidResources = true } }
     }
 }
 
@@ -859,6 +872,15 @@ dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    if (renderScreens) {
+        // Robolectric draws the real Compose screens on the JVM; ui-test
+        // captures them. Test-only, and only with -Pscreens: the shipped
+        // runtime classpaths (and the licence guard over them) are unchanged.
+        testImplementation("org.robolectric:robolectric:4.14.1")
+        testImplementation(composeBom)
+        testImplementation("androidx.compose.ui:ui-test-junit4")
+        debugImplementation("androidx.compose.ui:ui-test-manifest")
+    }
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.6.1")
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

@@ -531,6 +531,20 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /**
+     * For the release page's screenshots only: show [state] with no engine
+     * behind it. CI draws the real screens from made-up conversations
+     * (src/screens, built with -Pscreens) because the app sets FLAG_SECURE
+     * and a phone cannot screenshot it. Without a core every action is a
+     * no-op, so nothing can be sent from here.
+     */
+    fun attachForScreenshots(state: ChatState,
+                             members: Map<String, List<org.otrv4plus.android.bridge.GroupMember>> = emptyMap()) {
+        this.state = state
+        groupMembers.putAll(members)
+        revision++
+    }
+
     // -- actions --------------------------------------------------------------
 
     fun setDraft(jid: String, text: String) {
