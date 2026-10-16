@@ -3,11 +3,12 @@
 package org.otrv4plus.android.screens
 
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.view.View
+import android.view.ViewGroup
+import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.graphics.asAndroidBitmap
-import androidx.compose.ui.test.captureToImage
-import androidx.compose.ui.test.junit4.createComposeRule
-import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -48,7 +49,7 @@ import java.io.File
 @Config(sdk = [34], qualifiers = "w400dp-h860dp-xhdpi", application = android.app.Application::class)
 class AndroidScreensTest {
 
-    @get:Rule val compose = createComposeRule()
+    @get:Rule val compose = createAndroidComposeRule<ComponentActivity>()
 
     private val me = "alice@otrv4plus.i2p"
     private val bob = "bob@otrv4plus.i2p"
@@ -121,7 +122,22 @@ class AndroidScreensTest {
         val model = model()
         compose.setContent { OtrTheme(ThemeTokens.Mode.DARK_PURPLE) { screen(model) } }
         compose.waitForIdle()
-        val bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
+        // Not captureToImage(): under Robolectric its forceRedraw waits for a
+        // frame callback that never comes (ComposeTimeoutException). Drawing
+        // the ComposeView into a Canvas is the same pixels, synchronously.
+        lateinit var bitmap: Bitmap
+        compose.runOnUiThread {
+            val content = compose.activity.findViewById<ViewGroup>(android.R.id.content)
+            val view: View = content.getChildAt(0) ?: content
+            if (view.width == 0 || view.height == 0) {
+                val dm = compose.activity.resources.displayMetrics
+                view.measure(View.MeasureSpec.makeMeasureSpec(dm.widthPixels, View.MeasureSpec.EXACTLY),
+                             View.MeasureSpec.makeMeasureSpec(dm.heightPixels, View.MeasureSpec.EXACTLY))
+                view.layout(0, 0, view.measuredWidth, view.measuredHeight)
+            }
+            bitmap = Bitmap.createBitmap(view.width, view.height, Bitmap.Config.ARGB_8888)
+            view.draw(Canvas(bitmap))
+        }
         val dir = File("build/screens").apply { mkdirs() }
         File(dir, "$name.png").outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
