@@ -89,7 +89,7 @@ def test_the_chat_is_ciphertext_and_reads_like_people():
         clock.t += 0.5
         sw.tick()
         pump()
-    assert seen and all(b.startswith((st.ROOM_PREFIX, "?OTRv4F|")) for b in seen)
+    assert seen and all(b.startswith((st.ROOM_PREFIX, st.CHAT_PREFIX, "?OTRv4F|")) for b in seen)
     assert not any("news" in b or "Did you see" in b for b in seen)
     assert "?" in st.chatter(random.Random(1)) or "." in st.chatter(random.Random(1))
 
@@ -104,6 +104,39 @@ def test_observers_limit_who_decrypts():
         sw.tick()
         pump()
     assert sw.stats.delivered == sw.stats.expected > 0
+
+
+def test_a_non_observer_never_decrypts_chat():
+    """Run of 2026-10-16: with --observers 10 every bot still decrypted
+    every line, so 100 members meant ~10 000 decryptions per burst in one
+    process and the run measured the laptop. Group changes are still
+    processed by everyone."""
+    sw, bots, clock, pump = _swarm(5, observers=2)
+    sw.create()
+    sw.add_batch(bots[1:])
+    pump()
+    calls = {b.index: 0 for b in bots}
+
+    class Counting:
+        def __init__(self, bot):
+            self.bot, self.inner = bot, bot.mls
+
+        def process(self, gid, data):
+            calls[self.bot.index] += 1
+            return self.inner.process(gid, data)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    for b in bots:
+        b.mls = Counting(b)
+    for _ in range(200):
+        clock.t += 0.5
+        sw.tick()
+        pump()
+    assert sw.stats.sent > 0 and sw.stats.delivered == sw.stats.expected
+    assert all(calls[b.index] == 0 for b in bots[2:]), calls
+    assert calls[1] > 0
 
 
 def test_the_flag_is_hidden_and_admin_only_by_design():

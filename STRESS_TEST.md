@@ -36,7 +36,7 @@ nice -n 10 python3 otrv4plus_xmpp.py --stresstest --admin alice@otrv4plus.i2p \
 | `--minutes` | 60 | How long to run |
 | `--interval` | 120 | Average seconds between one user's messages (jittered: chat, not a flood) |
 | `--batch` / `--ramp` | 16 / 60 | Users added per group change, and seconds between changes. Ramping shows where things degrade |
-| `--observers N` | all | Only the first N users decrypt the chat, which saves this machine's CPU (see below) |
+| `--observers N` | all | Only the first N users decrypt the chat; the rest skip it (they still process every group change). Saves this machine's CPU (see below) |
 | `--keep` | off | Keep the test accounts afterwards |
 | `--csv FILE` | `stresstest-<time>.csv` | One row of numbers per minute |
 
@@ -49,7 +49,10 @@ Every minute it prints a line and appends a CSV row:
 - group changes (commits) made;
 - **room errors**: messages the room refused, usually its rate limit;
 - disconnects;
-- joins refused.
+- joins refused;
+- **undecryptable**: messages a member could not decrypt;
+- **harness lag**: how long this process's own loop stalled. Several seconds
+  means the numbers measure this machine's bots, not the server.
 
 The messages are made-up one-liners about invented news stories, for example
 *"Did you see the piece on the night bus trial?"*. They are built on this
@@ -73,6 +76,32 @@ Nothing is fetched from the internet.
   Every message is decrypted by every member. Watch the stress-test process
   in `htop` next to Prosody, and use `--observers 10` on a big run so the
   laptop isn't mostly measuring itself.
+
+## First measurement (ThinkPad T450, 2026-10-16)
+
+100 users, added 16 at a time every 2 minutes, one line each per ~20 s.
+
+| | Result |
+|---|---|
+| Group size | All **100** joined; none refused. The ceiling is just above 100 (the Welcome at 100 members is ~940 KB of the 1 MiB limit). |
+| Prosody, steady chat at 100 members | Under 50% of one core, in short bursts; idle in between |
+| Prosody, adding 16 people to a group of 81-90 | **100% of one core for about 4 minutes**, memory 60 MB → 180 MB (peak 260 MB). The commit (~270 KB) goes to ~90 occupants and each new member gets a ~900 KB Welcome. |
+| Prosody memory after the run | Stayed at ~180 MB (Lua keeps what it allocated); a restart returns it |
+| Errors | No room errors, no disconnects |
+| Latency and delivery | Up to 49 members: 100% delivered, p95 under 1 s. From 65 members, latency rose to ~23 s and delivery fell to ~35%. |
+
+**That last row measured the test, not the server.** Prosody was idle
+between bursts that came every ~25 s, the same as the latency. The test
+process was the bottleneck: every bot decrypted every chat line, even with
+`--observers 10`, which is ~10 000 post-quantum MLS decryptions per burst in
+one Python process. Fixed after this run: non-observers now skip chat
+lines, and the **harness lag** column shows when the test process itself
+is the bottleneck. Run it again to measure Prosody alone.
+
+**What it means for real groups:** adding many people at once to a large
+group is the expensive operation for the server. The app adds people one at
+a time, as they accept their invitations, so each change is ~1/16 of the
+size measured here.
 
 ## Watching the laptop and Prosody
 

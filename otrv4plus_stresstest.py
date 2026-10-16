@@ -60,6 +60,12 @@ from typing import Callable, Dict, List, Optional
 import otrv4plus_fragment as _fragment
 
 ROOM_PREFIX = "?OTRv4MLS1:"
+#: Chat lines get their own prefix so a non-observer can skip them without
+#: decrypting (run of 2026-10-16: every bot decrypted every line in this one
+#: process, ~10 000 MLS decryptions per 25 s at 100 members, and the run
+#: measured the laptop, not Prosody). Group changes keep ROOM_PREFIX: every
+#: member must process those.
+CHAT_PREFIX = "?OTRv4MLSC:"
 WELCOME_PREFIX = "?OTRv4MLSW:"
 ADMIN_ADD = "http://jabber.org/protocol/admin#add-user"
 ADMIN_DELETE = "http://jabber.org/protocol/admin#delete-user"
@@ -123,6 +129,7 @@ class Stats:
         self.room_errors = 0
         self.undecryptable = 0
         self.disconnects = 0
+        self.lag_max = 0.0                  # this process's event-loop stall
 
 
 class Bot:
@@ -207,8 +214,8 @@ class Swarm:
         self._post(self.owner, base64.b64encode(commit).decode())
         return True
 
-    def _post(self, bot: Bot, b64: str) -> None:
-        parts, bot.frag_seq = _fragment.fragment(ROOM_PREFIX + b64, bot.frag_seq,
+    def _post(self, bot: Bot, b64: str, prefix: str = ROOM_PREFIX) -> None:
+        parts, bot.frag_seq = _fragment.fragment(prefix + b64, bot.frag_seq,
                                                  _fragment.ROOM_FRAGMENT)
         for part in parts:
             self.send_room(bot, part)
@@ -229,10 +236,18 @@ class Swarm:
             whole = bot.reasm.feed(sender_nick, body)
             if whole is None:
                 return
-        if not whole.startswith(ROOM_PREFIX) or not bot.member:
+        if not bot.member:
+            return
+        if whole.startswith(CHAT_PREFIX):
+            if not bot.observe and not own:
+                return              # not measured: no need to decrypt it
+            body64 = whole[len(CHAT_PREFIX):]
+        elif whole.startswith(ROOM_PREFIX):
+            body64 = whole[len(ROOM_PREFIX):]
+        else:
             return
         try:
-            mls = base64.b64decode(whole[len(ROOM_PREFIX):])
+            mls = base64.b64decode(body64)
         except Exception:
             return
         try:
@@ -310,7 +325,7 @@ class Swarm:
             self.stats.sent += 1
             # Everyone who decrypts, except the sender itself.
             self.stats.expected += max(0, observers - (1 if bot.observe else 0))
-            self._post(bot, base64.b64encode(ct).decode())
+            self._post(bot, base64.b64encode(ct).decode(), CHAT_PREFIX)
 
     def minute_row(self, elapsed: float, online: int) -> Dict[str, object]:
         s = self.stats
@@ -325,6 +340,7 @@ class Swarm:
             "commits": s.commits, "commit_failures": s.commit_failures,
             "room_errors": s.room_errors, "undecryptable": s.undecryptable,
             "disconnects": s.disconnects, "join_refused": s.join_refused,
+            "harness_lag_s": round(s.lag_max, 2),
         }
         s.reset()
         return row
@@ -545,9 +561,16 @@ async def run(args) -> int:
                         "%(online)3d  sent %(sent)4d  delivered %(delivery_pct)5.1f%%  "
                         "latency p50 %(lat_p50_s).2fs p95 %(lat_p95_s).2fs  "
                         "commits %(commits)d  room errors %(room_errors)d  "
-                        "disconnects %(disconnects)d" % row)
+                        "undecryptable %(undecryptable)d  disconnects %(disconnects)d  "
+                        "harness lag %(harness_lag_s).1fs" % row)
                     next_row += 60
+                before = time.time()
                 await asyncio.sleep(0.5)
+                # More than the 0.5 s asked for: this process was too busy to
+                # run its loop. Several seconds means the numbers above
+                # measure this machine's bots, not the server.
+                swarm.stats.lag_max = max(swarm.stats.lag_max,
+                                          time.time() - before - 0.5)
         say("[stress] done. Joins refused: %d%s" % (
             swarm.stats.join_refused,
             "" if swarm.stats.join_refused_at is None
