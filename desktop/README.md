@@ -94,6 +94,27 @@ Working now:
 Chat history is kept in memory only, by choice: nothing is written to
 disk.
 
+## Install on Ubuntu or Debian
+
+There is no ready-made package yet; build it from this repository.
+
+1. Build the engine first: steps 1 and 2 of the terminal client in the main
+   [README](../README.md#termux-ubuntu-and-other-linux-terminal-clients)
+   (they end with `BUILD OK`).
+2. Install Java 21: `sudo apt install openjdk-21-jdk`
+3. Build the app; the Gradle wrapper fetches the right Gradle by itself:
+   ```bash
+   cd ~/OTRv4Plus/desktop
+   ../android/gradlew -p . desktopLib
+   ```
+4. Run it from the repository root:
+   ```bash
+   cd ~/OTRv4Plus
+   OTRV4PLUS_ENGINE=".venv/bin/python -s -m desktop_bridge.host" \
+     java -cp 'desktop/build/desktop-lib/*' org.otrv4plus.desktop.MainKt
+   ```
+   For I2P, have `i2pd` running (`sudo apt install i2pd`).
+
 ## Build and run
 
 ```sh

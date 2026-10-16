@@ -21,13 +21,11 @@ for what that covers and what it does not.
 
 ## Screenshots
 
-| Desktop app: a verified conversation | Desktop app: an encrypted group |
+| Desktop: a verified conversation | Desktop: an encrypted group |
 |---|---|
-| ![A verified conversation in the desktop app](desktop/docs/chat.jpg) | ![An encrypted group with its verification status and members](desktop/docs/group.jpg) |
+| ![A verified conversation](desktop/docs/chat.jpg) | ![An encrypted group, its verification and members](desktop/docs/group.jpg) |
 
-Rendered by the desktop app's own tests with made-up accounts (no real data).
-Android screenshots are being added; the Android app uses the same layout
-and the same dark purple theme on a phone screen.
+Rendered by the desktop app's tests with made-up accounts. Android shares the layout and theme.
 
 ## Android app (experimental)
 
@@ -134,50 +132,18 @@ Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
 
 ### Desktop app (Ubuntu, Debian, Qubes OS)
 
-The desktop app is the Android app's interface for a Linux desktop: the same
-screens, theme and rules, with a list on the left and the conversation on the
-right. The keys stay in a separate engine process, never in the window
-([desktop/README.md](desktop/README.md)).
-
-**There is no ready-made download yet.** The Releases page carries only the
-Android APK. Build it from source:
-
-**Ubuntu 24.04+ / Debian 13+:**
-
-1. Do steps 1 and 2 of the terminal client below first. They build the
-   encryption engine that the desktop app runs.
-2. Install Java 21:
-   ```bash
-   sudo apt install openjdk-21-jdk
-   ```
-3. Build the app. The Gradle wrapper downloads the right Gradle by itself:
-   ```bash
-   cd ~/OTRv4Plus/desktop
-   ../android/gradlew -p . desktopLib
-   ```
-4. Run it, from the repository root:
-   ```bash
-   cd ~/OTRv4Plus
-   OTRV4PLUS_ENGINE=".venv/bin/python -s -m desktop_bridge.host" \
-     java -cp 'desktop/build/desktop-lib/*' org.otrv4plus.desktop.MainKt
-   ```
-   For I2P, have `i2pd` running (step 4 below).
-
-**Qubes OS 4.2:** the desktop app and the terminal client run in a qube with
-no network, and I2P runs in a separate qube. Packages are built offline and
-reproducibly, then signed. The step-by-step guide is
-[qubes/README.md](qubes/README.md); `qubes/packaging/build-desktop.sh` builds
-the `otrv4plus-desktop` package.
+The Android app's screens on a Linux desktop; the keys stay in a separate
+engine process. **No ready-made download yet** (Releases has the APK only).
+Ubuntu/Debian: build the engine (steps 1-2 below), then follow
+[desktop/README.md](desktop/README.md#install-on-ubuntu-or-debian) (Java 21,
+one build command, one run command). Qubes OS 4.2: offline, reproducible,
+signed packages, guide in [qubes/README.md](qubes/README.md).
 
 ### Termux, Ubuntu and other Linux (terminal clients)
 
 **1. Install the tools.** Python 3.12 or newer is required.
 
-On **Termux**:
-
-```bash
-pkg install python rust openssl clang git
-```
+On **Termux**: `pkg install python rust openssl clang git`
 
 On **Ubuntu 24.04+ / Debian 13+** (Rust from rustup; the distribution's rustc is too old):
 
@@ -204,7 +170,6 @@ cd ..
 
 That branch matches the APK on the Releases page (`main` lags behind). To switch an
 existing clone: `git fetch origin && git checkout claude/otrv4plus-android-spec-a3oq4d`.
-
 `build.sh` sets up its own Python environment in `.venv`, runs the Rust tests and
 lints, installs the core (with secure groups) and ends with `BUILD OK`. Keep Termux
 open while it runs; details in [TECHNICAL.md](TECHNICAL.md#buildsh-in-detail).
@@ -217,7 +182,6 @@ git pull
 cd Rust && bash build.sh && cd ..
 git log -1 --format='%h %ad'     # check you are on the latest commit
 ```
-
 Keys and settings live in `~/.otrv4plus`, outside the repository; updates leave them.
 
 **4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656: on a
@@ -232,14 +196,10 @@ XMPP over I2P (chat, files and voice):
 PYTHONMALLOC=malloc .venv/bin/python otrv4plus_xmpp.py \
   --jid you@yourserver.i2p --peer friend@yourserver.i2p
 ```
-
 Add `--server <address>.b32.i2p` if the server name does not resolve; `--voice-debug` for call stats.
 
 IRC (defaults to `irc.postman.i2p` over I2P; `-s irc.libera.chat` for TLS):
-
-```bash
-PYTHONMALLOC=malloc .venv/bin/python otrv4+.py
-```
+`PYTHONMALLOC=malloc .venv/bin/python otrv4+.py`
 
 **6. First commands** (XMPP; IRC uses the same `/otr` and `/smp`):
 
@@ -256,9 +216,7 @@ Encrypted group chat (XMPP): `/group create mls3` (then its passphrase),
 `/group invite mls3 bob`, `y` to join, then just type; `/group verify mls3`
 checks every member, then `/group call mls3` or `/sendfile` (to the group).
 App: Rooms, "Create end-to-end encrypted group"; Verify, Call, Send a file.
-
-Building on musl (Alpine), every option and all commands are in
-[TECHNICAL.md](TECHNICAL.md).
+Building on musl (Alpine), every option and all commands: [TECHNICAL.md](TECHNICAL.md).
 
 ## Documentation
 
@@ -273,11 +231,7 @@ Building on musl (Alpine), every option and all commands are in
 
 ## License
 
-OTRv4+ is dual-licensed:
-
-```
-AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
-```
+OTRv4+ is dual-licensed: `AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial`.
 
 - [AGPL-3.0](LICENSE) is the default. You may use, change and share it; if you
   distribute it or run a modified version as a network service, you must
