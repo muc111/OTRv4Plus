@@ -40,6 +40,10 @@ class LoginProgress(private val now: () -> Long = { System.currentTimeMillis() }
     /** When "Log in" was last tapped, or 0 when no tap is outstanding. */
     private var requestedAt: Long = 0L
 
+    /** Whether this sign-in has been connected at least once. Until it has,
+     *  a second attempt is not a reconnect: nothing was lost. */
+    private var hadConnection: Boolean = false
+
     /**
      * Record that the user asked to log in.
      *
@@ -48,6 +52,7 @@ class LoginProgress(private val now: () -> Long = { System.currentTimeMillis() }
      */
     fun requested() {
         requestedAt = now()
+        hadConnection = false
     }
 
     /**
@@ -70,6 +75,7 @@ class LoginProgress(private val now: () -> Long = { System.currentTimeMillis() }
      * be the UI contradicting the thing it is reporting.
      */
     fun observe(phase: LinkPhase) {
+        if (phase == LinkPhase.CONNECTED) hadConnection = true
         if (requestedAt == 0L) return
         if (phase.busy || phase == LinkPhase.CONNECTED ||
             phase == LinkPhase.FAILED) {
@@ -101,10 +107,14 @@ class LoginProgress(private val now: () -> Long = { System.currentTimeMillis() }
      * add beyond that the press was taken.
      */
     fun label(phase: LinkPhase): String = when {
-        phase == LinkPhase.CONNECTING -> "Connecting over I2P. This can take a minute or two."
+        // Owner (2026-10-16): "Connection lost, trying again" while the
+        // built-in router was still building its first tunnels told users
+        // something had broken, and they gave up before I2P was ready. Until
+        // this sign-in has connected once, every attempt is the same first
+        // connection, still being set up -- whatever the service calls it.
+        phase == LinkPhase.RECONNECTING && hadConnection -> RECONNECTING
+        phase == LinkPhase.CONNECTING || phase == LinkPhase.RECONNECTING -> FIRST_CONNECTION
         phase == LinkPhase.STARTING -> "Starting the connection service..."
-        phase == LinkPhase.RECONNECTING -> "Connection lost. Trying again..."
-        pending -> "Connecting..."
         else -> "Connecting..."
     }
 
@@ -140,6 +150,19 @@ class LoginProgress(private val now: () -> Long = { System.currentTimeMillis() }
     }
 
     companion object {
+        /** Before the first connection: what is happening, how long it
+         *  takes, and that waiting is the right thing to do. */
+        const val FIRST_CONNECTION =
+            "Setting up your private I2P connection to the server. The first " +
+                "time can take 2 to 5 minutes while the built-in router joins " +
+                "the I2P network. This is normal: keep the app open, it carries " +
+                "on by itself."
+
+        /** After a connection this sign-in really had. */
+        const val RECONNECTING =
+            "The connection dropped. Reconnecting over I2P by itself; this " +
+                "can take a minute or two."
+
         /**
          * How long a tap is believed without corroboration, in ms.
          *

@@ -64,7 +64,27 @@ class LoginProgressTest {
         val p = at(Clock())
         p.requested()
         assertTrue(p.label(LinkPhase.CONNECTING).contains("I2P"))
-        assertTrue(p.label(LinkPhase.RECONNECTING).contains("again"))
+    }
+
+    @Test
+    fun `nothing is called lost before the first connection`() {
+        // Owner (2026-10-16): "Connection lost, trying again" while the
+        // built-in router built its first tunnels made users give up.
+        val p = at(Clock())
+        p.requested()
+        for (phase in listOf(LinkPhase.CONNECTING, LinkPhase.RECONNECTING)) {
+            val text = p.label(phase)
+            assertEquals(LoginProgress.FIRST_CONNECTION, text)
+            assertTrue("minutes" in text && "normal" in text, text)
+            for (alarming in listOf("lost", "failed", "trying again", "dropped"))
+                assertTrue(alarming !in text.lowercase(), text)
+        }
+        // Once connected, a later drop is said as such.
+        p.observe(LinkPhase.CONNECTED)
+        assertEquals(LoginProgress.RECONNECTING, p.label(LinkPhase.RECONNECTING))
+        // A new sign-in starts over.
+        p.requested()
+        assertEquals(LoginProgress.FIRST_CONNECTION, p.label(LinkPhase.RECONNECTING))
     }
 
     // ── the service takes over ───────────────────────────────────────────────

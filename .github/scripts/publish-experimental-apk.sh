@@ -122,6 +122,7 @@ installed), and with the Termux client.
 | Area | What to test | Since |
 |---|---|---|
 | Synthetic voice notes | **Synthetic** was rebuilt: no whistle, every note's voice drawn from the phone's own random generator, changing through the note. **Disguised is gone** (rc.81): the choice is Synthetic or My voice. Record the same sentence in both and compare | rc.77–rc.81 |
+| Sign-in wording | While the built-in router sets up the first connection the screen says it is **setting up (2–5 minutes, normal)**, never "Connection lost" | rc.82 |
 | Verification progress | A moving bar on **both** phones (and the desktop and terminal) from the moment verification starts until it ends, 1:1 and groups | rc.81 |
 | Joining a secure group | After accepting an invitation the room shows *setting up end-to-end encryption* with a bar, never "not encrypted"; typing is held until it is ready | rc.81 |
 | Ready-to-call phone | The phone icon should turn **green on both phones** within a few minutes of signing in, in any chat; a call placed while green should start without the 30–120 s wait | rc.76–rc.77 |

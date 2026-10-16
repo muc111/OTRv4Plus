@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.82 — 2026-10-16 — no "Connection lost" before the first connection (core 0.13.1)
+
+- **Signing in says what is happening, not that something broke.** Owner:
+  *"Really hate the fact it says connection lost trying again when building
+  the i2pd bundled router … this will confuse end users who may not wait
+  long enough."* Every attempt after the first was labelled a reconnect,
+  even when nothing had ever connected. Now, until this sign-in has
+  connected once, the screen says: *"Setting up your private I2P connection
+  to the server. The first time can take 2 to 5 minutes while the built-in
+  router joins the I2P network. This is normal: keep the app open, it
+  carries on by itself."* The quiet line under it reads *"Still setting up:
+  … Nothing is wrong; it carries on by itself (try 2)."* Only a connection
+  that really dropped is called one. The notification says "Connecting over
+  I2P…"; the desktop banner tells first connection and reconnect apart too.
+
 ## Android 0.7.0-experimental.rc.81 — 2026-10-16 — Synthetic only; a bar while verifying; a secure group never looks unencrypted while joining (core 0.13.1)
 
 - **Disguised voice notes are gone.** Owner: *"Disguised is hard to

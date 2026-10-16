@@ -25,7 +25,7 @@
     <string name="connection_starting">Starting…</string>
     <string name="connection_connecting">Connecting…</string>
     <string name="connection_connected">Connected</string>
-    <string name="connection_reconnecting">Reconnecting…</string>
+    <string name="connection_reconnecting">Connecting over I2P…</string>
     <string name="connection_disconnecting">Disconnecting…</string>
     <string name="connection_failed">Connection failed</string>
 

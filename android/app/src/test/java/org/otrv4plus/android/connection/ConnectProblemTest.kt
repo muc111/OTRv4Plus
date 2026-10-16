@@ -23,8 +23,9 @@ class ConnectProblemTest {
                             "i2p_session_failed", "stream_failed")) {
             val l = line(code, retrying = true, n = 1)!!
             assertEquals(ConnectProblem.Tone.QUIET, l.tone, code)
-            assertTrue(l.text.startsWith("Still connecting"), l.text)
-            assertTrue("failed" !in l.text.lowercase(), l.text)
+            assertTrue(l.text.startsWith("Still setting up"), l.text)
+            for (alarming in listOf("failed", "lost", "dropped", "trying again"))
+                assertTrue(alarming !in l.text.lowercase(), l.text)
         }
     }
 

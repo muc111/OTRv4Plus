@@ -78,9 +78,9 @@ object ConnectProblem {
                 failuresInARow >= PERSISTENT_AFTER ->
                     Line(persistent(code) + if (retrying) " Still trying." else "",
                          Tone.ERROR)
-                retrying -> Line("Still connecting: ${transient(code)} " +
-                                 "Trying again by itself" +
-                                 (if (failuresInARow > 0) " (attempt ${failuresInARow + 1})."
+                retrying -> Line("Still setting up: ${transient(code)} " +
+                                 "Nothing is wrong; it carries on by itself" +
+                                 (if (failuresInARow > 0) " (try ${failuresInARow + 1})."
                                   else "."), Tone.QUIET)
                 else -> Line(persistent(code), Tone.ERROR)
             }
@@ -113,7 +113,7 @@ object ConnectProblem {
         "i2p_destination_unreachable", "i2p_name_not_found" ->
             "the server's I2P address has not been found yet."
         "xmpp_stream_failure", "server_closed_connection", "closed",
-        "stream_failed", "tls_failed" -> "the server's connection dropped."
+        "stream_failed", "tls_failed" -> "the route to the server is still settling."
         else -> "the connection is not up yet."
     }
 

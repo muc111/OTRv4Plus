@@ -105,7 +105,9 @@ private fun LinkBanner(model: AppModel) {
     val text = when (phase) {
         LinkPhase.FAILED -> model.problemLine()?.text ?: "The connection failed."
         LinkPhase.STOPPED -> "Not connected."
-        else -> "Reconnecting over I2P… messages you type are kept until it is back."
+        LinkPhase.RECONNECTING ->
+            "Reconnecting over I2P by itself… messages you type are kept until it is back."
+        else -> "Connecting over I2P… the first time can take a few minutes; it carries on by itself."
     }
     Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
         Text(text, Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
