@@ -114,6 +114,19 @@ before a change arrived after it, and the new epoch cannot read the old one.
 With 23 s of lag many lines were in flight; in normal use it is the few
 seconds around adding someone.
 
+**Second run (same evening, after those fixes).** Harness lag stayed under
+half a second and latency at 100 members was **0.2 s median, 0.5 s p95**.
+Prosody used **~29% of one core** steady with 100 members sending ~300
+lines a minute (each delivered to 100 occupants), and ~100% for about five
+minutes while members 81-97 were added. Delivery still read ~43% with no
+undecryptable messages: the test's own pacing never saw the room's
+refusals (they arrive as `type="error"`, not as room messages) and never
+re-sent them, so it showed "room errors 0". The test now uses the app's own
+`RoomPacer`, which slows down on a refusal and re-sends anything the room
+refused or did not echo, and it counts refusals and pieces given up on
+(`lost`). If `room errors` climbs, the server's `mod_muc_limits` is
+refusing the traffic; see below.
+
 **What it means for real groups:** adding many people at once to a large
 group is the expensive operation for the server. The app adds people one at
 a time, as they accept their invitations, so each change is ~1/16 of the

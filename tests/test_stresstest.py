@@ -174,3 +174,13 @@ def test_an_older_core_without_identities_still_adds():
     assert sw.add_batch(bots[1:])
     pump()
     assert all(b.member for b in bots) and sw.old_core_warned
+
+
+def test_the_runner_uses_the_apps_pacer_and_sees_bounces():
+    """Run of 2026-10-16: delivery 43% with "room errors 0". The room's
+    refusals arrive as type="error" (slixmpp's message_error event), which
+    the old hand-made pacing never listened to, and nothing re-sent them."""
+    src = open(st.__file__).read()
+    assert "from android_bridge.groups import RoomPacer" in src
+    assert '"message_error"' in src and ".rejected(room)" in src
+    assert ".confirm(room," in src          # echoes confirm, so unechoed re-send

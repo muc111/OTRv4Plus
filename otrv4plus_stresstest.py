@@ -72,10 +72,6 @@ ADMIN_DELETE = "http://jabber.org/protocol/admin#delete-user"
 COMMANDS_NODE = "http://jabber.org/protocol/commands"
 #: The core's batch limit for one add (MAX_BATCH in Rust/src/mls_group.rs).
 MAX_BATCH = 64
-#: Room pacing, the app's (android_bridge/groups.py RoomPacer settings).
-ROOM_BURST = 10
-ROOM_INTERVAL = 0.25
-ROOM_SLOW_INTERVAL = 2.2
 
 #: Made-up news, so the chat reads like people talking; nothing is fetched.
 _TOPICS = [
@@ -130,6 +126,7 @@ class Stats:
         self.undecryptable = 0
         self.disconnects = 0
         self.lag_max = 0.0                  # this process's event-loop stall
+        self.lost = 0                       # pieces the pacer gave up on
 
 
 class Bot:
@@ -340,7 +337,7 @@ class Swarm:
             "commits": s.commits, "commit_failures": s.commit_failures,
             "room_errors": s.room_errors, "undecryptable": s.undecryptable,
             "disconnects": s.disconnects, "join_refused": s.join_refused,
-            "harness_lag_s": round(s.lag_max, 2),
+            "harness_lag_s": round(s.lag_max, 2), "lost": s.lost,
         }
         s.reset()
         return row
@@ -459,52 +456,63 @@ async def run(args) -> int:
     clients = {}
     swarm: Optional[Swarm] = None
 
-    # Room pieces are paced like the app's RoomPacer: a burst of ROOM_BURST,
-    # then one every ROOM_INTERVAL s, slowing to ROOM_SLOW_INTERVAL s for a
-    # bot the room has pushed back on. Without it this would only measure
-    # the server's flood limit.
-    queues: Dict[str, asyncio.Queue] = {}
-    slow: Dict[str, bool] = {}
+    # Room pieces go through the app's own RoomPacer, one per bot as the app
+    # has one per account: fast until the room bounces something, then slow,
+    # re-sending whatever the room refused or never echoed. Run of
+    # 2026-10-16: a hand-made copy of the pacing never saw the room's
+    # bounces (they arrive as type="error", not as groupchat) and never
+    # re-sent, so refused pieces were silently lost and the run reported
+    # "room errors 0" while delivering 43%.
+    from android_bridge.groups import RoomPacer, SecureGroups
+    loop = asyncio.get_running_loop()
+    pacers: Dict[str, RoomPacer] = {}
+
+    def pacer_for(bot: Bot) -> RoomPacer:
+        p = pacers.get(bot.jid)
+        if p is None:
+            def send(to_room: str, body: str, _bot=bot) -> None:
+                c = clients.get(_bot.jid)
+                if c is not None:
+                    c.send_message(mto=to_room, mbody=body, mtype="groupchat")
+
+            def gave_up(_room: str) -> None:
+                swarm.stats.lost += 1
+
+            p = pacers[bot.jid] = RoomPacer(
+                send, burst=SecureGroups.ROOM_BURST,
+                interval=SecureGroups.ROOM_INTERVAL,
+                slow_burst=SecureGroups.ROOM_SLOW_BURST,
+                slow_interval=SecureGroups.ROOM_SLOW_INTERVAL,
+                on_error=gave_up,
+                schedule=lambda delay, fn: loop.call_later(delay, fn))
+        return p
 
     def send_room(bot: Bot, body: str) -> None:
-        q = queues.get(bot.jid)
-        if q is None:
-            q = queues[bot.jid] = asyncio.Queue()
-            asyncio.get_running_loop().create_task(drain(bot, q))
-        q.put_nowait(body)
-
-    async def drain(bot: Bot, q: asyncio.Queue) -> None:
-        burst = ROOM_BURST
-        while True:
-            body = await q.get()
-            c = clients.get(bot.jid)
-            if c is not None:
-                c.send_message(mto=room, mbody=body, mtype="groupchat")
-            if q.empty():
-                burst = ROOM_BURST
-                continue
-            if burst > 0 and not slow.get(bot.jid):
-                burst -= 1
-                continue
-            await asyncio.sleep(ROOM_SLOW_INTERVAL if slow.get(bot.jid) else ROOM_INTERVAL)
+        pacer_for(bot).post(room, [body])
 
     def send_direct(bot: Bot, to: str, body: str) -> None:
         clients[bot.jid].send_message(mto=to, mbody=body, mtype="chat")
 
     def wire(bot: Bot, c) -> None:
         def on_group(msg):
-            if msg["type"] == "error":
-                swarm.stats.room_errors += 1
-                slow[bot.jid] = True
-                return
             if str(msg["from"].bare) == room and msg["body"]:
+                if msg["from"].resource == Swarm.nick(bot):
+                    pacer_for(bot).confirm(room, msg["body"])   # our echo
                 swarm.on_room(bot, msg["from"].resource, msg["body"])
+
+        def on_error(msg):
+            # The room refused something (Prosody's mod_muc_limits answers
+            # "resource-constraint"): slow down and send it again.
+            if str(msg["from"].bare) == room:
+                swarm.stats.room_errors += 1
+                pacer_for(bot).rejected(room)
 
         def on_chat(msg):
             if msg["type"] in ("chat", "normal") and msg["body"]:
                 swarm.on_direct(bot, str(msg["from"].bare), msg["body"])
         c.add_event_handler("groupchat_message", on_group)
         c.add_event_handler("message", on_chat)
+        c.add_event_handler("message_error", on_error)
         c.add_event_handler("disconnected",
                             lambda _e: setattr(swarm.stats, "disconnects",
                                                swarm.stats.disconnects + 1))
