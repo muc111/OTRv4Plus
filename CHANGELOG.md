@@ -17,6 +17,10 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   now text; a new test builds and writes the real slixmpp stanza.
   rc.85-rc.88's changes (longer timeout, the reason shown, fitting to 8 KB,
   the smaller retry) stay; none of them was this.
+- **Confirmed on the phones (owner, 2026-10-16):** profile pictures
+  publish and reach contacts, files to a secure group, two-way group calls,
+  GPS location pins, and Delete for the server admin. The release page's
+  "Verified" table is updated.
 - **Diagnostics are readable again.** The 10-second owned-rooms and
   server-admin polls filled the report's last events; they are now recorded
   only when their answer changes, and the admin answer (yes/no) is shown.

@@ -107,11 +107,14 @@ installed), and with the Termux client.
 | 1:1 chat | OTRv4+ end to end, app ↔ app and app ↔ Termux |
 | Identity check | SMP verification, app ↔ app and app ↔ Termux |
 | Files | Encrypted file transfer, hashes checked on arrival |
+| Group files | Sending files to a secure group (confirmed rc.89) |
 | 1:1 calls | Two-way voice calls between two handsets running this app, and between this app and the Termux client |
 | Secure groups | Post-quantum MLS groups, group messages both ways — **tested with four members** (two phones, each with the app and Termux). No size limit is set; larger groups are not yet tested |
 | Group check | Group verification with a shared passphrase |
-| Group calls | Two-way group voice calls |
-| Location | Location pins from GPS only, received as a card (rc.73; since rc.80 only to verified contacts and groups) |
+| Group calls | Two-way group voice calls (re-confirmed rc.89) |
+| Location | Location pins from GPS only, received as a card (rc.73; since rc.80 only to verified contacts and groups — re-confirmed rc.89) |
+| Profile picture | Setting a profile picture from a phone photo; contacts receive it (rc.89 — the server log shows both the picture and its announcement stored and delivered) |
+| Moderation | Signed in as the server admin, Delete shows on every room (rc.88) |
 | Voice notes | Voice notes in **My voice** |
 | Rooms | Room discovery, creating and joining a room |
 | App | Bottom bar on every main screen; the 📎 and 🎤 buttons in the composer |
@@ -123,9 +126,8 @@ installed), and with the Termux client.
 |---|---|---|
 | Synthetic voice notes | **Synthetic** was rebuilt: no whistle, every note's voice drawn from the phone's own random generator, changing through the note. **Disguised is gone** (rc.81): the choice is Synthetic or My voice. Record the same sentence in both and compare | rc.77–rc.81 |
 | Picture formats | Choose a profile picture in **any format** — JPEG, PNG, WebP, HEIC, AVIF, GIF, BMP — any size: it is converted and fitted to the app's limit (at most 96 x 96 and 8 KB) | rc.87 |
-| Profile picture upload | Set a picture: it should publish (a minute or two over I2P). If the full size gets no answer, a **48 x 48 copy is sent automatically** and the app says so. If it still fails, the message names why (connection dropped, no answer, or the server's refusal) — please send that text and the Prosody log lines from that minute | rc.85–rc.86 |
 | Group status and call limit | A group's line reads **"Encrypted Chat \| 5/6 users verified"** and updates as members are verified; a group of **6 or more has no call button** ("Text only") | rc.84 |
-| Delete buttons | "Delete group for everyone" and room "Delete" appear **only for the creator or a server admin**; other members see Leave only. Signed in as the **server admin**, Delete shows on every room in Rooms (needs Prosody's `admin_adhoc` module, on by default) | rc.83–rc.88 |
+| Delete buttons | An ordinary member (not the creator, not an admin) sees **Leave only**, no Delete | rc.83 |
 | Sign-in wording | While the built-in router sets up the first connection the screen says it is **setting up (2–5 minutes, normal)**, never "Connection lost" | rc.82 |
 | Verification progress | A moving bar on **both** phones (and the desktop and terminal) from the moment verification starts until it ends, 1:1 and groups | rc.81 |
 | Joining a secure group | After accepting an invitation the room shows *setting up end-to-end encryption* with a bar, never "not encrypted"; typing is held until it is ready | rc.81 |
@@ -134,9 +136,7 @@ installed), and with the Termux client.
 | Group-call recovery | If one side stops hearing the other, the call repairs itself (at most twice). Send the diagnostics report from **both** phones after a group call | rc.74 |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups | rc.68–rc.69 |
 | Room history | Earlier room messages loaded from the server archive | rc.68 |
-| Profile picture | A photo from the camera (HEIC, rotated) as your picture | rc.72 |
-| Group files | Sending a file to a secure group | rc.54 |
-| Location | Only sent once the contact (or every group member) is verified — before that 📍 explains and the GPS never starts; a mock-location app's position; typing a Plus Code; "Open in maps app" | rc.73–rc.80 |
+| Location | Before verification 📍 explains and the GPS never starts; a mock-location app's position; typing a Plus Code; "Open in maps app" | rc.73–rc.80 |
 | Photos | The "hidden information" question strips a camera photo's location | — |
 | Staying connected | Background survival, reconnect after a network change | — |
 | Desktop app | The desktop (Linux/Qubes) client against the same server | — |
