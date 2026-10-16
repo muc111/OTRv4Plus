@@ -267,7 +267,10 @@ jobs:
           set -euo pipefail
           BASE=https://repo.maven.apache.org/maven2/com/chaquo/python/target
           V="${{ env.CHAQUOPY_TARGET }}"
-          curl -sSfLo target.zip "$BASE/$V/target-$V-${{ matrix.abi }}.zip"
+          # Retried: Maven Central has answered 404 for a file it serves
+          # (twice on 2026-10-16, a different ABI each time).
+          curl -sSfL --retry 5 --retry-delay 10 --retry-all-errors \
+            -o target.zip "$BASE/$V/target-$V-${{ matrix.abi }}.zip"
           unzip -q -o target.zip -d chaquopy
           mkdir -p "$PWD/pylib"
           SO="libpython${{ env.PYTHON_VERSION }}.so"
