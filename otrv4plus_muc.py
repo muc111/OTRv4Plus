@@ -243,7 +243,8 @@ CODES = {
                        "first if you want to join again.",
     "password_not_applied": "The server did not password-protect the room, "
                             "so it was removed rather than left open.",
-    "forbidden": "You are banned from this room.",
+    "forbidden": "The room refused to let you in (forbidden): you may be "
+                 "banned from it, or the server's rules do not allow it.",
     "registration_required": "This room is members only.",
     "not_allowed": "This service does not let you create rooms.",
     "not_acceptable": "The room refused that.",
