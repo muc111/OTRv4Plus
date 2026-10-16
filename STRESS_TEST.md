@@ -134,6 +134,61 @@ group is the expensive operation for the server. The app adds people one at
 a time, as they accept their invitations, so each change is ~1/16 of the
 size measured here.
 
+## Capacity: many groups of 20 (T450, 2026-10-16)
+
+Every user in a group of ~20, added one at a time as the app does, sending
+one line a minute (far more than real people send). Local connections, no
+I2P. Steady = the minutes after everyone had joined.
+
+| Users | Groups | Prosody steady (one core) | Prosody memory | Latency steady p50 / p95 | Delivered steady |
+|---|---|---|---|---|---|
+| 200 | 10 | ~8.5% | 53 MB | 0.11 s / 0.23 s | ~100% |
+| 400 | 20 | ~17.5% | 106 MB | 0.17 s / 0.34 s | ~100% |
+| 800 | 40 | ~37% | 303 MB | 0.31 s / 0.56 s | 99.8-100.5% |
+
+**Steady chat grows in a straight line: about 0.046% of one core per user.**
+No room errors, no disconnects and no refused joins in any run.
+
+**Prosody uses one core, whatever the machine has.** It runs as a single
+Lua process, so "100% of one core" is its limit even though the T450 has
+four. The whole laptop never went above ~55% CPU, and only because the test
+process was on it too.
+
+**Adding people is what costs.** While 800 people joined 40 groups in 16
+minutes (~50 additions a minute), Prosody ran at 60-100% of one core. Once
+everyone had joined it dropped to ~37%.
+
+**The bad numbers in the 800 run's joining phase came from the test
+process, not the server.** The test is one Python process. It sat at
+95-100% of a core and fell up to 45 s behind ("harness lag"):
+
+- **Undecryptable:** new members were processing their Welcome late. Room
+  traffic sent before they had joined is unreadable to them, as it should be.
+- **Delivered above 100%:** late lines were counted in a later minute's
+  window.
+- **lost 94 / 92 / 65:** pieces the pacer gave up re-sending while the
+  process was stalled.
+
+Within a minute of the lag clearing, every figure was clean. For larger
+runs, run the test on a second machine, or split it into two runs with
+different `--groups`.
+
+**Memory is not a limit.** Prosody used ~0.38 MB per user (303 MB at 800).
+Lua keeps what it allocated until a restart. The test itself used 2.4 GB.
+vmstat's low "free" is page cache, which the kernel hands back.
+
+**What the T450 can carry, keeping Prosody under 80% of its one core:**
+
+- Steady chat at this test's rate (one line per user per minute): about
+  **1,700 users**.
+- Recommended planning figure: **about 1,000 users**. That leaves room for
+  join bursts and for everyone reconnecting at once after a restart.
+  Real people send far less than a line a minute, so this is conservative
+  for chat.
+- Still unmeasured: the I2P router. Every real user arrives through I2P
+  tunnels, and the router's CPU is probably the next limit. Measure it with
+  real I2P clients before going past a few hundred users.
+
 ## The room rate limit (`mod_muc_limits`)
 
 Prosody's `mod_muc_limits` caps how many messages **one room** accepts per
