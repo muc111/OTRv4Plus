@@ -656,3 +656,22 @@ def test_our_encoder_round_trips_through_the_hardened_decoder():
     small = A_.shrink(png(96, 96, 6))
     assert A_.decode_png(small)[:2] == (48, 48)
     assert A_.shrink(png(40, 40, 6)) == png(40, 40, 6)     # already small
+
+
+def test_any_picture_is_fitted_to_the_limit():
+    """Owner (2026-10-16): "select any image format and it should convert
+    for our limits". Whatever the app hands over -- even pure noise, the
+    worst case for PNG -- leaves as a square PNG within TARGET_BYTES that
+    our own hardened decoder accepts."""
+    import os
+    from android_bridge import avatar as A_
+    noisy = png(96, 96, 2, rows=[os.urandom(96 * 3) for _ in range(96)])
+    assert len(noisy) > A_.TARGET_BYTES
+    out = A_.fit(noisy)
+    w, h, _ = A_.decode_png(out)
+    assert w == h and w <= A_.OWN_SIZE and len(out) <= A_.TARGET_BYTES
+    wide = png(120, 60, 6)                          # not square: centre-cropped
+    w, h, _ = A_.decode_png(A_.fit(wide))
+    assert w == h == 60
+    small = png(40, 40, 6)                          # already fine: untouched
+    assert A_.fit(small) == small

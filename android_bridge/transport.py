@@ -3944,7 +3944,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         try:
             if len(png) > _avatar.MAX_BYTES:
                 raise _avatar.AvatarError("too_large")
-            _avatar.decode_png(png)
+            # Any picture the app made, fitted to our limits here: square,
+            # at most OWN_SIZE, at most TARGET_BYTES (owner, 2026-10-16).
+            png = _avatar.fit(png)
         except _avatar.AvatarError as exc:
             raise TransportError("avatar_refused", exc.code)
         # Two round trips, each with its own AVATAR_TIMEOUT, and a little

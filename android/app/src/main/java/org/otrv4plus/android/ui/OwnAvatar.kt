@@ -56,7 +56,13 @@ object OwnAvatar {
         (make(context, uri) as? Made.Png)?.bytes
 
     fun make(context: Context, uri: Uri): Made = try {
-        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) decodeModern(context, uri)
+        // Any format this phone can read (owner, 2026-10-16: "select any
+        // image format and it should convert for our limits"): ImageDecoder
+        // first (HEIC/HEIF, AVIF on 12+, WebP, JPEG, PNG, GIF, BMP, DNG),
+        // then BitmapFactory for what it rejects. The engine fits the
+        // result to its size limit (avatar.fit).
+        val bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P)
+                         decodeModernOrNull(context, uri) ?: decodeLegacy(context, uri)
                      else decodeLegacy(context, uri)
         if (bitmap == null) Made.Refused("That file is not a picture this phone can read.")
         else Made.Png(encode(bitmap))
@@ -71,6 +77,16 @@ object OwnAvatar {
     }
 
     private class TooLarge : Exception()
+
+    private fun decodeModernOrNull(context: Context, uri: Uri): Bitmap? = try {
+        decodeModern(context, uri)
+    } catch (e: TooLarge) {
+        throw e
+    } catch (e: SecurityException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
 
     private fun decodeModern(context: Context, uri: Uri): Bitmap? {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return null

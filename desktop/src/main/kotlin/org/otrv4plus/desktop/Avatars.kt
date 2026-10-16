@@ -39,7 +39,22 @@ object Avatars {
         return out.toComposeImageBitmap()
     }
 
-    fun ownPng(file: File): ByteArray? = runCatching {
+    /**
+     * Our own picture as a small PNG, from any image file. Owner
+     * (2026-10-16): "we should be able to select any image format and it
+     * should convert for our limits". ImageIO reads PNG, JPEG, GIF, BMP and
+     * TIFF; anything else (WebP, HEIC/HEIF, AVIF, ...) is converted by an
+     * image tool already on this computer, if there is one ([CONVERTERS]).
+     * The engine then fits the result to its size limit (avatar.fit).
+     */
+    fun ownPng(file: File): ByteArray? {
+        val decoded = runCatching { readWithImageIO(file) }.getOrNull()
+            ?: runCatching { readWithConverter(file) }.getOrNull()
+            ?: return null
+        return runCatching { squarePng(decoded) }.getOrNull()
+    }
+
+    private fun readWithImageIO(file: File): BufferedImage? =
         ImageIO.createImageInputStream(file).use { input ->
             val reader = ImageIO.getImageReaders(input).asSequence().firstOrNull() ?: return null
             try {
@@ -51,23 +66,65 @@ object Avatars {
                 val param: ImageReadParam = reader.defaultReadParam.apply {
                     setSourceSubsampling(step, step, 0, 0)
                 }
-                val decoded = reader.read(0, param)
-                val (left, top, side) = AvatarPixels.centreSquare(decoded.width, decoded.height)
-                val size = AvatarPixels.OWN_SIZE
-                val scaled = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
-                scaled.createGraphics().apply {
-                    setRenderingHint(RenderingHints.KEY_INTERPOLATION,
-                                     RenderingHints.VALUE_INTERPOLATION_BICUBIC)
-                    drawImage(decoded, 0, 0, size, size, left, top, left + side, top + side, null)
-                    dispose()
-                }
-                ByteArrayOutputStream().use { out ->
-                    ImageIO.write(scaled, "png", out)
-                    out.toByteArray()
-                }
+                reader.read(0, param)
             } finally {
                 reader.dispose()
             }
         }
-    }.getOrNull()
+
+    /**
+     * Tools tried, in order, for a format ImageIO cannot read. Each writes
+     * one PNG frame (at most 512 px) to stdout; no shell, the path is one
+     * argument. They only ever read the user's own file.
+     */
+    private val CONVERTERS: List<(String) -> List<String>> = listOf(
+        { p -> listOf("magick", "$p[0]", "-auto-orient", "-thumbnail", "512x512", "png:-") },
+        { p -> listOf("convert", "$p[0]", "-auto-orient", "-thumbnail", "512x512", "png:-") },
+        { p -> listOf("dwebp", "-quiet", p, "-png", "-o", "-") },
+        { p -> listOf("ffmpeg", "-v", "error", "-i", p, "-frames:v", "1",
+                      "-vf", "scale='min(512,iw)':-2", "-f", "image2pipe", "-c:v", "png", "-") },
+    )
+
+    private const val CONVERT_SECONDS = 30L
+    private const val CONVERT_MAX_BYTES = 32 * 1024 * 1024
+
+    private fun readWithConverter(file: File): BufferedImage? {
+        for (command in CONVERTERS) {
+            val png = runCatching { run(command(file.absolutePath)) }.getOrNull() ?: continue
+            val image = runCatching { ImageIO.read(java.io.ByteArrayInputStream(png)) }.getOrNull()
+            if (image != null && image.width > 0 && image.height > 0) return image
+        }
+        return null
+    }
+
+    private fun run(command: List<String>): ByteArray? {
+        val process = ProcessBuilder(command)
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        val out = java.util.concurrent.CompletableFuture.supplyAsync {
+            process.inputStream.use { it.readNBytes(CONVERT_MAX_BYTES) }
+        }
+        if (!process.waitFor(CONVERT_SECONDS, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            return null
+        }
+        val bytes = out.get(5, java.util.concurrent.TimeUnit.SECONDS)
+        return if (process.exitValue() == 0 && bytes.isNotEmpty()) bytes else null
+    }
+
+    private fun squarePng(decoded: BufferedImage): ByteArray {
+        val (left, top, side) = AvatarPixels.centreSquare(decoded.width, decoded.height)
+        val size = AvatarPixels.OWN_SIZE
+        val scaled = BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB)
+        scaled.createGraphics().apply {
+            setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                             RenderingHints.VALUE_INTERPOLATION_BICUBIC)
+            drawImage(decoded, 0, 0, size, size, left, top, left + side, top + side, null)
+            dispose()
+        }
+        return ByteArrayOutputStream().use { out ->
+            ImageIO.write(scaled, "png", out)
+            out.toByteArray()
+        }
+    }
 }

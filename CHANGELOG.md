@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.87 — 2026-10-16 — any picture format, converted to fit (core 0.13.1)
+
+- **Owner: "we should be able to select any image format and it should
+  convert for our limits".**
+  * **The engine fits every picture** (`avatar.fit`), whatever made it:
+    centre square, at most 96 x 96, at most **8 KB** -- trying full colour
+    first, then fewer colours, then 80/64/56/48 px. A worst-case picture
+    (pure noise, 28 KB) leaves as 64 x 64 in 8 KB; a normal photo keeps
+    96 x 96. The PNG encoder now uses the Paeth filter, so photos are
+    much smaller at the same size. Small enough to cross I2P as one stanza
+    -- the rc.86 fallback stays for anything that still gets no answer.
+  * **Android**: ImageDecoder (HEIC/HEIF, AVIF on 12+, WebP, JPEG, PNG,
+    GIF, BMP, DNG) and now BitmapFactory for anything it rejects.
+  * **Desktop**: Java reads PNG, JPEG, GIF, BMP and TIFF; anything else
+    (WebP, HEIC, AVIF, ...) is converted by ImageMagick, dwebp or ffmpeg if
+    one is installed. No shell; only the user's own file is read.
+
 ## Android 0.7.0-experimental.rc.86 — 2026-10-16 — an unanswered picture is sent again, smaller (core 0.13.1)
 
 - **Device report on rc.85: "The server did not answer over I2P in time"**

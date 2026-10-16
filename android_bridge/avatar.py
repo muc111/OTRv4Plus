@@ -51,7 +51,7 @@ from typing import Dict, List, Optional, Tuple
 
 __all__ = ["AvatarError", "Avatar", "decode_png", "AvatarBook",
            "MAX_BYTES", "MAX_DIMENSION", "OWN_SIZE", "PNG_TYPE",
-           "SMALL_SIZE", "encode_png", "shrink"]
+           "SMALL_SIZE", "TARGET_BYTES", "encode_png", "shrink", "fit"]
 
 #: Largest avatar accepted, in bytes. Real avatars are a few kilobytes; the
 #: app publishes OWN_SIZE x OWN_SIZE.
@@ -64,6 +64,14 @@ PNG_TYPE = "image/png"
 #: A second, much smaller try when the first publish got no answer
 #: (device report, 2026-10-16: "The server did not answer over I2P in time").
 SMALL_SIZE = 48
+#: What our own picture is fitted into before it is published, whatever
+#: format and size it was picked in (owner, 2026-10-16: "select any image
+#: format and it should convert for our limits"). Small enough to cross
+#: I2P as one stanza; see `fit`.
+TARGET_BYTES = 8 * 1024
+#: Sizes tried by `fit`, largest first, and colour depths per channel.
+FIT_SIZES = (96, 80, 64, 56, 48)
+FIT_BITS = (8, 6, 5, 4)
 #: base64 of MAX_BYTES, with slack for line breaks a server may add.
 MAX_B64_CHARS = (MAX_BYTES + 2) // 3 * 4 + 1024
 #: How many contacts' avatars are kept.
@@ -272,15 +280,23 @@ def encode_png(width: int, height: int, rgba: bytes) -> bytes:
     opaque = all(a == 255 for a in rgba[3::4])
     channels = 3 if opaque else 4
     rows = bytearray()
+    prev = bytes(width * channels)
     for y in range(height):
         row = rgba[y * width * 4:(y + 1) * width * 4]
         if opaque:
             packed = bytearray(width * 3)
             packed[0::3], packed[1::3], packed[2::3] = row[0::4], row[1::4], row[2::4]
             row = bytes(packed)
-        rows += b"\x00" + row
+        # Paeth (filter 4): photos compress far better than unfiltered.
+        out = bytearray(len(row))
+        for i, v in enumerate(row):
+            a = row[i - channels] if i >= channels else 0
+            c = prev[i - channels] if i >= channels else 0
+            out[i] = (v - _paeth(a, prev[i], c)) & 0xFF
+        rows += b"\x04" + bytes(out)
+        prev = row
 
-    def chunk(kind: bytes, body: bytes) -> bytes:
+    def chunk(kind: bytes, body: bytes) -> bytes:  # noqa: E306
         return (struct.pack(">I", len(body)) + kind + body
                 + struct.pack(">I", zlib.crc32(kind + body) & 0xFFFFFFFF))
 
@@ -313,6 +329,66 @@ def shrink(png: bytes, size: int = SMALL_SIZE) -> bytes:
             out[o:o + 4] = bytes(v // n for v in acc)
     small = encode_png(size, size, bytes(out))
     return small if len(small) < len(png) else bytes(png)
+
+
+def _scale_square(w: int, h: int, rgba: bytes, size: int) -> bytes:
+    """The centre square of an image, box-averaged to size x size."""
+    side = min(w, h)
+    left, top = (w - side) // 2, (h - side) // 2
+    out = bytearray(size * size * 4)
+    for ty in range(size):
+        y0 = top + ty * side // size
+        y1 = max(y0 + 1, top + (ty + 1) * side // size)
+        for tx in range(size):
+            x0 = left + tx * side // size
+            x1 = max(x0 + 1, left + (tx + 1) * side // size)
+            acc = [0, 0, 0, 0]
+            n = 0
+            for y in range(y0, y1):
+                base = y * w * 4
+                for x in range(x0, x1):
+                    i = base + x * 4
+                    acc[0] += rgba[i]; acc[1] += rgba[i + 1]
+                    acc[2] += rgba[i + 2]; acc[3] += rgba[i + 3]
+                    n += 1
+            o = (ty * size + tx) * 4
+            out[o:o + 4] = bytes(v // n for v in acc)
+    return bytes(out)
+
+
+def _quantise(rgba: bytes, bits: int) -> bytes:
+    """Fewer levels per colour channel (alpha untouched): smaller PNGs."""
+    if bits >= 8:
+        return rgba
+    step = 1 << (8 - bits)
+    table = bytes(min(255, (v // step) * step + step // 2) for v in range(256))
+    out = bytearray(rgba)
+    for c in range(3):
+        out[c::4] = bytes(rgba[c::4]).translate(table)
+    return bytes(out)
+
+
+def fit(png: bytes, budget: int = TARGET_BYTES) -> bytes:
+    """Our own picture, made to fit: square, at most OWN_SIZE, and no more
+    than [budget] bytes as PNG. Tries the largest size at full colour first,
+    then fewer colours, then smaller sizes. The result always passes
+    `decode_png`; the smallest attempt is returned if nothing fits."""
+    w, h, rgba = decode_png(png)
+    if w == h and w <= OWN_SIZE and len(png) <= budget:
+        return bytes(png)
+    best = None
+    side = min(w, h)
+    sizes = sorted({min(side, OWN_SIZE)} | {n for n in FIT_SIZES if n < side},
+                   reverse=True)
+    for size in sizes:
+        square = _scale_square(w, h, rgba, size)
+        for bits in FIT_BITS:
+            data = encode_png(size, size, _quantise(square, bits))
+            if best is None or len(data) < len(best):
+                best = data
+            if len(data) <= budget:
+                return data
+    return best
 
 
 def _clean_id(value) -> str:
