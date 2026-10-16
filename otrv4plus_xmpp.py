@@ -605,6 +605,26 @@ _SESSION_LOG_FH = None
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
+#: The server limits sessions per account (Prosody mod_c2s_limit_sessions,
+#: see SECURITY_SESSIONS.md) and this account already has its quota.
+SESSION_LIMIT_TEXT = (
+    "this account is already signed in on another device, and the server "
+    "allows only one session at a time.\n"
+    "  Sign out on the other device (or wait a few minutes if it just lost "
+    "its connection), then start again.\n"
+    "  If the other session is not yours: change the password on the server "
+    "(prosodyctl passwd) and end it (prosodyctl shell, c2s:close).")
+
+
+def _is_session_limit(condition: str, raw: str) -> bool:
+    """A policy-violation from a per-account session limit. Prosody's
+    mod_c2s_limit_sessions says "Too many active connections to this
+    account"; other policy refusals are left alone."""
+    text = (condition + " " + raw).lower()
+    return "policy-violation" in text and (
+        "too many active connections" in text or "too many resources" in text)
+
+
 def _sanitise(text, max_len: int = 1024) -> str:
     """Strip ANSI/OSC/CSI escape sequences and control characters from
     untrusted data (peer JIDs, plaintext bodies, decrypted OTR payloads)
@@ -2537,6 +2557,14 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         # slixmpp does not always populate .condition, so fall back to
         # matching the element name inside the raw stanza.
         matched = None
+        if _is_session_limit(str(condition), raw):
+            self._shutting_down = True
+            print("\n[fatal] %s\n" % SESSION_LIMIT_TEXT)
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            return
         for name in self._FATAL_STREAM_ERRORS:
             if name == str(condition) or ("<%s " % name) in raw or (
                     "<%s>" % name) in raw:

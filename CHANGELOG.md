@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.92 — 2026-10-16 — "already signed in on another device" (core 0.13.1)
+
+- **New: a server that allows one session per account is understood.** With
+  Prosody's `mod_c2s_limit_sessions` (`max_resources = 1`), a second
+  sign-in is refused with `policy-violation`, "Too many active connections
+  to this account". The Connect screen (Android, desktop) said "still
+  setting up". It now says "This account is already signed in on another
+  device, and the server allows one at a time", and keeps retrying, because
+  a session that just lost its network is timed out by the server. The
+  terminal client says the same and stops. `SECURITY_SESSIONS.md` has the
+  install without `luarocks` and what the module does.
+
 ## Android 0.7.0-experimental.rc.91 — 2026-10-16 — warned when your account is signed in elsewhere (core 0.13.1)
 
 - **New: a warning when your own account is signed in on another device.**

@@ -39,29 +39,38 @@ signing in. Prosody's community module
 limits how many resources one account may have connected. Its option is
 `max_resources`, which defaults to 10.
 
-On the server (Prosody 0.12 or later):
+On the server: `prosodyctl install` needs `luarocks`. Without it, the
+module is a single file. Fetch it into a plugin folder:
 
 ```bash
-sudo prosodyctl install --server=https://modules.prosody.im/rocks/ mod_c2s_limit_sessions
+sudo mkdir -p /usr/local/lib/prosody/custom_modules
+cd /usr/local/lib/prosody/custom_modules
+sudo wget -O mod_c2s_limit_sessions.lua \
+  https://hg.prosody.im/prosody-modules/raw-file/tip/mod_c2s_limit_sessions/mod_c2s_limit_sessions.lua
 ```
 
-In `prosody.cfg.lua`, add it to `modules_enabled` and set the limit:
+In `prosody.cfg.lua`, before any `VirtualHost`:
 
 ```lua
-modules_enabled = {
-    -- ...the modules already listed...
-    "c2s_limit_sessions";
-}
+plugin_paths = { "/usr/local/lib/prosody/modules", "/usr/local/lib/prosody/custom_modules" }
 max_resources = 1
 ```
 
-Then run `sudo prosodyctl reload` (or restart Prosody), and check with
-`sudo prosodyctl shell` → `c2s:show()` while signing in from a second device.
+Add `"c2s_limit_sessions";` inside the existing `modules_enabled` list.
+Then run `sudo prosodyctl check config && sudo systemctl restart prosody`.
 
-**Check before relying on it.** We could not fetch the module's page while
-writing this, so test how it behaves on your server. It either refuses the
-new session or ends the old one. Sign in on the phone, then on the laptop, and
-see which one stays connected.
+**What it does** (read from the module's source): at resource bind it counts
+the account's sessions. When there are already `max_resources`, it refuses
+the **new** one with `policy-violation`, "Too many active connections to
+this account". The session already signed in stays. The app, the desktop
+app and the terminal client then say *"This account is already signed in on
+another device"* instead of a generic connection error. The terminal stops;
+the apps keep retrying.
+
+Because the first session wins, if someone else signs in first, **you** are
+locked out. Change the password on the server (`sudo prosodyctl passwd
+alice@server`), then end their session (`sudo prosodyctl shell`, then
+`c2s:close("alice@server")`).
 
 **The trade-off over I2P.** When a phone loses its connection, the server can
 keep the old session for several minutes before timing it out. With

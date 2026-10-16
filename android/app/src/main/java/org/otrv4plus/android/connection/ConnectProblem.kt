@@ -34,6 +34,16 @@ object ConnectProblem {
 
     data class Line(val text: String, val tone: Tone)
 
+    /** The server allows one session per account and another holds it
+     *  (Prosody mod_c2s_limit_sessions; SECURITY_SESSIONS.md). */
+    const val SESSION_LIMIT = "session_limit"
+
+    const val SESSION_LIMIT_TEXT =
+        "This account is already signed in on another device, and the " +
+            "server allows one at a time. Sign out there, or wait a few " +
+            "minutes if it just lost its connection. If it isn't you, " +
+            "change your password."
+
     /** Transient failures in a row before one is shown as an error. */
     const val PERSISTENT_AFTER = 3
 
@@ -72,6 +82,13 @@ object ConnectProblem {
              failuresInARow: Int): Line? {
         if (connected) return null
         val code: String = failure?.takeIf { it.isNotBlank() } ?: return null
+        // Not "still setting up": the server refused this sign-in because
+        // another session of the account holds its only slot. Said every
+        // time; retrying is still right (a session that lost its network is
+        // timed out by the server).
+        if (code == SESSION_LIMIT) {
+            return Line(SESSION_LIMIT_TEXT + if (retrying) " Trying again." else "", Tone.ERROR)
+        }
         return when (kind(code)) {
             Kind.NEEDS_YOU -> Line(needsYou(code), Tone.ERROR)
             Kind.TRANSIENT -> when {

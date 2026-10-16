@@ -347,3 +347,11 @@ def test_another_session_of_our_account_is_warned_about(capsys):
     c._on_presence_unavailable(_pres("me@example.i2p/phone"))
     assert "signed out" in capsys.readouterr().out
     assert c._peer_resources == {}                       # not a peer
+
+
+def test_the_terminal_names_a_session_limit():
+    assert xmpp._is_session_limit(
+        "policy-violation", "<policy-violation/><text>Too many active "
+        "connections to this account</text>")
+    assert not xmpp._is_session_limit("policy-violation", "rate limited")
+    assert "already signed in on another device" in xmpp.SESSION_LIMIT_TEXT

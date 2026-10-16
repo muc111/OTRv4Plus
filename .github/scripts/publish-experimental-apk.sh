@@ -134,6 +134,7 @@ installed), and with the Termux client.
 | Password-protected group | Create a secure group **with a room password**, invite someone: they join without typing it (it comes with the invitation, encrypted); if it does not arrive they are **asked for it** instead of an error | rc.90 |
 | Group status and call limit | A new group reads **"Encrypted Chat \| 0/1 users verified"**; the count rises only as verification succeeds (you count once a verification you took part in succeeds); a group of **6 or more has no call button** ("Text only") | rc.84–rc.90 |
 | Signed in elsewhere | Sign in with the same account on a second device: the first shows **"Your account is also signed in on another device"**; as server admin, **Sign out other devices** ends the second session (your own stays up) | rc.91 |
+| One session per account | With `max_resources = 1` on the server, sign in on a second device: it says **"already signed in on another device"** (not "still setting up"); the first device stays connected | rc.92 |
 | Location | Before verification 📍 explains and the GPS never starts; a mock-location app's position; typing a Plus Code; "Open in maps app" | rc.73–rc.80 |
 | Photos | The "hidden information" question strips a camera photo's location | — |
 | Network change | Reconnecting by itself after switching between Wi-Fi and mobile data | — |

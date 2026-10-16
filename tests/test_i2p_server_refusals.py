@@ -125,6 +125,30 @@ class TestAStreamErrorIsReportedAtOnce:
         assert took < 10
 
 
+POLICY = ("<stream:error><policy-violation "
+          "xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>"
+          "<text xmlns='urn:ietf:params:xml:ns:xmpp-streams'>%s</text>"
+          "</stream:error>")
+
+
+class TestOneSessionPerAccount:
+    """Prosody's mod_c2s_limit_sessions with max_resources = 1 (owner's
+    server, 2026-10-16): a second sign-in is refused at resource bind with
+    this exact text. It must not read as "still setting up"."""
+
+    def test_the_session_limit_is_named(self, monkeypatch):
+        err, took = _attempt(XmppServer(HEADER + POLICY % (
+            "Too many active connections to this account")), monkeypatch)
+        assert err.code == "session_limit"
+        assert "already signed in on another device" in err.detail
+        assert took < 10
+
+    def test_another_policy_refusal_keeps_its_meaning(self, monkeypatch):
+        err, _ = _attempt(XmppServer(HEADER + POLICY % "go away"), monkeypatch)
+        assert err.code == "xmpp_stream_failure"
+        assert "policy-violation" in err.detail
+
+
 class TestSignInRulesAreUnchanged:
 
     def test_plain_only_is_still_refused_and_said_at_once(self, monkeypatch):

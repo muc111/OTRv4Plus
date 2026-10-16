@@ -66,4 +66,13 @@ class ConnectProblemTest {
             assertTrue(code !in ConnectProblem.TRANSIENT, code)
         }
     }
+
+    @Test
+    fun `a session limit says another device holds the account, from the first try`() {
+        val line = ConnectProblem.line("session_limit", connected = false,
+                                       retrying = true, failuresInARow = 1)!!
+        assertEquals(ConnectProblem.Tone.ERROR, line.tone)
+        assertTrue("already signed in on another device" in line.text)
+        assertTrue("Still setting up" !in line.text)
+    }
 }

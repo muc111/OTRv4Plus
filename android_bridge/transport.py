@@ -811,6 +811,23 @@ def _tls_failure_text(reason: str, profile) -> str:
     return head + "the server's log will say why."
 
 
+#: The server limits sessions per account (Prosody mod_c2s_limit_sessions)
+#: and another session of this account holds the slot.
+SESSION_LIMIT_TEXT = (
+    "This account is already signed in on another device, and the server "
+    "allows one session at a time. Sign out there, or wait a few minutes if "
+    "it just lost its connection. If it is not yours, change the password.")
+
+
+def _is_session_limit(condition: str, text: str) -> bool:
+    """mod_c2s_limit_sessions refuses with policy-violation and the text
+    "Too many active connections to this account"; other policy refusals
+    keep their generic meaning."""
+    said = (text or "").lower()
+    return condition == "policy-violation" and (
+        "too many active connections" in said or "too many resources" in said)
+
+
 def _stream_error_text(condition: str, profile) -> str:
     try:
         domain = str(profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
@@ -1690,7 +1707,19 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             _TRACE.record("connection", "stream_error", "error",
                           condition=cond,
                           last_step=getattr(self, "_progress", ""))
+            try:
+                said = str(stanza["text"] or "")
+            except Exception:
+                said = ""
             if not started.done():
+                if _is_session_limit(cond, said):
+                    # Signed in, refused at resource bind: the server allows
+                    # one session per account and another holds it
+                    # (SECURITY_SESSIONS.md). Retried: a session that just
+                    # lost its network is timed out by the server.
+                    started.set_exception(TransportError(
+                        "session_limit", SESSION_LIMIT_TEXT))
+                    return
                 started.set_exception(TransportError(
                     "xmpp_stream_failure",
                     _stream_error_text(cond, self._profile)))
