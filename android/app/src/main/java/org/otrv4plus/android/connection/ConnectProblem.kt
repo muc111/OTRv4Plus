@@ -55,6 +55,29 @@ object ConnectProblem {
             "here (that signs the other device out). If it wasn't you, " +
             "change your password."
 
+    /**
+     * How long the built-in router counts as settling in. A router started
+     * minutes ago can send into I2P before other routers can reach it, so
+     * the server's replies are lost and its silence looks like a server
+     * fault (owner report, 2026-10-16: the i2pd app worked, the built-in
+     * router did not).
+     */
+    const val ROUTER_SETTLING_MS = 15 * 60_000L
+
+    /** Failures that a settling router's lost replies look like. */
+    private val SILENT_SERVER: Set<String> = setOf(
+        "xmpp_stream_failure", "server_closed_connection", "closed",
+        "stream_failed", "timeout",
+    )
+
+    fun routerSettling(upMs: Long): String {
+        val s = upMs.coerceAtLeast(0) / 1000
+        return "The built-in I2P router has been running %d:%02d and other routers cannot ".format(s / 60, s % 60) +
+            "reach it yet, so the server's replies are not arriving. Nothing is wrong " +
+            "with the server; this clears by itself, usually within 5 to 10 minutes. " +
+            "The I2P app, if you have it running, is ready sooner."
+    }
+
     /** Transient failures in a row before one is shown as an error. */
     const val PERSISTENT_AFTER = 3
 
@@ -91,9 +114,20 @@ object ConnectProblem {
      * scheduled). [failuresInARow]: consecutive failed attempts.
      */
     fun line(failure: String?, connected: Boolean, retrying: Boolean,
-             failuresInARow: Int): Line? {
+             failuresInARow: Int,
+             /** How long the built-in router has run, when it is the one in use. */
+             bundledRouterUpMs: Long? = null): Line? {
         if (connected) return null
         val code: String = failure?.takeIf { it.isNotBlank() } ?: return null
+        // Our own router is new: the server's silence is most likely its
+        // replies failing to reach us, not the server. Said quietly while
+        // it retries, as an explanation rather than an alarm.
+        if (bundledRouterUpMs != null && bundledRouterUpMs < ROUTER_SETTLING_MS &&
+            code in SILENT_SERVER) {
+            return Line(routerSettling(bundledRouterUpMs) +
+                            if (retrying) " Still trying." else "",
+                        if (retrying) Tone.QUIET else Tone.ERROR)
+        }
         // Not "still setting up": the server refused this sign-in because
         // another session of the account holds its only slot. Said every
         // time; retrying is still right (a session that lost its network is

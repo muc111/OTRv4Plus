@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.98 — 2026-10-16 — a new built-in router is not a broken server (core 0.13.1)
+
+- **Fixed: "The server answers over I2P, but its chat service is not
+  responding" when the server was fine** (owner report: the i2pd app
+  connected, the built-in router did not). The built-in router is started
+  for each connection, and a router minutes old can send into I2P before
+  other routers can reach it: the tunnel opens, the server answers, and the
+  answer is lost on the way back. For its first 15 minutes the app now says
+  so — "the built-in I2P router has been running m:ss and other routers
+  cannot reach it yet… Nothing is wrong with the server" — quietly, while it
+  keeps trying. The diagnostic report names both causes.
+
 ## v10.31.0 — the terminal client's number catches up
 
 *2026-10-16.  `VERSION → 10.31.0`.  `otrv4_core` 0.13.1.*

@@ -75,4 +75,28 @@ class ConnectProblemTest {
         assertTrue("already signed in on another device" in line.text)
         assertTrue("Still setting up" !in line.text)
     }
+
+    @Test
+    fun `a young built-in router is named, not the server`() {
+        val line = ConnectProblem.line("server_closed_connection", connected = false,
+            retrying = true, failuresInARow = 5, bundledRouterUpMs = 125_000L)!!
+        assertEquals(ConnectProblem.Tone.QUIET, line.tone)
+        assertTrue(line.text.contains("2:05"))
+        assertTrue(line.text.contains("Nothing is wrong with the server"))
+    }
+
+    @Test
+    fun `a settled router or the I2P app gets the usual words`() {
+        val settled = ConnectProblem.line("server_closed_connection", false, true, 5,
+            bundledRouterUpMs = ConnectProblem.ROUTER_SETTLING_MS + 1)!!
+        assertTrue(settled.text.contains("chat service is not responding"))
+        val external = ConnectProblem.line("server_closed_connection", false, true, 5)!!
+        assertTrue(external.text.contains("chat service is not responding"))
+    }
+
+    @Test
+    fun `a wrong password is still a wrong password with a young router`() {
+        val line = ConnectProblem.line("auth_failed", false, false, 1, bundledRouterUpMs = 1_000L)!!
+        assertTrue(line.text.contains("check the address and password"))
+    }
 }

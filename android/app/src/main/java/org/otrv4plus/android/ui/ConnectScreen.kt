@@ -454,6 +454,7 @@ fun ConnectScreen(
             connected = status.connected,
             retrying = model.connecting,
             failuresInARow = model.failuresInARow,
+            bundledRouterUpMs = model.bundledRouterUpMs,
         )
         problemLine?.let { line ->
             val isError = line.tone == org.otrv4plus.android.connection.ConnectProblem.Tone.ERROR

@@ -196,6 +196,11 @@ class OtrConnectionService : Service() {
     var routerState: RouterChoice.State = RouterChoice.State.NOT_USED
         private set
 
+    /** How long the built-in router has run, while it is the one in use; else null. */
+    fun bundledRouterUpMs(): Long? =
+        if (routerState == RouterChoice.State.RUNNING && router.startedAt > 0)
+            System.currentTimeMillis() - router.startedAt else null
+
     /** One line about the router for the connection screen, or null. */
     fun routerLabel(): String? = RouterChoice.label(
         routerState, System.currentTimeMillis() - router.startedAt, router.fresh,

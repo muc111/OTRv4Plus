@@ -756,8 +756,11 @@ _PROGRESS_HINTS = {
     "sam_established": "the I2P tunnel opened but the local bridge to it did not start",
     "tunnel_open": (
         "the I2P tunnel to the server opened, but the XMPP server never "
-        "answered over it. Check that the server's XMPP service is running "
-        "and that this is the address of its XMPP (port 5222) tunnel"),
+        "answered over it. Either its replies cannot reach this device yet "
+        "(a router started in the last few minutes often cannot be reached: "
+        "wait 5-10 minutes), or the server's XMPP service is not running "
+        "behind its tunnel, or this is not the address of its XMPP (port "
+        "5222) tunnel"),
     "stream_features": (
         "the XMPP server answered, but the encrypted (TLS) handshake or "
         "sign-in did not finish"),
@@ -1592,9 +1595,11 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     #: What the end of the I2P stream means, by (who ended it, bytes
     #: received, first byte kind). Recorded with the counts; never content.
     _STREAM_END_HINTS = {
-        "silent": ("server sent nothing: its I2P server tunnel reaches nothing "
-                   "that answers. Needs type=server, host 127.0.0.1, port "
-                   "5222, and the XMPP server running"),
+        "silent": ("server sent nothing: its replies cannot reach this "
+                   "device's router yet (a router started minutes ago), or its "
+                   "I2P server tunnel reaches nothing that answers (needs "
+                   "type=server, host 127.0.0.1, port 5222, and the XMPP "
+                   "server running)"),
         "tls": ("server answered in TLS, not XMPP: its I2P tunnel points at "
                 "the direct-TLS port (5223). Point it at 5222"),
         "other": ("server answered with something other than XMPP: the I2P "
