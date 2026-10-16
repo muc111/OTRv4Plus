@@ -125,6 +125,16 @@ fun ConversationScreen(
                     TextButton(onClick = onBack) { Text("Back") }
                 },
                 title = {
+                  Row(verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    // A person's picture opens their profile, as in every
+                    // messenger (owner, 2026-10-16). A room has no profile.
+                    if (!model.isRoom(jid)) {
+                        AvatarPlaceholder(
+                            conversation.displayName, model.avatar(jid), size = 36.dp,
+                            onClick = onOpenProfile?.let { open -> { open(jid) } },
+                        )
+                    }
                     Column {
                         Text(
                             conversation.displayName,
@@ -141,6 +151,7 @@ fun ConversationScreen(
                             PresenceDot(conversation.presence)
                         }
                     }
+                  }
                 },
                 actions = {
                     // A person's profile and blocking; a room has neither.

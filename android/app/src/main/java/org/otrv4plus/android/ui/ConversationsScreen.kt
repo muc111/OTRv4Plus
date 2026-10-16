@@ -57,6 +57,8 @@ fun ConversationsScreen(
     onOpenDiagnostics: () -> Unit = {},
     onOpenAbout: () -> Unit = {},
     onOpenProfile: () -> Unit = {},
+    /** A contact's profile, from their picture in the list. */
+    onOpenContactProfile: (String) -> Unit = {},
     onWipeAndExit: ((Boolean) -> Unit)? = null,
     theme: ThemeTokens.Mode = ThemeTokens.DEFAULT,
     onTheme: ((ThemeTokens.Mode) -> Unit)? = null,
@@ -286,6 +288,8 @@ fun ConversationsScreen(
                             group = model.groupBadge(conversation.jid),
                             onClick = { onOpen(conversation.jid) },
                             onLongClick = { deleting = conversation.jid },
+                            onAvatarClick = if (model.isRoom(conversation.jid)) null
+                                            else ({ onOpenContactProfile(conversation.jid) }),
                         )
                         HorizontalDivider()
                     }
@@ -509,6 +513,8 @@ private fun ConversationRow(
     group: RowSecurity.Badge?,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    /** The picture opens the person's profile (null for a room). */
+    onAvatarClick: (() -> Unit)? = null,
 ) {
     Row(
         Modifier.fillMaxWidth()
@@ -521,7 +527,7 @@ private fun ConversationRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        AvatarPlaceholder(conversation.displayName, avatar)
+        AvatarPlaceholder(conversation.displayName, avatar, onClick = onAvatarClick)
 
         Column(Modifier.weight(1f)) {
             Row(
@@ -610,20 +616,29 @@ private fun SecurityBadge(conversation: Conversation, group: RowSecurity.Badge? 
  * the contact sent -- and their initial otherwise.
  */
 @Composable
-private fun AvatarPlaceholder(name: String, avatar: ImageBitmap? = null) {
+internal fun AvatarPlaceholder(
+    name: String,
+    avatar: ImageBitmap? = null,
+    size: androidx.compose.ui.unit.Dp = 40.dp,
+    /** Opens the person's profile; null where there is none (a room). */
+    onClick: (() -> Unit)? = null,
+) {
+    val tap = if (onClick != null)
+        Modifier.clickable(onClickLabel = "Profile", onClick = onClick) else Modifier
     if (avatar != null) {
         Image(
             bitmap = avatar,
-            contentDescription = null,
+            contentDescription = if (onClick != null) "$name's picture" else null,
             contentScale = ContentScale.Crop,
-            modifier = Modifier.size(40.dp).clip(CircleShape),
+            modifier = Modifier.size(size).clip(CircleShape).then(tap),
         )
         return
     }
     Box(
         Modifier
-            .size(40.dp)
+            .size(size)
             .clip(CircleShape)
+            .then(tap)
             .background(MaterialTheme.colorScheme.secondaryContainer),
         contentAlignment = Alignment.Center,
     ) {

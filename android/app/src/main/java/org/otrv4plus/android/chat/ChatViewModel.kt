@@ -1254,8 +1254,13 @@ class ChatViewModel : ViewModel() {
                 state.applyChange(jid, action, target.wireId, body, emojis, outgoing = true)
                 actionStatus = null
             } else {
+                // A plain room never has a secure session: saying it lacked
+                // one there read as the room having lost its encryption.
+                val plainRoom = state.isRoom(jid) && !state.isSecureRoom(jid)
                 actionStatus = when (action) {
-                    "edit" -> "Could not correct the message: no secure session yet."
+                    "edit" -> if (plainRoom) "Could not correct the message: the room did not " +
+                                  "take it. Check you are connected and try again."
+                              else "Could not correct the message: no secure session yet."
                     "retract" -> "Could not delete the message for everyone."
                     else -> "Could not send the reaction."
                 }

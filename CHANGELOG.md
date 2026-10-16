@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.97 — 2026-10-16 — tap a picture to see the profile (core 0.13.1)
+
+- **New: a person's picture opens their profile**: in the chat list, and
+  in a new picture at the top of a conversation. Owner request.
+- **New: tap a profile picture to see it full screen.** Tap anywhere or
+  Back to close. Pictures are published at 96 × 96, so it is larger, not
+  sharper.
+- **Fixed: a failed edit in a plain room** (such as the Welcome room) said
+  "no secure session yet", which read as the room having lost its
+  encryption. A plain room never had any: it now says the room did not
+  take the correction.
+
 ## Android 0.7.0-experimental.rc.96 — 2026-10-16 — change your password from the app (core 0.13.1)
 
 - **New: Profile → "Change password…"** (Android and desktop). Enter the

@@ -221,6 +221,9 @@ class MainActivity : ComponentActivity() {
                     var openJid by rememberSaveable { mutableStateOf<String?>(null) }
                     // Whose profile the Profile screen shows; blank = ours.
                     var profileOf by rememberSaveable { mutableStateOf("") }
+                    // Where a contact's profile goes back to: their chat, or
+                    // the chat list when opened from a picture there.
+                    var profileBack by rememberSaveable { mutableStateOf(Screen.CONVERSATION) }
                     // The tab a conversation was opened from, so leaving the
                     // conversation goes back there (Chats, People or Rooms).
                     var lastTab by rememberSaveable { mutableStateOf(Screen.CONVERSATIONS) }
@@ -282,12 +285,12 @@ class MainActivity : ComponentActivity() {
                                     )
                                 }
                             } else {
-                                BackHandler { screen = Screen.CONVERSATION }
+                                BackHandler { screen = profileBack }
                                 ProfileScreen(
                                     model = chat,
                                     ownJid = connection.status.jid,
                                     jid = profileOf,
-                                    onBack = { screen = Screen.CONVERSATION },
+                                    onBack = { screen = profileBack },
                                 )
                             }
                         }
@@ -342,6 +345,7 @@ class MainActivity : ComponentActivity() {
                                     },
                                     onOpenProfile = { who ->
                                         profileOf = who
+                                        profileBack = Screen.CONVERSATION
                                         screen = Screen.PROFILE
                                     },
                                 )
@@ -363,6 +367,11 @@ class MainActivity : ComponentActivity() {
                                     onOpenDiagnostics = { screen = Screen.DIAGNOSTICS },
                                     onOpenAbout = { screen = Screen.ABOUT },
                                     onOpenProfile = { selectTab(MainTab.PROFILE) },
+                                    onOpenContactProfile = { who ->
+                                        profileOf = who
+                                        profileBack = Screen.CONVERSATIONS
+                                        screen = Screen.PROFILE
+                                    },
                                     onWipeAndExit = { deleteAccount -> connection.wipeAndExit(deleteAccount) },
                                     theme = themeMode,
                                     onTheme = { mode ->

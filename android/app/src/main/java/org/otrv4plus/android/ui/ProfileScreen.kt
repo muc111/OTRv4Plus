@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -15,9 +16,13 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import org.otrv4plus.android.chat.ChatViewModel
 
 /**
@@ -48,6 +53,7 @@ fun ProfileScreen(
 ) {
     val own = jid.isBlank()
     val context = LocalContext.current
+    var enlarged by remember(jid) { mutableStateOf(false) }
     LaunchedEffect(jid) { model.loadProfile(jid) }
 
     // Our edits, keyed by field; reset whenever a profile is (re)loaded.
@@ -98,10 +104,12 @@ fun ProfileScreen(
             if (picture != null) {
                 Image(
                     bitmap = picture,
-                    contentDescription = null,
+                    contentDescription = "Picture: tap to view it larger",
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.size(72.dp).clip(CircleShape),
+                    modifier = Modifier.size(72.dp).clip(CircleShape)
+                        .clickable(onClickLabel = "View larger") { enlarged = true },
                 )
+                if (enlarged) FullScreenPicture(picture) { enlarged = false }
             } else {
                 Box(
                     Modifier.size(72.dp).clip(CircleShape)
@@ -194,6 +202,30 @@ fun ProfileScreen(
                     "verified: only their fingerprint and SMP prove who they are.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
+ * A profile picture as large as the screen allows; a tap anywhere or Back
+ * closes it. The picture is what the person published -- the app publishes
+ * 96 x 96 (see [OwnAvatar]) -- so it is enlarged, not more detailed.
+ */
+@Composable
+private fun FullScreenPicture(picture: ImageBitmap, onClose: () -> Unit) {
+    Dialog(onDismissRequest = onClose,
+           properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            Modifier.fillMaxSize().background(Color.Black)
+                .clickable(onClickLabel = "Close", onClick = onClose),
+            contentAlignment = Alignment.Center,
+        ) {
+            Image(
+                bitmap = picture,
+                contentDescription = "Profile picture",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
             )
         }
     }
