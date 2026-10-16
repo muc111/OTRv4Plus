@@ -19,6 +19,16 @@ AI-assisted analysis, but not independently audited.** See
 [Security assessment and audit status](#security-assessment-and-audit-status)
 for what that covers and what it does not.
 
+## Screenshots
+
+| Desktop app: a verified conversation | Desktop app: an encrypted group |
+|---|---|
+| ![A verified conversation in the desktop app](desktop/docs/chat.jpg) | ![An encrypted group with its verification status and members](desktop/docs/group.jpg) |
+
+Rendered by the desktop app's own tests with made-up accounts (no real data).
+Android screenshots are being added; the Android app uses the same layout
+and the same dark purple theme on a phone screen.
+
 ## Android app (experimental)
 
 **Download:** open the
@@ -121,6 +131,43 @@ Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
 [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md).
 
 ## Quick start
+
+### Desktop app (Ubuntu, Debian, Qubes OS)
+
+The desktop app is the Android app's interface for a Linux desktop: the same
+screens, theme and rules, with a list on the left and the conversation on the
+right. The keys stay in a separate engine process, never in the window
+([desktop/README.md](desktop/README.md)).
+
+**There is no ready-made download yet.** The Releases page carries only the
+Android APK. Build it from source:
+
+**Ubuntu 24.04+ / Debian 13+:**
+
+1. Do steps 1 and 2 of the terminal client below first. They build the
+   encryption engine that the desktop app runs.
+2. Install Java 21:
+   ```bash
+   sudo apt install openjdk-21-jdk
+   ```
+3. Build the app. The Gradle wrapper downloads the right Gradle by itself:
+   ```bash
+   cd ~/OTRv4Plus/desktop
+   ../android/gradlew -p . desktopLib
+   ```
+4. Run it, from the repository root:
+   ```bash
+   cd ~/OTRv4Plus
+   OTRV4PLUS_ENGINE=".venv/bin/python -s -m desktop_bridge.host" \
+     java -cp 'desktop/build/desktop-lib/*' org.otrv4plus.desktop.MainKt
+   ```
+   For I2P, have `i2pd` running (step 4 below).
+
+**Qubes OS 4.2:** the desktop app and the terminal client run in a qube with
+no network, and I2P runs in a separate qube. Packages are built offline and
+reproducibly, then signed. The step-by-step guide is
+[qubes/README.md](qubes/README.md); `qubes/packaging/build-desktop.sh` builds
+the `otrv4plus-desktop` package.
 
 ### Termux, Ubuntu and other Linux (terminal clients)
 
