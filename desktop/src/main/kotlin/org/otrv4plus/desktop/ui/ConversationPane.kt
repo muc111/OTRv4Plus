@@ -167,7 +167,10 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
             Text(c.displayName.ifBlank { jid }, style = MaterialTheme.typography.titleMedium,
                  fontWeight = FontWeight.SemiBold)
             if (isRoom) {
-                Text(if (model.chat.isSecureRoom(jid)) "Encrypted group (MLS)" else "Room — not end-to-end encrypted",
+                Text(if (model.chat.isSecureRoom(jid)) org.otrv4plus.android.chat.GroupText.securityLine(
+                         org.otrv4plus.android.chat.GroupText.verifiedCount(model.groupMembers[jid].orEmpty()).first,
+                         model.groupMembers[jid].orEmpty().size)
+                     else "Room — not end-to-end encrypted",
                      style = MaterialTheme.typography.bodySmall,
                      color = if (model.chat.isSecureRoom(jid)) MaterialTheme.colorScheme.primary
                              else MaterialTheme.colorScheme.error)

@@ -710,6 +710,10 @@ class TermuxGroups:
         import importlib
         _gc = importlib.import_module("otrv4plus_groupcall")
         calls = self._group_calls()
+        if calls.too_large(room):
+            self._print("[group call] this group has more than %d members: "
+                        "large groups are text only" % calls.MAX_PARTICIPANTS)
+            return
         if self._media is None:
             self._print("[group call] building an I2P datagram tunnel "
                         "(this can take a minute)...")
@@ -737,6 +741,8 @@ class TermuxGroups:
                                       "you; verify members over OTRv4+ first",
                 "call_in_progress": "you are already in a call (/group hangup)",
                 "no_call": "nobody is calling in that group",
+                "group_too_large": "large groups are text only (calls take at "
+                                   "most %d members)" % calls.MAX_PARTICIPANTS,
             }.get(str(exc), str(exc)))
             return
         try:

@@ -111,8 +111,11 @@ fun GroupBar(model: AppModel, room: String) {
                         Text("Every member is verified.", style = MaterialTheme.typography.labelSmall,
                              color = VerifiedBlue)
                     }
+                    // A large group is text only (owner, 2026-10-16).
+                    val callable = GroupText.callAllowed(model.groupMembers[room].orEmpty().size)
+                    if (!callable) Text(GroupText.TEXT_ONLY, style = MaterialTheme.typography.labelSmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        if (anyVerified && running == 0) {
+                        if (anyVerified && running == 0 && callable) {
                             // The same phone as a 1:1 call, coloured by the path.
                             Button(onClick = { model.startGroupCall(room) },
                                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(

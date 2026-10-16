@@ -67,9 +67,12 @@ object RowSecurity {
      * it catches up, it says so.
      */
     @JvmStatic
-    fun group(syncing: Boolean): Badge =
+    @JvmOverloads
+    fun group(syncing: Boolean, verified: Int = 0, total: Int = 0): Badge =
         if (syncing) Badge("Encrypted group, syncing…", Tone.NEUTRAL, "\u27F3")
-        else Badge("Encrypted group", Tone.NEUTRAL,
+        // Owner (2026-10-16): "Encrypted Chat | 5/6 users verified".
+        else Badge(GroupText.securityLine(verified, total),
+                   if (total > 0 && verified >= total) Tone.GOOD else Tone.NEUTRAL,
                    SecurityLevel.Level.ENCRYPTED_UNVERIFIED.mark)
 
     /**

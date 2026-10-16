@@ -122,6 +122,7 @@ installed), and with the Termux client.
 | Area | What to test | Since |
 |---|---|---|
 | Synthetic voice notes | **Synthetic** was rebuilt: no whistle, every note's voice drawn from the phone's own random generator, changing through the note. **Disguised is gone** (rc.81): the choice is Synthetic or My voice. Record the same sentence in both and compare | rc.77–rc.81 |
+| Group status and call limit | A group's line reads **"Encrypted Chat \| 5/6 users verified"** and updates as members are verified; a group of **6 or more has no call button** ("Text only") | rc.84 |
 | Delete buttons | "Delete group for everyone" and room "Delete" appear **only for the creator (or a server admin)**; other members see Leave only | rc.83 |
 | Sign-in wording | While the built-in router sets up the first connection the screen says it is **setting up (2–5 minutes, normal)**, never "Connection lost" | rc.82 |
 | Verification progress | A moving bar on **both** phones (and the desktop and terminal) from the moment verification starts until it ends, 1:1 and groups | rc.81 |
@@ -151,8 +152,9 @@ installed), and with the Termux client.
   every group change through the server room, and post-quantum keys make
   those changes large, so big groups (hundreds) will be slow on a server
   with the default room rate limits — see the server section below.
-- **Group calls take at most 5 people**: each phone sends its audio to
-  every other phone directly over I2P.
+- **Group calls are for groups of up to 5 members.** Each phone sends its
+  audio to every other phone directly over I2P, so a larger group has no
+  call button and stays text only (rc.84).
 - Secure groups made before rc.27 must be re-created to add members.
 
 The full gate list is \`ANDROID_XMPP_MILESTONE.md\` §7; the device-test

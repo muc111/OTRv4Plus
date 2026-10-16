@@ -85,7 +85,7 @@ fun ConversationScreen(
     // look); elsewhere its state is only read.
     LaunchedEffect(jid, room) {
         while (true) {
-            val callable = if (room) model.isSecureRoom(jid) &&
+            val callable = if (room) model.isSecureRoom(jid) && model.groupCallAllowed(jid) &&
                                      model.groupMembers(jid).any { !it.me && it.verified }
                            else model.callGate(jid).first == CallUi.Gate.AVAILABLE
             model.refreshCallPath(callable)
@@ -356,6 +356,11 @@ private fun RoomHeader(model: ChatViewModel, jid: String) {
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
       Column {
         if (joining) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        if (secure && !joining) {
+            Text("${level.mark} " + model.groupSecurityLine(jid),
+                 style = MaterialTheme.typography.labelLarge,
+                 modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, top = 6.dp))
+        }
         Text(
             "${level.mark} " + when {
                 joining -> org.otrv4plus.android.chat.GroupText.JOINING_HEADER
@@ -1598,10 +1603,16 @@ private fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                              "${verify.members.size} (not verified: ${notYet.keys.joinToString()})",
                              style = MaterialTheme.typography.labelSmall)
                     }
+                    if (!model.groupCallAllowed(jid)) {
+                        Text(org.otrv4plus.android.chat.GroupText.TEXT_ONLY,
+                             style = MaterialTheme.typography.labelSmall)
+                    }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         // Callable once the checks are done and someone is
                         // verified: anyone not verified is simply not in it.
-                        if (anyVerified && running == 0) {
+                        // A large group is text only: no phone at all
+                        // (owner, 2026-10-16; the engine refuses too).
+                        if (anyVerified && running == 0 && model.groupCallAllowed(jid)) {
                             // The same phone as a 1:1 call, coloured by the path.
                             PhoneButton(model.callPath, model.callPathSecondsLeft,
                                         enabled = true, description = "Call the group") {

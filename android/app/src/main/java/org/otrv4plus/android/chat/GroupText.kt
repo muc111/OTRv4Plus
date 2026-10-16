@@ -24,6 +24,34 @@ object GroupText {
 
     fun header(secure: Boolean): String = if (secure) SECURE_HEADER else PLAIN_HEADER
 
+    /**
+     * The most members a group may have and still call. The same number as
+     * `android_bridge/group_call.MAX_PARTICIPANTS`, which refuses too: each
+     * phone sends its audio to every other one over I2P. Owner (2026-10-16):
+     * "a hard limit ... large groups will have to stay text only".
+     */
+    const val MAX_CALL_MEMBERS = 5
+
+    /** Whether a group of [members] (us included) may call at all. Unknown
+     *  (0: the member list has not arrived) is not a reason to hide it. */
+    fun callAllowed(members: Int): Boolean = members <= MAX_CALL_MEMBERS
+
+    const val TEXT_ONLY = "Text only: group calls take at most " +
+        "$MAX_CALL_MEMBERS members."
+
+    /**
+     * The group's security line. Owner (2026-10-16): "Encrypted Chat | 5/6
+     * users verified". Verified counts us (we know who we are) and every
+     * member whose key we verified; [total] is everyone in the group.
+     */
+    fun securityLine(verified: Int, total: Int): String =
+        if (total <= 0) "Encrypted Chat"
+        else "Encrypted Chat | $verified/$total users verified"
+
+    /** [verified]/[total] from the member list. */
+    fun verifiedCount(members: List<org.otrv4plus.android.bridge.GroupMember>): Pair<Int, Int> =
+        members.count { it.me || it.verified } to members.size
+
     /** Between accepting an invitation and the group's keys arriving.
      *  Device report (2026-10-16): the room was shown as unencrypted then. */
     const val JOINING_HEADER = "Secure group (MLS): setting up end-to-end encryption… " +
@@ -170,6 +198,7 @@ object GroupText {
         "passphrase_too_short" -> "The group passphrase must be 8 characters or more."
         "no_verified_member" -> "Nobody in this group is verified yet: verify the group first."
         "call_in_progress" -> "You are already in a group call."
+        "group_too_large" -> TEXT_ONLY
         "no_call" -> "Nobody is calling in this group."
         "call_audio_unavailable" -> "The call could not use the microphone or speaker."
         "forbidden", "not_allowed" -> "Only the group's creator (the room's owner) can " +

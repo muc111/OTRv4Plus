@@ -276,6 +276,10 @@ class GroupCallBridge:
             return False
 
     def _go(self, room: str, *, start: bool) -> str:
+        # Before any tunnel is built: a group over the limit is text only.
+        if self.calls.too_large(room):
+            self._emit_out(ErrorOccurred(peer=room, code="group_too_large"))
+            return "group_too_large"
         try:
             self._ensure_media()
         except Exception as exc:

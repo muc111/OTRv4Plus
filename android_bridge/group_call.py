@@ -67,6 +67,12 @@ __all__ = ["CALL_PREFIX", "GroupCalls", "mix"]
 #: Prefix of a call control message inside the MLS plaintext. Starts with a
 #: NUL so nothing a person types can collide with it.
 CALL_PREFIX = "\x00OTRv4GC1:"
+#: A HARD limit, on the group's size and not only on who joins: owner
+#: (2026-10-16), "if the group members is over this limit the call button
+#: should not be displayed, large groups will have to stay text only". Each
+#: phone sends its audio to every other one over I2P, so the cost grows with
+#: the group; a group larger than this can neither start nor join a call, and
+#: a ring from one (an older client) is ignored.
 MAX_PARTICIPANTS = 5
 REKEY_SECONDS = 120.0
 GRACE_SECONDS = 2.0
@@ -144,8 +150,17 @@ class GroupCalls:
 
     # -- what the user does ---------------------------------------------------
 
+    def too_large(self, room: str) -> bool:
+        """Whether [room] has more members than a call may have."""
+        try:
+            return len(self._groups.member_identities(room)) > self.MAX_PARTICIPANTS
+        except Exception:
+            return False
+
     def start(self, room: str) -> str:
         """Ring the group. Returns the call id. We join at once."""
+        if self.too_large(room):
+            raise ValueError("group_too_large")
         with self._lock:
             if self._active is not None:
                 raise ValueError("call_in_progress")
@@ -161,6 +176,8 @@ class GroupCalls:
         return call_id
 
     def join(self, room: str) -> None:
+        if self.too_large(room):
+            raise ValueError("group_too_large")
         with self._lock:
             call = self._calls.get(room)
             if call is None:
@@ -347,6 +364,8 @@ class GroupCalls:
             return
         if sender == self._me():
             return
+        if kind == "ring" and self.too_large(room):
+            return                              # text only: see MAX_PARTICIPANTS
         with self._lock:
             call = self._calls.get(room)
             if kind == "ring":

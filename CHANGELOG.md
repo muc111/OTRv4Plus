@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.84 — 2026-10-16 — large groups are text only; "n/m users verified" (core 0.13.1)
+
+- **A hard limit on group calls: 5 members.** Owner: *"if the group members
+  is over this limit then the call button should not be displayed, large
+  groups will have to stay text only."* A group with more than 5 members
+  shows no call button (app and desktop) and says "Text only: group calls
+  take at most 5 members". The engine holds the same line: starting or
+  joining a call in such a group is refused (`group_too_large`) before any
+  I2P tunnel is built, a ring from one (an older client) is ignored, and the
+  terminal says so. Before, the limit was only on how many joined a call.
+- **"Encrypted Chat | 5/6 users verified".** Owner's wording. A secure
+  group's line, in the chat list, at the top of the group and on the
+  desktop, now counts its members and how many are verified (you, plus each
+  member whose key you verified by SMP or group verification), and turns to
+  the verified colour when all are.
+
 ## Android 0.7.0-experimental.rc.83 — 2026-10-16 — delete buttons only for whoever can delete (core 0.13.1)
 
 - **Only the group's creator or a server admin sees "Delete".** Owner:

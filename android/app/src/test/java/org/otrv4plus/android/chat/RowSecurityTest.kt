@@ -172,11 +172,41 @@ class RowSecurityTest {
         // Device test, 2026-10-05: a restored group's row said "Not encrypted".
         val settled = RowSecurity.group(syncing = false)
         val syncing = RowSecurity.group(syncing = true)
-        assertEquals("Encrypted group", settled.text)
+        assertEquals("Encrypted Chat", settled.text)
         assertTrue(syncing.text.contains("syncing"))
         for (b in listOf(settled, syncing)) {
             assertTrue(!b.text.contains("Not encrypted"))
             assertEquals(RowSecurity.Tone.NEUTRAL, b.tone)
         }
+    }
+
+    @Test
+    fun `a group says how many of its members are verified`() {
+        // Owner (2026-10-16): "Encrypted Chat | 5/6 users verified".
+        val some = RowSecurity.group(syncing = false, verified = 5, total = 6)
+        assertEquals("Encrypted Chat | 5/6 users verified", some.text)
+        assertEquals(RowSecurity.Tone.NEUTRAL, some.tone)
+        val all = RowSecurity.group(syncing = false, verified = 6, total = 6)
+        assertEquals(RowSecurity.Tone.GOOD, all.tone)
+    }
+
+    @Test
+    fun `verified counts us and every member whose key we verified`() {
+        fun m(jid: String, me: Boolean = false, verified: Boolean = false) =
+            org.otrv4plus.android.bridge.GroupMember(jid = jid, fingerprint = "", me = me,
+                                                     verified = verified, bound = verified)
+        val members = listOf(m("me@x", me = true), m("a@x", verified = true),
+                             m("b@x", verified = true), m("c@x"))
+        assertEquals(3 to 4, GroupText.verifiedCount(members))
+    }
+
+    @Test
+    fun `a group over the call limit is text only`() {
+        // Owner (2026-10-16): a hard limit; the engine's MAX_PARTICIPANTS is 5.
+        assertEquals(5, GroupText.MAX_CALL_MEMBERS)
+        assertTrue(GroupText.callAllowed(5))
+        assertTrue(!GroupText.callAllowed(6))
+        assertTrue("Text only" in GroupText.TEXT_ONLY)
+        assertEquals(GroupText.TEXT_ONLY, GroupText.outcome("group_too_large"))
     }
 }

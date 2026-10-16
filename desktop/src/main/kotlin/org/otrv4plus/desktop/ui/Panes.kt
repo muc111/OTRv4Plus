@@ -142,7 +142,10 @@ fun RoomsPane(model: AppModel) {
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Text(room, fontWeight = FontWeight.Medium)
-                        Text(if (secure) "Encrypted group" else "Room — not end-to-end encrypted",
+                        val members = model.groupMembers[room].orEmpty()
+                        Text(if (secure) org.otrv4plus.android.chat.GroupText.securityLine(
+                                 org.otrv4plus.android.chat.GroupText.verifiedCount(members).first, members.size)
+                             else "Room — not end-to-end encrypted",
                              style = MaterialTheme.typography.bodySmall,
                              color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }

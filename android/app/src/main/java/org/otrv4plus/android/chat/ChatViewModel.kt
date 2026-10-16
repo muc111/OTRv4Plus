@@ -187,8 +187,20 @@ class ChatViewModel : ViewModel() {
     fun isJoiningRoom(jid: String): Boolean { observe(); return state?.isJoiningRoom(jid) == true }
 
     /** A secure group's row badge (MLS), or null for any other row. */
-    fun groupBadge(jid: String): RowSecurity.Badge? =
-        if (isSecureRoom(jid)) RowSecurity.group(isSyncingRoom(jid)) else null
+    fun groupBadge(jid: String): RowSecurity.Badge? {
+        if (!isSecureRoom(jid)) return null
+        val (verified, total) = GroupText.verifiedCount(groupMembers(jid))
+        return RowSecurity.group(isSyncingRoom(jid), verified, total)
+    }
+
+    /** "Encrypted Chat | 5/6 users verified". */
+    fun groupSecurityLine(jid: String): String {
+        val (verified, total) = GroupText.verifiedCount(groupMembers(jid))
+        return GroupText.securityLine(verified, total)
+    }
+
+    /** Whether this group is small enough to call (see GroupText.MAX_CALL_MEMBERS). */
+    fun groupCallAllowed(jid: String): Boolean = GroupText.callAllowed(groupMembers(jid).size)
 
     fun groupInvites(): List<OtrEvent.GroupInvited> {
         observe()
@@ -233,6 +245,8 @@ class ChatViewModel : ViewModel() {
                 runCatching { c.secureGroups() }.getOrNull()
             } ?: return@launch
             state.noteSecureRooms(rooms)
+            // Each group's members: the "n/m users verified" in its line.
+            rooms.forEach { refreshGroupMembers(it) }
             withContext(Dispatchers.IO) { runCatching { c.ownedRooms() }.getOrNull() }
                 ?.let { state.noteOwnedRooms(it) }
         }

@@ -182,6 +182,11 @@ class AppModel(
             transfers = withContext(Dispatchers.IO) { core.transfers() }
             groups = withContext(Dispatchers.IO) { runCatching { core.secureGroups() }.getOrDefault(emptyList()) }
             chat.noteSecureRooms(groups)
+            // Each group's members: its "n/m users verified" line.
+            val members = withContext(Dispatchers.IO) {
+                groups.associateWith { g -> runCatching { core.groupMembers(g).second }.getOrDefault(emptyList()) }
+            }
+            groupMembers = groupMembers + members.filterValues { it.isNotEmpty() }
             withContext(Dispatchers.IO) { runCatching { core.ownedRooms() }.getOrNull() }
                 ?.let { chat.noteOwnedRooms(it) }
         }

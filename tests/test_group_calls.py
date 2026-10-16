@@ -130,6 +130,51 @@ class TestACall:
             a.calls.start(ROOM)
 
 
+class TestLargeGroupsAreTextOnly:
+    """Owner (2026-10-16): a hard limit -- a group with more members than a
+    call may have shows no call button and stays text only. The engine holds
+    the line too: no start, no join, and a ring from such a group is ignored."""
+
+    @staticmethod
+    def _grow(m, extra):
+        real = m.groups.member_identities
+        m.groups.member_identities = lambda room: list(real(room)) + extra
+
+    def test_the_limit_is_five(self):
+        assert GroupCalls.MAX_PARTICIPANTS == 5
+
+    def test_a_group_over_the_limit_cannot_start_or_join(self):
+        w, (a, b, c), net, now, heard = _calling(3)
+        _pair_all(w, [a, b, c])
+        a.calls.start(ROOM)                     # three members: fine
+        a.calls.hangup(ROOM)
+        extra = ["m%d@x.i2p" % i for i in range(3)]       # six members
+        for m in (a, b, c):
+            self._grow(m, extra)
+        assert a.calls.too_large(ROOM)
+        with pytest.raises(ValueError, match="group_too_large"):
+            a.calls.start(ROOM)
+        with pytest.raises(ValueError, match="group_too_large"):
+            b.calls.join(ROOM)
+
+    def test_a_ring_from_a_group_over_the_limit_is_ignored(self):
+        w, (a, b, c), net, now, heard = _calling(3)
+        _pair_all(w, [a, b, c])
+        self._grow(b, ["m%d@x.i2p" % i for i in range(3)])
+        a.calls.start(ROOM)                     # an older client would
+        assert b.calls.ringing() == []
+        assert "call_ringing" not in [e.change for e in b.events
+                                      if isinstance(e, GroupChanged)]
+        assert c.calls.ringing() != []
+
+    def test_exactly_the_limit_may_call(self):
+        w, (a, b, c), net, now, heard = _calling(3)
+        _pair_all(w, [a, b, c])
+        self._grow(a, ["m1@x.i2p", "m2@x.i2p"])  # five
+        assert not a.calls.too_large(ROOM)
+        a.calls.start(ROOM)
+
+
 class TestKeysFollowTheGroup:
 
     def test_a_commit_moves_the_call_to_new_keys(self):
