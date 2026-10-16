@@ -117,3 +117,27 @@ def test_the_flag_is_hidden_and_admin_only_by_design():
     # refuses to anyone but its admins.
     assert st.ADMIN_ADD.endswith("admin#add-user")
     assert "getpass" in open(st.__file__).read()
+
+
+def test_an_older_core_without_identities_still_adds():
+    """Device report (2026-10-16): the laptop's compiled core predated the
+    `identities` argument and every add was refused."""
+    sw, bots, clock, pump = _swarm(3)
+    sw.create()
+
+    class OldCore:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def add_members(self, gid, kps, **kw):
+            if kw:
+                raise TypeError("add_members() got an unexpected keyword argument 'identities'")
+            return self.inner.add_members(gid, kps)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    sw.owner.mls = OldCore(sw.owner.mls)
+    assert sw.add_batch(bots[1:])
+    pump()
+    assert all(b.member for b in bots) and sw.old_core_warned

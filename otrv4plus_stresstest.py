@@ -165,6 +165,7 @@ class Swarm:
         self.stats = Stats()
         self.owner = bots[0]
         self.pending_adds: List[Bot] = []     # added, Welcome not yet sent
+        self.old_core_warned = False
         self.seq = 0
 
     # -- the group --------------------------------------------------------
@@ -185,8 +186,19 @@ class Swarm:
             return False
         kps = [bytes(b.mls.key_package()) for b in batch]
         try:
-            commit = bytes(self.owner.mls.add_members(
-                self.gid, kps, identities=[b.jid.encode() for b in batch]))
+            try:
+                commit = bytes(self.owner.mls.add_members(
+                    self.gid, kps, identities=[b.jid.encode() for b in batch]))
+            except TypeError:
+                # An older compiled core (no identity check on add): fine for a
+                # load test, where every KeyPackage is our own bot's. Device
+                # report (2026-10-16): the laptop's core predated `identities`.
+                if not self.old_core_warned:
+                    self.old_core_warned = True
+                    self.say("[stress] note: this machine's otrv4_core is older than "
+                             "the code (no identity check on add); rebuild it to "
+                             "match. Continuing.")
+                commit = bytes(self.owner.mls.add_members(self.gid, kps))
         except Exception as exc:
             self.stats.commit_failures += 1
             self.say("[stress] add refused by the core: %s" % str(exc)[:80])
