@@ -43,6 +43,8 @@ fun ProfileScreen(
     onBack: () -> Unit,
     /** False when shown as a tab (our own profile): the bottom bar is the way out. */
     showBack: Boolean = true,
+    /** Account actions under our own profile (Change password). */
+    account: @Composable () -> Unit = {},
 ) {
     val own = jid.isBlank()
     val context = LocalContext.current
@@ -185,6 +187,7 @@ fun ProfileScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
+            account()
         } else {
             Text(
                 "Written by this person and shown as plain text. It is not " +

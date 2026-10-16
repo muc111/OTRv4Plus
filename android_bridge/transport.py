@@ -3903,6 +3903,94 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             return (code, detail, len(targets))
         return (code, detail, 0)
 
+    #: What each refusal of a password change means (XEP-0077 §3.3).
+    PASSWORD_REFUSALS = {
+        "not-authorized": ("refused", "The server does not let this account "
+                           "change its password. Ask the server's admin."),
+        "forbidden": ("refused", "The server does not let this account "
+                      "change its password. Ask the server's admin."),
+        "not-allowed": ("refused", "The server does not let this account "
+                        "change its password. Ask the server's admin."),
+        "not-acceptable": ("not_acceptable", "The server did not accept that "
+                           "password. Try a longer one."),
+        "bad-request": ("not_acceptable", "The server did not accept that "
+                        "password. Try a longer one."),
+        "service-unavailable": ("unsupported", "This server does not offer "
+                                "password changes (Prosody: mod_register)."),
+        "feature-not-implemented": ("unsupported", "This server does not "
+                                    "offer password changes (Prosody: "
+                                    "mod_register)."),
+    }
+
+    def change_password(self, current_password: str,
+                        new_password: str) -> "tuple[str, str, None]":
+        """Change this account's password on the server (XEP-0077 §3.3).
+
+        [current_password] is checked here, in constant time, against the one
+        this stream signed in with, and is never sent: XEP-0077 trusts the
+        signed-in stream, so without this anyone at an unlocked device could
+        lock its owner out. The new password goes only to the server, over the
+        stream already encrypted to it. Neither is traced. On success it
+        replaces the one this transport signs in with on a reconnect; the
+        caller saves it wherever else it is remembered.
+        """
+        import hmac
+        from otrv4plus_registration import MIN_PASSWORD
+        if not self.is_connected:
+            return ("network", _muc.CODES["network"], None)
+        if not hmac.compare_digest((current_password or "").encode(),
+                                   (self._password or "").encode()):
+            return ("wrong_current", "That is not your current password.", None)
+        if len(new_password or "") < MIN_PASSWORD:
+            return ("not_acceptable", "The new password must be at least %d "
+                    "characters." % MIN_PASSWORD, None)
+        code, detail = "ok", "Password changed."
+        try:
+            loop = self._ensure_loop()
+            future = asyncio.run_coroutine_threadsafe(
+                self._change_password(new_password), loop)
+            future.result(timeout=CALL_TIMEOUT + 5)
+        except BaseException as exc:
+            cond = ""
+            try:
+                cond = str(exc.iq["error"]["condition"] or "")
+            except Exception:
+                pass
+            if cond in self.PASSWORD_REFUSALS:
+                code, detail = self.PASSWORD_REFUSALS[cond]
+            elif type(exc).__name__ in ("IqTimeout", "TimeoutError"):
+                code, detail = "timeout", _muc.CODES["timeout"]
+            else:
+                code, detail = "unknown", ("The password was not changed "
+                                           "(%s)." % (cond or "no answer"))
+        _TRACE.record("account", "change_password",
+                      "info" if code == "ok" else "warning", code=code)
+        if code == "ok":
+            self._password = new_password
+            client = self._client
+            if client is not None:
+                try:
+                    client.password = new_password
+                except Exception:
+                    pass
+        return (code, detail, None)
+
+    async def _change_password(self, new_password: str) -> None:
+        # Built by hand: the signed-in client does not load slixmpp's
+        # xep_0077, whose stream-feature handler belongs to account creation
+        # (`_enable_registration`) and must not touch a sign-in.
+        from slixmpp.xmlstream import ET
+        client = self._client
+        ns = "jabber:iq:register"
+        query = ET.Element("{%s}query" % ns)
+        ET.SubElement(query, "{%s}username" % ns).text = client.boundjid.user
+        ET.SubElement(query, "{%s}password" % ns).text = new_password
+        iq = client.Iq()
+        iq["type"] = "set"
+        iq["to"] = client.boundjid.domain
+        iq.append(query)
+        await iq.send(timeout=CALL_TIMEOUT)
+
     async def _end_sessions(self, targets: "list[str]") -> int:
         client = self._client
         domain = str(client.boundjid.domain)

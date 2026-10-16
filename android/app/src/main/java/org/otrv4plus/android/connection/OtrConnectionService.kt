@@ -648,6 +648,24 @@ class OtrConnectionService : Service() {
         }
     }
 
+    /**
+     * Change the account's password: checked here against the one this
+     * service signs in with, changed on the server, then remembered for the
+     * next sign-in. Blocking (it crosses into Python): call it off the main
+     * thread. Returns whether it changed, and the sentence to show.
+     */
+    fun changePassword(current: String, new: String, confirm: String): Pair<Boolean, String> {
+        PasswordChange.problem(current, password, new, confirm)?.let { return false to it }
+        if (phase != LinkPhase.CONNECTED) return false to PasswordChange.NOT_CONNECTED
+        val out = runCatching { core.changePassword(current, new) }.getOrNull()
+            ?: return false to PasswordChange.result(false, "", saved = false)
+        runCatching { core.note("service", "change_password", if (out.ok) "info" else "warning", out.code) }
+        if (!out.ok) return false to PasswordChange.result(false, out.detail, saved = false)
+        password = new
+        val saved = runCatching { credentials.save(Credentials(jid, new)) }.isSuccess
+        return true to PasswordChange.result(true, out.detail, saved)
+    }
+
     private suspend fun connectLoop() {
         while (scope.isActive) {
             if (!reconnect.beginAttempt()) return

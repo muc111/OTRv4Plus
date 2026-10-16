@@ -31,6 +31,7 @@ import org.otrv4plus.android.connection.BundledRouter
 import org.otrv4plus.android.connection.LinkPhase
 import org.otrv4plus.android.connection.LoginProgress
 import org.otrv4plus.android.connection.OtrConnectionService
+import org.otrv4plus.android.connection.PasswordChange
 import org.otrv4plus.android.connection.RouterChoice
 
 /**
@@ -459,6 +460,30 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         connectionFailure = null
         revision++
         OtrConnectionService.wipeAndExit(getApplication(), deleteAccount)
+    }
+
+    /** The last password change's result, for the profile screen. */
+    var signInChangeStatus by mutableStateOf<String?>(null)
+        private set
+
+    /** True while a password change is on its way to the server. */
+    var signInChangeBusy by mutableStateOf(false)
+        private set
+
+    /** Change the account's password; returns through [signInChangeStatus]. */
+    fun changePassword(current: String, new: String, confirm: String, onDone: (Boolean) -> Unit = {}) {
+        val s = service ?: run { signInChangeStatus = PasswordChange.NOT_CONNECTED; return }
+        signInChangeBusy = true
+        signInChangeStatus = null
+        viewModelScope.launch {
+            val (ok, said) = withContext(Dispatchers.IO) {
+                runCatching { s.changePassword(current, new, confirm) }
+                    .getOrElse { false to PasswordChange.result(false, "", saved = false) }
+            }
+            signInChangeStatus = said
+            signInChangeBusy = false
+            onDone(ok)
+        }
     }
 
     /** Sign out: stop, and forget the account and its history. */

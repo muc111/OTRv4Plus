@@ -23,6 +23,7 @@ import org.otrv4plus.android.bridge.OtrBridgeException
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.SendOutcome
 import org.otrv4plus.android.chat.AccountScope
+import org.otrv4plus.android.connection.PasswordChange
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.Conversation
 import org.otrv4plus.android.chat.Message
@@ -654,6 +655,28 @@ class AppModel(
             sessionsStatus = org.otrv4plus.android.chat.AccountSessions.outcome(r.ok, r.code, ended)
             if (r.ok) otherSessions = 0
             changed()
+        }
+    }
+
+    // -- change password (owner, 2026-10-16) -------------------------------------
+
+    var passwordStatus by mutableStateOf<String?>(null)
+        private set
+    var passwordBusy by mutableStateOf(false)
+        private set
+
+    /** The password is not kept here: the engine checks [current] against the
+     *  one it signed in with, and changes it on the server. */
+    fun changePassword(current: String, new: String, confirm: String, onDone: (Boolean) -> Unit = {}) {
+        PasswordChange.problem(current, null, new, confirm)?.let { passwordStatus = it; return }
+        passwordBusy = true
+        passwordStatus = null
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.changePassword(current, new) }
+            passwordStatus = PasswordChange.result(r.ok, r.detail, saved = true)
+            passwordBusy = false
+            changed()
+            onDone(r.ok)
         }
     }
 

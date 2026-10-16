@@ -419,6 +419,10 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         return r to n
     }
 
+    /** Change the account's password on the server; the engine checks [current]. */
+    fun changePassword(current: String, new: String): Outcome =
+        controller("change_password", "current_password" to current, "new_password" to new)
+
     private fun names(value: JsonElement?): List<String> =
         (value as? JsonArray).orEmpty().mapNotNull { item ->
             when (item) {

@@ -77,7 +77,9 @@ you need that second slot, or the test signs your app out.
 
 ## If you see the warning and it is not you
 
-1. Change the password (Prosody: `sudo prosodyctl passwd alice@server`).
+1. Change the password: **Profile → Change password…** in the app or the
+   desktop app (current password, then the new one twice). On the server
+   itself: `sudo prosodyctl passwd alice@server`.
 2. As an admin, press *Sign out other devices* (or, on the server,
    `prosodyctl shell` → `c2s:close("alice@server/resource")`).
 3. Verify your contacts again (SMP). A session that is not yours has a

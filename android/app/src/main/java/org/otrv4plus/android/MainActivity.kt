@@ -25,6 +25,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.ui.AboutScreen
+import org.otrv4plus.android.ui.ChangePasswordSection
 import org.otrv4plus.android.ui.OtrTheme
 import org.otrv4plus.android.ui.ThemeStore
 import org.otrv4plus.android.ui.ConnectScreen
@@ -277,6 +278,7 @@ class MainActivity : ComponentActivity() {
                                         jid = "",
                                         onBack = { selectTab(MainTab.CHATS) },
                                         showBack = false,
+                                        account = { ChangePasswordSection(connection) },
                                     )
                                 }
                             } else {

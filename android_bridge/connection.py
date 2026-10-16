@@ -1716,6 +1716,23 @@ class ConnectionController:
         """Sign out our account's other sessions; server admins only."""
         return self._muc_call("end_other_sessions")
 
+    def change_password(self, current_password: str,
+                        new_password: str) -> Dict[str, Any]:
+        """Change the account's password on the server (transport.
+        change_password). Neither password is traced or kept here."""
+        transport = self._transport
+        if transport is None or not getattr(transport, "is_connected", False):
+            return {"ok": False, "code": "network",
+                    "detail": "Connect first: the password is changed on the "
+                              "server.", "value": None}
+        try:
+            code, detail, _ = transport.change_password(current_password,
+                                                        new_password)
+        except Exception:
+            code, detail = "unknown", "The password was not changed."
+        return {"ok": code == "ok", "code": code, "detail": detail,
+                "value": None}
+
     def _muc_call(self, name: str, *args) -> Dict[str, Any]:
         """Run a room operation on the transport and flatten what it says.
 

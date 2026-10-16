@@ -31,8 +31,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.chat.ProfileText
+import org.otrv4plus.android.connection.PasswordChange
 import org.otrv4plus.desktop.AppModel
 
 /**
@@ -88,6 +90,44 @@ fun ProfileSection(model: AppModel) {
                enabled = !model.profileBusy && model.profileFields.isNotEmpty()) { Text("Publish profile") }
         TextButton(onClick = { model.loadProfile() }, enabled = !model.profileBusy) { Text("Reload") }
     }
+    ChangePasswordSection(model)
+}
+
+/** Change the account's password on the server (shared rules: PasswordChange). */
+@Composable
+private fun ChangePasswordSection(model: AppModel) {
+    var open by remember { mutableStateOf(false) }
+    var current by remember { mutableStateOf("") }
+    var new by remember { mutableStateOf("") }
+    var confirm by remember { mutableStateOf("") }
+    fun reset() { current = ""; new = ""; confirm = ""; open = false }
+
+    Spacer(Modifier.padding(4.dp))
+    if (!open) {
+        OutlinedButton(onClick = { open = true }) { Text(PasswordChange.TITLE + "…") }
+        model.passwordStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        return
+    }
+    Text(PasswordChange.TITLE, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+    Text(PasswordChange.EXPLAINED, style = MaterialTheme.typography.bodySmall,
+         color = MaterialTheme.colorScheme.onSurfaceVariant)
+    @Composable
+    fun field(label: String, value: String, onChange: (String) -> Unit) = OutlinedTextField(
+        value = value, onValueChange = onChange, label = { Text(label) }, singleLine = true,
+        enabled = !model.passwordBusy, visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    field("Current password", current) { current = it }
+    field("New password (at least ${PasswordChange.MIN_LENGTH} characters)", new) { new = it }
+    field("New password again", confirm) { confirm = it }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            enabled = !model.passwordBusy && current.isNotEmpty() && new.isNotEmpty() && confirm.isNotEmpty(),
+            onClick = { model.changePassword(current, new, confirm) { ok -> if (ok) reset() } },
+        ) { Text(if (model.passwordBusy) "Changing…" else "Change") }
+        TextButton(onClick = { reset() }, enabled = !model.passwordBusy) { Text("Cancel") }
+    }
+    model.passwordStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 }
 
 /** Someone's profile, read-only. Text only: nothing in it is a link or runs. */

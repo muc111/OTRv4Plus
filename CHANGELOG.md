@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.96 — 2026-10-16 — change your password from the app (core 0.13.1)
+
+- **New: Profile → "Change password…"** (Android and desktop). Enter the
+  current password, then the new one twice (at least 8 characters). The
+  change is made on your server (XEP-0077), and this device keeps working
+  with the new one: the app saves it for the next sign-in. The current
+  password is checked on the device and never sent, so someone at an
+  unlocked phone cannot lock you out. Use it when the app warns that your
+  account is signed in elsewhere: signing that device out does not stop it
+  coming back, a new password does. A server that does not allow it says
+  so (Prosody needs `mod_register`, which is on by default). The terminal
+  client does not have it yet: use `prosodyctl passwd` on the server.
+
 ## Android 0.7.0-experimental.rc.95 — 2026-10-16 — reconnecting after a drop, and a Disconnect that shows (core 0.13.1)
 
 - **Fixed: after the connection dropped, signing back in was refused** with

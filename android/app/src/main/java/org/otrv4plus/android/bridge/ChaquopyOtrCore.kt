@@ -683,6 +683,17 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result) to ended
     }
 
+    /**
+     * Change the account's password on the server (XEP-0077). The engine
+     * checks [currentPassword] against the one it signed in with; neither is
+     * kept, logged or put in any status here.
+     */
+    fun changePassword(currentPassword: String, newPassword: String): RoomOutcome {
+        val result = call("change_password", currentPassword, newPassword)
+            ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
     fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
         val result = call("destroy_room", room, reason) ?: return notPrepared()
         return outcomeOf(result)

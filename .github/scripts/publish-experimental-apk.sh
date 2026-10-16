@@ -155,6 +155,7 @@ installed), and with the Termux client.
 | Signed in elsewhere | Sign in with the same account on a second device: the first shows **"Your account is also signed in on another device"**; as server admin, **Sign out other devices** ends the second session (your own stays up) | rc.91 |
 | One session per account | With `mod_otrv4plus_one_session` and `max_resources = 1` (SECURITY_SESSIONS.md), sign in on a second device: it gets in, and the first says **"Signed out: this account signed in on another device"** and does **not** reconnect by itself. Drop the connection (airplane mode) and reconnect: you get straight back in | rc.95 |
 | Disconnect / Sign out | Pressing either shows the sign-in screen at once (the teardown carries on in the background) | rc.95 |
+| Change password | Profile → **Change password…**: a wrong current password is refused without contacting the server; a good change says **"Password changed"**; then Disconnect and Connect again: it signs in with the new password without asking; another device with the old password cannot sign in | rc.96 |
 | Busy group | In a secure group where several people send at once (or after reconnecting to a busy group), every message arrives; none silently missing | rc.93 |
 | Invite several | In a secure group, "Invite people online…": tick several, "Invite N people"; each gets an invitation and those who accept join | rc.94 |
 | Location | Before verification 📍 explains and the GPS never starts; a mock-location app's position; typing a Plus Code; "Open in maps app" | rc.73–rc.80 |

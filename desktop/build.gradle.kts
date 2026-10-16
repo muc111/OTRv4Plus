@@ -55,6 +55,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/connection/ConnectProblem.kt",
     "org/otrv4plus/android/connection/LinkPhase.kt",
     "org/otrv4plus/android/connection/LoginProgress.kt",
+    "org/otrv4plus/android/connection/PasswordChange.kt",
     "org/otrv4plus/android/connection/ReconnectPolicy.kt",
     "org/otrv4plus/android/connection/RouterChoice.kt",
     "org/otrv4plus/android/connection/SignIn.kt",

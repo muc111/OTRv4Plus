@@ -55,6 +55,7 @@ from typing import Any, Callable, Dict, Optional
 #: Controller operations: name -> argument names, in call order.
 CONTROLLER_OPS: Dict[str, tuple] = {
     "register": ("password",),
+    "change_password": ("current_password", "new_password"),
     "cancel": (),
     "disconnect": (),
     "destination_change": (),
