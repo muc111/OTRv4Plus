@@ -44,6 +44,14 @@ object ConnectProblem {
             "minutes if it just lost its connection. If it isn't you, " +
             "change your password."
 
+    /** The server has as many people online as it allows
+     *  (prosody/mod_otrv4plus_capacity.lua). Retried: people leave. */
+    const val SERVER_FULL = "server_full"
+
+    const val SERVER_FULL_TEXT =
+        "The server is full: it has as many people online as it allows. " +
+            "The app keeps trying and gets in when someone leaves."
+
     /** The server closed this session for a newer sign-in of the account
      *  (transport.REPLACED_CODE). Never retried by itself: a retry would sign
      *  the other device out, and that one would do the same back. */
@@ -132,6 +140,9 @@ object ConnectProblem {
         // another session of the account holds its only slot. Said every
         // time; retrying is still right (a session that lost its network is
         // timed out by the server).
+        if (code == SERVER_FULL) {
+            return Line(SERVER_FULL_TEXT, if (retrying) Tone.QUIET else Tone.ERROR)
+        }
         if (code == SESSION_LIMIT) {
             return Line(SESSION_LIMIT_TEXT + if (retrying) " Trying again." else "", Tone.ERROR)
         }

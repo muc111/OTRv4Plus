@@ -141,3 +141,25 @@ class TestTheServerModule:
 
     def test_it_reads_max_resources(self):
         assert 'get_option_number("max_resources", 1)' in self.SRC
+
+
+class TestAFullServer:
+    """prosody/mod_otrv4plus_capacity.lua refuses a new person at bind with
+    resource-constraint once max_online_users are online."""
+
+    SRC = open(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")).read()
+
+    def test_the_module_refuses_with_resource_constraint_and_spares_reconnects(self):
+        assert 'get_option_number("max_online_users", 2000)' in self.SRC
+        assert 'condition = "resource-constraint"' in self.SRC
+        assert "if host_sessions[session.username] then" in self.SRC
+        assert 'module:hook("user-registering"' in self.SRC
+        assert 'module:hook("user-registered"' in self.SRC
+
+    def test_the_app_names_it_and_keeps_trying(self):
+        assert T.SERVER_FULL_CODE == "server_full"
+        kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                               "android/connection/ConnectProblem.kt")).read()
+        assert 'SERVER_FULL = "server_full"' in kt
+        needs = kt[kt.index("val NEEDS_YOU"):kt.index("val TRANSIENT")]
+        assert "SERVER_FULL" not in needs        # retried, never latched

@@ -822,6 +822,14 @@ SESSION_LIMIT_TEXT = (
     "it just lost its connection. If it is not yours, change the password.")
 
 
+#: The server has as many people online as it allows (mod_otrv4plus_capacity,
+#: stream error resource-constraint at resource bind). Retried: people leave.
+SERVER_FULL_CODE = "server_full"
+SERVER_FULL_TEXT = (
+    "The server is full: it has as many people online as it allows. The app "
+    "keeps trying and gets in when someone leaves.")
+
+
 #: Shown when the server closed our session for a newer sign-in of the same
 #: account. Retrying would push that one out, so the app stops and says so.
 REPLACED_CODE = "signed_in_elsewhere"
@@ -1733,6 +1741,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                     # lost its network is timed out by the server.
                     started.set_exception(TransportError(
                         "session_limit", SESSION_LIMIT_TEXT))
+                    return
+                if cond == "resource-constraint":
+                    started.set_exception(TransportError(
+                        SERVER_FULL_CODE, SERVER_FULL_TEXT))
                     return
                 started.set_exception(TransportError(
                     "xmpp_stream_failure",

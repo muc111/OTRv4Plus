@@ -149,6 +149,22 @@ class TestOneSessionPerAccount:
         assert "policy-violation" in err.detail
 
 
+FULL = ("<stream:error><resource-constraint "
+        "xmlns='urn:ietf:params:xml:ns:xmpp-streams'/>"
+        "<text xmlns='urn:ietf:params:xml:ns:xmpp-streams'>This server is full"
+        "</text></stream:error>")
+
+
+class TestAFullServer:
+    """prosody/mod_otrv4plus_capacity.lua at max_online_users."""
+
+    def test_it_is_named_at_once(self, monkeypatch):
+        err, took = _attempt(XmppServer(HEADER + FULL), monkeypatch)
+        assert err.code == "server_full"
+        assert "server is full" in err.detail
+        assert took < 10
+
+
 class TestSignInRulesAreUnchanged:
 
     def test_plain_only_is_still_refused_and_said_at_once(self, monkeypatch):

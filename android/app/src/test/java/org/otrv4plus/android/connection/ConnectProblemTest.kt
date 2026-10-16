@@ -99,4 +99,11 @@ class ConnectProblemTest {
         val line = ConnectProblem.line("auth_failed", false, false, 1, bundledRouterUpMs = 1_000L)!!
         assertTrue(line.text.contains("check the address and password"))
     }
+
+    @Test
+    fun `a full server says so, quietly while it keeps trying`() {
+        val line = ConnectProblem.line(ConnectProblem.SERVER_FULL, false, true, 4)!!
+        assertEquals(ConnectProblem.Tone.QUIET, line.tone)
+        assertTrue(line.text.startsWith("The server is full"))
+    }
 }

@@ -2572,6 +2572,14 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             except Exception:
                 pass
             return
+        if "resource-constraint" in (str(condition), raw) or \
+                "<resource-constraint" in raw:
+            # mod_otrv4plus_capacity: as many people online as it allows.
+            # Not fatal: the reconnect loop tries again, and gets in once
+            # someone leaves.
+            print("[server] the server is full (as many people online as it "
+                  "allows); trying again shortly.")
+            return
         for name in self._FATAL_STREAM_ERRORS:
             if name == str(condition) or ("<%s " % name) in raw or (
                     "<%s>" % name) in raw:

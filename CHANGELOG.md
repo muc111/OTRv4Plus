@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.99 — 2026-10-16 — a full server says so; server limits (core 0.13.1)
+
+- **New server module `prosody/mod_otrv4plus_capacity.lua`:** a hard cap on
+  people online at once (`max_online_users`, 2,000 by default; someone
+  already online who reconnects is never refused), new accounts per hour
+  server-wide (`max_registrations_per_hour`, 30) and an optional total.
+  Server-wide on purpose: over I2P every client reaches Prosody from
+  127.0.0.1, so per-address limits cannot tell users apart.
+- **A full server is named:** "The server is full: it has as many people
+  online as it allows. The app keeps trying and gets in when someone
+  leaves." Android, desktop and the terminal client, which all keep
+  retrying.
+- **SERVER_HARDENING.md:** what protects the server now, the module, and
+  recommended Prosody (`c2s_timeout`, `mod_limits`, no s2s), i2pd and
+  systemd settings.
+
 ## Android 0.7.0-experimental.rc.98 — 2026-10-16 — a new built-in router is not a broken server (core 0.13.1)
 
 - **Fixed: "The server answers over I2P, but its chat service is not

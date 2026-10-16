@@ -80,6 +80,7 @@ path = [
     "SPEC_GROUP.md",
     "STRESS_TEST.md",
     "SECURITY_SESSIONS.md",
+    "SERVER_HARDENING.md",
     "TRADE.md",
     "TRANSPORT_AUDIT.md",
     "TRANSPORT_POLICY.md",
