@@ -136,6 +136,7 @@ installed), and with the Termux client.
 | Signed in elsewhere | Sign in with the same account on a second device: the first shows **"Your account is also signed in on another device"**; as server admin, **Sign out other devices** ends the second session (your own stays up) | rc.91 |
 | One session per account | With `max_resources = 1` on the server, sign in on a second device: it says **"already signed in on another device"** (not "still setting up"); the first device stays connected | rc.92 |
 | Busy group | In a secure group where several people send at once (or after reconnecting to a busy group), every message arrives; none silently missing | rc.93 |
+| Invite several | In a secure group, "Invite people online…": tick several, "Invite N people"; each gets an invitation and those who accept join | rc.94 |
 | Location | Before verification 📍 explains and the GPS never starts; a mock-location app's position; typing a Plus Code; "Open in maps app" | rc.73–rc.80 |
 | Photos | The "hidden information" question strips a camera photo's location | — |
 | Network change | Reconnecting by itself after switching between Wi-Fi and mobile data | — |

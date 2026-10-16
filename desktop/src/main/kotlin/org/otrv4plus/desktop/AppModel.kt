@@ -694,6 +694,27 @@ class AppModel(
     }
     fun inviteToGroup(room: String, peer: String) = outcome { core.inviteToGroup(room, peer.trim()) }
 
+    /** Online people not yet in [room] (owner, 2026-10-16: tick and invite). */
+    fun groupInviteCandidates(room: String): List<org.otrv4plus.android.chat.GroupInvitePicker.Candidate> =
+        org.otrv4plus.android.chat.GroupInvitePicker.candidates(
+            chat.directory(), groupMembers[room].orEmpty().map { it.jid },
+            chat.account.bareJid)
+
+    /** One OTRv4+ invitation per ticked person, sent in turn. */
+    fun inviteManyToGroup(room: String, jids: Collection<String>) {
+        val list = jids.distinct()
+        if (list.isEmpty()) return
+        ui.launch {
+            var sent = 0
+            for (jid in list) {
+                val r = withContext(Dispatchers.IO) { core.inviteToGroup(room, jid) }
+                if (r.ok) sent++ else chat.note("Inviting $jid: " + r.detail.ifBlank { r.code })
+            }
+            if (sent > 0) chat.note(org.otrv4plus.android.chat.GroupInvitePicker.sent(sent))
+            changed()
+        }
+    }
+
     private fun outcome(block: () -> DesktopCore.Outcome) {
         ui.launch {
             val r = withContext(Dispatchers.IO) { block() }

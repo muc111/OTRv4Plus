@@ -374,6 +374,31 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** Online people who could be invited to [room] (see GroupInvitePicker). */
+    fun groupInviteCandidates(room: String): List<GroupInvitePicker.Candidate> =
+        GroupInvitePicker.candidates(directory, groupMembers(room).map { it.jid },
+                                     state?.account?.bareJid.orEmpty())
+
+    /** Invite every ticked person: one OTRv4+ invitation each, sent in turn. */
+    fun inviteManyToGroup(room: String, jids: Collection<String>) {
+        val c = core ?: return
+        val list = jids.map { ChatState.bare(it) }.distinct()
+        if (list.isEmpty()) return
+        viewModelScope.launch {
+            var sent = 0
+            for (jid in list) {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching { c.inviteToGroup(room, jid) }.getOrNull()
+                }
+                if (outcome?.ok == true) sent++
+                else GroupText.outcome(outcome?.code ?: "group_failed")
+                    ?.let { state?.note("Inviting $jid: $it") }
+            }
+            if (sent > 0) state?.note(GroupInvitePicker.sent(sent))
+            revision++
+        }
+    }
+
     // ── group verification (the group passphrase) and group calls ───────────
 
     fun groupVerifyState(room: String): org.otrv4plus.android.bridge.GroupVerifyState {

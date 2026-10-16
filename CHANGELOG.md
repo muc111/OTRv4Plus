@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.94 — 2026-10-16 — invite several people at once (core 0.13.1)
+
+- **New: "Invite people online…" in a secure group** (Android and desktop).
+  A list of everyone the server says is online and not yet in the group,
+  contacts first, each with a tick box, and one "Invite N people" button.
+  Owner request: typing one name at a time was the only way. Each person
+  still gets their own invitation over OTRv4+, and those who accept close
+  together are added in one change.
+- **Stress test:** `--groups N` splits the users into N groups (one room
+  each) to measure the server rather than one group. People are added one
+  at a time by default, as the app does. Room pieces go through the app's
+  own pacer, which slows down and re-sends when the room refuses, and the
+  refusals are now counted.
+
 ## Android 0.7.0-experimental.rc.93 — 2026-10-16 — busy groups no longer drop messages (core 0.13.1)
 
 - **Fixed: messages that arrive in pieces could be silently dropped when

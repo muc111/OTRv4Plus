@@ -182,5 +182,34 @@ def test_the_runner_uses_the_apps_pacer_and_sees_bounces():
     the old hand-made pacing never listened to, and nothing re-sent them."""
     src = open(st.__file__).read()
     assert "from android_bridge.groups import RoomPacer" in src
-    assert '"message_error"' in src and ".rejected(room)" in src
-    assert ".confirm(room," in src          # echoes confirm, so unechoed re-send
+    assert '"message_error"' in src and ".rejected(bot.room)" in src
+    assert ".confirm(bot.room," in src          # echoes confirm, so unechoed re-send
+
+
+def test_several_groups_add_one_at_a_time_and_add_up():
+    """--groups: each room its own group, filled one person per change (the
+    app adds people one at a time as they accept), and one row for all."""
+    a, a_bots, clock_a, pump_a = _swarm(4)
+    b, b_bots, clock_b, pump_b = _swarm(3)
+    for sw, bots, pump in ((a, a_bots, pump_a), (b, b_bots, pump_b)):
+        sw.create()
+        for bot in bots[1:]:
+            assert sw.add_batch([bot])
+            pump()
+        assert all(x.member for x in bots)
+    assert a.stats.commits == 3 and b.stats.commits == 2
+    for _ in range(240):
+        clock_a.t += 0.5
+        clock_b.t += 0.5
+        a.tick(); pump_a()
+        b.tick(); pump_b()
+    row = st.combine_rows([a, b], 120, online=7, lag=0.3)
+    assert row["groups"] == 2 and row["members"] == 7 and row["largest_group"] == 4
+    assert row["sent"] > 0 and row["delivery_pct"] == 100.0
+    assert row["harness_lag_s"] == 0.3
+    assert a.stats.sent == 0 and b.stats.sent == 0          # both reset
+
+
+def test_the_defaults_add_like_the_app():
+    args = st.build_parser().parse_args(["--admin", "a@x"])
+    assert args.batch == 1 and args.groups == 1

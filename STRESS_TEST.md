@@ -35,7 +35,8 @@ nice -n 10 python3 otrv4plus_xmpp.py --stresstest --admin alice@otrv4plus.i2p \
 | `--users` | 50 | Simulated users |
 | `--minutes` | 60 | How long to run |
 | `--interval` | 120 | Average seconds between one user's messages (jittered: chat, not a flood) |
-| `--batch` / `--ramp` | 16 / 60 | Users added per group change, and seconds between changes. Ramping shows where things degrade |
+| `--groups` | 1 | Split the users into this many groups, each its own room. Server capacity is measured with many groups; one group tops out at ~100 members |
+| `--batch` / `--ramp` | 1 / 10 | Most users added in one change, and seconds between adds in each group. 1 is how the app adds people (one at a time, as they accept) |
 | `--observers N` | all | Only the first N users decrypt the chat; the rest skip it (they still process every group change). Saves this machine's CPU (see below) |
 | `--keep` | off | Keep the test accounts afterwards |
 | `--csv FILE` | `stresstest-<time>.csv` | One row of numbers per minute |
@@ -51,6 +52,7 @@ Every minute it prints a line and appends a CSV row:
 - disconnects;
 - joins refused;
 - **undecryptable**: messages a member could not decrypt;
+- **lost**: room pieces the app's pacer gave up on after its retries;
 - **harness lag**: how long this process's own loop stalled. Several seconds
   means the numbers measure this machine's bots, not the server.
 
@@ -131,6 +133,16 @@ refusing the traffic; see below.
 group is the expensive operation for the server. The app adds people one at
 a time, as they accept their invitations, so each change is ~1/16 of the
 size measured here.
+
+## The room rate limit (`mod_muc_limits`)
+
+Prosody's `mod_muc_limits` caps how many messages **one room** accepts per
+second from occupants who are not room members or admins. The T450 runs
+`muc_event_rate = 5`, `muc_burst_factor = 10`: 5 per second per room, bursts
+of 50. A secure-group line is two pieces, so a room takes about 2.5 lines a
+second before it starts refusing. The app slows down and re-sends; the test
+does the same and counts the refusals (`room errors`). Each room has its own
+budget, so ten groups have ten times the room.
 
 ## Watching the laptop and Prosody
 

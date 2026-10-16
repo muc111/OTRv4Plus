@@ -141,6 +141,8 @@ class Bot:
         self.frag_seq = 0
         self.observe = True             # decrypts application messages
         self.next_post = 0.0
+        self.room = ""                  # its group's room (the runner sets it)
+        self.swarm = None
 
 
 class Swarm:
@@ -433,10 +435,11 @@ async def run(args) -> int:
     domain = admin.boundjid.domain
     muc = args.muc or await _muc_service(admin)
     run_id = secrets.token_hex(3)
-    room = "stress-%s@%s" % (run_id, muc)
+    n_groups = max(1, min(args.groups, args.users // 2))
+    rooms = ["stress-%s-g%02d@%s" % (run_id, g, muc) for g in range(n_groups)]
     csv_path = args.csv or "stresstest-%s.csv" % time.strftime("%Y%m%d-%H%M%S")
-    say("[stress] run %s: %d users, room %s, %d min, CSV %s"
-        % (run_id, args.users, room, args.minutes, csv_path))
+    say("[stress] run %s: %d users in %d group(s) of ~%d, %g min, CSV %s"
+        % (run_id, args.users, n_groups, args.users // n_groups, args.minutes, csv_path))
 
     # 1. accounts
     creds = []
@@ -450,11 +453,16 @@ async def run(args) -> int:
             say("[stress] %d accounts created" % (i + 1))
 
     bots = [Bot(i, jid, core) for i, (jid, _pw) in enumerate(creds)]
-    if args.observers and args.observers < len(bots):
-        for b in bots[args.observers:]:
-            b.observe = False
+    # Users dealt round-robin into the groups; the first of each owns it.
+    members_of = [[b for b in bots if b.index % n_groups == g] for g in range(n_groups)]
+    for g, group in enumerate(members_of):
+        for k, b in enumerate(group):
+            b.room = rooms[g]
+            # --observers is per group: its first N users decrypt the chat.
+            b.observe = not args.observers or k < args.observers
     clients = {}
-    swarm: Optional[Swarm] = None
+    swarms: List[Swarm] = []
+    lag = [0.0]
 
     # Room pieces go through the app's own RoomPacer, one per bot as the app
     # has one per account: fast until the room bounces something, then slow,
@@ -475,8 +483,8 @@ async def run(args) -> int:
                 if c is not None:
                     c.send_message(mto=to_room, mbody=body, mtype="groupchat")
 
-            def gave_up(_room: str) -> None:
-                swarm.stats.lost += 1
+            def gave_up(_room: str, _bot=bot) -> None:
+                _bot.swarm.stats.lost += 1
 
             p = pacers[bot.jid] = RoomPacer(
                 send, burst=SecureGroups.ROOM_BURST,
@@ -488,39 +496,45 @@ async def run(args) -> int:
         return p
 
     def send_room(bot: Bot, body: str) -> None:
-        pacer_for(bot).post(room, [body])
+        pacer_for(bot).post(bot.room, [body])
 
     def send_direct(bot: Bot, to: str, body: str) -> None:
         clients[bot.jid].send_message(mto=to, mbody=body, mtype="chat")
 
     def wire(bot: Bot, c) -> None:
         def on_group(msg):
-            if str(msg["from"].bare) == room and msg["body"]:
+            if str(msg["from"].bare) == bot.room and msg["body"]:
                 if msg["from"].resource == Swarm.nick(bot):
-                    pacer_for(bot).confirm(room, msg["body"])   # our echo
-                swarm.on_room(bot, msg["from"].resource, msg["body"])
+                    pacer_for(bot).confirm(bot.room, msg["body"])   # our echo
+                bot.swarm.on_room(bot, msg["from"].resource, msg["body"])
 
         def on_error(msg):
             # The room refused something (Prosody's mod_muc_limits answers
             # "resource-constraint"): slow down and send it again.
-            if str(msg["from"].bare) == room:
-                swarm.stats.room_errors += 1
-                pacer_for(bot).rejected(room)
+            if str(msg["from"].bare) == bot.room:
+                bot.swarm.stats.room_errors += 1
+                pacer_for(bot).rejected(bot.room)
 
         def on_chat(msg):
             if msg["type"] in ("chat", "normal") and msg["body"]:
-                swarm.on_direct(bot, str(msg["from"].bare), msg["body"])
+                bot.swarm.on_direct(bot, str(msg["from"].bare), msg["body"])
+
+        def on_gone(_e):
+            bot.swarm.stats.disconnects += 1
         c.add_event_handler("groupchat_message", on_group)
         c.add_event_handler("message", on_chat)
         c.add_event_handler("message_error", on_error)
-        c.add_event_handler("disconnected",
-                            lambda _e: setattr(swarm.stats, "disconnects",
-                                               swarm.stats.disconnects + 1))
+        c.add_event_handler("disconnected", on_gone)
 
-    swarm = Swarm(core, room, bots, send_room=send_room, send_direct=send_direct,
-                  interval=args.interval, say=say)
+    for g, group in enumerate(members_of):
+        sw = Swarm(core, rooms[g], group, send_room=send_room, send_direct=send_direct,
+                   interval=args.interval, say=say)
+        swarms.append(sw)
+        for b in group:
+            b.swarm = sw
     try:
-        # 2. connect and join, a few at a time
+        # 2. connect and join, a few at a time; the owners first, so each
+        # room exists and is configured before anyone else walks in.
         sem = asyncio.Semaphore(max(1, args.connect_concurrency))
 
         async def bring_up(bot: Bot, pw: str, create: bool = False):
@@ -528,47 +542,57 @@ async def run(args) -> int:
                 c = _client(bot.jid, pw, args.host)
                 wire(bot, c)
                 await _online(c, args.host, args.port)
-                await c["xep_0045"].join_muc_wait(room, Swarm.nick(bot), timeout=60)
+                await c["xep_0045"].join_muc_wait(bot.room, Swarm.nick(bot), timeout=60)
                 if create:
                     # A new room is locked until its creator submits a
                     # configuration: the empty form takes the defaults.
                     form = c["xep_0004"].make_form(ftype="submit")
-                    await c["xep_0045"].set_room_config(room, form, timeout=60)
+                    await c["xep_0045"].set_room_config(bot.room, form, timeout=60)
                 clients[bot.jid] = c
-        await bring_up(bots[0], creds[0][1], create=True)
-        await asyncio.gather(*(bring_up(b, pw) for b, (_j, pw)
-                               in zip(bots[1:], creds[1:])))
-        say("[stress] %d users online in %s" % (len(clients), room))
+        pw_of = dict(creds)
+        await asyncio.gather(*(bring_up(sw.owner, pw_of[sw.owner.jid], create=True)
+                               for sw in swarms))
+        others = [b for b in bots if b is not b.swarm.owner]
+        await asyncio.gather(*(bring_up(b, pw_of[b.jid]) for b in others))
+        say("[stress] %d users online in %d room(s)" % (len(clients), len(swarms)))
 
-        # 3. the group, ramped
-        swarm.create()
-        waiting = bots[1:]
+        # 3. the groups, filled the way the app fills them: one person per
+        # change as they accept, several together only when they accept
+        # while a change is still out (--batch caps that).
+        for sw in swarms:
+            sw.create()
+        waiting = {id(sw): [b for b in sw.bots if b is not sw.owner] for sw in swarms}
         start = time.time()
-        next_add = start
+        next_add = {id(sw): start + args.ramp * k / max(1, len(swarms))
+                    for k, sw in enumerate(swarms)}
         next_row = start + 60
         end = start + args.minutes * 60
         with open(csv_path, "w", newline="") as fh:
             writer = None
             while time.time() < end:
                 now = time.time()
-                if waiting and now >= next_add and not swarm.pending_adds:
-                    batch, rest = waiting[:args.batch], waiting[args.batch:]
-                    if swarm.add_batch(batch):
-                        waiting = rest
-                        next_add = now + args.ramp
-                swarm.tick()
+                for sw in swarms:
+                    todo = waiting[id(sw)]
+                    if todo and now >= next_add[id(sw)] and not sw.pending_adds:
+                        batch, rest = todo[:args.batch], todo[args.batch:]
+                        if sw.add_batch(batch):
+                            waiting[id(sw)] = rest
+                            next_add[id(sw)] = now + args.ramp
+                    sw.tick()
                 if now >= next_row:
                     online = sum(1 for c in clients.values() if c.is_connected())
-                    row = swarm.minute_row(now - start, online)
+                    row = combine_rows(swarms, now - start, online, lag[0])
+                    lag[0] = 0.0
                     if writer is None:
                         writer = csv.DictWriter(fh, fieldnames=list(row))
                         writer.writeheader()
                     writer.writerow(row)
                     fh.flush()
-                    say("[stress] %(elapsed_min)5.1f min  members %(members)3d  online "
-                        "%(online)3d  sent %(sent)4d  delivered %(delivery_pct)5.1f%%  "
+                    say("[stress] %(elapsed_min)5.1f min  members %(members)4d "
+                        "(largest group %(largest_group)3d)  online %(online)4d  "
+                        "sent %(sent)4d  delivered %(delivery_pct)5.1f%%  "
                         "latency p50 %(lat_p50_s).2fs p95 %(lat_p95_s).2fs  "
-                        "commits %(commits)d  room errors %(room_errors)d  "
+                        "commits %(commits)d  room errors %(room_errors)d  lost %(lost)d  "
                         "undecryptable %(undecryptable)d  disconnects %(disconnects)d  "
                         "harness lag %(harness_lag_s).1fs" % row)
                     next_row += 60
@@ -577,12 +601,12 @@ async def run(args) -> int:
                 # More than the 0.5 s asked for: this process was too busy to
                 # run its loop. Several seconds means the numbers above
                 # measure this machine's bots, not the server.
-                swarm.stats.lag_max = max(swarm.stats.lag_max,
-                                          time.time() - before - 0.5)
+                lag[0] = max(lag[0], time.time() - before - 0.5)
+        refused = sum(sw.stats.join_refused for sw in swarms)
+        firsts = [sw.stats.join_refused_at for sw in swarms
+                  if sw.stats.join_refused_at is not None]
         say("[stress] done. Joins refused: %d%s" % (
-            swarm.stats.join_refused,
-            "" if swarm.stats.join_refused_at is None
-            else " (first at %d members)" % swarm.stats.join_refused_at))
+            refused, " (first at %d members)" % min(firsts) if firsts else ""))
     finally:
         for c in clients.values():
             try:
@@ -606,6 +630,36 @@ async def run(args) -> int:
     return 0
 
 
+def combine_rows(swarms: List["Swarm"], elapsed: float, online: int,
+                 lag: float) -> Dict[str, object]:
+    """One minute's row across every group (and each group's stats reset)."""
+    latency: List[float] = []
+    for sw in swarms:
+        latency.extend(sw.stats.latency)
+    rows = [sw.minute_row(elapsed, online) for sw in swarms]
+    total = {k: sum(r[k] for r in rows) for k in (
+        "members", "sent", "delivered", "expected", "commits", "commit_failures",
+        "room_errors", "undecryptable", "disconnects", "join_refused", "lost")}
+    return {
+        "elapsed_min": round(elapsed / 60.0, 1),
+        "groups": len(swarms),
+        "members": total["members"],
+        "largest_group": max(r["members"] for r in rows),
+        "online": online,
+        "sent": total["sent"], "delivered": total["delivered"],
+        "expected": total["expected"],
+        "delivery_pct": (round(100.0 * total["delivered"] / total["expected"], 1)
+                         if total["expected"] else 100.0),
+        "lat_p50_s": round(percentile(latency, 50), 2),
+        "lat_p95_s": round(percentile(latency, 95), 2),
+        "lat_max_s": round(max(latency), 2) if latency else 0.0,
+        "commits": total["commits"], "commit_failures": total["commit_failures"],
+        "room_errors": total["room_errors"], "lost": total["lost"],
+        "undecryptable": total["undecryptable"], "disconnects": total["disconnects"],
+        "join_refused": total["join_refused"], "harness_lag_s": round(lag, 2),
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="otrv4plus_xmpp.py --stresstest",
@@ -615,13 +669,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--minutes", type=float, default=60, help="run length (default 60)")
     ap.add_argument("--interval", type=float, default=120,
                     help="average seconds between one user's messages (default 120)")
-    ap.add_argument("--batch", type=int, default=16,
-                    help="users added to the group per commit (default 16, max %d)" % MAX_BATCH)
-    ap.add_argument("--ramp", type=float, default=60,
-                    help="seconds between batches (default 60)")
+    ap.add_argument("--groups", type=int, default=1,
+                    help="split the users into this many groups, each its own room "
+                         "(default 1)")
+    ap.add_argument("--batch", type=int, default=1,
+                    help="most users added in one change (default 1, like the app, "
+                         "which adds people one at a time as they accept; max %d)"
+                         % MAX_BATCH)
+    ap.add_argument("--ramp", type=float, default=10,
+                    help="seconds between adds in each group (default 10)")
     ap.add_argument("--observers", type=int, default=0,
-                    help="only the first N users decrypt chat (saves this machine's CPU; "
-                         "0 = all)")
+                    help="in each group, only the first N users decrypt chat (saves "
+                         "this machine's CPU; 0 = all)")
     ap.add_argument("--host", default="127.0.0.1", help="Prosody c2s host (default 127.0.0.1)")
     ap.add_argument("--port", type=int, default=5222)
     ap.add_argument("--muc", help="MUC service (found by disco if omitted)")

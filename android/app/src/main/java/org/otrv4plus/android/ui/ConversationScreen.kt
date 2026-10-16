@@ -1455,6 +1455,60 @@ private fun HandshakeCard(status: HandshakeUi.Status) {
 }
 
 /**
+ * Everyone online who is not in the group yet, with a tick box each; one
+ * button invites them all (owner request, 2026-10-16). Each still gets their
+ * own invitation over OTRv4+.
+ */
+@Composable
+private fun GroupInviteDialog(model: ChatViewModel, room: String, onDone: () -> Unit) {
+    val people = model.groupInviteCandidates(room)
+    val ticked = androidx.compose.runtime.remember(room) {
+        androidx.compose.runtime.mutableStateListOf<String>()
+    }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDone,
+        title = { Text(org.otrv4plus.android.chat.GroupInvitePicker.TITLE) },
+        text = {
+            if (people.isEmpty()) {
+                Text(org.otrv4plus.android.chat.GroupInvitePicker.EMPTY,
+                     style = MaterialTheme.typography.bodySmall)
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                    items(people.size) { i ->
+                        val p = people[i]
+                        val on = p.jid in ticked
+                        Row(
+                            Modifier.fillMaxWidth().clickable {
+                                if (on) ticked.remove(p.jid) else ticked.add(p.jid)
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.Checkbox(
+                                checked = on,
+                                onCheckedChange = { if (it) ticked.add(p.jid) else ticked.remove(p.jid) },
+                            )
+                            Column(Modifier.weight(1f)) {
+                                Text(p.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(p.jid + if (p.contact) "" else "  (not a contact)",
+                                     style = MaterialTheme.typography.labelSmall,
+                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = ticked.isNotEmpty(), onClick = {
+                model.inviteManyToGroup(room, ticked.toList())
+                onDone()
+            }) { Text(org.otrv4plus.android.chat.GroupInvitePicker.button(ticked.size)) }
+        },
+        dismissButton = { TextButton(onClick = onDone) { Text("Cancel") } },
+    )
+}
+
+/**
  * Members of a secure group, each with whether you have verified their key,
  * and an invite field. Invitations go over an encrypted OTRv4+ conversation
  * with the person invited; the room never sees them.
@@ -1466,6 +1520,9 @@ private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
     }
     var invitee by androidx.compose.runtime.saveable.rememberSaveable(jid) {
         androidx.compose.runtime.mutableStateOf("")
+    }
+    var picking by androidx.compose.runtime.saveable.rememberSaveable(jid) {
+        androidx.compose.runtime.mutableStateOf(false)
     }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp),
@@ -1506,10 +1563,14 @@ private fun SecureGroupPanel(model: ChatViewModel, jid: String) {
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             modifier = Modifier.fillMaxWidth(),
         )
-        TextButton(
-            enabled = invitee.isNotBlank(),
-            onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
-        ) { Text("Invite over OTRv4+") }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            TextButton(
+                enabled = invitee.isNotBlank(),
+                onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
+            ) { Text("Invite over OTRv4+") }
+            TextButton(onClick = { picking = true }) { Text("Invite people online…") }
+        }
+        if (picking) GroupInviteDialog(model, jid) { picking = false }
         GroupEndButtons(model, jid)
     }
 }

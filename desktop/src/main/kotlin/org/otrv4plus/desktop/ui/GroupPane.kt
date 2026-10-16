@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -178,6 +180,7 @@ private fun GroupPassphraseDialog(onDone: (String?) -> Unit) {
 @Composable
 fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifier) {
     var invitee by remember(room) { mutableStateOf("") }
+    var picking by remember(room) { mutableStateOf(false) }
     var ending by remember(room) { mutableStateOf("") }
     Column(modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
            verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -203,8 +206,12 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
         Text("Invitations go over your encrypted OTRv4+ conversation with them; " +
              "the room never sees them.", style = MaterialTheme.typography.labelSmall,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Button(onClick = { model.inviteToGroup(room, invitee); invitee = "" },
-               enabled = invitee.contains('@')) { Text("Invite over OTRv4+") }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { model.inviteToGroup(room, invitee); invitee = "" },
+                   enabled = invitee.contains('@')) { Text("Invite over OTRv4+") }
+            TextButton(onClick = { picking = true }) { Text("Invite people online…") }
+        }
+        if (picking) GroupInviteDialog(model, room) { picking = false }
         HorizontalDivider()
         TextButton(onClick = { model.verifyGroupMembers(room) }) { Text("Verify members (for calls)") }
         TextButton(onClick = { ending = "leave" }) { Text("Leave group") }
@@ -234,4 +241,52 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
             dismissButton = { TextButton(onClick = { ending = "" }) { Text("Cancel") } },
         )
     }
+}
+
+
+/** Everyone online not yet in the group, a tick box each, one Invite button
+ *  (owner, 2026-10-16). Each person still gets their own OTRv4+ invitation. */
+@Composable
+private fun GroupInviteDialog(model: AppModel, room: String, onDone: () -> Unit) {
+    val picker = org.otrv4plus.android.chat.GroupInvitePicker
+    val people = model.groupInviteCandidates(room)
+    val ticked = androidx.compose.runtime.remember(room) {
+        androidx.compose.runtime.mutableStateListOf<String>()
+    }
+    AlertDialog(
+        onDismissRequest = onDone,
+        title = { Text(picker.TITLE) },
+        text = {
+            if (people.isEmpty()) {
+                Text(picker.EMPTY, style = MaterialTheme.typography.bodySmall)
+            } else {
+                androidx.compose.foundation.lazy.LazyColumn(
+                    Modifier.heightIn(max = 400.dp)) {
+                    items(people.size) { i ->
+                        val p = people[i]
+                        val on = p.jid in ticked
+                        Row(Modifier.fillMaxWidth()
+                                .clickable { if (on) ticked.remove(p.jid) else ticked.add(p.jid) },
+                            verticalAlignment = Alignment.CenterVertically) {
+                            androidx.compose.material3.Checkbox(checked = on, onCheckedChange = {
+                                if (it) ticked.add(p.jid) else ticked.remove(p.jid)
+                            })
+                            Column(Modifier.weight(1f)) {
+                                Text(p.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(p.jid + if (p.contact) "" else "  (not a contact)",
+                                     style = MaterialTheme.typography.labelSmall,
+                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = ticked.isNotEmpty(), onClick = {
+                model.inviteManyToGroup(room, ticked.toList()); onDone()
+            }) { Text(picker.button(ticked.size)) }
+        },
+        dismissButton = { TextButton(onClick = onDone) { Text("Cancel") } },
+    )
 }
