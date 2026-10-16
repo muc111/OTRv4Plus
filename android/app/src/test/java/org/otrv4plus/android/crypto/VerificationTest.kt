@@ -332,4 +332,15 @@ class VerificationTest {
         assertTrue("warned" in Verification.IDENTITY_LIFETIME,
             "the user is not told their contacts will see a key change")
     }
+
+    @Test
+    fun `verification shows a bar from the first moment`() {
+        // Owner (2026-10-16): verification takes a while; every client must
+        // show it is actively trying. Before the first step: indeterminate.
+        assertEquals(null, Verification.progressFraction(0, 0))
+        assertEquals(0.5f, Verification.progressFraction(2, 4))
+        assertEquals(1f, Verification.progressFraction(9, 4))
+        assertTrue("waiting" in Verification.progressLabel(0, 0))
+        assertEquals("Verifying… step 3 of 4", Verification.progressLabel(3, 4))
+    }
 }

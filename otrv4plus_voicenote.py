@@ -46,7 +46,9 @@ __all__ = ["MODES", "DEFAULT_MODE", "RATE", "MAX_SECONDS", "MIN_SECONDS",
 
 # Synthetic first and by default: measured, it is the one a speaker
 # recogniser matches least (VOICE_NOTES.md); owner chose it 2026-10-15.
-MODES = ("synthetic", "disguise", "natural")
+# "disguise" was removed 2026-10-16 (owner: "hard to understand, we can use
+# synthetic only"); the Rust core no longer accepts it either.
+MODES = ("synthetic", "natural")
 DEFAULT_MODE = "synthetic"
 RATE = 16000
 MAX_SECONDS = 300
@@ -58,8 +60,7 @@ VENDOR = b"OTRv4Plus"
 MAX_NOTE_BYTES = 16 * 1024 * 1024
 
 _DESCRIPTIONS = {
-    "disguise": "Disguised: a different voice for every note",
-    "synthetic": "Synthetic: robot-like, strongest disguise (default)",
+    "synthetic": "Synthetic: robot-like, your voice replaced (default)",
     "natural": "Natural: your own voice",
 }
 

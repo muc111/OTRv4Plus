@@ -184,6 +184,7 @@ class ChatViewModel : ViewModel() {
     /** Whether [jid] is an OTRv4Plus secure group, as the engine reported. */
     fun isSecureRoom(jid: String): Boolean { observe(); return state?.isSecureRoom(jid) == true }
     fun isSyncingRoom(jid: String): Boolean { observe(); return state?.isSyncingRoom(jid) == true }
+    fun isJoiningRoom(jid: String): Boolean { observe(); return state?.isJoiningRoom(jid) == true }
 
     /** A secure group's row badge (MLS), or null for any other row. */
     fun groupBadge(jid: String): RowSecurity.Badge? =
@@ -290,7 +291,8 @@ class ChatViewModel : ViewModel() {
 
     fun acceptGroupInvite(room: String) {
         state?.clearGroupInvite(room)
-        groupCall("Joining $room", onOk = { state?.noteRoom(room) }) { it.acceptGroupInvite(room) }
+        // A secure group being set up from this moment, never an ordinary room.
+        groupCall("Joining $room", onOk = { state?.noteJoiningSecure(room) }) { it.acceptGroupInvite(room) }
     }
 
     fun declineGroupInvite(room: String) {
@@ -1305,6 +1307,13 @@ class ChatViewModel : ViewModel() {
         observe()
         val conversation = conversation(jid)
         return Verification.offer(conversation.security, conversation.smp)
+    }
+
+    /** (step, total) of the verification running with [jid]; (0, 4) when
+     *  it runs and nothing has come back yet. */
+    fun verificationSteps(jid: String): Pair<Int, Int> {
+        observe()
+        return state?.smpSteps(jid) ?: (0 to 4)
     }
 
     /** The user tapped Verify Identity. Opens the outgoing prompt only. */

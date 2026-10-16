@@ -280,8 +280,9 @@ class GroupChanged(Event):
 
     `change` is one of: created, joined, member_added, member_removed,
     removed_us, left, commit_lost (our change lost the race and was dropped;
-    retry), invite_sent, invite_declined, refused (a join or invite was
-    refused; `detail` says which check)."""
+    retry), invite_sent, invite_declined, joining (we accepted and await
+    the Welcome: no text until it arrives), join_expired (it never came),
+    refused (a join or invite was refused; `detail` says which check)."""
 
     change: str = ""
     epoch: int = 0

@@ -174,6 +174,20 @@ object Verification {
     const val VERIFIED_UNTIL: String =
         "This lasts until the app closes: your identity is new each launch."
 
+    /**
+     * The progress bar while a verification runs. Owner (2026-10-16):
+     * "verification took a while, it should display a loading bar on all
+     * clients to ensure users can see it's actively trying". Null means an
+     * indeterminate (moving) bar: nothing has come back yet. Otherwise the
+     * fraction of the SMP exchange done.
+     */
+    fun progressFraction(step: Int, total: Int): Float? =
+        if (step <= 0 || total <= 0) null else (step.toFloat() / total).coerceIn(0f, 1f)
+
+    fun progressLabel(step: Int, total: Int): String =
+        if (step <= 0 || total <= 0) "Verifying… waiting for the other side (a minute or two over I2P)"
+        else "Verifying… step $step of $total"
+
     fun explanation(prompt: Prompt, peer: String): String = when (prompt) {
         Prompt.OUTGOING ->
             "Enter the passphrase you agreed with this contact in person or " +

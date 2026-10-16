@@ -644,7 +644,8 @@ class AppModel(
     fun acceptGroupInvite(room: String) {
         chat.clearGroupInvite(room)
         outcome { core.acceptGroupInvite(room) }
-        chat.noteRoom(room)
+        // A secure group being set up from this moment, never an ordinary room.
+        chat.noteJoiningSecure(room)
     }
     fun declineGroupInvite(room: String) {
         chat.clearGroupInvite(room)

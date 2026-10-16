@@ -1140,6 +1140,10 @@ class SecureGroups:
             self._awaiting_welcome[room] = inv.peer
             self.save()
         self._send_private(inv.peer, "%sKP:%s|%s" % (SIGNAL_PREFIX, room, _b64e(kp)))
+        # Said at once (device report, 2026-10-16): the room was shown as an
+        # ordinary, unencrypted room until the Welcome arrived. "joining"
+        # marks it as a secure group being set up; "joined" follows.
+        self._emit(GroupChanged(peer=room, change="joining"))
 
     def decline(self, room: str) -> None:
         with self._lock:
@@ -1155,7 +1159,8 @@ class SecureGroups:
         now = self._clock()
         for room in [r for r, i in self._invites.items() if now - i.at > INVITE_TTL]:
             self._invites.pop(room, None)
-            self._awaiting_welcome.pop(room, None)
+            if self._awaiting_welcome.pop(room, None) is not None:
+                self._emit(GroupChanged(peer=room, change="join_expired"))
         for key in [k for k, o in self._outgoing.items() if now - o.at > INVITE_TTL]:
             self._outgoing.pop(key, None)
 

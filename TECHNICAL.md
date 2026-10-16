@@ -1809,9 +1809,10 @@ plaintext action.
 
 ## Voice notes (rc.66)
 
-Recorded into memory, disguised on the device by `Rust/src/voice_mask.rs`
-(per-note random McAdams + vocal-tract-length warp, pitch and rate change,
-channel normalisation, optional synthetic source), written as metadata-free
+Recorded into memory, replaced by a synthetic voice on the device by
+`Rust/src/voice_mask.rs` (per-note random McAdams + vocal-tract-length
+envelope warp, a generated source, rate change, fixed reference balance;
+the "disguise" mode was removed in rc.81), written as metadata-free
 Ogg Opus and sent as an ordinary encrypted file. Fails closed without the
 mask. Design, measurements against a speaker-recognition network, and
 limits: [VOICE_NOTES.md](VOICE_NOTES.md).

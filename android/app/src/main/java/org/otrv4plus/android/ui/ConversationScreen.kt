@@ -174,7 +174,12 @@ fun ConversationScreen(
         bottomBar = {
             Composer(
                 draft = model.draft(jid),
-                enabled = model.canSend(),
+                // A secure group still being set up sends nothing (the
+                // engine refuses too): said here rather than "not connected".
+                enabled = model.canSend() && !model.isJoiningRoom(jid),
+                held = if (model.isJoiningRoom(jid))
+                           "Setting up end-to-end encryption — you can type; it can be sent once the group is ready."
+                       else null,
                 onChange = { model.setDraft(jid, it) },
                 onSend = { model.send(jid) },
                 banner = model.editing?.takeIf { it.conversationId == ChatState.bare(jid) }
@@ -271,6 +276,7 @@ fun ConversationScreen(
             // row draws nothing at all until there is a session to verify.
             VerificationOffer(
                 offer = model.verificationOffer(jid),
+                steps = model.verificationSteps(jid),
                 onVerify = { model.requestVerification(jid) },
                 onCancel = { model.dismissVerification(jid) },
             )
@@ -342,24 +348,33 @@ fun ConversationScreen(
 @Composable
 private fun RoomHeader(model: ChatViewModel, jid: String) {
     val secure = model.isSecureRoom(jid)
+    // Accepted, keys not here yet: a secure group being set up -- never shown
+    // as an ordinary, unencrypted room (device report, 2026-10-16).
+    val joining = model.isJoiningRoom(jid)
     val level = if (secure) org.otrv4plus.android.crypto.SecurityLevel.Level.ENCRYPTED_UNVERIFIED
                 else org.otrv4plus.android.crypto.SecurityLevel.Level.NOT_ENCRYPTED
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+      Column {
+        if (joining) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         Text(
-            "${level.mark} " + if (secure && model.isSyncingRoom(jid))
-                org.otrv4plus.android.chat.GroupText.SYNCING_HEADER
-            else org.otrv4plus.android.chat.GroupText.header(secure),
+            "${level.mark} " + when {
+                joining -> org.otrv4plus.android.chat.GroupText.JOINING_HEADER
+                secure && model.isSyncingRoom(jid) -> org.otrv4plus.android.chat.GroupText.SYNCING_HEADER
+                else -> org.otrv4plus.android.chat.GroupText.header(secure)
+            },
             style = MaterialTheme.typography.bodySmall,
             color = if (secure) MaterialTheme.colorScheme.onSurfaceVariant
                     else MaterialTheme.colorScheme.error,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
         )
+      }
     }
-    if (secure) GroupVerifyAndCallBar(model, jid)
+    val ready = secure && !joining
+    if (ready) GroupVerifyAndCallBar(model, jid)
     // Files to the whole group, over MLS; the same picker, metadata
     // question, rows and viewer as a 1:1 conversation.
-    if (secure) TransferBar(model, jid, group = true)
-    if (secure) SecureGroupPanel(model, jid)
+    if (ready) TransferBar(model, jid, group = true)
+    if (ready) SecureGroupPanel(model, jid)
     val expanded = model.occupantsShown(jid)
     val people = model.occupants(jid)
     Row(
@@ -497,11 +512,21 @@ private fun EncryptionOffer(
 @Composable
 private fun VerificationOffer(
     offer: Verification.Offer,
+    steps: Pair<Int, Int>,
     onVerify: () -> Unit,
     onCancel: () -> Unit,
 ) {
     if (offer == Verification.Offer.HIDDEN) return
+    val running = offer == Verification.Offer.IN_PROGRESS || offer == Verification.Offer.ANSWERING
     Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+      Column {
+        // A moving bar while it runs (owner: users must see it is actively
+        // trying); it fills as the SMP steps come back.
+        if (running) {
+            val fraction = Verification.progressFraction(steps.first, steps.second)
+            if (fraction == null) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+            else LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+        }
         Row(
             Modifier.fillMaxWidth().padding(start = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -514,9 +539,10 @@ private fun VerificationOffer(
                     Verification.Offer.VERIFY ->
                         "You have not checked who is on the other end."
                     Verification.Offer.IN_PROGRESS ->
-                        "Verifying… this takes a minute over I2P."
+                        Verification.progressLabel(steps.first, steps.second)
                     Verification.Offer.ANSWERING ->
-                        "Answering their verification request…"
+                        "Answering their verification request… " +
+                            Verification.progressLabel(steps.first, steps.second).removePrefix("Verifying… ")
                     Verification.Offer.VERIFIED -> "Identity Verified ✓"
                     Verification.Offer.HIDDEN -> ""
                 },
@@ -538,6 +564,7 @@ private fun VerificationOffer(
                 else -> Unit
             }
         }
+      }
     }
 }
 
@@ -1282,6 +1309,7 @@ private fun Composer(
     onVoice: (() -> Unit)? = null,
     onLocation: (() -> Unit)? = null,
     onAttach: (() -> Unit)? = null,
+    held: String? = null,
 ) {
     Surface(tonalElevation = 3.dp) {
         Column {
@@ -1303,7 +1331,7 @@ private fun Composer(
             }
             if (!enabled) {
                 Text(
-                    "Not connected — you can type, but nothing will be sent.",
+                    held ?: "Not connected — you can type, but nothing will be sent.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp),
@@ -1549,10 +1577,14 @@ private fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                 else -> {
                     val running = verify.members.count { it.value == "running" }
                     val anyVerified = verify.members.values.any { it == "verified" }
-                    if (verify.active && verify.total > 0) {
+                    if (verify.active) {
                         // Owner request (2026-10-10): progress and an ETA until
-                        // everyone who knew the passphrase is verified.
-                        LinearProgressIndicator(
+                        // everyone who knew the passphrase is verified -- and
+                        // (2026-10-16) moving from the first moment, so it is
+                        // plain it is actively trying.
+                        if (verify.total <= 0 || verify.done <= 0)
+                            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                        else LinearProgressIndicator(
                             progress = { verify.done.toFloat() / verify.total },
                             modifier = Modifier.fillMaxWidth(),
                         )

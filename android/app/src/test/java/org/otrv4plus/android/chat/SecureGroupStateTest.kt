@@ -55,6 +55,34 @@ class SecureGroupStateTest {
     }
 
     @Test
+    fun `a group being joined is secure and unsendable until its keys arrive`() {
+        // Device report (2026-10-16): C's room read "not encrypted" until the
+        // Welcome came. From accepting on it is a secure group being set up.
+        val s = state()
+        s.noteJoiningSecure(room)
+        assertTrue(s.isSecureRoom(room))
+        assertTrue(s.isJoiningRoom(room))
+        assertTrue(s.isRoom(room))
+        // The engine's poll lists only groups that exist: it must not undo it.
+        s.noteSecureRooms(emptyList())
+        assertTrue(s.isSecureRoom(room))
+        assertTrue(s.isJoiningRoom(room))
+        s.handle(OtrEvent.GroupChanged(room, "joined", 1, ""))
+        assertFalse(s.isJoiningRoom(room))
+        assertTrue(s.isSecureRoom(room))
+    }
+
+    @Test
+    fun `a join that never completes stops reading as joining`() {
+        val s = state()
+        s.handle(OtrEvent.GroupChanged(room, "joining", 0, ""))
+        assertTrue(s.isJoiningRoom(room))
+        s.handle(OtrEvent.GroupChanged(room, "join_expired", 0, ""))
+        assertFalse(s.isJoiningRoom(room))
+        assertFalse(s.isSecureRoom(room))
+    }
+
+    @Test
     fun `an invitation for a group we are in is shown with what accepting does`() {
         // rc.39 (device test, 2026-10-05): a member invites us back because our
         // copy stopped working. Hiding it left the inviter waiting for nothing.

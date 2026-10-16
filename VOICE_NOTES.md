@@ -1,4 +1,11 @@
-# Voice notes in a disguised voice
+# Voice notes in a synthetic voice
+
+**Two choices since rc.81: Synthetic (the default) and My voice.** A third,
+*Disguised* (your own voice, pitch-shifted and reshaped), was removed on
+2026-10-16 -- owner: *"Disguised is hard to understand, remove it from all,
+we can use synthetic only."* It was also the weaker of the two masks
+(table below). Asking for it now is refused, in the app, the desktop app,
+the terminal and the Rust core alike.
 
 Owner request (2026-10-15): *"add a voice note feature but with a security
 mind twist — can we morph voice notes advanced enough where AI detection
@@ -39,11 +46,10 @@ microphone ─► memory ─► voice mask (Rust) ─► Ogg Opus / WAV ─► e
      McAdams warp (the VoicePrivacy Challenge baseline B2) and a bilinear
      vocal-tract-length warp, both random. Every formant moves, by a
      different amount;
-  5. **voice source**: in **Disguised**, your harmonics, pitch-shifted
-     (down 14–26 % or up 18–38 %), under the warped envelope; in
-     **Synthetic**, a generated source instead (a monotone pulse train with
-     a little jitter, breath above ~3 kHz, noise where you were unvoiced),
-     so no glottal pulse shape, breathiness or intonation of yours remains;
+  5. **voice source**: a generated one replaces yours (a monotone pulse
+     train with a little jitter, breath above ~3 kHz, noise where you were
+     unvoiced), so no glottal pulse shape, breathiness or intonation of
+     yours remains; silence stays silent;
   6. a **fixed reference balance**: the note's long-term spectrum is pulled
      to the standard long-term speech spectrum, so neither brightness, the
      microphone nor your own spectral colour is a cue;
@@ -54,8 +60,8 @@ microphone ─► memory ─► voice mask (Rust) ─► Ogg Opus / WAV ─► e
   some of the random settings that pushed resonances towards 8 kHz with
   almost no damping, and each 30 ms frame was filtered from scratch, so
   they rang. On the reference clip Synthetic put 80 % of its energy above
-  4 kHz (speech: about 12 %); through a phone microphone and room, Disguise
-  did it too. The envelope warp cannot ring: it never builds a resonator.
+  4 kHz (speech: about 12 %); through a phone microphone and room, the
+  since-removed Disguised mode did it too. The envelope warp cannot ring: it never builds a resonator.
   A Rust test (`no_whistle`) now fails any setting that puts more than a
   quarter of the energy above 4 kHz, or concentrates the 3–8 kHz energy in
   a few lines. **My voice** (`natural`) is unchanged.
@@ -80,15 +86,15 @@ microphone ─► memory ─► voice mask (Rust) ─► Ogg Opus / WAV ─► e
   reference balance and, in Synthetic, the speaker's source replaced
   outright. Those cannot be undone with any settings. The randomness makes
   sure an attacker does not know which transform was used, and that two
-  notes by the same person do not share a disguised voice.
-* **Fail closed.** If the mask is missing from a build, a disguised note is
+  notes by the same person do not share a synthetic voice.
+* **Fail closed.** If the mask is missing from a build, a Synthetic note is
   refused. It is never quietly sent in your own voice. "My voice"
   (`natural`) is a separate, explicit choice.
 * **The file holds only audio**: Ogg Opus with a fixed vendor string and no
   tags, or a bare WAV where the build has no Opus encoder. It has a random
   name. It is sent as an ordinary file, so the session and SMP verification
   gates, the Rust sealing and the receiver's accept prompt all apply. You
-  hear exactly the disguised file before you send it.
+  hear exactly the finished file before you send it.
 
 ## Measured
 
@@ -101,7 +107,7 @@ threshold: **50 % = coin toss, 0 % = perfect**.
 | mode | attacker who knows your real voice | linking two notes by voice | digit recognition (pocketsphinx) |
 |---|---|---|---|
 | My voice | 0 % | 0 % | 72 % |
-| Disguised | 28 % | 30 % | 36 % |
+| Disguised (removed in rc.81) | 28 % | 30 % | 36 % |
 | Synthetic | 40 % | 34 % | 43 % |
 
 Measured for rc.78 (3 runs, 200 digits). rc.77, without the random path
@@ -126,11 +132,12 @@ gain).
 How to read it:
 
 * Undisguised, the network recognises every speaker every time.
-* Synthetic takes it close to guessing in both attacks. Disguised keeps more
-  of your timing and expression, and with it more of your identity.
+* Synthetic takes it close to guessing in both attacks. Disguised kept more
+  of your timing and expression, and with it more of your identity -- one
+  reason it was removed.
 * The intelligibility column comes from an old, voice-sensitive recogniser
   used as a rough proxy. People cope with shifted voices far better than
-  pocketsphinx does, but the drop is real: the disguise costs some clarity.
+  pocketsphinx does, but the drop is real: the mask costs some clarity.
   The settings were chosen as a balance between the two columns. Stronger
   settings hid more and were understood less.
 * **Not measured, and stronger than both attackers above:** an adversary
@@ -142,14 +149,14 @@ How to read it:
 ## Where it is
 
 * **Synthetic is the default** (owner's choice after listening, 2026-10-15):
-  all three were easy to understand, and Synthetic is the one the
-  recogniser matches least.
+  Synthetic is the one the recogniser matches least. Since rc.81 it is
+  the only masked voice.
 * Android: in a conversation, **Voice note** (next to *Send a file*).
-  Choose Synthetic / Disguised / My voice, then Record → Stop → Play →
+  Choose Synthetic / My voice, then Record → Stop → Play →
   Send or Discard. A received note opens in the in-app player like any
   audio file.
 * Desktop: the microphone button in the conversation header; received
   notes get **Play**.
-* Terminal: `/voice [synthetic|disguise|natural]` (synthetic if omitted), then `/voice` to stop,
+* Terminal: `/voice [synthetic|natural]` (synthetic if omitted), then `/voice` to stop,
   then `/voice play`, `/voice send` or `/voice cancel`.
 * Groups: the same, to a secure group, over MLS.

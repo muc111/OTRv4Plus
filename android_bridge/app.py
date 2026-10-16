@@ -1899,6 +1899,14 @@ class OtrApp:
             except (GroupError, Exception):
                 return self.SEND_FAILED
             return self.SEND_QUEUED if outcome == "held" else self.SEND_ENCRYPTED
+        if self._groups is not None and self._groups.awaiting_welcome(peer):
+            # A secure group we accepted and whose keys (the Welcome) have
+            # not arrived: never plaintext, whether or not its room has been
+            # joined yet. Device report (2026-10-16): the room looked like an
+            # ordinary one meanwhile, and a line typed there would have gone
+            # to the room in the clear.
+            self._emit(ErrorOccurred(peer=peer, code="group_joining"))
+            return self.SEND_FAILED
         if peer in self._rooms:
             if peer in self._keyless_groups:
                 # An encrypted group we have no keys for: never plaintext.
@@ -2250,6 +2258,8 @@ class OtrApp:
             return self.SEND_FAILED
         if self._groups is not None and self._groups.is_secure(peer):
             return self._group_action(peer, action, target_id, body, emojis, message_id)
+        if self._groups is not None and self._groups.awaiting_welcome(peer):
+            return self.SEND_FAILED             # never plaintext: see send
         if peer in self._rooms:
             return self._room_action(peer, action, target_id, body, emojis, message_id)
         message_id = message_id if _actions.valid_id(message_id) else _new_message_id()

@@ -25,7 +25,7 @@
 //!      microphone's and the speaker's fine detail lives -- is gone.
 //!   2. Channel normalisation: the recording's long-term spectrum (the
 //!      microphone, the room, the distance) is replaced by a FIXED reference
-//!      (for Disguise and Synthetic, the standard long-term speech spectrum,
+//!      (for Synthetic, the standard long-term speech spectrum,
 //!      applied at the end of step 7).
 //!   3. A noise gate: room tone and background between words are removed.
 //!   4. Short-time spectra (32 ms, 8 ms hop); each frame's smooth spectral
@@ -35,14 +35,14 @@
 //!      length warp. Every formant moves, by a different amount,
 //!      non-linearly. (Until rc.76 the McAdams warp moved the poles of an
 //!      LPC filter, which rang like a whistle -- see "the spectral path".)
-//!   6. DISGUISE: the speaker's own harmonics, pitch-shifted (resample +
-//!      WSOLA), under the warped envelope; the speaking rate changed too.
+//!   6. (A "disguise" mode put the speaker's own harmonics, pitch-shifted,
+//!      under the warped envelope. Removed on 2026-10-16: see [Mode].)
 //!   7. SYNTHETIC throws the speaker's source away and puts a generated one
 //!      under the warped envelope: a monotone pulse train with a little
 //!      jitter, breath above ~3 kHz, noise where the speaker was unvoiced.
 //!      No glottal pulse shape, breathiness or intonation of the speaker's
 //!      is left. It sounds like a vocoder. It is the strongest setting.
-//!      Both end on a FIXED reference spectral balance.
+//!      It ends on a FIXED reference spectral balance.
 //!   8. Loudness is normalised, so level is no cue either.
 //!
 //! EVERY NOTE GETS ITS OWN, SECRET SETTINGS
@@ -51,7 +51,7 @@
 //! each note from the OS random generator, inside this function, and never
 //! leave it: they are not returned, logged or stored. So there is no single
 //! transform to invert, and two notes by the same person do not sound like
-//! the same disguised voice -- they cannot be linked to each other by voice
+//! the same synthetic voice -- they cannot be linked to each other by voice
 //! either.
 //!
 //! WHAT NO VOICE CHANGER CAN PROMISE
@@ -60,8 +60,8 @@
 //! make it impossible, and nothing honest claims to. WHAT is said -- words,
 //! phrasing, dialect, background events -- is untouched: a voice note saying
 //! "it's me, from the office" identifies its sender whatever it sounds like.
-//! DISGUISE keeps more of the speaker's own timing and expression than
-//! SYNTHETIC does. Where it really matters, type instead.
+//! SYNTHETIC still keeps the speaker's timing (where they pause). Where it
+//! really matters, type instead.
 //!
 //! Not cryptography: this module holds no key. The note it produces is sent
 //! as an ordinary encrypted file transfer (`filetransfer.rs`).
@@ -87,9 +87,15 @@ const ORDER: usize = 20;
 pub enum Mode {
     /// Clean-up only (level, tilt, gate). The speaker's own voice.
     Natural,
-    /// Formants warped, pitch and rate moved, all at random.
-    Disguise,
-    /// As Disguise, with a generated source instead of the speaker's.
+    /// The speaker's vocal tract warped at random, under a generated
+    /// source: none of the speaker's own voice source remains.
+    ///
+    /// There used to be a third mode, "disguise" (the speaker's own
+    /// harmonics, pitch-shifted, under the warped envelope). Owner,
+    /// 2026-10-16: "Disguised is hard to understand, remove it, we can use
+    /// synthetic only". It was also the weaker of the two against a speaker
+    /// recogniser (VOICE_NOTES.md). It is gone from every client and from
+    /// here, so nothing can ask for it.
     Synthetic,
 }
 
@@ -97,7 +103,6 @@ impl Mode {
     pub fn parse(s: &str) -> Option<Mode> {
         match s {
             "natural" => Some(Mode::Natural),
-            "disguise" => Some(Mode::Disguise),
             "synthetic" => Some(Mode::Synthetic),
             _ => None,
         }
@@ -540,7 +545,7 @@ fn normalise(x: &mut [f64]) {
     }
 }
 
-// -- the spectral path (Disguise, Synthetic) ------------------------------------
+// -- the spectral path (Synthetic) ----------------------------------------------
 //
 // Device report (2026-10-15, rc.76): "disguise and synthetic sound like a
 // whistle". Measured on the reference clip: Synthetic put 80 % of its energy
@@ -558,9 +563,7 @@ fn normalise(x: &mut [f64]) {
 //   2. The envelope is warped along frequency: the McAdams warp (what was
 //      at angle phi moves to scale * phi^alpha), then a bilinear (all-pass)
 //      vocal-tract-length warp. Every formant moves, non-linearly.
-//   3. DISGUISE: the speaker's harmonics are pitch-shifted (resample +
-//      WSOLA), their own envelope divided out and the warped one put in.
-//      SYNTHETIC: a generated pulse train (monotone, slight drift) and
+//   3. SYNTHETIC: a generated pulse train (monotone, slight drift) and
 //      noise, shaped the same way: none of the speaker's source remains.
 //   4. A FIXED reference balance: every note's long-term spectrum is
 //      pulled to the standard long-term speech spectrum (flat to 500 Hz,
@@ -830,18 +833,11 @@ fn synthetic_excitation(x: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64
     out
 }
 
-fn spectral_mask(x: &[f64], params: &Params, mode: Mode, rng: &mut StdRng) -> Vec<f64> {
+fn spectral_mask(x: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64> {
     let n = x.len();
     let win = sqrt_hann();
     let original = stft(x, &win);
-    let source = match mode {
-        Mode::Synthetic => synthetic_excitation(x, params, rng),
-        _ => {
-            let mut s = shift(x, params.pitch, 1.0);
-            s.resize(n, 0.0);
-            s
-        }
-    };
+    let source = synthetic_excitation(x, params, rng);
     let carrier = stft(&source, &win);
     // NOT ONE TRANSFORM PER NOTE: the warps also move, smoothly and at
     // random, through the note -- a fresh random value every 0.25 s for
@@ -875,6 +871,14 @@ fn spectral_mask(x: &[f64], params: &Params, mode: Mode, rng: &mut StdRng) -> Ve
             let env = log_envelope(xr, xi);
             let target = warp_log_envelope(&mcadams_log_envelope(&env, alpha, params.scale), warp);
             let own = log_envelope(yr, yi);
+            // Silence stays silence. The generated source is noise where the
+            // speaker was unvoiced, and a frame with nothing in it would
+            // otherwise come out as that noise -- a silent recording became
+            // a full-length hiss at speaking level instead of "no speech".
+            let energy: f64 = xr.iter().zip(xi).map(|(a, b)| a * a + b * b).sum();
+            if energy < 1e-9 {
+                return (vec![0.0; BINS], vec![0.0; BINS]);
+            }
             let mut re = yr.clone();
             let mut im = yi.clone();
             for k in 0..BINS {
@@ -919,10 +923,10 @@ fn mask_with_params(pcm: &[f64], rate: u32, mode: Mode, params: &Params, rng: &m
     for (v, g) in x.iter_mut().zip(gains.iter()) {
         *v *= g;
     }
-    // Disguise and Synthetic: the spectral path (rc.77). Natural keeps the
+    // Synthetic: the spectral path (rc.77). Natural keeps the
     // LPC clean-up below, unchanged.
     if mode != Mode::Natural {
-        let mut y = spectral_mask(&x, params, mode, rng);
+        let mut y = spectral_mask(&x, params, rng);
         x.zeroize();
         trim(&mut y);
         normalise(&mut y);
@@ -1051,7 +1055,7 @@ fn mask_with(pcm: &[u8], rate: u32, mode: Mode, seed: Option<[u8; 32]>) -> Resul
 
 /// Python: `voice_mask(pcm, sample_rate, mode) -> bytes`. No seed: the
 /// settings are always the OS generator's (see [mask]).
-/// [mode] is "natural", "disguise" or "synthetic". Returns 16 kHz s16le
+/// [mode] is "natural" or "synthetic". Returns 16 kHz s16le
 /// mono; empty if there was no speech.
 #[pyfunction]
 #[pyo3(signature = (pcm, sample_rate, mode))]
@@ -1110,25 +1114,6 @@ mod tests {
         b.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f64 / 32768.0).collect()
     }
 
-    /// The strongest spectral peak of a long-term LPC envelope, in Hz.
-    fn first_formant(x: &[f64]) -> f64 {
-        let a = lpc(&x[..x.len().min(RATE as usize)], 12).unwrap();
-        let mut best = (0.0, 0.0);
-        for hz in (15..150).map(|i| i * 10) {
-            let w = 2.0 * PI * hz as f64 / RATE as f64;
-            let (mut re, mut im) = (0.0, 0.0);
-            for (k, c) in a.iter().enumerate() {
-                re += c * (w * k as f64).cos();
-                im -= c * (w * k as f64).sin();
-            }
-            let gain = 1.0 / (re * re + im * im);
-            if gain > best.1 {
-                best = (hz as f64, gain);
-            }
-        }
-        best.0
-    }
-
     fn pitch(x: &[f64]) -> f64 {
         // The loudest 100 ms, then the SHORTEST lag whose correlation is
         // near the best one (a subharmonic is never preferred).
@@ -1173,23 +1158,46 @@ mod tests {
     }
 
     #[test]
-    fn natural_keeps_the_voice_disguise_moves_it() {
+    fn natural_keeps_the_voice_synthetic_moves_it() {
         let x = speaker(120.0, &[600.0, 1700.0], 3.0);
         let seed = [7u8; 32];
         let nat = from_pcm(&mask_with(&to_pcm(&x), RATE, Mode::Natural, Some(seed)).unwrap());
-        let dis = from_pcm(&mask_with(&to_pcm(&x), RATE, Mode::Disguise, Some(seed)).unwrap());
         assert!((pitch(&nat) - 120.0).abs() < 8.0, "natural pitch {}", pitch(&nat));
-        let moved = (pitch(&dis) / 120.0).ln().abs();
-        assert!(moved > 0.12, "disguised pitch {}", pitch(&dis));
-        assert!((first_formant(&dis) - first_formant(&nat)).abs() > 40.0,
-                "formant {} vs {}", first_formant(&dis), first_formant(&nat));
+        // Synthetic warps the vocal tract per note: the note's long-term
+        // spectrum, in 16 bands, is clearly not the speaker's.
+        let bands = |y: &[f64]| -> Vec<f64> {
+            let win = sqrt_hann();
+            let frames = stft(y, &win);
+            let mut acc = [1e-12; 16];
+            for (re, im) in &frames {
+                for k in 1..BINS {
+                    acc[(k - 1) * 16 / (BINS - 1)] += re[k] * re[k] + im[k] * im[k];
+                }
+            }
+            let total: f64 = acc.iter().sum();
+            acc.iter().map(|v| 10.0 * (v / total).log10()).collect()
+        };
+        let own = bands(&nat);
+        for s in 1..=4u8 {
+            let syn = from_pcm(&mask_with(&to_pcm(&x), RATE, Mode::Synthetic, Some([s; 32])).unwrap());
+            let other = bands(&syn);
+            let diff = own.iter().zip(&other).map(|(a, b)| (a - b).abs()).sum::<f64>() / 16.0;
+            assert!(diff > 2.0, "seed {}: only {:.1} dB from the speaker's spectrum", s, diff);
+        }
+    }
+
+    #[test]
+    fn disguise_is_not_a_mode_any_more() {
+        assert_eq!(Mode::parse("disguise"), None);
+        assert_eq!(Mode::parse("synthetic"), Some(Mode::Synthetic));
+        assert_eq!(Mode::parse("natural"), Some(Mode::Natural));
     }
 
     #[test]
     fn every_note_draws_its_own_settings() {
         let x = speaker(140.0, &[500.0, 1500.0], 2.0);
-        let a = mask_with(&to_pcm(&x), RATE, Mode::Disguise, None).unwrap();
-        let b = mask_with(&to_pcm(&x), RATE, Mode::Disguise, None).unwrap();
+        let a = mask_with(&to_pcm(&x), RATE, Mode::Synthetic, None).unwrap();
+        let b = mask_with(&to_pcm(&x), RATE, Mode::Synthetic, None).unwrap();
         assert_ne!(a, b);
         let pa = from_pcm(&a);
         let pb = from_pcm(&b);
@@ -1210,17 +1218,17 @@ mod tests {
 
     #[test]
     fn silence_and_bad_input() {
-        assert!(mask_with(&[0u8; 32_000], RATE, Mode::Disguise, None).unwrap().len() < 32_000);
-        assert!(mask_with(&[1u8; 3], RATE, Mode::Disguise, None).is_err());
-        assert!(mask_with(&[0u8; 100], 1000, Mode::Disguise, None).is_err());
+        assert!(mask_with(&[0u8; 32_000], RATE, Mode::Synthetic, None).unwrap().len() < 32_000);
+        assert!(mask_with(&[1u8; 3], RATE, Mode::Synthetic, None).is_err());
+        assert!(mask_with(&[0u8; 100], 1000, Mode::Synthetic, None).is_err());
         let too_long = vec![0u8; (RATE as usize * (MAX_SECONDS + 1)) * 2];
-        assert!(mask_with(&too_long, RATE, Mode::Disguise, None).is_err());
+        assert!(mask_with(&too_long, RATE, Mode::Synthetic, None).is_err());
     }
 
     #[test]
     fn level_is_normalised() {
         let quiet: Vec<f64> = speaker(130.0, &[700.0, 1100.0], 2.0).iter().map(|v| v * 0.05).collect();
-        let y = from_pcm(&mask_with(&to_pcm(&quiet), RATE, Mode::Disguise, Some([1u8; 32])).unwrap());
+        let y = from_pcm(&mask_with(&to_pcm(&quiet), RATE, Mode::Synthetic, Some([1u8; 32])).unwrap());
         let peak = frame_rms(&y).into_iter().fold(0.0, f64::max);
         assert!(peak > 0.05 && peak < 0.5, "{}", peak);
     }
@@ -1284,7 +1292,8 @@ mod tests {
         // Device report rc.76: Synthetic put 80 % of its energy above 4 kHz.
         let x = breathy(130.0, &[650.0, 1500.0, 2600.0], 3.0);
         for seed in 0..12u8 {
-            for mode in [Mode::Disguise, Mode::Synthetic] {
+            {
+                let mode = Mode::Synthetic;
                 let y = from_pcm(&mask_with(&to_pcm(&x), RATE, mode, Some([seed; 32])).unwrap());
                 let (hf, peak) = whistle(&y);
                 assert!(hf < 0.25, "{:?} seed {}: {:.0} % above 4 kHz", mode, seed, hf * 100.0);

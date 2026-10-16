@@ -92,9 +92,13 @@ fun GroupBar(model: AppModel, room: String) {
                 else -> {
                     val running = verify.members.count { it.value == "running" }
                     val anyVerified = verify.members.values.any { it == "verified" }
-                    if (verify.active && verify.total > 0) {
-                        LinearProgressIndicator(progress = { verify.done.toFloat() / verify.total },
-                                                modifier = Modifier.fillMaxWidth())
+                    if (verify.active) {
+                        // Moving from the first moment (owner, 2026-10-16:
+                        // users must see it is actively trying); filling as
+                        // members are verified.
+                        if (verify.total <= 0 || verify.done <= 0) LinearProgressIndicator(Modifier.fillMaxWidth())
+                        else LinearProgressIndicator(progress = { verify.done.toFloat() / verify.total },
+                                                     modifier = Modifier.fillMaxWidth())
                         Text(GroupText.verifyProgress(verify.done, verify.total, verify.etaSeconds,
                                                       verify.members, verify.excluded),
                              style = MaterialTheme.typography.labelSmall)

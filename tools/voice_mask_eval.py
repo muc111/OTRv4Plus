@@ -97,7 +97,7 @@ def main(directory):
         return bytes(otrv4_core.voice_mask(pcm, rate, mode)), 16000
 
     rows = []
-    for mode in ("natural", "disguise", "synthetic"):
+    for mode in ("natural", "synthetic"):
         clear = {s: [embed(p, r) for p, r in ns] for s, ns in corpus.items()}
         if mode == "natural":
             test = clear
@@ -149,7 +149,7 @@ def intelligibility(directory, n=300):
         return h.hypstr.strip() if h else ""
 
     out = {}
-    for mode in ("natural", "disguise", "synthetic"):
+    for mode in ("natural", "synthetic"):
         right = 0
         for name in files:
             pcm, rate = read(os.path.join(directory, name))

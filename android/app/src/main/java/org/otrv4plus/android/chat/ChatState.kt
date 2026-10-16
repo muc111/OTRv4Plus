@@ -88,6 +88,7 @@ class ChatState(
         if (next == account) return
         account = next
         rooms.clear()
+        joiningRooms.clear()
         contacts.clear()
         drafts.clear()
         openConversation = null
@@ -106,6 +107,7 @@ class ChatState(
         // account's, which is the one claim this application must never make
         // wrongly.
         smpStates.clear()
+        smpSteps.clear()
         sessionStates.clear()
         capabilities.clear()
         chatStates.clear()
@@ -499,10 +501,12 @@ class ChatState(
             // is the fail-closed direction.
             is OtrEvent.SmpProgressed -> {
                 smpStates[bare(event.peer)] = event.progress.state
+                smpSteps[bare(event.peer)] = event.progress.step to event.progress.total
                 false
             }
             is OtrEvent.SmpFinished -> {
                 smpStates[bare(event.peer)] = event.state
+                smpSteps.remove(bare(event.peer))
                 false
             }
             // Recorded, and NOT a notification. `ChaquopyOtrCore` has decoded
@@ -621,6 +625,13 @@ class ChatState(
      * passphrase, no proof state, no key material — those never leave Rust.
      */
     private val smpStates = mutableMapOf<String, SmpState>()
+
+    /** The SMP exchange's step (of its total) per peer while it runs, for
+     *  the progress bar. Two counters, nothing of the proof. */
+    private val smpSteps = mutableMapOf<String, Pair<Int, Int>>()
+
+    /** (step, total) of a verification under way with [jid], or null. */
+    fun smpSteps(jid: String): Pair<Int, Int>? = smpSteps[bare(jid)]
 
     /**
      * The engine's security level per peer: from events as they happen and
@@ -779,7 +790,7 @@ class ChatState(
     /** Invitations waiting for an answer, by room. Never auto-accepted. */
     private val groupInvites = LinkedHashMap<String, OtrEvent.GroupInvited>()
 
-    fun isSecureRoom(jid: String): Boolean = bare(jid) in secureRooms
+    fun isSecureRoom(jid: String): Boolean = bare(jid) in secureRooms || bare(jid) in joiningRooms
 
     /** Each secure group's verification and call, as last read from the engine. */
     private val groupVerify = HashMap<String, org.otrv4plus.android.bridge.GroupVerifyState>()
@@ -807,6 +818,21 @@ class ChatState(
 
     fun isSyncingRoom(jid: String): Boolean = bare(jid) in syncingRooms
 
+    /** Secure groups we accepted whose keys have not arrived. Kept apart
+     *  from [secureRooms], which every engine poll replaces with the groups
+     *  that exist: a group being joined does not exist yet, and must not
+     *  fall back to looking like an ordinary room. */
+    private val joiningRooms = mutableSetOf<String>()
+
+    fun isJoiningRoom(jid: String): Boolean = bare(jid) in joiningRooms
+
+    /** Accepting an invitation: the room is a secure group being set up
+     *  from this moment, not an ordinary room. */
+    fun noteJoiningSecure(room: String) {
+        joiningRooms.add(bare(room))
+        rooms.add(bare(room))
+    }
+
     fun noteSecureRooms(jids: Collection<String>) {
         secureRooms.clear()
         jids.forEach { secureRooms.add(bare(it)) }
@@ -820,12 +846,14 @@ class ChatState(
     private fun noteGroupChange(event: OtrEvent.GroupChanged) {
         val room = bare(event.room)
         when (event.change) {
-            "created", "joined" -> { secureRooms.add(room); rooms.add(room) }
+            "created", "joined" -> { secureRooms.add(room); rooms.add(room); joiningRooms.remove(room) }
+            "joining" -> { joiningRooms.add(room); rooms.add(room) }
+            "join_expired" -> joiningRooms.remove(room)
             // A restored group says so as soon as the app opens it.
             "syncing" -> { secureRooms.add(room); rooms.add(room); syncingRooms.add(room) }
             "synced" -> { secureRooms.add(room); syncingRooms.remove(room) }
             "left", "removed_us", "deleted" -> {
-                secureRooms.remove(room); syncingRooms.remove(room)
+                secureRooms.remove(room); syncingRooms.remove(room); joiningRooms.remove(room)
             }
         }
         GroupText.describe(event)?.let { note(it) }

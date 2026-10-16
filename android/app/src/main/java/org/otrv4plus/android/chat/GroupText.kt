@@ -24,6 +24,11 @@ object GroupText {
 
     fun header(secure: Boolean): String = if (secure) SECURE_HEADER else PLAIN_HEADER
 
+    /** Between accepting an invitation and the group's keys arriving.
+     *  Device report (2026-10-16): the room was shown as unencrypted then. */
+    const val JOINING_HEADER = "Secure group (MLS): setting up end-to-end encryption… " +
+        "This can take a minute over I2P. Nothing can be sent until it is ready."
+
     /** While a secure group catches up after a sign-in or reconnect. */
     const val SYNCING_HEADER = "Secure group (MLS), syncing: messages you type wait " +
         "until it is back in sync, then go encrypted."
@@ -42,6 +47,7 @@ object GroupText {
     /** "2 of 4 verified · about 1 min 30 s left · excluded: c@x (wrong passphrase)" */
     fun verifyProgress(done: Int, total: Int, etaSeconds: Int,
                        members: Map<String, String>, excluded: List<String>): String {
+        if (total <= 0) return "Starting the group verification… (a minute or two over I2P)"
         val verified = members.count { it.value == "verified" }
         val running = members.count { it.value == "running" }
         val waiting = members.count { it.value == "waiting" || it.value == "not_verified" }
@@ -69,6 +75,9 @@ object GroupText {
     /** A notice for a change worth telling the user about, or null. */
     fun describe(event: OtrEvent.GroupChanged): String? = when (event.change) {
         "removed_us" -> "You were removed from ${event.room}. You can no longer read it."
+        "joining" -> "Joining ${event.room}: setting up end-to-end encryption…"
+        "join_expired" -> "The invitation to ${event.room} expired before its keys " +
+            "arrived. Ask to be invited again."
         // Accepting an invitation back replaces this device's old copy of
         // the group; the old copy sees that as its removal. Nobody removed us.
         "replaced" -> "Your old copy of ${event.room} was replaced because you " +
@@ -121,6 +130,9 @@ object GroupText {
 
     /** A group failure reported by the bridge, worth telling the user, or null. */
     fun failure(code: String, room: String?): String? = when (code) {
+        "group_joining" ->
+            "${room ?: "This group"} is still setting up end-to-end encryption. " +
+                "Nothing was sent; send it once the group is ready."
         "group_keys_missing" ->
             "${room ?: "This room"} is an encrypted group, but this device has no " +
                 "keys for it, so its messages cannot be shown and nothing can be " +

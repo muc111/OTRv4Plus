@@ -211,3 +211,29 @@ def test_a_plain_room_join_does_not_create_the_group_machinery():
         assert app._groups is None
     finally:
         app.shutdown()
+
+
+def test_a_group_still_joining_sends_nothing_in_the_clear(pair):
+    """Device report (2026-10-16): C accepted an invitation and the room read
+    as unencrypted until the Welcome arrived. Until then nothing typed there
+    may reach the room, encrypted or not, and the UI is told why."""
+    from android_bridge.events import ErrorOccurred
+    muc, A, B = pair
+    a, aw, asink, a_jid = A
+    b, bw, bsink, b_jid = B
+    a.note_room_joined(ROOM)
+    muc.members["alice"] = a
+    a.groups.create(ROOM)
+    a.groups.invite(ROOM, b_jid)
+    bw.cut = True                         # Bob's key package never reaches Alice
+    b.note_room_joined(ROOM)
+    muc.members["bob"] = b
+    b.groups.accept(ROOM)
+    assert b.groups.awaiting_welcome(ROOM) and not b.groups.is_secure(ROOM)
+    assert any(isinstance(e, GroupChanged) and e.change == "joining" for e in bsink.events)
+    n = len(muc.bodies)
+    assert b.send_user_text(ROOM, "too early") == OtrApp.SEND_FAILED
+    assert any(isinstance(e, ErrorOccurred) and e.code == "group_joining"
+               for e in bsink.events)
+    assert b.send_action(ROOM, "react", "0" * 32, "", ["+1"], "") == OtrApp.SEND_FAILED
+    assert muc.bodies[n:] == []

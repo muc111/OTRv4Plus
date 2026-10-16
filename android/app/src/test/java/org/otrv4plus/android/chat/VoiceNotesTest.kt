@@ -19,6 +19,18 @@ class VoiceNotesTest {
     }
 
     @Test
+    fun `disguised is gone, synthetic and my voice remain`() {
+        assertEquals(listOf(VoiceNotes.SYNTHETIC, VoiceNotes.NATURAL), VoiceNotes.MODES)
+        assertTrue("disguise" !in VoiceNotes.MODES)
+        // Nor does any word the user reads mention it.
+        val shown = VoiceNotes.MODES.flatMap { listOf(VoiceNotes.label(it), VoiceNotes.detail(it),
+                                                      VoiceNotes.whileRecording(it, "phone"),
+                                                      VoiceNotes.making(it)) } +
+            VoiceNotes.CAVEAT + VoiceNotes.errorText("unavailable")
+        for (text in shown) assertTrue("disguis" !in text.lowercase(), text)
+    }
+
+    @Test
     fun `the caveat does not promise what no disguise can`() {
         val c = VoiceNotes.CAVEAT.lowercase()
         assertTrue("not impossible" in c)

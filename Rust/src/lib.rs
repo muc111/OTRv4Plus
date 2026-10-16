@@ -37,7 +37,7 @@ pub mod mls_group;        // OTRv4Plus group chat (MLS); see otrv4-mls       // 
 pub mod container;         // .otrv: files encrypted at rest and for export
 pub mod at_rest;          // Rust-owned at-rest secrets (SMP auto-respond store, identity DEK)
 pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
-pub mod voice_mask;       // voice notes: per-note random voice disguise
+pub mod voice_mask;       // voice notes: a synthetic voice, random per note
 
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;

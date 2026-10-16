@@ -3,36 +3,34 @@
 package org.otrv4plus.android.chat
 
 /**
- * Voice notes in a disguised voice: the words and the states of the sheet.
+ * Voice notes in a synthetic voice (or your own): the words and the states of the sheet.
  *
  * The recording, the mask and the file are in Python and Rust
  * (`otrv4plus_voicenote`, `Rust/src/voice_mask.rs`). The recording never
  * reaches Kotlin: it stays in Python's memory, is masked there, and only the
- * finished, disguised note is written -- to the app's cache, from where it
+ * finished note is written -- to the app's cache, from where it
  * is sent as an ordinary encrypted file and then deleted.
  *
  * Plain Kotlin, driven by `VoiceNotesTest`.
  */
 object VoiceNotes {
 
-    const val DISGUISE = "disguise"
     const val SYNTHETIC = "synthetic"
     const val NATURAL = "natural"
 
-    /** Synthetic first, and the default: it is the one a speaker recogniser
-     *  matches least (VOICE_NOTES.md). */
-    val MODES = listOf(SYNTHETIC, DISGUISE, NATURAL)
+    /** Synthetic, the default, and My voice. "Disguised" was removed on
+     *  2026-10-16 (owner: hard to understand; synthetic only) -- it was also
+     *  the weaker of the two masks (VOICE_NOTES.md). */
+    val MODES = listOf(SYNTHETIC, NATURAL)
     const val DEFAULT = SYNTHETIC
 
     fun label(mode: String): String = when (mode) {
-        DISGUISE -> "Disguised"
         SYNTHETIC -> "Synthetic"
         NATURAL -> "My voice"
         else -> mode
     }
 
     fun detail(mode: String): String = when (mode) {
-        DISGUISE -> "A different, random voice for every note. More natural, easier for AI to match."
         SYNTHETIC -> "A generated, robot-like voice. The hardest for AI to match."
         NATURAL -> "Your own voice, unchanged."
         else -> ""
@@ -40,7 +38,7 @@ object VoiceNotes {
 
     /** Said once, under the choice, because it is what matters most. */
     const val CAVEAT =
-        "The disguise is made on this phone before anything is saved or " +
+        "The synthetic voice is made on this device before anything is saved or " +
         "sent, and your real voice is never stored. It makes recognising " +
         "or linking your notes by voice much harder, not impossible -- and " +
         "what you say can still identify you."
@@ -49,7 +47,7 @@ object VoiceNotes {
         "too_short" -> "Too short to send."
         "no_speech" -> "No speech was heard."
         "too_long" -> "Too long: notes are at most five minutes."
-        "unavailable" -> "Voice disguise is not available in this build, so nothing was recorded."
+        "unavailable" -> "The synthetic voice is not available in this build, so nothing was recorded."
         "no_microphone" -> "The microphone could not be opened."
         "bad_mode" -> "Unknown voice setting."
         else -> "The voice note could not be made."
@@ -61,6 +59,15 @@ object VoiceNotes {
     fun looksLikeNote(filename: String): Boolean =
         filename.startsWith("voice-note-") &&
             (filename.endsWith(".ogg") || filename.endsWith(".wav"))
+
+    /** Under the level bar while recording. */
+    fun whileRecording(mode: String, device: String): String =
+        if (mode == NATURAL) "Your own voice is kept, as recorded."
+        else "Your voice is replaced by a synthetic one when you stop, on this $device."
+
+    /** While the note is being made. */
+    fun making(mode: String): String =
+        if (mode == NATURAL) "Preparing your note…" else "Making the synthetic voice…"
 
     /** "0:07", "1:30". */
     fun clock(seconds: Double): String {
@@ -82,7 +89,7 @@ sealed interface VoiceSheet {
     /** Masking and encoding: a moment, on another thread. */
     data class Making(override val mode: String) : VoiceSheet
 
-    /** A disguised note, ready to hear, send or throw away. */
+    /** A finished note, ready to hear, send or throw away. */
     data class Ready(override val mode: String, val path: String,
                      val seconds: Double) : VoiceSheet
 

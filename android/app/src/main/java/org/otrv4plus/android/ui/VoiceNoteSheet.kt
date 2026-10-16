@@ -42,10 +42,10 @@ import org.otrv4plus.android.chat.VoiceSheet
 import org.otrv4plus.android.crypto.MicPermission
 
 /**
- * Record a voice note in a disguised voice, hear it, then send or discard.
+ * Record a voice note in a synthetic voice (or your own), hear it, then send or discard.
  *
  * Everything the sheet shows is [ChatViewModel.voiceSheet]. The recording
- * never comes to Kotlin; the preview plays the finished, disguised file --
+ * never comes to Kotlin; the preview plays the finished, masked file --
  * exactly what the other person will hear.
  */
 @Composable
@@ -121,13 +121,13 @@ fun VoiceNoteSheet(model: ChatViewModel, jid: String) {
                             progress = { sheet.level.toFloat().coerceIn(0f, 1f) },
                             modifier = Modifier.fillMaxWidth(),
                         )
-                        Text("Your voice is disguised when you stop, on this phone.",
+                        Text(VoiceNotes.whileRecording(sheet.mode, "phone"),
                              style = MaterialTheme.typography.bodySmall)
                     }
                     is VoiceSheet.Making -> {
                         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                             CircularProgressIndicator()
-                            Text("Disguising your voice…")
+                            Text(VoiceNotes.making(sheet.mode))
                         }
                     }
                     is VoiceSheet.Ready -> {
@@ -192,7 +192,7 @@ fun VoiceNoteSheet(model: ChatViewModel, jid: String) {
     }
 }
 
-/** Play the disguised note. The player goes with the sheet. */
+/** Play the finished note. The player goes with the sheet. */
 @Composable
 private fun Preview(path: String) {
     var playing by remember(path) { mutableStateOf(false) }

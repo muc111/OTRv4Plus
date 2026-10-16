@@ -3168,6 +3168,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         # finished: the OTR worker never waits for a human.
         self._check_smp_secret_required(peer)
         self._expire_stale_smp_consent()
+        self._show_smp_progress(peer)
 
         # A correction, deletion or reaction, authenticated inside the frame.
         if meta is not None and meta.get("action"):
@@ -3999,6 +4000,27 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
     # SMP result reporting
     # -------------------------------------------------------------------------
 
+    def _show_smp_progress(self, peer, force: bool = False) -> None:
+        """A progress line each time a verification moves on (owner,
+        2026-10-16: "it should display a loading bar on all clients"). The
+        app and the desktop draw a bar; this is the terminal's: one line per
+        step, never repeated for the same step."""
+        try:
+            step, total = self.otr.get_smp_progress(peer)
+        except Exception:
+            return
+        shown = self.__dict__.setdefault("_smp_shown", {})
+        if not (0 < step < total):
+            shown.pop(peer, None)
+            return
+        if shown.get(peer) == step and not force:
+            return
+        shown[peer] = step
+        bar = "█" * step + "░" * (total - step)
+        print(_SMP + " verifying with %s  [%s] step %d of %d%s"
+              % (peer, bar, step, total,
+                 " — waiting for them (a minute or two over I2P)" if step == 1 else ""))
+
     def _report_smp(self, peer):
         # Terminal success state names across Rust engine versions
         _SMP_SUCCESS = {"SUCCEEDED", "VERIFIED", "COMPLETE", "COMPLETED",
@@ -4546,7 +4568,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         asyncio.ensure_future(_run())
 
     def _cmd_voice(self, peer, args: str) -> None:
-        """/voice [synthetic|disguise|natural] -- record (synthetic by default); /voice again (or
+        """/voice [synthetic|natural] -- record (synthetic by default); /voice again (or
         /voice stop) to finish; then /voice play, /voice send, /voice cancel.
 
         The recording stays in memory and goes through the voice mask
@@ -4647,7 +4669,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             asyncio.ensure_future(self._offer_file(
                 peer, path, False, group=group, picked=False, discard=discard))
         else:
-            print("usage: /voice [synthetic|disguise|natural] | stop | play | send | cancel")
+            print("usage: /voice [synthetic|natural] | stop | play | send | cancel")
 
     async def _offer_file(self, peer, chosen: str, strip: bool, *, group: bool,
                           picked: bool, discard) -> None:
@@ -5529,6 +5551,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
                         _SMP + f" started with {peer}; waiting for response "
                         "(SMP runs several 3072-bit DH rounds; keep both clients running)..."
                     )
+                    self._show_smp_progress(peer, force=True)
                 else:
                     print(_SMP + f" could not start with {peer}")
 
@@ -5723,9 +5746,9 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             "  /sendfile [path]     send a file (encrypted, verified peer; in a\n"
             "                       group, to the group). Asks y/n to remove\n"
             "                       hidden information (location, camera) first\n"
-            "  /voice [mode]        record a voice note in a disguised voice\n"
-            "                       (synthetic = default and strongest,\n"
-            "                       disguise, natural);\n"
+            "  /voice [mode]        record a voice note in a synthetic voice\n"
+            "                       (synthetic = default; natural = your\n"
+            "                       own voice);\n"
             "                       /voice again to stop, then play|send|cancel\n"
             "  /transfer            show file transfer state (group files too)\n"
             + self.TS_HELP +

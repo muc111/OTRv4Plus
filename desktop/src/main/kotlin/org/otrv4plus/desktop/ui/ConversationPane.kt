@@ -95,7 +95,10 @@ fun ConversationPane(model: AppModel, jid: String) {
     val c = model.conversation(jid)
     val isRoom = model.chat.isRoom(jid)
     var pendingFile by remember(jid) { mutableStateOf<String?>(null) }
-    val secure = isRoom && model.chat.isSecureRoom(jid)
+    // Accepted, keys not here yet: a secure group being set up, never an
+    // ordinary room (device report, 2026-10-16). Its panels wait for it.
+    val joining = isRoom && model.chat.isJoiningRoom(jid)
+    val secure = isRoom && model.chat.isSecureRoom(jid) && !joining
     var showMembers by remember(jid) { mutableStateOf(true) }
     var locationOpen by remember(jid) { mutableStateOf(false) }
     LaunchedEffect(jid, secure) { if (secure) model.refreshGroupNow(jid) }
@@ -115,8 +118,17 @@ fun ConversationPane(model: AppModel, jid: String) {
             }
             HorizontalDivider()
             if (!isRoom) {
+                VerificationProgress(model, jid)
                 CallBar(model, jid)
                 HandshakeView(model.handshake)
+            }
+            if (joining) {
+                Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth())
+                    Text(org.otrv4plus.android.chat.GroupText.JOINING_HEADER,
+                         style = MaterialTheme.typography.labelSmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             if (secure) GroupBar(model, jid)
             FileOffers(model, jid)
@@ -264,7 +276,7 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
             }
         }
         TooltipBox(TooltipDefaults.rememberPlainTooltipPositionProvider(),
-                   tooltip = { PlainTooltip { Text("Voice note, in a disguised voice") } },
+                   tooltip = { PlainTooltip { Text("Voice note, in a synthetic voice") } },
                    state = rememberTooltipState()) {
             IconButton(onClick = { model.openVoiceSheet() },
                        enabled = isRoom && model.chat.isSecureRoom(jid) || offer is TransferUi.Offer.Available) {
@@ -493,7 +505,8 @@ private fun BubbleActions(m: Message, model: AppModel) {
 private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: SecurityState,
                      onLocation: () -> Unit) {
     val text = model.draft(jid)
-    val canSend = model.chat.canSend()
+    val joining = isRoom && model.chat.isJoiningRoom(jid)
+    val canSend = model.chat.canSend() && !joining
     val banner = model.editing?.takeIf { it.conversationId == jid }?.let { "Correcting your message" }
         ?: model.replyingTo?.takeIf { it.conversationId == jid }
             ?.let { "Replying to: " + it.body.lineSequence().firstOrNull().orEmpty().take(60) }
@@ -521,6 +534,7 @@ private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: Se
                     } else false
                 },
                 placeholder = { Text(when {
+                    joining -> "Setting up end-to-end encryption — send once the group is ready"
                     !canSend -> "Not connected — your message will wait"
                     isRoom -> "Message the room"
                     security == SecurityState.PLAINTEXT -> "Message (not encrypted yet — press Encrypt)"
@@ -609,10 +623,10 @@ private fun VoiceNoteDialog(model: AppModel, jid: String, sheet: VoiceSheet) {
                              style = MaterialTheme.typography.titleMedium)
                         LinearProgressIndicator(progress = { sheet.level.toFloat().coerceIn(0f, 1f) },
                                                 modifier = Modifier.fillMaxWidth())
-                        Text("Your voice is disguised when you stop, on this computer.",
+                        Text(VoiceNotes.whileRecording(sheet.mode, "computer"),
                              style = MaterialTheme.typography.bodySmall)
                     }
-                    is VoiceSheet.Making -> Text("Disguising your voice\u2026")
+                    is VoiceSheet.Making -> Text(VoiceNotes.making(sheet.mode))
                     is VoiceSheet.Ready -> {
                         Text("${VoiceNotes.label(sheet.mode)} \u00b7 ${VoiceNotes.clock(sheet.seconds)}",
                              style = MaterialTheme.typography.titleMedium)
@@ -742,5 +756,22 @@ private fun LocationCard(pin: Location.Pin) {
             clipboard.setText(androidx.compose.ui.text.AnnotatedString(
                 "${pin.code} (${Location.coordinates(pin)})"))
         }) { Text("Copy") }
+    }
+}
+
+/** A moving bar while a verification runs, filling as its steps come back
+ *  (owner, 2026-10-16: users must see it is actively trying). */
+@Composable
+private fun VerificationProgress(model: AppModel, jid: String) {
+    val c = model.conversation(jid)
+    val offer = Verification.offer(c.security, c.smp)
+    if (offer != Verification.Offer.IN_PROGRESS && offer != Verification.Offer.ANSWERING) return
+    val (step, total) = model.chat.smpSteps(jid) ?: (0 to 4)
+    val fraction = Verification.progressFraction(step, total)
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+        if (fraction == null) LinearProgressIndicator(Modifier.fillMaxWidth())
+        else LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
+        Text(Verification.progressLabel(step, total), style = MaterialTheme.typography.labelSmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

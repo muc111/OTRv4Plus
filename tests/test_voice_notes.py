@@ -53,8 +53,8 @@ def speech(seconds=2.0, f0=130.0, rate=16000):
 
 def test_every_note_is_masked_differently_and_stays_speech_length():
     pcm = speech()
-    a = vn.mask(pcm, 16000, "disguise")
-    b = vn.mask(pcm, 16000, "disguise")
+    a = vn.mask(pcm, 16000, "synthetic")
+    b = vn.mask(pcm, 16000, "synthetic")
     assert a != b
     for out in (a, b):
         assert 1.0 < len(out) / 2 / vn.RATE < 3.0
@@ -64,7 +64,7 @@ def test_no_mask_means_no_note(monkeypatch):
     """A build without the mask refuses; it never sends the real voice."""
     monkeypatch.setattr(vn, "_core", lambda: None)
     with pytest.raises(vn.VoiceNoteError) as e:
-        vn.mask(speech(), 16000, "disguise")
+        vn.mask(speech(), 16000, "synthetic")
     assert e.value.code == "unavailable"
     pcm = bytearray(speech())
     with pytest.raises(vn.VoiceNoteError):
@@ -77,24 +77,24 @@ def test_bad_mode_short_and_silent_notes():
         vn.mask(speech(), 16000, "loud")
     assert e.value.code == "bad_mode"
     with pytest.raises(vn.VoiceNoteError) as e:
-        vn.mask(b"\x00\x00" * 4000, 16000, "disguise")
+        vn.mask(b"\x00\x00" * 4000, 16000, "synthetic")
     assert e.value.code == "too_short"
     with pytest.raises(vn.VoiceNoteError) as e:
-        vn.mask(b"\x00\x00" * 32000, 16000, "disguise")
+        vn.mask(b"\x00\x00" * 32000, 16000, "synthetic")
     assert e.value.code == "no_speech"
 
 
 def test_a_note_file_is_private_random_and_wipes_the_recording():
     d = tempfile.mkdtemp()
     pcm = bytearray(speech())
-    note = vn.make_note(pcm, 16000, "disguise", d)
+    note = vn.make_note(pcm, 16000, "synthetic", d)
     assert not any(pcm)
     path = note["path"]
     assert os.path.dirname(path) == d
     assert os.path.basename(path).startswith("voice-note-")
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
-    assert note["mode"] == "disguise" and note["seconds"] > 1.0
-    other = vn.make_note(bytearray(speech()), 16000, "disguise", d)
+    assert note["mode"] == "synthetic" and note["seconds"] > 1.0
+    other = vn.make_note(bytearray(speech()), 16000, "synthetic", d)
     assert other["path"] != path
 
 
@@ -139,7 +139,7 @@ def test_wav_round_trip():
 
 def test_received_notes_are_untrusted():
     rnd = random.Random(5)
-    good = vn.encode(vn.mask(speech(), 16000, "disguise"))[0]
+    good = vn.encode(vn.mask(speech(), 16000, "synthetic"))[0]
     samples = [b"", b"OggS", b"RIFF" + b"\x00" * 40, b"x" * 100,
                good[:50], good[:-7], good.replace(b"OpusHead", b"OpusHexd")]
     for _ in range(60):
@@ -231,7 +231,7 @@ def test_the_app_makes_a_note_and_never_leaves_the_recording(monkeypatch):
     app.voice_note_discard(keep)
     assert os.path.exists(keep)
     # A stop with nothing recorded is an error, not a crash.
-    assert app.voice_note_stop("disguise", d).get("error") == "too_short"
+    assert app.voice_note_stop("synthetic", d).get("error") == "too_short"
 
 
 def test_modes_are_described_for_the_ui():
@@ -277,7 +277,7 @@ def test_a_note_is_never_cut_down_to_a_fragment():
     trim measured against one spike from the warped filter. Rust now measures
     against the 95th percentile of frame levels."""
     pcm = speech()
-    for mode in ("disguise", "synthetic"):
+    for mode in ("synthetic",):
         for _ in range(60):
             assert len(vn.mask(pcm, 16000, mode)) / 2 / vn.RATE > 1.2
 
@@ -288,8 +288,19 @@ def test_no_caller_can_choose_the_settings():
     import otrv4_core
     pcm = speech()
     with pytest.raises(TypeError):
-        otrv4_core.voice_mask(pcm, 16000, "disguise", b"\x00" * 32)
+        otrv4_core.voice_mask(pcm, 16000, "synthetic", b"\x00" * 32)
     with pytest.raises(TypeError):
-        otrv4_core.voice_mask(pcm, 16000, "disguise", seed=b"\x00" * 32)
+        otrv4_core.voice_mask(pcm, 16000, "synthetic", seed=b"\x00" * 32)
     # Two notes from the same recording never come out the same.
-    assert otrv4_core.voice_mask(pcm, 16000, "disguise") != otrv4_core.voice_mask(pcm, 16000, "disguise")
+    assert otrv4_core.voice_mask(pcm, 16000, "synthetic") != otrv4_core.voice_mask(pcm, 16000, "synthetic")
+
+
+def test_disguise_is_gone():
+    """Owner (2026-10-16): Disguised was hard to understand; Synthetic only.
+    Neither the note pipeline nor the Rust core accepts it any more."""
+    import otrv4_core
+    assert "disguise" not in vn.MODES
+    with pytest.raises(vn.VoiceNoteError):
+        vn.mask(speech(), 16000, "disguise")
+    with pytest.raises(ValueError):
+        otrv4_core.voice_mask(speech(), 16000, "disguise")

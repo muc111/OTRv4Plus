@@ -4,6 +4,31 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.81 — 2026-10-16 — Synthetic only; a bar while verifying; a secure group never looks unencrypted while joining (core 0.13.1)
+
+- **Disguised voice notes are gone.** Owner: *"Disguised is hard to
+  understand, remove it from all, we can use synthetic only."* The choice
+  is now Synthetic (default) or My voice, in the app, the desktop app and
+  the terminal (`/voice [synthetic|natural]`); the Rust core refuses
+  "disguise". Disguised was also the weaker mask (VOICE_NOTES.md). A silent
+  stretch of a Synthetic note is now silent, not noise.
+- **Verification shows a moving bar on every client.** Owner: *"Verification
+  took a while, it should display a loading bar on all clients"*. From the
+  moment either side starts until it ends: indeterminate while waiting for
+  the other side, then step N of 4 -- 1:1 on Android and desktop, groups on
+  both (the bar now shows from the start, not only after the first answer),
+  and the terminal prints `[██░░] step 2 of 4` as the steps arrive.
+- **Joining a secure group: "setting up end-to-end encryption", never
+  "not encrypted".** Device report: C, invited by Alice, saw the room as
+  unencrypted until the group's keys (the MLS Welcome) arrived. From the
+  moment an invitation is accepted the room is a secure group being set
+  up: a bar and that message on Android and desktop, and nothing can be
+  typed until the keys are there. The engine refuses too: text or an action
+  sent to a group still awaiting its Welcome fails with `group_joining` and
+  never reaches the room -- before, it would have gone in the clear. If the
+  Welcome never comes, the join expires and says so. The terminal says the same on
+  accepting, and has always refused plaintext in a group.
+
 ## Android 0.7.0-experimental.rc.80 — 2026-10-15 — locations only to verified people; set or mocked locations welcome (core 0.13.1)
 
 - **A location goes only to a verified contact or group.** Owner: *"GPS

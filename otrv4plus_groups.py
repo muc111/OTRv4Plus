@@ -1426,5 +1426,6 @@ class TermuxGroups:
         except GroupError:
             self._leave_muc(room)
             raise
-        self._print("[group %s] invitation accepted; waiting for the Welcome"
-                    % room[:64])
+        self._print("[group %s] invitation accepted; setting up end-to-end "
+                    "encryption (waiting for the group's keys, can take a minute "
+                    "over I2P). Nothing can be sent until it is ready." % room[:64])

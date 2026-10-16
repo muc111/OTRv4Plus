@@ -121,7 +121,9 @@ installed), and with the Termux client.
 
 | Area | What to test | Since |
 |---|---|---|
-| Disguised voice notes | **Disguised** and **Synthetic** were rebuilt: no whistle, and every note's voice drawn from the phone's own random generator, changing through the note. Record the same sentence in all three modes and compare | rc.77–rc.78 |
+| Synthetic voice notes | **Synthetic** was rebuilt: no whistle, every note's voice drawn from the phone's own random generator, changing through the note. **Disguised is gone** (rc.81): the choice is Synthetic or My voice. Record the same sentence in both and compare | rc.77–rc.81 |
+| Verification progress | A moving bar on **both** phones (and the desktop and terminal) from the moment verification starts until it ends, 1:1 and groups | rc.81 |
+| Joining a secure group | After accepting an invitation the room shows *setting up end-to-end encryption* with a bar, never "not encrypted"; typing is held until it is ready | rc.81 |
 | Ready-to-call phone | The phone icon should turn **green on both phones** within a few minutes of signing in, in any chat; a call placed while green should start without the 30–120 s wait | rc.76–rc.77 |
 | Hang-up | No crash when hanging up 1:1 and group calls (the Pixel crashed in rc.74) | rc.75 |
 | Group-call recovery | If one side stops hearing the other, the call repairs itself (at most twice). Send the diagnostics report from **both** phones after a group call | rc.74 |
@@ -136,7 +138,7 @@ installed), and with the Termux client.
 
 ## ⚠️ Known limits
 
-- **A disguised voice is harder to recognise, not impossible.** Measured
+- **A synthetic voice is harder to recognise, not impossible.** Measured
   against a speaker-recognition network (see \`VOICE_NOTES.md\`), Synthetic
   is the strongest. What you *say* — words, accent, background — can still
   identify you. Where it matters, type.
