@@ -15,7 +15,8 @@ created with the XEP-0133 "add-user" command, which Prosody runs for its
 admins only; anybody else is refused by the server itself, not by this file.
 The admin's password is asked for, never taken from the command line or kept.
 Every account it makes is deleted again at the end ("delete-user") unless
---keep is given; the room is not persistent and goes when the last bot leaves.
+--keep is given, and each group's room is destroyed (it is also created
+not persistent, so a killed run's rooms go when the last bot leaves).
 
 WHAT IT DOES
   1. Signs in as the admin and checks the server lists the admin commands.
@@ -546,7 +547,14 @@ async def run(args) -> int:
                 if create:
                     # A new room is locked until its creator submits a
                     # configuration: the empty form takes the defaults.
+                    # Not persistent, whatever the server's default: the
+                    # room should go when the run does (it is also
+                    # destroyed at the end; this covers a killed run).
                     form = c["xep_0004"].make_form(ftype="submit")
+                    form.add_field(var="FORM_TYPE", ftype="hidden",
+                                   value="http://jabber.org/protocol/muc#roomconfig")
+                    form.add_field(var="muc#roomconfig_persistentroom",
+                                   ftype="boolean", value=False)
                     await c["xep_0045"].set_room_config(bot.room, form, timeout=60)
                 clients[bot.jid] = c
         pw_of = dict(creds)
@@ -608,6 +616,19 @@ async def run(args) -> int:
         say("[stress] done. Joins refused: %d%s" % (
             refused, " (first at %d members)" % min(firsts) if firsts else ""))
     finally:
+        if not args.keep:
+            # Destroy each room while its owner is still signed in; servers
+            # that make rooms persistent by default would otherwise keep
+            # them after every account is gone.
+            for sw in swarms:
+                c = clients.get(sw.owner.jid)
+                if c is None:
+                    continue
+                try:
+                    await c["xep_0045"].destroy(sw.room, "stress test finished",
+                                                timeout=30)
+                except Exception as exc:
+                    say("[stress] could not destroy %s: %s" % (sw.room, str(exc)[:60]))
         for c in clients.values():
             try:
                 c.disconnect()

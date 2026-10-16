@@ -243,3 +243,25 @@ Ctrl-C stops it and still deletes the accounts. If the process is killed
 outright, the leftover accounts are named `stress-<run>-NNN`. Remove them
 with the admin command, or run
 `sudo prosodyctl deluser stress-<run>-000@otrv4plus.i2p` for each.
+
+## Removing leftover rooms and accounts
+
+Runs before rc.95 left their rooms behind on servers that make rooms
+persistent by default (the T450 does, so real groups survive restarts).
+Runs now create their rooms as not persistent and destroy them at the end.
+
+To clear old ones, open the Prosody console with `sudo prosodyctl shell`.
+`MUC` below is your rooms component, for example `conference.otrv4plus.i2p`.
+To find it: `grep -n Component /usr/local/etc/prosody/prosody.cfg.lua`.
+Lines starting with `>` run as Lua inside Prosody. Count first, then
+delete; every one matches only names starting with `stress-`.
+
+```
+> local n=0 for r in prosody.hosts["MUC"].modules.muc.each_room() do if r.jid:match("^stress%-") then n=n+1 end end return n
+> local l={} for r in prosody.hosts["MUC"].modules.muc.each_room() do if r.jid:match("^stress%-") then l[#l+1]=r end end for _,r in ipairs(l) do r:destroy(nil,"stress test cleanup") end return #l
+> local um=require"core.usermanager" local n=0 for u in um.users("otrv4plus.i2p") do if u:match("^stress%-") then n=n+1 end end return n
+> local um=require"core.usermanager" local l={} for u in um.users("otrv4plus.i2p") do if u:match("^stress%-") then l[#l+1]=u end end for _,u in ipairs(l) do um.delete_user(u,"otrv4plus.i2p") end return #l
+```
+
+The first and third lines only count. Run the counts again afterwards;
+both should be 0.
