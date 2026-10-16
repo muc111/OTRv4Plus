@@ -668,7 +668,7 @@ class AppModel(
     /** The password is not kept here: the engine checks [current] against the
      *  one it signed in with, and changes it on the server. */
     fun changePassword(current: String, new: String, confirm: String, onDone: (Boolean) -> Unit = {}) {
-        PasswordChange.problem(current, null, new, confirm)?.let { passwordStatus = it; return }
+        PasswordChange.problem(current, new, confirm)?.let { passwordStatus = it; return }
         passwordBusy = true
         passwordStatus = null
         ui.launch {

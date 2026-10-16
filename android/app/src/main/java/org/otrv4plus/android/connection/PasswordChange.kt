@@ -2,16 +2,16 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.connection
 
-import java.security.MessageDigest
-
 /**
  * Changing the account's password: the checks made before anything is sent,
  * and what the result says.
  *
  * The current password is asked for even though the app already holds it,
- * so that someone holding an unlocked device cannot lock its owner out. It is
- * compared here and again by the engine, in constant time, and never sent to
- * the server: XEP-0077 §3.3 trusts the signed-in stream.
+ * so that someone holding an unlocked device cannot lock its owner out. The
+ * ENGINE compares it, in constant time, with the one the stream signed in
+ * with (transport.change_password), and never sends it to the server:
+ * XEP-0077 §3.3 trusts the signed-in stream. Not here: the vault is
+ * Kotlin's only cryptography (CRYPTO_SOURCE_OF_TRUTH.md).
  *
  * Plain Kotlin, so a JVM test drives it (PasswordChangeTest).
  */
@@ -30,16 +30,11 @@ object PasswordChange {
             "out does not stop it signing in again, a new password does. Your " +
             "messages stay encrypted with your keys either way."
 
-    /**
-     * Why the change cannot be sent, or null when it can. [stored] is the
-     * password this device signs in with, or null where none is kept (the
-     * desktop app): the engine checks the current password either way.
-     */
-    fun problem(current: String, stored: String?, new: String, confirm: String): String? = when {
+    /** Why the change cannot be sent, or null when it can. */
+    fun problem(current: String, new: String, confirm: String): String? = when {
         current.isEmpty() -> "Enter your current password."
-        stored != null && !sameSecret(current, stored) -> "That is not your current password."
         new.length < MIN_LENGTH -> "The new password must be at least $MIN_LENGTH characters."
-        sameSecret(new, current) -> "The new password is the same as the current one."
+        new == current -> "The new password is the same as the current one."
         new != confirm -> "The two new passwords do not match."
         else -> null
     }
@@ -53,8 +48,4 @@ object PasswordChange {
             "it: you will be asked for it the next time you sign in."
         else -> detail.ifBlank { "The password was not changed." }
     }
-
-    /** Constant-time: how many leading characters match is not observable. */
-    fun sameSecret(a: String, b: String): Boolean =
-        MessageDigest.isEqual(a.toByteArray(Charsets.UTF_8), b.toByteArray(Charsets.UTF_8))
 }

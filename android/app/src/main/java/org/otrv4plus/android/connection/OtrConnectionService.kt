@@ -649,13 +649,13 @@ class OtrConnectionService : Service() {
     }
 
     /**
-     * Change the account's password: checked here against the one this
-     * service signs in with, changed on the server, then remembered for the
-     * next sign-in. Blocking (it crosses into Python): call it off the main
+     * Change the account's password: the engine checks [current] against the
+     * one it signed in with and changes it on the server; then it is
+     * remembered here for the next sign-in. Blocking (it crosses into Python): call it off the main
      * thread. Returns whether it changed, and the sentence to show.
      */
     fun changePassword(current: String, new: String, confirm: String): Pair<Boolean, String> {
-        PasswordChange.problem(current, password, new, confirm)?.let { return false to it }
+        PasswordChange.problem(current, new, confirm)?.let { return false to it }
         if (phase != LinkPhase.CONNECTED) return false to PasswordChange.NOT_CONNECTED
         val out = runCatching { core.changePassword(current, new) }.getOrNull()
             ?: return false to PasswordChange.result(false, "", saved = false)
