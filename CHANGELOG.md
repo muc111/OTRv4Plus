@@ -23,9 +23,11 @@ what is already shipped:
   `--stresstest` for server admins.
 - **Fixed:** pieces of busy group messages were dropped (rc.93).
 
-The README badge now names all three tracks: `v10.31.0 · Rust core 0.13.1 ·
-Android 0.7.0 (pre-release)`, each checked against its source by
-`tests/test_readme_matches_the_code.py`. VERSIONING.md had the core at 0.13.0
+The README badge now names all four tracks: `v10.31.0 · Rust core 0.13.1 ·
+Android 0.7.0 (pre-release) · Desktop 0.13.1 (pre-release)`, each checked
+against its source by `tests/test_readme_matches_the_code.py`. The desktop app
+gets its own track (it carried the core's number); it starts at 0.13.1 so
+installed packages upgrade, and its window title shows it. VERSIONING.md had the core at 0.13.0
 and the Android example at rc.26; both are corrected.
 
 ## Android 0.7.0-experimental.rc.97 — 2026-10-16 — tap a picture to see the profile (core 0.13.1)

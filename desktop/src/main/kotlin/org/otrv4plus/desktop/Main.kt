@@ -37,7 +37,10 @@ fun main() = application {
     }
     Window(
         onCloseRequest = { model.shutdown(); exitApplication() },
-        title = "Off The Record v4 Plus",
+        // The version from the jar's manifest (desktop/build.gradle.kts);
+        // absent when run from classes, as in tests.
+        title = "Off The Record v4 Plus" +
+            (AppModel::class.java.`package`?.implementationVersion?.let { " $it" } ?: ""),
         state = rememberWindowState(size = DpSize(1180.dp, 780.dp)),
     ) {
         DisposableEffect(Unit) { onDispose { model.shutdown() } }

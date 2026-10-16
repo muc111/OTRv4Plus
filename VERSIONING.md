@@ -6,18 +6,19 @@ not have was a written rule about which files carry a version and which ones
 must never be touched — and by v10.12.0 five files disagreed about what version
 the project was on. This document exists so that cannot happen quietly again.
 
-## Three tracks, deliberately not one number
+## Four tracks, deliberately not one number
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
 | **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.31.0` | The thing a user runs and a peer must match. |
 | **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.13.1` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.7.0-experimental.rc.N+core.<crate>` (N rises with every published APK) | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Android app** | `android/app/build.gradle.kts` | `0.7.0-experimental.rc.N+core.<crate>` (N rises with every published APK) | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. Shown under About. |
+| **Desktop app** | `desktop/build.gradle.kts` `version` | `0.13.1` | The Compose app (Ubuntu, Debian, Qubes). Its own track from 2026-10-16; it was the core's number until then, so it starts there and installed packages still upgrade. The `.deb` (`qubes/packaging/build-desktop.sh`) and the window title read it from that one line. |
 
-The README badge shows all three (`v10.31.0 · Rust core 0.13.1 · Android
-0.7.0 (pre-release)`), each checked against its source of truth by
-`tests/test_readme_matches_the_code.py`. The Android entry carries no `rc.N`:
-that rises with every APK and is on the Releases page.
+The README badge shows all four (`v10.31.0 · Rust core 0.13.1 · Android
+0.7.0 (pre-release) · Desktop 0.13.1 (pre-release)`), each checked against its
+source of truth by `tests/test_readme_matches_the_code.py`. The Android entry
+carries no `rc.N`: that rises with every APK and is on the Releases page.
 
 **The client number is bumped when the terminal clients gain a capability**,
 not only at a `v10.x` changelog heading. From 2026-09-10 to 2026-10-16 it

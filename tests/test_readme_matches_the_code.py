@@ -67,6 +67,21 @@ class TestTheVersionBadge:
         assert "Android %s " % name in badge, (
             "README badge does not say Android %s" % name)
 
+    def test_it_matches_the_desktop_app(self):
+        gradle = _read(os.path.join("desktop", "build.gradle.kts"))
+        version = re.search(r'^version = "([^"]+)"', gradle, re.M).group(1)
+        badge = _badge(_read("README.md"))
+        assert "Desktop %s " % version in badge, (
+            "README badge does not say Desktop %s" % version)
+
+    def test_the_desktop_version_is_stated_once(self):
+        """The package version restated the number, which is how the
+        desktop app came to be versioned by the Rust core."""
+        gradle = _read(os.path.join("desktop", "build.gradle.kts"))
+        assert "packageVersion = project.version.toString()" in gradle
+        script = _read(os.path.join("qubes", "packaging", "build-desktop.sh"))
+        assert "desktop/build.gradle.kts" in script
+
     def test_the_technical_reference_has_the_same_badge(self):
         assert _badge(_read("TECHNICAL.md")) == _badge(_read("README.md"))
 

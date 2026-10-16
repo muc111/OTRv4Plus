@@ -9,6 +9,9 @@ plugins {
 }
 
 group = "org.otrv4plus"
+// The desktop app's own version (VERSIONING.md). Not the Rust core's: it
+// started at the core's 0.13.1 only so packages already installed upgrade.
+// The README badge is tested against this line.
 version = "0.13.1"
 
 dependencies {
@@ -103,7 +106,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Deb, TargetFormat.Rpm)
             packageName = "otrv4plus-desktop"
-            packageVersion = "0.13.1"
+            packageVersion = project.version.toString()
         }
     }
 }
@@ -115,6 +118,12 @@ tasks.register<Sync>("desktopLib") {
     from(tasks.named("jar"))
     from(configurations.named("runtimeClasspath"))
     into(layout.buildDirectory.dir("desktop-lib"))
+}
+
+// Read back by the window title (Main.kt), so the running app says which
+// version it is.
+tasks.named<Jar>("jar") {
+    manifest { attributes("Implementation-Version" to project.version.toString()) }
 }
 
 tasks.withType<AbstractArchiveTask>().configureEach {
