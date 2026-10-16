@@ -4,6 +4,30 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## v10.31.0 — the terminal client's number catches up
+
+*2026-10-16.  `VERSION → 10.31.0`.  `otrv4_core` 0.13.1.*
+
+The client number sat at 10.30.0 from 2026-09-10 while the terminal client
+gained, under the Android headings below (rc.1 to rc.97), roughly a minor
+release a week. Nothing here is new code; it is the version catching up with
+what is already shipped:
+
+- **Encrypted group chat (MLS)** on the hybrid post-quantum suite, joined by
+  the same groups as the app; replies, corrections, deletions and reactions
+  inside MLS; files in groups; group verification.
+- **Group voice calls** and the 24 kHz call audio chain.
+- **The OTRv4Plus Welcome room**, the default server `otrv4plus.i2p`.
+- **Accounts:** the warning when your account is signed in elsewhere,
+  stopping when the server signs this session out for a newer one, and
+  `--stresstest` for server admins.
+- **Fixed:** pieces of busy group messages were dropped (rc.93).
+
+The README badge now names all three tracks: `v10.31.0 · Rust core 0.13.1 ·
+Android 0.7.0 (pre-release)`, each checked against its source by
+`tests/test_readme_matches_the_code.py`. VERSIONING.md had the core at 0.13.0
+and the Android example at rc.26; both are corrected.
+
 ## Android 0.7.0-experimental.rc.97 — 2026-10-16 — tap a picture to see the profile (core 0.13.1)
 
 - **New: a person's picture opens their profile**: in the chat list, and

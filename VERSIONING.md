@@ -10,9 +10,19 @@ the project was on. This document exists so that cannot happen quietly again.
 
 | Track | Where | Current | Why it is separate |
 |---|---|---|---|
-| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.30.0` | The thing a user runs and a peer must match. |
-| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.13.0` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
-| **Android app** | `android/app/build.gradle.kts` | `0.7.0-experimental.rc.26+core.<crate>` | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+| **Client** | `otrv4+.py` `VERSION`, `otrv4plus_xmpp.py` `XMPP_VERSION` | `10.31.0` | The thing a user runs and a peer must match. |
+| **Crypto core** | `Rust/Cargo.toml`, `Rust/pyproject.toml` | `0.13.1` | A crate with its own release history; it is `0.x` because its API is not stable for outside consumers. |
+| **Android app** | `android/app/build.gradle.kts` | `0.7.0-experimental.rc.N+core.<crate>` (N rises with every published APK) | An APK at an earlier maturity than the Termux client. Its own track, with the client version it embeds recorded as semver build metadata. |
+
+The README badge shows all three (`v10.31.0 · Rust core 0.13.1 · Android
+0.7.0 (pre-release)`), each checked against its source of truth by
+`tests/test_readme_matches_the_code.py`. The Android entry carries no `rc.N`:
+that rises with every APK and is on the Releases page.
+
+**The client number is bumped when the terminal clients gain a capability**,
+not only at a `v10.x` changelog heading. From 2026-09-10 to 2026-10-16 it
+sat at 10.30.0 while secure groups, group calls and more reached the terminal
+client under Android headings; 10.31.0 records that.
 
 The crate and the client are bumped together at a release, so a changelog entry
 reads `VERSION → 10.14.0, otrv4_core 0.10.26`. The Android `versionCode` is a

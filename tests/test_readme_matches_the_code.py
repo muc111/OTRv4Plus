@@ -50,6 +50,26 @@ class TestTheVersionBadge:
             "README badge says %r, client says %r"
             % (badge.split(" ")[0], "v" + xmpp.XMPP_VERSION))
 
+    def test_it_matches_the_rust_core(self):
+        """The badge said "Rust crypto core" with no number while the crate
+        moved from 0.10.28 to 0.13.1 (owner, 2026-10-16)."""
+        cargo = _read(os.path.join("Rust", "Cargo.toml"))
+        core = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.M).group(1)
+        badge = _badge(_read("README.md"))
+        assert "Rust core %s " % core in badge + " ", (
+            "README badge does not say Rust core %s" % core)
+
+    def test_it_matches_the_android_app(self):
+        """Its major.minor.patch; the rc number rises with every APK."""
+        gradle = _read(os.path.join("android", "app", "build.gradle.kts"))
+        name = re.search(r'versionName = "(\d+\.\d+\.\d+)', gradle).group(1)
+        badge = _badge(_read("README.md"))
+        assert "Android %s " % name in badge, (
+            "README badge does not say Android %s" % name)
+
+    def test_the_technical_reference_has_the_same_badge(self):
+        assert _badge(_read("TECHNICAL.md")) == _badge(_read("README.md"))
+
     def test_it_names_what_encrypts_a_message(self):
         """It listed the AEAD for voice and not for chat, which reads as
         though chat has none -- the question that prompted this file."""

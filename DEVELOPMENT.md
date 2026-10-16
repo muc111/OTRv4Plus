@@ -1,6 +1,6 @@
 # DEVELOPMENT.md
 
-Build environment, architecture, and test plan for OTRv4+ as of v10.30.0.
+Build environment, architecture, and test plan for OTRv4+ as of v10.31.0.
 
 There are no C extensions to compile and no prebuilt binaries in the repository.
 Everything is built from source with `cargo`. (Earlier versions used three C

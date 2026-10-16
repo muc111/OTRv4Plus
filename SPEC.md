@@ -1,6 +1,6 @@
 # OTRv4+ Protocol Specification
 
-**Version:** 10.30.0
+**Version:** 10.31.0
 **Status:** Draft / Research Prototype
 **Repository:** github.com/muc111/OTRv4Plus
 

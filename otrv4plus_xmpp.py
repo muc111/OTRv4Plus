@@ -263,7 +263,7 @@ def voice_available() -> "tuple[bool, str]":
             "no audio backend: libaaudio.so unavailable and parec/pacat "
             "missing  (run /audioprobe for details)")
 
-XMPP_VERSION = "10.30.0"
+XMPP_VERSION = "10.31.0"
 
 # ---------------------------------------------------------------------------
 # XMPP-private state directory
