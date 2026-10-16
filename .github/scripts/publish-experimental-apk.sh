@@ -109,7 +109,7 @@ installed), and with the Termux client.
 | Files | Encrypted file transfer, hashes checked on arrival |
 | Group files | Sending files to a secure group (confirmed rc.89) |
 | 1:1 calls | Two-way voice calls between two handsets running this app, and between this app and the Termux client |
-| Secure groups | Post-quantum MLS groups, group messages both ways — **tested with four members** (two phones, each with the app and Termux). No size limit is set; larger groups are not yet tested |
+| Secure groups | Post-quantum MLS groups, group messages both ways — **tested with four members** (two phones, each with the app and Termux); about 100 is the measured ceiling (see Known limits) |
 | Group check | Group verification with a shared passphrase |
 | Group calls | Two-way group voice calls (re-confirmed rc.89) |
 | Location | Location pins from GPS only, received as a card (rc.73; since rc.80 only to verified contacts and groups — re-confirmed rc.89) |
@@ -145,11 +145,13 @@ installed), and with the Termux client.
   identify you. Where it matters, type.
 - **I2P is slow to start.** Building tunnels takes 30–120 s; the first start
   of the built-in router 2–5 minutes.
-- **Group size.** A secure group has no member limit (up to 16 can be
-  added at once), but only four have been tested. Every member receives
-  every group change through the server room, and post-quantum keys make
-  those changes large, so big groups (hundreds) will be slow on a server
-  with the default room rate limits — see the server section below.
+- **Group size: about 100 members.** Measured, not set: a new member joins
+  with a message carrying the whole group's post-quantum keys, about 9.4 KB
+  per member, and the app refuses any group message over 1 MB, so joins
+  stop at roughly 100. Only four members have been tested on phones. Every
+  group change also goes through the server room, so big groups are slow on
+  a server with the default room rate limits. Server admins can measure
+  their own server with the terminal client's stress test (`STRESS_TEST.md`).
 - **Group calls are for groups of up to 5 members.** Each phone sends its
   audio to every other phone directly over I2P, so a larger group has no
   call button and stays text only (rc.84).
