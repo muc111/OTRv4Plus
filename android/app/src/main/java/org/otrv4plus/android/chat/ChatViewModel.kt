@@ -701,7 +701,7 @@ class ChatViewModel : ViewModel() {
             avatarStatus = "That picture could not be used."
             return
         }
-        avatarStatus = "Updating your picture…"
+        avatarStatus = "Uploading your picture over I2P… this can take a minute or two."
         viewModelScope.launch {
             val outcome = withContext(Dispatchers.IO) {
                 runCatching { core.setAvatar(png) }.getOrNull()

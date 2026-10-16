@@ -1496,7 +1496,10 @@ class ConnectionController:
             # TransportError carries `code` and `detail`; anything else is
             # named by its type only.
             code = getattr(exc, "code", None) or type(exc).__name__
-            _TRACE.record("avatar", "publish_failed", "warning", code=code)
+            # The condition (an XMPP error name) or exception type: never
+            # identifying, and what the next report needs.
+            _TRACE.record("avatar", "publish_failed", "warning", code=code,
+                          detail=str(getattr(exc, "detail", ""))[:64])
             if code == "pep_unavailable":
                 detail = ("This server does not store profile pictures (it has "
                           "no PEP service). Its admin can turn it on -- "
@@ -1504,8 +1507,26 @@ class ConnectionController:
             elif code == "avatar_refused":
                 detail = ("The picture could not be used (%s)."
                           % getattr(exc, "detail", ""))
+            elif code == "timeout":
+                detail = ("The server did not answer in time over I2P, so the "
+                          "picture may not be saved. Try again in a minute -- "
+                          "a fresh I2P path is often slow at first.")
+            elif code == "avatar_server_refused":
+                cond = str(getattr(exc, "detail", ""))[:64]
+                if cond in ("not-acceptable", "policy-violation",
+                            "resource-constraint"):
+                    detail = ("The server refused the picture as too large or "
+                              "not allowed (%s)." % cond)
+                elif cond in ("forbidden", "not-authorized", "not-allowed"):
+                    detail = ("The server does not let this account store a "
+                              "picture (%s). Its admin can check the PEP "
+                              "settings." % cond)
+                else:
+                    detail = "The server refused the picture (%s)." % cond
             else:
-                detail = "The picture could not be published."
+                # Named, so a report says what happened.
+                detail = ("The picture could not be published (%s)."
+                          % (getattr(exc, "detail", "") or code))
             return {"ok": False, "code": code, "detail": detail, "value": None}
         _TRACE.record("avatar", "published", "info")
         return {"ok": True, "code": "ok", "detail": "", "value": None}

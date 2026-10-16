@@ -4,6 +4,25 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.85 — 2026-10-16 — profile pictures: a real reason, and time to upload (core 0.13.1)
+
+- **Device report: pictures still failed, with PEP on the server.** Two
+  faults in the app, neither the server's:
+  * **Every failure was flattened before it was read.** The transport's
+    call wrapper turns any exception into "unexpected_error"; rc.52's
+    "server has no PEP" check ran *after* it, so on a phone it never fired,
+    and every refusal and every timeout read "The picture could not be
+    published". The test that covered it ran the publish outside that
+    wrapper. Failures are now classified inside the publish itself: a
+    timeout says so, a server without PEP says so, and any other refusal
+    names the server's own condition (forbidden, not-acceptable, ...). The
+    diagnostics report carries it too. New tests run through the real loop
+    and fail on the old code.
+  * **30 seconds for both round trips.** A picture is two requests, the
+    first carrying ~20 KB up an I2P tunnel; on a fresh tunnel that took
+    longer. Each now has 2 minutes, and the screen says it can take a
+    minute or two over I2P.
+
 ## Android 0.7.0-experimental.rc.84 — 2026-10-16 — large groups are text only; "n/m users verified" (core 0.13.1)
 
 - **A hard limit on group calls: 5 members.** Owner: *"if the group members

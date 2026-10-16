@@ -425,6 +425,83 @@ class TestTheTransport:
         assert not out["ok"] and out["code"] == "pep_unavailable"
         assert "pep" in out["detail"] and "modules_enabled" in out["detail"]
 
+    def _real_run(self, t):
+        """The transport's own `_run` on its own loop thread -- not
+        asyncio.run, which let exceptions through that the real one turns
+        into "unexpected_error" (and hid the bug below)."""
+        import threading
+        t._lock = threading.RLock()
+        t._closed = False
+        t._loop = None
+        t._connected = threading.Event()
+        t._connected.set()
+        t._profile = type("P", (), {"jid": "me@x.i2p"})()
+
+    def _refusing(self, plugin, make):
+        async def refuse(png, timeout=None):
+            raise make()
+        plugin.publish_avatar = refuse
+
+    @pytest.mark.parametrize("cond,code", [
+        ("feature-not-implemented", "pep_unavailable"),
+        ("not-acceptable", "avatar_server_refused"),
+        ("forbidden", "avatar_server_refused"),
+    ])
+    def test_a_server_refusal_survives_the_real_loop(self, cond, code):
+        """Device report (2026-10-16): pictures failed with PEP on, and the
+        app only ever said "could not be published" -- the real `_run`
+        flattened every server answer to "unexpected_error" before it was
+        read. The condition must reach the user."""
+        slixmpp = pytest.importorskip("slixmpp")
+        from slixmpp.exceptions import IqError
+        from android_bridge import transport as T
+        from android_bridge.connection import ConnectionController
+        t, plugin, _asyncio = self._transport("")
+        self._real_run(t)
+
+        def make():
+            iq = slixmpp.stanza.Iq()
+            iq["type"] = "error"
+            iq["error"]["type"] = "cancel"
+            iq["error"]["condition"] = cond
+            return IqError(iq)
+
+        self._refusing(plugin, make)
+        with pytest.raises(T.TransportError) as exc:
+            t.publish_avatar(png(96, 96, 6))
+        assert exc.value.code == code
+        ctl = ConnectionController.__new__(ConnectionController)
+        ctl._transport = t
+        out = ctl.set_avatar(png(96, 96, 6))
+        assert out["code"] == code
+        if code != "pep_unavailable":
+            assert cond in out["detail"]
+
+    def test_a_timeout_says_so_and_waits_long_enough(self):
+        slixmpp = pytest.importorskip("slixmpp")
+        from slixmpp.exceptions import IqTimeout
+        from android_bridge import transport as T
+        from android_bridge.connection import ConnectionController
+        t, plugin, _asyncio = self._transport("")
+        self._real_run(t)
+        self._refusing(plugin, lambda: IqTimeout(slixmpp.stanza.Iq()))
+        with pytest.raises(T.TransportError) as exc:
+            t.publish_avatar(png(96, 96, 6))
+        assert exc.value.code == "timeout"
+        ctl = ConnectionController.__new__(ConnectionController)
+        ctl._transport = t
+        assert "I2P" in ctl.set_avatar(png(96, 96, 6))["detail"]
+        # Each round trip gets minutes, not the 30 s a chat call gets.
+        assert T.AVATAR_TIMEOUT >= 120
+
+    def test_a_publish_through_the_real_loop_succeeds(self):
+        t, plugin, _asyncio = self._transport("")
+        self._real_run(t)
+        good = png(96, 96, 6)
+        plugin.published.clear()
+        t.publish_avatar(good)
+        assert plugin.published == [("data", len(good)), ("meta", "image/png")]
+
     def test_the_controller_hands_raw_pixels_not_the_file(self):
         from android_bridge.connection import ConnectionController
         data = png(5, 4, 6)

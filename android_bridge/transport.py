@@ -552,6 +552,32 @@ class _StreamWatch:
 PEP_MISSING = frozenset({"feature-not-implemented", "service-unavailable",
                          "item-not-found"})
 
+#: Each of an avatar publish's two server round trips, the first carrying the
+#: picture (about 20 KB of base64) up an I2P tunnel. Was CALL_TIMEOUT (30 s)
+#: for both together: too short on a fresh tunnel (device report, 2026-10-16).
+AVATAR_TIMEOUT = 120.0
+
+
+def _avatar_publish_error(exc: BaseException) -> "TransportError":
+    """What an avatar publish failure was, while the exception still says.
+
+    Classified INSIDE the coroutine: `_run` turns any exception that reaches
+    it into "unexpected_error", so classifying after it -- as rc.52 did --
+    never saw a server's answer, and every refusal and every timeout on a
+    phone read "could not be published". Device report (2026-10-16), with
+    PEP on: nothing said why."""
+    if isinstance(exc, TransportError):
+        return exc
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or \
+            type(exc).__name__ == "IqTimeout":
+        return TransportError("timeout", "the server did not answer in time")
+    cond = _muc._condition_of(exc)
+    if cond in PEP_MISSING:
+        return TransportError("pep_unavailable", cond)
+    if cond:
+        return TransportError("avatar_server_refused", cond)
+    return TransportError("unexpected_error", type(exc).__name__)
+
 
 def _room_was_created(join_result) -> bool:
     """Whether `join_muc_wait`'s answer says the join created the room
@@ -3921,19 +3947,11 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             w, h, _rgba = _avatar.decode_png(png)
         except _avatar.AvatarError as exc:
             raise TransportError("avatar_refused", exc.code)
-        try:
-            self._run(self._publish_avatar(png, w, h), CALL_TIMEOUT)
-        except TransportError:
-            raise
-        except Exception as exc:
-            # A server without PEP (XEP-0163) has nowhere to keep an avatar
-            # and refuses the publish. Said as such, not as a vague failure:
-            # it is a server setting, not the picture (device test,
-            # 2026-10-10: Prosody without "pep" in modules_enabled).
-            cond = _muc._condition_of(exc)
-            if cond in PEP_MISSING:
-                raise TransportError("pep_unavailable", cond)
-            raise
+        # Two round trips, each with its own AVATAR_TIMEOUT, and a little
+        # over for the loop. Failures are already classified (see
+        # _avatar_publish_error): a server without PEP (XEP-0163) is
+        # "pep_unavailable", any other refusal names its condition.
+        self._run(self._publish_avatar(png, w, h), 2 * AVATAR_TIMEOUT + 10)
         self._avatars.set_own(self._profile.jid, png)
 
     async def _publish_avatar(self, png: bytes, w: int, h: int) -> None:
@@ -3941,10 +3959,13 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         plugin = self._client["xep_0084"]
         # XEP-0084: the id IS the SHA-1 of the image -- a name, not security.
         avatar_id = hashlib.sha1(png, usedforsecurity=False).hexdigest()
-        await plugin.publish_avatar(png, timeout=CALL_TIMEOUT)
-        await plugin.publish_avatar_metadata(
-            [{"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": len(png),
-              "width": w, "height": h}], timeout=CALL_TIMEOUT)
+        try:
+            await plugin.publish_avatar(png, timeout=AVATAR_TIMEOUT)
+            await plugin.publish_avatar_metadata(
+                [{"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": len(png),
+                  "width": w, "height": h}], timeout=AVATAR_TIMEOUT)
+        except Exception as exc:
+            raise _avatar_publish_error(exc) from None
 
     # -- the XMPP profile (vcard-temp, XEP-0054) --------------------------------
 

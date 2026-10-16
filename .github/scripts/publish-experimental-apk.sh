@@ -122,6 +122,7 @@ installed), and with the Termux client.
 | Area | What to test | Since |
 |---|---|---|
 | Synthetic voice notes | **Synthetic** was rebuilt: no whistle, every note's voice drawn from the phone's own random generator, changing through the note. **Disguised is gone** (rc.81): the choice is Synthetic or My voice. Record the same sentence in both and compare | rc.77–rc.81 |
+| Profile picture upload | Set a picture: it should publish (it can take a minute or two over I2P). **If it fails, the message now names the reason** (timeout, or the server's own refusal such as forbidden / not-acceptable) — please send that text | rc.85 |
 | Group status and call limit | A group's line reads **"Encrypted Chat \| 5/6 users verified"** and updates as members are verified; a group of **6 or more has no call button** ("Text only") | rc.84 |
 | Delete buttons | "Delete group for everyone" and room "Delete" appear **only for the creator (or a server admin)**; other members see Leave only | rc.83 |
 | Sign-in wording | While the built-in router sets up the first connection the screen says it is **setting up (2–5 minutes, normal)**, never "Connection lost" | rc.82 |
