@@ -649,6 +649,14 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
     }
 
+    /** Rooms we are in as owner (creator, or a server admin): the only
+     *  ones a delete button is shown for. */
+    fun ownedRooms(): List<String>? {
+        val result = call("owned_rooms") ?: return null
+        if (!outcomeOf(result).ok) return null
+        return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
+    }
+
     fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
         val result = call("destroy_room", room, reason) ?: return notPrepared()
         return outcomeOf(result)

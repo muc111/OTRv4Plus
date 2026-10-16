@@ -659,6 +659,36 @@ class TestDestroying:
             t.close()
 
 
+class TestOwnedRooms:
+    """Owner (2026-10-16): delete buttons "only work for group creator and
+    server admins", so only they may see them. `owned_rooms` is what the UI
+    asks: the rooms we are in as owner."""
+
+    def test_an_owner_is_listed(self):
+        t, _ = build(muc=FakeMuc(standing=("owner", "moderator")))
+        try:
+            t.join_room(ROOM, NICK)
+            assert t.owned_rooms() == ("ok", muc.CODES["ok"], [ROOM.lower()])
+        finally:
+            t.close()
+
+    @pytest.mark.parametrize("affiliation", ["member", "none", "admin"])
+    def test_anyone_else_is_not(self, affiliation):
+        t, _ = build(muc=FakeMuc(standing=(affiliation, "participant")))
+        try:
+            t.join_room(ROOM, NICK)
+            assert t.owned_rooms()[2] == []
+        finally:
+            t.close()
+
+    def test_a_room_we_are_not_in_is_never_ours(self):
+        t, _ = build(muc=FakeMuc(standing=("owner", "moderator")))
+        try:
+            assert t.owned_rooms()[2] == []
+        finally:
+            t.close()
+
+
 # ── everything answers, nothing raises ───────────────────────────────────────
 
 class TestNoRoomCallEverRaises:
@@ -671,6 +701,7 @@ class TestNoRoomCallEverRaises:
         lambda t: t.leave_room(ROOM, NICK),
         lambda t: t.destroy_room(ROOM),
         lambda t: t.room_standing(ROOM, NICK),
+        lambda t: t.owned_rooms(),
         lambda t: t.joined_rooms(),
     ])
     def test_a_disconnected_transport_answers_rather_than_throwing(self, call):

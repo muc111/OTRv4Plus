@@ -169,9 +169,11 @@ fun RoomsScreen(
                                    onClick = { onOpenRoom(group) }) { Text("Open") }
                     OutlinedButton(enabled = busy == null,
                                    onClick = { model.leaveSecureGroup(group) }) { Text("Leave") }
-                    OutlinedButton(enabled = busy == null,
-                                   onClick = { deleting = group }) {
-                        Text("Delete", color = MaterialTheme.colorScheme.error)
+                    if (model.canDelete(group)) {
+                        OutlinedButton(enabled = busy == null,
+                                       onClick = { deleting = group }) {
+                            Text("Delete", color = MaterialTheme.colorScheme.error)
+                        }
                     }
                 }
             }
@@ -313,11 +315,14 @@ fun RoomsScreen(
             ) { Text("Create") }
 
             // Moderation: a room that is not listed (hidden) can still be
-            // deleted by its address, by its owner or a server admin.
-            OutlinedButton(
-                enabled = busy == null && address.isNotBlank(),
-                onClick = { deletingRoom = address.trim() },
-            ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            // deleted by its address -- offered only when the server says it
+            // is ours (owner, 2026-10-16: nobody else should see it).
+            if (address.isNotBlank() && model.canDelete(address)) {
+                OutlinedButton(
+                    enabled = busy == null,
+                    onClick = { deletingRoom = address.trim() },
+                ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            }
         }
         deletingRoom?.let { target ->
             AlertDialog(
@@ -467,11 +472,14 @@ fun RoomsScreen(
                             Text(if (model.joined.containsKey(room.jid)) "In"
                                  else "Join")
                         }
-                        // The server decides: its owner, or a server admin.
-                        TextButton(
-                            enabled = busy == null,
-                            onClick = { deletingRoom = room.jid },
-                        ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                        // Only its owner or a server admin may, so only
+                        // they see it (owner, 2026-10-16).
+                        if (model.canDelete(room.jid)) {
+                            TextButton(
+                                enabled = busy == null,
+                                onClick = { deletingRoom = room.jid },
+                            ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                        }
                     }
                 }
             }

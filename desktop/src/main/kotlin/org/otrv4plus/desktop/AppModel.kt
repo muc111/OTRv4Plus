@@ -182,6 +182,8 @@ class AppModel(
             transfers = withContext(Dispatchers.IO) { core.transfers() }
             groups = withContext(Dispatchers.IO) { runCatching { core.secureGroups() }.getOrDefault(emptyList()) }
             chat.noteSecureRooms(groups)
+            withContext(Dispatchers.IO) { runCatching { core.ownedRooms() }.getOrNull() }
+                ?.let { chat.noteOwnedRooms(it) }
         }
         changed()
     }

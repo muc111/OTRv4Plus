@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.83 — 2026-10-16 — delete buttons only for whoever can delete (core 0.13.1)
+
+- **Only the group's creator or a server admin sees "Delete".** Owner:
+  *"only the group creator or admin should see the buttons for delete as
+  they only work for group creator and server admins."* The engine now
+  answers which rooms we are in as OWNER (`owned_rooms`, read from the room
+  roster; Prosody reports a server admin as owner too), and every delete
+  button is behind it: "Delete group for everyone" in a secure group (app
+  and desktop), "Delete" on the secure-group list, on a listed room and on
+  a room typed by address. Leave stays for everyone. A room we are not in is
+  never known to be ours, so to delete a hidden room an admin joins it
+  first. The server still checks; the button just no longer invites a
+  refusal.
+
 ## Android 0.7.0-experimental.rc.82 — 2026-10-16 — no "Connection lost" before the first connection (core 0.13.1)
 
 - **Signing in says what is happening, not that something broke.** Owner:

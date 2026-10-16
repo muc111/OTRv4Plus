@@ -153,6 +153,20 @@ class TestTheActions:
         that fails minutes after it is pressed."""
         assert "if (standing.destroy)" in screen
 
+    def test_no_delete_is_offered_without_ownership(self, screen):
+        """Owner (2026-10-16): only the creator or a server admin sees a
+        delete button. Every "Delete" on this screen sits behind a check."""
+        i = 0
+        while True:
+            i = screen.find('Text("Delete"', i)
+            if i < 0:
+                break
+            before = screen[max(0, i - 500):i]
+            assert ("canDelete(" in before or "standing.destroy" in before
+                    or "confirmButton" in before[-250:]), \
+                screen[i - 200:i + 40]
+            i += 1
+
     def test_leave_is_offered_to_everybody_in_the_room(self, screen):
         block = screen[screen.index('Text("Leave")') - 400:
                        screen.index('Text("Leave")')]

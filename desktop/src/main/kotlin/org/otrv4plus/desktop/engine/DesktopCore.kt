@@ -399,6 +399,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
 
     fun joinedRooms(): List<String> = names(controller("joined_rooms").value)
     fun secureGroups(): List<String> = names(controller("secure_groups").value)
+    fun ownedRooms(): List<String> = names(controller("owned_rooms").value)
 
     private fun names(value: JsonElement?): List<String> =
         (value as? JsonArray).orEmpty().mapNotNull { item ->

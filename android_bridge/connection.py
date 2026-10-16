@@ -1639,6 +1639,10 @@ class ConnectionController:
     def joined_rooms(self) -> Dict[str, Any]:
         return self._muc_call("joined_rooms")
 
+    def owned_rooms(self) -> Dict[str, Any]:
+        """Rooms (plain or a secure group's) we may delete: see transport."""
+        return self._muc_call("owned_rooms")
+
     def _muc_call(self, name: str, *args) -> Dict[str, Any]:
         """Run a room operation on the transport and flatten what it says.
 

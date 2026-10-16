@@ -233,6 +233,8 @@ class ChatViewModel : ViewModel() {
                 runCatching { c.secureGroups() }.getOrNull()
             } ?: return@launch
             state.noteSecureRooms(rooms)
+            withContext(Dispatchers.IO) { runCatching { c.ownedRooms() }.getOrNull() }
+                ?.let { state.noteOwnedRooms(it) }
         }
         viewModelScope.launch {
             val (list, supported) = withContext(Dispatchers.IO) {
@@ -390,6 +392,9 @@ class ChatViewModel : ViewModel() {
     fun leaveSecureGroup(room: String) {
         groupCall("Leaving $room") { it.leaveSecureGroup(room) }
     }
+
+    /** Whether to offer "Delete group for everyone": we own its room. */
+    fun canDeleteGroup(room: String): Boolean = state?.canDeleteRoom(room) == true
 
     /** Delete the group for everyone: its room goes, and every member's copy. */
     fun deleteSecureGroup(room: String) {

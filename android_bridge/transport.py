@@ -3712,6 +3712,25 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             code, detail = _muc.classify(exc)
             return (code, detail, {})
 
+    def owned_rooms(self) -> "tuple[str, str, list]":
+        """The rooms we are in that the service lets us delete: those it
+        reports us as OWNER of (the creator; Prosody reports a server admin
+        as owner too). Owner (2026-10-16): only they should see a delete
+        button -- it fails for everyone else. Read from the room roster: no
+        network, and a room we are not in is never listed."""
+        try:
+            owned = []
+            for room, nick in list(getattr(self, "_room_nicks", {}).items()):
+                try:
+                    if self._room_standing(room, nick).get("destroy"):
+                        owned.append(room)
+                except Exception:
+                    continue
+            return ("ok", _muc.CODES["ok"], sorted(owned))
+        except Exception as exc:
+            code, detail = _muc.classify(exc)
+            return (code, detail, [])
+
     def joined_rooms(self) -> "tuple[str, str, list]":
         """The rooms this session is in, as slixmpp has them."""
         try:

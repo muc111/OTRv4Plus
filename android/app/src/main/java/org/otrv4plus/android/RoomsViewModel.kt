@@ -68,6 +68,9 @@ class RoomsViewModel : ViewModel() {
     /** This account's end-to-end encrypted groups (MLS), from the engine. */
     val secureGroups = mutableStateListOf<String>()
 
+    /** Rooms we own (creator or server admin): the only ones offered "Delete". */
+    val ownedRooms = mutableStateListOf<String>()
+
     /** Ask the engine which secure groups this account holds. Cheap: no network. */
     fun refreshSecureGroups() {
         val c = core ?: return
@@ -77,6 +80,9 @@ class RoomsViewModel : ViewModel() {
             }
             secureGroups.clear()
             secureGroups.addAll(found.sorted())
+            val owned = withContext(Dispatchers.IO) { runCatching { c.ownedRooms() }.getOrNull() }
+            ownedRooms.clear()
+            owned?.let { list -> ownedRooms.addAll(list.map { it.lowercase() }) }
         }
     }
 
@@ -388,6 +394,19 @@ class RoomsViewModel : ViewModel() {
      * service's refusal, said plainly. A group this phone holds goes through
      * [deleteSecureGroup] so its keys are destroyed here too.
      */
+    /**
+     * Whether to offer "Delete" for [typed]: only a room the server says we
+     * own (its creator, or a server admin -- Prosody makes an admin owner of
+     * every room). Owner (2026-10-16): the buttons "only work for group
+     * creator and server admins", so nobody else sees them. A room we are
+     * not in is not known to be ours: join it first.
+     */
+    fun canDelete(typed: String): Boolean {
+        val jid = resolve(typed.trim())?.lowercase() ?: return false
+        return jid in ownedRooms ||
+            joined.entries.any { it.key.equals(jid, ignoreCase = true) && it.value.destroy }
+    }
+
     fun deleteRoom(typed: String) {
         val jid = resolve(typed.trim()) ?: return
         if (secureGroups.any { it.equals(jid, ignoreCase = true) }) {

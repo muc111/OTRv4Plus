@@ -1669,8 +1669,9 @@ private fun GroupPassphrasePrompt(model: ChatViewModel, jid: String, close: () -
 
 /**
  * Leave the group (this phone only), or delete it for everyone. Deleting is
- * the group creator's: the server lets only the room's owner destroy it, and
- * says so to anyone else. Both ask first; neither can be undone.
+ * the group creator's: the server lets only the room's owner (or a server
+ * admin) destroy it, so only they are shown the button (owner, 2026-10-16).
+ * Both ask first; neither can be undone.
  */
 @Composable
 private fun GroupEndButtons(model: ChatViewModel, jid: String) {
@@ -1682,8 +1683,10 @@ private fun GroupEndButtons(model: ChatViewModel, jid: String) {
     TextButton(onClick = { model.verifyGroupMembers(jid) }) { Text("Verify members (for calls)") }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TextButton(onClick = { asking = "leave" }) { Text("Leave group") }
-        TextButton(onClick = { asking = "delete" }) {
-            Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+        if (model.canDeleteGroup(jid)) {
+            TextButton(onClick = { asking = "delete" }) {
+                Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+            }
         }
     }
     if (asking.isNotEmpty()) {

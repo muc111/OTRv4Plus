@@ -89,6 +89,7 @@ class ChatState(
         account = next
         rooms.clear()
         joiningRooms.clear()
+        ownedRooms.clear()
         contacts.clear()
         drafts.clear()
         openConversation = null
@@ -832,6 +833,18 @@ class ChatState(
         joiningRooms.add(bare(room))
         rooms.add(bare(room))
     }
+
+    /** Rooms the server reports us as owner of (the creator, or a server
+     *  admin). Owner (2026-10-16): only they see "Delete for everyone" --
+     *  for anyone else the server refuses it. Unknown means not shown. */
+    private val ownedRooms = mutableSetOf<String>()
+
+    fun noteOwnedRooms(jids: Collection<String>) {
+        ownedRooms.clear()
+        jids.forEach { ownedRooms.add(bare(it)) }
+    }
+
+    fun canDeleteRoom(jid: String): Boolean = bare(jid) in ownedRooms
 
     fun noteSecureRooms(jids: Collection<String>) {
         secureRooms.clear()

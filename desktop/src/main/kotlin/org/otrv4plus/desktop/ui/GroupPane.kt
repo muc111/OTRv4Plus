@@ -205,8 +205,12 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
         HorizontalDivider()
         TextButton(onClick = { model.verifyGroupMembers(room) }) { Text("Verify members (for calls)") }
         TextButton(onClick = { ending = "leave" }) { Text("Leave group") }
-        TextButton(onClick = { ending = "delete" }) {
-            Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+        // Only the group's creator (its room's owner) or a server admin can
+        // delete it, so only they see this (owner, 2026-10-16).
+        if (model.chat.canDeleteRoom(room)) {
+            TextButton(onClick = { ending = "delete" }) {
+                Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+            }
         }
     }
     if (ending.isNotEmpty()) {

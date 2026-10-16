@@ -73,6 +73,22 @@ class SecureGroupStateTest {
     }
 
     @Test
+    fun `only the room's owner is offered delete for everyone`() {
+        // Owner (2026-10-16): delete "only works for group creator and server
+        // admins", so nobody else sees the button. Unknown means hidden.
+        val s = state()
+        s.handle(OtrEvent.GroupChanged(room, "joined", 1, ""))
+        assertFalse(s.canDeleteRoom(room))
+        s.noteOwnedRooms(listOf(room.uppercase()))
+        assertTrue(s.canDeleteRoom(room))
+        s.noteOwnedRooms(emptyList())
+        assertFalse(s.canDeleteRoom(room))
+        s.noteOwnedRooms(listOf(room))
+        s.bindAccount(AccountScope.of("other@otrv4plus.i2p"))
+        assertFalse(s.canDeleteRoom(room))
+    }
+
+    @Test
     fun `a join that never completes stops reading as joining`() {
         val s = state()
         s.handle(OtrEvent.GroupChanged(room, "joining", 0, ""))
