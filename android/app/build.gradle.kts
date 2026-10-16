@@ -248,7 +248,13 @@ android {
     }
 
     if (renderScreens) {
-        testOptions { unitTests { isIncludeAndroidResources = true } }
+        testOptions {
+            unitTests {
+                isIncludeAndroidResources = true
+                // The full stack trace in the CI log, not just the class name.
+                all { it.testLogging { exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL } }
+            }
+        }
     }
 }
 

@@ -43,7 +43,9 @@ import java.io.File
  */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
-@Config(sdk = [34], qualifiers = "w400dp-h860dp-xhdpi")
+// A plain Application: OtrApplication starts the embedded CPython, whose
+// native library does not exist on the JVM (UnsatisfiedLinkError).
+@Config(sdk = [34], qualifiers = "w400dp-h860dp-xhdpi", application = android.app.Application::class)
 class AndroidScreensTest {
 
     @get:Rule val compose = createComposeRule()
