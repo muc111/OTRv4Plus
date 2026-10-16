@@ -175,6 +175,34 @@ fun ConversationsScreen(
                 NoticeBanner(notice) { model.dismissNotice() }
             }
 
+            // Our own account signed in somewhere else (owner, 2026-10-16).
+            // Shown while the server reports it; a server admin can end it.
+            val sessionsLine = org.otrv4plus.android.chat.AccountSessions.banner(model.otherSessions)
+            if (sessionsLine != null || model.sessionsStatus != null) {
+                Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        sessionsLine?.let {
+                            Text(it, style = MaterialTheme.typography.bodyMedium,
+                                 color = MaterialTheme.colorScheme.onErrorContainer)
+                        }
+                        model.sessionsStatus?.let {
+                            Text(it, style = MaterialTheme.typography.bodySmall,
+                                 color = MaterialTheme.colorScheme.onErrorContainer)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            if (sessionsLine != null && model.isServerAdmin) {
+                                TextButton(onClick = { model.endOtherSessions() }) {
+                                    Text(org.otrv4plus.android.chat.AccountSessions.END_BUTTON)
+                                }
+                            }
+                            if (model.sessionsStatus != null) {
+                                TextButton(onClick = { model.sessionsStatus = null }) { Text("OK") }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Above the conversation list and below the connection state,
             // because it is about this account rather than about any one
             // conversation. Every pending request is rendered: a second asker
@@ -214,7 +242,7 @@ fun ConversationsScreen(
 
             // A password-protected group's room (device report, 2026-10-16:
             // the join failed with "not_authorized" and nothing asked).
-            model.groupPasswordFor?.let { room -> GroupRoomPasswordPrompt(model, room) }
+            model.groupRoomPasswordFor?.let { room -> GroupRoomPasswordPrompt(model, room) }
 
             if (BuildConfig.DEV_DIAGNOSTICS && model.droppedEvents > 0) {
                 Text(
@@ -741,7 +769,7 @@ private fun GroupRoomPasswordPrompt(model: ChatViewModel, room: String) {
         androidx.compose.runtime.mutableStateOf("")
     }
     androidx.compose.material3.AlertDialog(
-        onDismissRequest = { model.groupPasswordFor = null },
+        onDismissRequest = { model.groupRoomPasswordFor = null },
         title = { Text("Room password") },
         text = {
             Column {
@@ -760,6 +788,6 @@ private fun GroupRoomPasswordPrompt(model: ChatViewModel, room: String) {
                 Text("Join")
             }
         },
-        dismissButton = { TextButton(onClick = { model.groupPasswordFor = null }) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = { model.groupRoomPasswordFor = null }) { Text("Cancel") } },
     )
 }

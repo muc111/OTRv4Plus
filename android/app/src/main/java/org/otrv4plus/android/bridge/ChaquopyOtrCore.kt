@@ -667,6 +667,22 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return result.callAttr("get", "value")?.toBoolean()
     }
 
+    /** How many other sessions of our own account the server told us
+     *  about; null when unknown (not connected). */
+    fun otherSessions(): Int? {
+        val result = call("other_sessions") ?: return null
+        if (!outcomeOf(result).ok) return null
+        return listValue(result)?.asList()?.size ?: 0
+    }
+
+    /** Sign out our account's other sessions (server admins only): the
+     *  outcome and how many were ended. */
+    fun endOtherSessions(): Pair<RoomOutcome, Int> {
+        val result = call("end_other_sessions") ?: return notPrepared() to 0
+        val ended = runCatching { result.callAttr("get", "value")?.toInt() }.getOrNull() ?: 0
+        return outcomeOf(result) to ended
+    }
+
     fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
         val result = call("destroy_room", room, reason) ?: return notPrepared()
         return outcomeOf(result)

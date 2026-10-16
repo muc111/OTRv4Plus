@@ -30,6 +30,7 @@ kotlin { jvmToolchain(21) }
 val sharedFromAndroid = listOf(
     "org/otrv4plus/android/bridge/OtrCore.kt",
     "org/otrv4plus/android/chat/AccountScope.kt",
+    "org/otrv4plus/android/chat/AccountSessions.kt",
     "org/otrv4plus/android/chat/AvatarPixels.kt",
     "org/otrv4plus/android/chat/ChatDeletion.kt",
     "org/otrv4plus/android/chat/ChatModels.kt",

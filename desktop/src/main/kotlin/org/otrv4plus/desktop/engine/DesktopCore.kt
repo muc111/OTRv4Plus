@@ -406,6 +406,19 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         if (r.ok) r.value.asBool() else null
     }.getOrNull()
 
+    /** Other sessions of our own account; null when unknown. */
+    fun otherSessions(): Int? = runCatching {
+        val r = controller("other_sessions")
+        if (r.ok) (r.value as? JsonArray)?.size ?: 0 else null
+    }.getOrNull()
+
+    /** Sign out our other sessions (server admins only): outcome and count. */
+    fun endOtherSessions(): Pair<Outcome, Int> {
+        val r = controller("end_other_sessions")
+        val n = runCatching { r.value.asInt() }.getOrDefault(0)
+        return r to n
+    }
+
     private fun names(value: JsonElement?): List<String> =
         (value as? JsonArray).orEmpty().mapNotNull { item ->
             when (item) {

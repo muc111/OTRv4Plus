@@ -64,6 +64,7 @@ fun MainScreen(model: AppModel, onWipe: () -> Unit) {
         Column(Modifier.fillMaxSize()) {
             LinkBanner(model)
             model.chat.notice?.let { Notice(it) { model.dismissNotice() } }
+            OtherSessionsBanner(model)
             model.chat.fingerprintAlert?.let { alert ->
                 Notice("The identity key of ${alert.peer} has CHANGED. Do not trust this " +
                        "conversation until you have verified them again.",
@@ -75,6 +76,37 @@ fun MainScreen(model: AppModel, onWipe: () -> Unit) {
                 AppModel.Tab.PEOPLE -> PeoplePane(model)
                 AppModel.Tab.ROOMS -> RoomsPane(model)
                 AppModel.Tab.SETTINGS -> SettingsPane(model, onWipe)
+            }
+        }
+    }
+}
+
+/** Our own account signed in somewhere else (owner, 2026-10-16). A server
+ *  admin can end those sessions; anyone else is told to change the password. */
+@Composable
+private fun OtherSessionsBanner(model: AppModel) {
+    val line = org.otrv4plus.android.chat.AccountSessions.banner(model.otherSessions)
+    val status = model.sessionsStatus
+    if (line == null && status == null) return
+    Surface(color = MaterialTheme.colorScheme.errorContainer) {
+        Column(Modifier.fillMaxWidth().padding(12.dp)) {
+            line?.let {
+                Text(it, color = MaterialTheme.colorScheme.onErrorContainer,
+                     style = MaterialTheme.typography.bodyMedium)
+            }
+            status?.let {
+                Text(it, color = MaterialTheme.colorScheme.onErrorContainer,
+                     style = MaterialTheme.typography.bodySmall)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                if (line != null && model.isServerAdmin) {
+                    TextButton(onClick = { model.endOtherSessions() }) {
+                        Text(org.otrv4plus.android.chat.AccountSessions.END_BUTTON)
+                    }
+                }
+                if (status != null) {
+                    TextButton(onClick = { model.sessionsStatus = null }) { Text("OK") }
+                }
             }
         }
     }

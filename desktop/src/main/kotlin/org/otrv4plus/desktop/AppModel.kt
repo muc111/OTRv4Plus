@@ -190,7 +190,8 @@ class AppModel(
             withContext(Dispatchers.IO) { runCatching { core.ownedRooms() }.getOrNull() }
                 ?.let { chat.noteOwnedRooms(it) }
             withContext(Dispatchers.IO) { runCatching { core.serverAdmin() }.getOrNull() }
-                ?.let { chat.noteServerAdmin(it) }
+                ?.let { chat.noteServerAdmin(it); isServerAdmin = it }
+            otherSessions = withContext(Dispatchers.IO) { core.otherSessions() } ?: 0
         }
         changed()
     }
@@ -636,6 +637,25 @@ class AppModel(
 
     var groups by mutableStateOf<List<String>>(emptyList())
         private set
+
+    // -- our account signed in elsewhere (owner, 2026-10-16) --------------------
+
+    /** Other sessions of our own account, as the server reports them. */
+    var otherSessions by mutableStateOf(0)
+        private set
+    var isServerAdmin by mutableStateOf(false)
+        private set
+    var sessionsStatus by mutableStateOf<String?>(null)
+
+    /** XEP-0133 end-user-session for every other session (admins only). */
+    fun endOtherSessions() {
+        ui.launch {
+            val (r, ended) = withContext(Dispatchers.IO) { core.endOtherSessions() }
+            sessionsStatus = org.otrv4plus.android.chat.AccountSessions.outcome(r.ok, r.code, ended)
+            if (r.ok) otherSessions = 0
+            changed()
+        }
+    }
 
     fun addContact(jid: String) = outcome { core.addContact(jid.trim()) }
     fun answerSubscription(jid: String, approve: Boolean) {

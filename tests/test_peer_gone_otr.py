@@ -322,3 +322,28 @@ def test_our_reconnect_forgets_their_resources():
     c._on_presence_available(_pres(PEER + "/a"))
     c._clear_peer_gone("our transport dropped")
     assert c._peer_resources == {}
+
+
+# ── our own account signed in elsewhere (owner report 2026-10-16) ────────────
+
+class _OwnClient(_ResourceClient):
+    _note_own_session = xmpp.OTRv4PlusXMPP._note_own_session
+
+    def __init__(self):
+        super().__init__()
+        self.boundjid = _Jid("me@example.i2p/term1")
+
+
+def test_another_session_of_our_account_is_warned_about(capsys):
+    c = _OwnClient()
+    c._on_presence_available(_pres("me@example.i2p/term1"))
+    assert "WARNING" not in capsys.readouterr().out      # ourselves
+    c._on_presence_available(_pres("me@example.i2p/phone"))
+    out = capsys.readouterr().out
+    assert "also signed in on another device" in out
+    assert "me@example.i2p/phone" in out
+    c._on_presence_available(_pres("me@example.i2p/phone"))
+    assert "WARNING" not in capsys.readouterr().out      # said once
+    c._on_presence_unavailable(_pres("me@example.i2p/phone"))
+    assert "signed out" in capsys.readouterr().out
+    assert c._peer_resources == {}                       # not a peer

@@ -2734,9 +2734,35 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         except Exception:
             return False
 
+    def _note_own_session(self, presence, online: bool) -> None:
+        """Another session of OUR account (owner, 2026-10-16: signed in as
+        alice here while alice was signed in on the phone, and nothing said
+        so). The server sends us our other resources' presence."""
+        resource = str(presence["from"].resource or "")
+        if not resource or resource == str(self.boundjid.resource or ""):
+            return
+        seen = self.__dict__.setdefault("_own_sessions", set())
+        if online and resource not in seen:
+            seen.add(resource)
+            print("[account] WARNING: this account is also signed in on "
+                  "another device (resource %s)." % _sanitise(resource, 64))
+            print("[account] If that is not you, change the password now. "
+                  "A server admin can sign it out with")
+            print("[account]   /admin end-user-session   and the full JID "
+                  "%s/%s" % (_sanitise(self._own_bare, 128),
+                             _sanitise(resource, 64)))
+        elif not online and resource in seen:
+            seen.discard(resource)
+            print("[account] the other session (%s) signed out."
+                  % _sanitise(resource, 64))
+
     def _on_presence_available(self, presence):
         peer = presence["from"].bare
         if peer == self._own_bare:
+            try:
+                self._note_own_session(presence, True)
+            except Exception:
+                pass
             return
         if _room_presence(self, presence):
             return
@@ -2770,6 +2796,10 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         """
         peer = presence["from"].bare
         if peer == self._own_bare:
+            try:
+                self._note_own_session(presence, False)
+            except Exception:
+                pass
             return
         if _room_presence(self, presence):
             # XEP-0045 §10.9: the owner destroyed the room. For a secure

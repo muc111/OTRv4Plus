@@ -4,6 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.91 — 2026-10-16 — warned when your account is signed in elsewhere (core 0.13.1)
+
+- **New: a warning when your own account is signed in on another device.**
+  Owner report: signed in as alice on the terminal while alice was signed in
+  on the phone, and nothing said so. The server tells each session about the
+  others; the chat list (Android, desktop) now shows "Your account is also
+  signed in on another device. If that isn't you, change your password now."
+  The terminal client prints the same warning, with the other session's
+  full JID.
+- **New: "Sign out other devices" for server admins.** It ends every other
+  session of your account with the server's XEP-0133 `end-user-session`,
+  naming each by its full JID so your own session is never touched. It does
+  not stop them signing in again: change the password too.
+- **Doc: one session per account on the server** (`SECURITY_SESSIONS.md`):
+  Prosody's `mod_c2s_limit_sessions` with `max_resources`. It also covers
+  what another session with your password can and cannot see (OTRv4+ and
+  MLS messages stay encrypted to your device) and the I2P reconnect
+  trade-off of a limit of 1.
+- **Fixed: `build.sh` failed at clippy on Rust 1.99** (new lint
+  `chunks_exact_to_as_chunks` in the voice code); the CI licence check now
+  covers `STRESS_TEST.md`.
+
 ## Android 0.7.0-experimental.rc.90 — 2026-10-16 — password-protected groups can be joined; "0/1 verified" (core 0.13.1)
 
 - **Fixed: invited to a password-protected secure group, the invitee could

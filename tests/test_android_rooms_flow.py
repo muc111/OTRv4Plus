@@ -107,6 +107,12 @@ class FakeTransport:
     def server_admin(self):
         return self._room("server_admin")
 
+    def other_sessions(self):
+        return self._room("other_sessions")
+
+    def end_other_sessions(self):
+        return self._room("end_other_sessions")
+
 
 def build(*, answer=None, raises=None, connect=True):
     made = {}
@@ -140,6 +146,8 @@ OPERATIONS = [
     ("joined_rooms", ()),
     ("owned_rooms", ()),
     ("server_admin", ()),
+    ("other_sessions", ()),
+    ("end_other_sessions", ()),
 ]
 
 

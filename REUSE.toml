@@ -79,6 +79,7 @@ path = [
     "SPEC.md",
     "SPEC_GROUP.md",
     "STRESS_TEST.md",
+    "SECURITY_SESSIONS.md",
     "TRADE.md",
     "TRANSPORT_AUDIT.md",
     "TRANSPORT_POLICY.md",

@@ -251,7 +251,10 @@ class ChatViewModel : ViewModel() {
             withContext(Dispatchers.IO) { runCatching { c.ownedRooms() }.getOrNull() }
                 ?.let { state.noteOwnedRooms(it) }
             withContext(Dispatchers.IO) { runCatching { c.serverAdmin() }.getOrNull() }
-                ?.let { state.noteServerAdmin(it) }
+                ?.let { state.noteServerAdmin(it); isServerAdmin = it }
+            otherSessions = withContext(Dispatchers.IO) {
+                runCatching { c.otherSessions() }.getOrNull()
+            } ?: 0
         }
         viewModelScope.launch {
             val (list, supported) = withContext(Dispatchers.IO) {
@@ -259,6 +262,32 @@ class ChatViewModel : ViewModel() {
             }
             blocked = list.map { ChatState.bare(it) }.toSet()
             blockingSupported = supported
+        }
+    }
+
+    // -- our account signed in elsewhere (owner, 2026-10-16) --------------------
+
+    /** Other sessions of our own account, as the server reports them. */
+    var otherSessions by mutableStateOf(0)
+        private set
+
+    /** Whether we administer the server: only then can we end them. */
+    var isServerAdmin by mutableStateOf(false)
+        private set
+
+    var sessionsStatus by mutableStateOf<String?>(null)
+
+    /** XEP-0133 end-user-session for every other session of ours. */
+    fun endOtherSessions() {
+        val c = core ?: return
+        viewModelScope.launch {
+            val (outcome, ended) = withContext(Dispatchers.IO) {
+                runCatching { c.endOtherSessions() }.getOrElse {
+                    org.otrv4plus.android.bridge.RoomOutcome(false, "failed", "") to 0
+                }
+            }
+            sessionsStatus = AccountSessions.outcome(outcome.ok, outcome.code, ended)
+            if (outcome.ok) otherSessions = 0
         }
     }
 
@@ -310,15 +339,15 @@ class ChatViewModel : ViewModel() {
 
     /** A password-protected group's room whose password the user must type
      *  (the inviter's did not come, or was refused). Null: no prompt. */
-    var groupPasswordFor by mutableStateOf<String?>(null)
+    var groupRoomPasswordFor by mutableStateOf<String?>(null)
 
-    fun acceptGroupInvite(room: String, password: String = "") {
+    fun acceptGroupInvite(room: String, roomPassword: String = "") {
         state?.clearGroupInvite(room)
-        groupPasswordFor = null
+        groupRoomPasswordFor = null
         // A secure group being set up from this moment, never an ordinary room.
         groupCall("Joining $room", onOk = { state?.noteJoiningSecure(room) },
-                  onFail = { if (it.code == "group_password_needed") groupPasswordFor = room }) {
-            it.acceptGroupInvite(room, password)
+                  onFail = { if (it.code == "group_password_needed") groupRoomPasswordFor = room }) {
+            it.acceptGroupInvite(room, roomPassword)
         }
     }
 

@@ -1693,6 +1693,15 @@ class ConnectionController:
         """Rooms (plain or a secure group's) we may delete: see transport."""
         return self._muc_call("owned_rooms")
 
+    def other_sessions(self) -> Dict[str, Any]:
+        """Other sessions of our own account: the UI warns while any exist
+        (see transport.other_sessions)."""
+        return self._muc_call("other_sessions")
+
+    def end_other_sessions(self) -> Dict[str, Any]:
+        """Sign out our account's other sessions; server admins only."""
+        return self._muc_call("end_other_sessions")
+
     def _muc_call(self, name: str, *args) -> Dict[str, Any]:
         """Run a room operation on the transport and flatten what it says.
 
@@ -1742,7 +1751,7 @@ class ConnectionController:
                 "value": value}
 
     #: Room calls the UI polls; traced only when their answer changes.
-    _QUIET_POLLS = frozenset({"owned_rooms", "server_admin"})
+    _QUIET_POLLS = frozenset({"owned_rooms", "server_admin", "other_sessions"})
 
     def _roster_call(self, name: str, *args) -> Dict[str, Any]:
         # Every roster operation is traced, because "Add Contact did nothing"

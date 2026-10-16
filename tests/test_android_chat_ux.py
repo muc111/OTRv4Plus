@@ -747,10 +747,17 @@ class TestNothingSensitiveReachesTheUi:
             assert "Text(password" not in source, name
             assert "$password" not in source, name
 
+    #: A password-protected secure group's ROOM password (rc.90): a shared
+    #: room secret typed for one join, never the account's. Named for what
+    #: it is so this check still catches the account password.
+    ROOM_PASSWORD = ("roompassword", "group_password_needed")
+
     def test_the_chat_layer_never_touches_a_password(self):
         for name in ("ChatViewModel.kt", "ChatModels.kt", "MessageStore.kt"):
-            source = _uncommented(_read(ANDROID, "chat", name))
-            assert "password" not in source.lower(), name
+            source = _uncommented(_read(ANDROID, "chat", name)).lower()
+            for allowed in self.ROOM_PASSWORD:
+                source = source.replace(allowed, "")
+            assert "password" not in source, name
 
     def test_exception_messages_are_not_rendered(self):
         """An exception's text can carry what the engine was handling."""

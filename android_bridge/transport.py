@@ -3790,6 +3790,104 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         return any(str(node or "").startswith(self.ADMIN_COMMAND_PREFIX)
                    for _jid, node, _name in items["disco_items"].get_items())
 
+    # -- our account signed in somewhere else ---------------------------------
+    #
+    # Owner (2026-10-16): "I was able to login with alice on terminal but
+    # alice was already logged in on the pixel 7 phone ... i don't want people
+    # using same login details and cloning accounts". XMPP lets one account
+    # have several resources at once, and the server sends each of them the
+    # others' presence (RFC 6121 4.2.2 / 4.4.2), so another session of OUR
+    # account is visible here without asking anyone. What a client can do is
+    # say so, and -- for a server admin -- end it (XEP-0133). Stopping it for
+    # good is the server's job: see SECURITY_SESSIONS.md.
+
+    END_SESSION_NODE = ADMIN_COMMAND_PREFIX + "end-user-session"
+
+    def _note_own_session(self, stanza, online: bool) -> bool:
+        """Track a presence from another resource of our own account.
+
+        Returns True when the stanza was one. Only full JIDs of the SAME bare
+        JID, other than this session's resource, are counted."""
+        try:
+            full = str(stanza["from"])
+        except Exception:
+            return False
+        bare, _, resource = full.partition("/")
+        own_bare = self._profile.jid.split("/", 1)[0].lower()
+        if not resource or bare.lower() != own_bare:
+            return False
+        if resource == self._own_resource():
+            return False
+        sessions = self.__dict__.setdefault("_own_sessions", {})
+        before = len(sessions)
+        if online:
+            sessions.setdefault(resource, time.time())
+        else:
+            sessions.pop(resource, None)
+        if len(sessions) != before:
+            # A count only: a resource name can identify a device.
+            _TRACE.record("account", "other_sessions", "warning" if sessions
+                          else "info", count=len(sessions))
+        return True
+
+    def other_sessions(self) -> "tuple[str, str, list]":
+        """Other sessions of our account the server told us about, oldest
+        first: [{"resource", "since"}]. Since is when WE saw it (epoch s)."""
+        if not self.is_connected:
+            return ("network", _muc.CODES["network"], [])
+        sessions = dict(getattr(self, "_own_sessions", {}) or {})
+        out = [{"resource": r, "since": int(t)} for r, t in
+               sorted(sessions.items(), key=lambda kv: kv[1])]
+        return ("ok", _muc.CODES["ok"], out)
+
+    def end_other_sessions(self) -> "tuple[str, str, int]":
+        """Sign out every OTHER session of our account (server admins only).
+
+        XEP-0133 end-user-session with each other session's FULL JID, never
+        the bare one: Prosody ends only the named resource when one is given,
+        and every session -- this one too -- for a bare JID. Ours is never in
+        the list. The server decides whether we may; a non-admin is refused.
+        Does not stop them signing in again: that needs a new password."""
+        sessions = dict(getattr(self, "_own_sessions", {}) or {})
+        own = self._own_resource()
+        bare = self._profile.jid.split("/", 1)[0]
+        targets = ["%s/%s" % (bare, r) for r in sessions if r and r != own]
+        if not targets:
+            return ("ok", _muc.CODES["ok"], 0)
+        code, detail, value = self._room_call(self._end_sessions(targets))
+        _TRACE.record("account", "end_other_sessions",
+                      "info" if code == "ok" else "warning", code=code,
+                      count=len(targets))
+        if code == "ok":
+            for t in targets:
+                sessions.pop(t.partition("/")[2], None)
+            self._own_sessions = sessions
+            return (code, detail, len(targets))
+        return (code, detail, 0)
+
+    async def _end_sessions(self, targets: "list[str]") -> int:
+        client = self._client
+        domain = str(client.boundjid.domain)
+        commands = client["xep_0050"]
+        first = await commands.send_command(
+            domain, self.END_SESSION_NODE, action="execute",
+            timeout=CALL_TIMEOUT)
+        form = first["command"]["form"]
+        submit = client["xep_0004"].make_form(ftype="submit")
+        for var, field in form.get_fields().items():
+            if var == "accountjids":
+                submit.add_field(var=var, ftype="jid-multi", value=targets)
+            elif var:
+                submit.add_field(var=var, ftype=field["type"],
+                                 value=field["value"])
+        done = await commands.send_command(
+            domain, self.END_SESSION_NODE, action="complete", payload=submit,
+            sessionid=first["command"]["sessionid"], timeout=CALL_TIMEOUT)
+        notes = done["command"]["notes"] or []
+        if any(kind == "error" for kind, _text in notes):
+            raise PermissionError("end-user-session refused")
+        return len(targets)
+
     def joined_rooms(self) -> "tuple[str, str, list]":
         """The rooms this session is in, as slixmpp has them."""
         try:
@@ -4313,6 +4411,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         self._welcome.occupant(nick, real, online, is_self=is_self)
 
     def _presence(self, stanza, online: bool) -> None:
+        try:
+            self._note_own_session(stanza, online)
+        except Exception:
+            _log.warning("could not track our own sessions")
         if not online and self._is_room_presence(stanza):
             try:
                 gone = stanza.xml.find("{%s}x/{%s}destroy" % (
@@ -4380,6 +4482,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                       quiet_for=round(self._stream_quiet_for()))
         self._disconnects = getattr(self, "_disconnects", 0) + 1
         self._server_admin = None            # asked again on the next stream
+        self._own_sessions = {}              # the server re-sends them
         self._connected.clear()
         # Every resource's presence is unknown now; capability goes with it,
         # and so does who was in the Welcome room.

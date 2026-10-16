@@ -726,6 +726,137 @@ class TestServerAdmin:
             t.close()
 
 
+class _Presence(dict):
+    """Just enough of a presence stanza for `_presence`."""
+
+    def __init__(self, frm):
+        super().__init__({"from": frm, "show": "", "priority": 0,
+                          "caps": {"ver": ""}})
+
+        class _X:
+            def find(self, _path):
+                return None
+        self.xml = _X()
+
+
+class _Field(dict):
+    pass
+
+
+class _CommandForm:
+    def __init__(self, fields):
+        self._fields = fields
+
+    def get_fields(self):
+        return self._fields
+
+
+class FakeCommands:
+    """XEP-0050 shaped like slixmpp: execute returns Prosody's
+    end-user-session form, complete records what was submitted."""
+
+    def __init__(self, refuse=False):
+        self.refuse = refuse
+        self.submitted = []
+
+    async def send_command(self, jid, node, action="execute", payload=None,
+                           sessionid=None, timeout=None, **_kw):
+        if action == "execute":
+            form = _CommandForm({
+                "FORM_TYPE": _Field(type="hidden",
+                                    value="http://jabber.org/protocol/admin"),
+                "accountjids": _Field(type="jid-multi", value=None)})
+            return {"command": {"form": form, "sessionid": "s1"}}
+        self.submitted.append((node, payload))
+        notes = [("error", "not allowed")] if self.refuse else [("info", "ok")]
+        return {"command": {"notes": notes}}
+
+
+class TestOtherSessionsOfOurAccount:
+    """Owner (2026-10-16): signed in as alice on the terminal while alice
+    was signed in on the phone, and nothing said so. Another session of OUR
+    account shows up as presence from our bare JID with another resource."""
+
+    OWN = "phone1"
+
+    def _build(self, **kw):
+        t, made = build(**kw)
+        made["client"].boundjid.resource = self.OWN
+        return t, made
+
+    def test_another_resource_of_ours_is_reported(self):
+        t, _ = self._build()
+        try:
+            t._presence(_Presence(JID + "/laptop"), True)
+            code, _d, value = t.other_sessions()
+            assert code == "ok"
+            assert [s["resource"] for s in value] == ["laptop"]
+            t._presence(_Presence(JID + "/laptop"), False)
+            assert t.other_sessions()[2] == []
+        finally:
+            t.close()
+
+    def test_our_own_resource_and_other_people_are_not(self):
+        t, _ = self._build()
+        try:
+            t._presence(_Presence(JID + "/" + self.OWN), True)
+            t._presence(_Presence("bob@otrv4plus.i2p/laptop"), True)
+            t._presence(_Presence(JID), True)
+            assert t.other_sessions()[2] == []
+        finally:
+            t.close()
+
+    def test_forgotten_when_the_stream_ends(self):
+        t, _ = self._build()
+        try:
+            t._presence(_Presence(JID + "/laptop"), True)
+            t._on_disconnected(None)
+            assert t._own_sessions == {}
+        finally:
+            t.close()
+
+    def test_an_admin_ends_only_the_other_sessions_by_full_jid(self):
+        t, made = self._build()
+        commands = FakeCommands()
+        made["client"].plugins["xep_0050"] = commands
+        made["client"].plugins["xep_0004"] = _Forms()
+        try:
+            t._presence(_Presence(JID + "/laptop"), True)
+            t._presence(_Presence(JID + "/tablet"), True)
+            assert t.end_other_sessions() == ("ok", muc.CODES["ok"], 2)
+            node, form = commands.submitted[0]
+            assert node == "http://jabber.org/protocol/admin#end-user-session"
+            jids = form["fields"]["accountjids"]
+            # Full JIDs only: a bare JID ends every session, ours too.
+            assert sorted(jids) == [JID + "/laptop", JID + "/tablet"]
+            assert JID not in jids and JID + "/" + self.OWN not in jids
+            assert t.other_sessions()[2] == []
+        finally:
+            t.close()
+
+    def test_nothing_to_end_sends_nothing(self):
+        t, made = self._build()
+        commands = FakeCommands()
+        made["client"].plugins["xep_0050"] = commands
+        try:
+            assert t.end_other_sessions()[2] == 0
+            assert commands.submitted == []
+        finally:
+            t.close()
+
+    def test_a_refusal_is_reported_and_keeps_the_warning(self):
+        t, made = self._build()
+        made["client"].plugins["xep_0050"] = FakeCommands(refuse=True)
+        made["client"].plugins["xep_0004"] = _Forms()
+        try:
+            t._presence(_Presence(JID + "/laptop"), True)
+            code, _d, ended = t.end_other_sessions()
+            assert code != "ok" and ended == 0
+            assert len(t.other_sessions()[2]) == 1
+        finally:
+            t.close()
+
+
 # ── everything answers, nothing raises ───────────────────────────────────────
 
 class TestNoRoomCallEverRaises:
@@ -741,6 +872,8 @@ class TestNoRoomCallEverRaises:
         lambda t: t.owned_rooms(),
         lambda t: t.server_admin(),
         lambda t: t.joined_rooms(),
+        lambda t: t.other_sessions(),
+        lambda t: t.end_other_sessions(),
     ])
     def test_a_disconnected_transport_answers_rather_than_throwing(self, call):
         t, _ = build()
