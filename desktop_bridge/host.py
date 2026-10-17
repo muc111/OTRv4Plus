@@ -123,6 +123,7 @@ APP_OPS: Dict[str, tuple] = {
     "smp_progress": ("peer",),
     "smp_secret_required": ("peer",),
     "security_details": ("peer",),
+    "trust_peer": ("peer", "fingerprint"),
     "otr_capability": ("peer",),
     "ensure_otr": ("peer",),
     "handshake_status": ("peer",),

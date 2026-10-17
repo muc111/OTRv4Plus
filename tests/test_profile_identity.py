@@ -8,9 +8,12 @@ from there would let a compromised server vouch for itself.
 """
 
 import os
+import sys
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 KT = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
                   "otrv4plus", "android")
 
@@ -59,3 +62,28 @@ def test_the_rules_are_shared_and_tested():
     assert os.path.exists(os.path.join(ROOT, "android", "app", "src", "test", "java",
                                        "org", "otrv4plus", "android", "chat",
                                        "ProfileIdentityTest.kt"))
+
+
+def test_the_two_checks_have_two_names():
+    """Owner, 2026-10-17: comparing fingerprints must not read as SMP."""
+    rules = _read(KT, "chat", "ProfileIdentity.kt")
+    assert 'const val CONFIRMED = "Fingerprint confirmed"' in rules
+    assert 'const val VERIFIED = "Verified (shared secret)"' in rules
+    # A confirmed fingerprint alone never claims VERIFIED.
+    branch = rules[rules.index("\n            details.trusted -> View("):]
+    branch = branch[:branch.index("details.security == SecurityState.PLAINTEXT")]
+    assert "$CONFIRMED" in branch and "$VERIFIED" not in branch
+
+
+def test_they_match_asks_first_and_goes_through_the_engine():
+    screen = _read(KT, "ui", "ProfileScreen.kt")
+    section = _section(screen, "private fun IdentitySection(")
+    assert "ProfileIdentity.CONFIRM_BODY" in section
+    assert "model.confirmFingerprint(jid)" in section
+    vm = _read(KT, "chat", "ChatViewModel.kt")
+    confirm = vm[vm.index("fun confirmFingerprint("):]
+    confirm = confirm[:confirm.index("fun loadProfile(")]
+    assert "profileIdentity?.peerFingerprint" in confirm   # the session's key
+    assert "c.trustPeer(jid, fp)" in confirm
+    from desktop_bridge.host import APP_OPS
+    assert APP_OPS["trust_peer"] == ("peer", "fingerprint")

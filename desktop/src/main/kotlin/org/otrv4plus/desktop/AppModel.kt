@@ -934,6 +934,18 @@ class AppModel(
     var profileIdentity by mutableStateOf<org.otrv4plus.android.bridge.SecurityDetails?>(null)
         private set
 
+    /** "They match": record the session's key as confirmed by the user. */
+    fun confirmFingerprint(jid: String) {
+        val fp = profileIdentity?.peerFingerprint ?: return
+        ui.launch {
+            profileIdentity = withContext(Dispatchers.IO) {
+                core.trustPeer(jid, fp)
+                runCatching { core.securityDetails(jid) }.getOrNull()
+            }
+            changed()
+        }
+    }
+
     /** From a profile: open the chat with the verification prompt up. */
     fun verifyFromProfile(jid: String) {
         closeProfile()

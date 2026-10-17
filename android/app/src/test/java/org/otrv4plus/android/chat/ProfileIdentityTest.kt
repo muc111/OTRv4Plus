@@ -13,8 +13,8 @@ import org.otrv4plus.android.bridge.SmpState
 class ProfileIdentityTest {
 
     private fun details(security: SecurityState, smp: SmpState = SmpState.NOT_VERIFIED,
-                        peer: String? = "a1b2c3d4e5f6a7b8") = SecurityDetails(
-        "bob@otrv4plus.i2p", security, smp, "", "00112233445566778899", peer, false)
+                        peer: String? = "a1b2c3d4e5f6a7b8", trusted: Boolean = false) = SecurityDetails(
+        "bob@otrv4plus.i2p", security, smp, "", "00112233445566778899", peer, trusted)
 
     @Test fun groupsOfFourForReadingAloud() {
         assertEquals("A1B2 C3D4 E5F6", ProfileIdentity.group("a1:b2:c3:d4:e5:f6"))
@@ -36,8 +36,9 @@ class ProfileIdentityTest {
 
     @Test fun verifiedSaysSoAndOffersNothing() {
         val v = ProfileIdentity.of(details(SecurityState.SMP_VERIFIED, SmpState.VERIFIED))
-        assertTrue(v.status.startsWith("Verified"))
+        assertTrue(v.status.startsWith(ProfileIdentity.VERIFIED))
         assertFalse(v.offerVerify)
+        assertTrue(v.offerConfirm)
     }
 
     @Test fun aChangedKeyIsAnAlarmAndOffersVerify() {
@@ -45,5 +46,25 @@ class ProfileIdentityTest {
         assertTrue(v.alarm)
         assertTrue(v.offerVerify)
         assertTrue(v.status.contains("changed"))
+    }
+
+    @Test fun aConfirmedFingerprintIsNeverCalledVerified() {
+        val v = ProfileIdentity.of(details(SecurityState.FINGERPRINT, trusted = true))
+        assertTrue(v.status.startsWith(ProfileIdentity.CONFIRMED))
+        assertFalse(v.status.contains(ProfileIdentity.VERIFIED))
+        assertTrue(v.offerVerify)       // the shared-secret check is still there
+        assertFalse(v.offerConfirm)
+    }
+
+    @Test fun bothChecksSayBoth() {
+        val v = ProfileIdentity.of(details(SecurityState.SMP_VERIFIED, SmpState.VERIFIED, trusted = true))
+        assertTrue(v.status.contains(ProfileIdentity.VERIFIED))
+        assertTrue(v.status.contains(ProfileIdentity.CONFIRMED))
+        assertFalse(v.offerVerify || v.offerConfirm)
+    }
+
+    @Test fun unconfirmedOffersBothChecks() {
+        val v = ProfileIdentity.of(details(SecurityState.ENCRYPTED))
+        assertTrue(v.offerVerify && v.offerConfirm)
     }
 }

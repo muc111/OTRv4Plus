@@ -278,7 +278,28 @@ private fun IdentitySection(model: ChatViewModel, own: Boolean, jid: String,
              style = MaterialTheme.typography.bodySmall,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
-    if (view.offerVerify && onVerify != null) {
-        Button(onClick = { onVerify(jid) }) { Text("Verify Identity") }
+    var confirming by remember(jid) { mutableStateOf(false) }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        if (view.offerConfirm) {
+            OutlinedButton(onClick = { confirming = true }) {
+                Text(org.otrv4plus.android.chat.ProfileIdentity.CONFIRM_BUTTON)
+            }
+        }
+        if (view.offerVerify && onVerify != null) {
+            Button(onClick = { onVerify(jid) }) { Text("Verify with a shared secret") }
+        }
+    }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text(org.otrv4plus.android.chat.ProfileIdentity.CONFIRM_TITLE) },
+            text = { Text(org.otrv4plus.android.chat.ProfileIdentity.CONFIRM_BODY) },
+            confirmButton = {
+                TextButton(onClick = { confirming = false; model.confirmFingerprint(jid) }) {
+                    Text(org.otrv4plus.android.chat.ProfileIdentity.CONFIRM_BUTTON)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
+        )
     }
 }

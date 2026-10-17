@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.109 — 2026-10-17 — "Fingerprint confirmed" is not "Verified" (core 0.13.1)
+
+- **Two checks, two names** (owner: "it should not be confused with SMP
+  verified"). On a profile:
+  - **Fingerprint confirmed** -- you compared fingerprints with them (in
+    person or on a call) and tapped **They match**. A confirmation first
+    says what that means: only after comparing every group, and that a
+    message from the account itself proves nothing. The engine records it
+    only if it is the session's own key.
+  - **Verified (shared secret)** -- the SMP check, "Verify with a shared
+    secret". Still the only one that unlocks calls and files.
+  - Both done: the profile says both.
+
 ## Android 0.7.0-experimental.rc.108 — 2026-10-17 — identity on the profile (core 0.13.1)
 
 - **New: an Identity section on every profile** (Android and desktop). A

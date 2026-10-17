@@ -180,11 +180,29 @@ fun ProfileDialog(model: AppModel, jid: String, values: Map<String, String>) {
             }
         },
         confirmButton = {
+            val identity = ProfileIdentity.of(model.profileIdentity)
+            var confirming by remember(jid) { mutableStateOf(false) }
             Row {
-                if (ProfileIdentity.of(model.profileIdentity).offerVerify) {
-                    TextButton(onClick = { model.verifyFromProfile(jid) }) { Text("Verify Identity") }
+                if (identity.offerConfirm) {
+                    TextButton(onClick = { confirming = true }) { Text(ProfileIdentity.CONFIRM_BUTTON) }
+                }
+                if (identity.offerVerify) {
+                    TextButton(onClick = { model.verifyFromProfile(jid) }) { Text("Verify with a shared secret") }
                 }
                 TextButton(onClick = { model.closeProfile() }) { Text("Close") }
+            }
+            if (confirming) {
+                AlertDialog(
+                    onDismissRequest = { confirming = false },
+                    title = { Text(ProfileIdentity.CONFIRM_TITLE) },
+                    text = { Text(ProfileIdentity.CONFIRM_BODY) },
+                    confirmButton = {
+                        TextButton(onClick = { confirming = false; model.confirmFingerprint(jid) }) {
+                            Text(ProfileIdentity.CONFIRM_BUTTON)
+                        }
+                    },
+                    dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
+                )
             }
         },
     )

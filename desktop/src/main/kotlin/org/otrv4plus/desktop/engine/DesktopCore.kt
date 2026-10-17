@@ -100,6 +100,12 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                            SmpState.fromName(p.str("state").ifBlank { "NOT_VERIFIED" }))
     }
 
+    /** "Fingerprints match": the engine checks [fingerprint] is the session's
+     *  key (constant time) and records it as confirmed. */
+    fun trustPeer(peer: String, fingerprint: String): Boolean = runCatching {
+        call("trust_peer", "peer" to peer, "fingerprint" to fingerprint).asBool()
+    }.getOrDefault(false)
+
     override fun securityDetails(peer: String): SecurityDetails {
         val d = call("security_details", "peer" to peer) as? JsonObject ?: JsonObject(emptyMap())
         return SecurityDetails(

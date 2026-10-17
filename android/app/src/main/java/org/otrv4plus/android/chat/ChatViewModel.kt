@@ -860,6 +860,16 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** "They match": record the session's key as confirmed by the user. */
+    fun confirmFingerprint(jid: String) {
+        val c = core ?: return
+        val fp = profileIdentity?.peerFingerprint ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { c.trustPeer(jid, fp) } }
+            loadIdentity(jid)
+        }
+    }
+
     fun loadProfile(jid: String = "") {
         val core = this.core ?: run { profileStatus = "Connect first."; return }
         profileJid = jid

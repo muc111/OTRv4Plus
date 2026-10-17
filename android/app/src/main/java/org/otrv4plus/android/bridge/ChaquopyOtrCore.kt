@@ -1167,6 +1167,12 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         )
     }
 
+    /** "Fingerprints match": the engine checks [fingerprint] is the session's
+     *  key (constant time) and records it as confirmed (TrustDatabase). */
+    fun trustPeer(peer: String, fingerprint: String): Boolean =
+        runCatching { requireApp().callAttr("trust_peer", peer, fingerprint).toBoolean() }
+            .getOrDefault(false)
+
     override fun securityDetails(peer: String): SecurityDetails {
         val d = requireApp().callAttr("security_details", peer)
         return SecurityDetails(
