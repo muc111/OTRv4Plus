@@ -1598,6 +1598,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         _forwarder_log(message)
         text = str(message)
         if "opening SAM stream" in text:
+            if "a failed attempt already built" in text:
+                # A retry on the held session (HeldSamSession): in a report,
+                # so the attempts that reused tunnels can be counted.
+                _TRACE.record("connection", "sam_session_reused", "info")
             self._reached("sam_opening")
         elif "ships for it" in text:
             # The project's server name, dialled at the address this version
@@ -2341,6 +2345,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         if _accepts(forward, "aliases"):
             # The app reads no alias file: a name means what the router says.
             extra["aliases"] = False
+        if _accepts(forward, "hold"):
+            # A failed attempt's tunnels are reused by the next one.
+            extra["hold"] = True
         if _accepts(forward, "verify"):
             extra["verify"] = self._verify_destination
         else:

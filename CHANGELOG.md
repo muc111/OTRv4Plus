@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.115 — 2026-10-17 — sign-in retries reuse their tunnels (core 0.13.1)
+
+- **Fewer, faster sign-in attempts.** Owner's timing: "I2P router 0:02,
+  sign-in 2:39, 10 attempts". Every attempt made a brand-new I2P
+  destination, and a failed attempt threw it away, so the next one, ten
+  seconds later, built its tunnels and looked the server up again from
+  nothing, and usually failed the same way. A failed attempt's I2P session
+  is now kept, and the next attempt tries the server again on the tunnels
+  already built. It is used only for retries of the same sign-in: a
+  sign-in that works keeps its session for that connection, and the next
+  sign-in starts with a fresh destination as before. An unused one is
+  closed after 5 minutes, or by Sign out, Stop or Wipe.
+
 ## Android 0.7.0-experimental.rc.114 — 2026-10-17 — ask to join encrypted groups; Rooms tab by kind (core 0.13.1)
 
 - **Ask to join instead of a password** (owner request). An encrypted group

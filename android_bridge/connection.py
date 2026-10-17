@@ -85,6 +85,19 @@ SAM_HELLO = b"HELLO VERSION MIN=3.0 MAX=3.1\n"
 SAM_PROBE_TIMEOUT = 5.0
 
 
+
+def _drop_held_sam() -> None:
+    """Close the session a failed sign-in left for the next attempt
+    (otrv4plus_xmpp.HeldSamSession): Sign out, Stop and Wipe end it."""
+    import sys
+    mod = sys.modules.get("otrv4plus_xmpp")
+    held = getattr(mod, "HELD_SAM", None)
+    if held is not None:
+        try:
+            held.drop()
+        except Exception:
+            pass
+
 class SamProbe:
     """What a probe found. A result, not an exception.
 
@@ -893,6 +906,7 @@ class ConnectionController:
     def disconnect(self) -> Dict[str, Any]:
         """Tear down. Best effort, and always ends at a known state."""
         self._release_transport()
+        _drop_held_sam()
         self._enter("idle")
         self._last = {"ok": True, "stage": "idle", "code": "ok",
                       "detail": "Disconnected."}

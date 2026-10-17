@@ -1195,9 +1195,79 @@ def _first_byte_kind(byte: int) -> str:
     return "other"
 
 
+class HeldSamSession:
+    """One SAM session kept between FAILED sign-in attempts (Android).
+
+    Owner's report (2026-10-17): "I2P router 0:02, sign-in 2:39, 10
+    attempts". Each attempt made a brand-new transient destination, and a
+    failed STREAM CONNECT closed it: the next attempt, ten seconds later,
+    built tunnels and looked the server up again from nothing -- and failed
+    the same way. A session whose STREAM CONNECT failed is now held here, and
+    the next attempt to the same server tries again on it: the tunnels are
+    built and the router is already looking for the server.
+
+      * One at a time, for the same SAM bridge and server only.
+      * Only after a failed stream: a sign-in that worked keeps its session
+        for the connection, and the next sign-in starts a fresh destination
+        as before (sessions stay unlinkable).
+      * Closed after HOLD_SECONDS unused, or by `drop` (Wipe, Sign out).
+    """
+
+    HOLD_SECONDS = 300.0
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._sam = None
+        self._key = None
+        self._timer = None
+
+    def _swap(self, sam=None, key=None):
+        with self._lock:
+            old, self._sam, self._key = self._sam, sam, key
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            if sam is not None:
+                self._timer = threading.Timer(self.HOLD_SECONDS, self.drop)
+                self._timer.daemon = True
+                self._timer.start()
+        return old
+
+    def take(self, key):
+        """The held session for `key` if it is still open; else None."""
+        with self._lock:
+            held_key = self._key
+        sam = self._swap()
+        if sam is None:
+            return None
+        if held_key == key and sam.session_alive():
+            return sam
+        sam.close()
+        return None
+
+    def keep(self, key, sam):
+        old = self._swap(sam, key)
+        if old is not None and old is not sam:
+            old.close()
+
+    def drop(self):
+        old = self._swap()
+        if old is not None:
+            old.close()
+
+    @property
+    def holding(self) -> bool:
+        return self._sam is not None
+
+
+#: The one held session (see HeldSamSession).
+HELD_SAM = HeldSamSession()
+
+
 async def start_i2p_sam_forwarder(
     dest_b32: str, dest_port: int, sam_host: str = "127.0.0.1", sam_port: int = 7656,
     *, resources=None, log=None, aliases: bool = True, verify=None,
+    hold: bool = False,
 ):
     """
     Open an I2P SAM stream to `dest_b32` and expose it as a local TCP endpoint.
@@ -1226,6 +1296,9 @@ async def start_i2p_sam_forwarder(
     one thing CONTRIBUTING.md's rejection list says must not be logged. A
     destination in a terminal a user is looking at is feedback; the same string
     in a system log that any `adb logcat` reads is a disclosure.
+
+    **hold** -- keep the SAM session after a failed STREAM CONNECT and reuse
+    it on the next call to the same server (HeldSamSession). Android only.
     """
     if I2PSAMConnection is None:
         raise RuntimeError(
@@ -1236,7 +1309,12 @@ async def start_i2p_sam_forwarder(
     say = log if log is not None else print
 
     loop = asyncio.get_event_loop()
-    sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
+    key = (sam_host, sam_port, dest_b32)
+    sam = HELD_SAM.take(key) if hold else None
+    reused = sam is not None
+    if sam is None:
+        sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
+    extra = {"keep_session": True} if hold else {}
 
     def _do_sam():
         # `dest_b32` may be a .b32.i2p address or a short .i2p name: the
@@ -1246,17 +1324,27 @@ async def start_i2p_sam_forwarder(
         # before any stream to it exists. Omitted, the call is unchanged.
         if verify is not None:
             s = sam.connect(dest_b32, allow_aliases=aliases,
-                            verify_destination=verify)
+                            verify_destination=verify, **extra)
         else:
-            s = sam.connect(dest_b32, allow_aliases=aliases)
+            s = sam.connect(dest_b32, allow_aliases=aliases, **extra)
         s.setblocking(False)
         return s
 
-    say(f"[i2p] opening SAM stream to {dest_b32} "
-        "(the router resolves the name; a cold tunnel can take 30-90s)...")
+    if reused:
+        say(f"[i2p] opening SAM stream to {dest_b32} again, on the tunnels "
+            "a failed attempt already built...")
+    else:
+        say(f"[i2p] opening SAM stream to {dest_b32} "
+            "(the router resolves the name; a cold tunnel can take 30-90s)...")
     try:
         sam_sock = await loop.run_in_executor(None, _do_sam)
-    except BaseException:
+    except BaseException as exc:
+        if (hold and getattr(exc, "stage", "") == "stream"
+                and sam.session_alive()):
+            # The server did not answer this time; the tunnels are fine.
+            # Held for the next attempt (HeldSamSession).
+            HELD_SAM.keep(key, sam)
+            raise
         # Cancelled (the Android connect timed out) or failed: the executor
         # thread is not stopped by either, and a session it created would stay
         # open in the router -- one more per retry. See I2PSAMConnection.abandon.

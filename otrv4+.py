@@ -1375,9 +1375,27 @@ class I2PSAMConnection:
                     raise self._naming_failure(alias, exc, alias_source) from None
         raise self._naming_failure(target, router_reply) from None
 
+    def session_alive(self) -> bool:
+        """Whether this object still holds an open SAM session: the router
+        ends one by closing its control connection, which reads as EOF."""
+        sock = self._control_sock
+        if sock is None or self._abandoned:
+            return False
+        try:
+            sock.setblocking(False)
+            try:
+                return sock.recv(1, socket.MSG_PEEK) != b""
+            except (BlockingIOError, InterruptedError):
+                return True
+            finally:
+                sock.setblocking(True)
+        except OSError:
+            return False
+
     def connect(self, target_host: str, target_port: int = 0,
                 allow_aliases: bool = True,
-                verify_destination=None) -> "socket.socket":
+                verify_destination=None,
+                keep_session: bool = False) -> "socket.socket":
         """Connect to an I2P destination via SAM. Returns a raw socket.
 
         Creates a transient destination (fresh identity, not saved).
@@ -1390,26 +1408,37 @@ class I2PSAMConnection:
         resolved destination BEFORE any session or stream exists; whatever it
         raises propagates and nothing is sent to that destination. This is
         where the Android bridge enforces its destination pin (X1).
+
+        `keep_session` (Android sign-in retries): when STREAM CONNECT fails,
+        the session -- its destination, its built tunnels and what its router
+        has learnt about the server -- is kept open, and calling `connect`
+        again on this object reuses it instead of starting from nothing.
+        Without it, every retry was a brand-new destination that had to build
+        tunnels and look the server up again, so retries a few seconds apart
+        kept failing the same way. The caller must `close()` it when done.
         """
         dest_b64 = self.resolve(target_host, allow_aliases=allow_aliases)
         if verify_destination is not None:
             verify_destination(dest_b64)
 
-        self._control_sock = self._bridge_socket(90)
-        if self._abandoned:
+        if not self.session_alive():
             self.close()
-            raise SamError("cancelled", "the SAM connection was abandoned")
-        reply = self._send_cmd(
-            self._control_sock,
-            f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
-            f"DESTINATION=TRANSIENT SIGNATURE_TYPE=7",
-        )
-        parsed = self._parse_reply(reply, "SESSION STATUS ")
-        if parsed.get("RESULT") != "OK":
-            self._control_sock.close()
-            raise SamError("session", f"SAM session failed: {reply[:200] }",
-                           parsed.get("RESULT", ""))
-        self._our_destination = parsed.get("DESTINATION", "")
+            self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
+            self._control_sock = self._bridge_socket(90)
+            if self._abandoned:
+                self.close()
+                raise SamError("cancelled", "the SAM connection was abandoned")
+            reply = self._send_cmd(
+                self._control_sock,
+                f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
+                f"DESTINATION=TRANSIENT SIGNATURE_TYPE=7",
+            )
+            parsed = self._parse_reply(reply, "SESSION STATUS ")
+            if parsed.get("RESULT") != "OK":
+                self.close()
+                raise SamError("session", f"SAM session failed: {reply[:200] }",
+                               parsed.get("RESULT", ""))
+            self._our_destination = parsed.get("DESTINATION", "")
 
         stream_sock = self._bridge_socket(NetworkConstants.TIMEOUT_I2P)
         self._pending_stream = stream_sock
@@ -1427,7 +1456,8 @@ class I2PSAMConnection:
         parsed = self._parse_reply(reply, "STREAM STATUS ")
         if parsed.get("RESULT") != "OK":
             stream_sock.close()
-            self._control_sock.close()
+            if not keep_session:
+                self.close()
             raise SamError("stream",
                            self._explain_stream_failure(target_host, parsed, reply),
                            parsed.get("RESULT", ""))
