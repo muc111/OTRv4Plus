@@ -65,7 +65,7 @@ def test_only_sign_out_wipe_closing_and_stop_take_the_router():
 def test_a_lost_router_is_restarted_from_the_failure_path():
     src = open(SERVICE).read()
     loop = src[src.index("private suspend fun connectLoop()"):]
-    loop = loop[:loop.index("val wait = reconnect.nextDelayMs()")]
+    loop = loop[:loop.index("val wait = (if (ConnectProblem.settling(")]
     assert "restartRouterIfLost(failure)" in loop
     fn = src[src.index("private fun restartRouterIfLost("):]
     fn = fn[:fn.index("\n    }\n")]
