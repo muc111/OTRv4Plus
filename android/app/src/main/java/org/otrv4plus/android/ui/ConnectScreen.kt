@@ -395,6 +395,13 @@ fun ConnectScreen(
         // find them.
         if (status.stage != "idle" && !model.connecting) {
             StatusRow("State", stageLabel(status.stage))
+            // How long it took this time, router and retries included.
+            if (status.connected) {
+                model.connectTiming?.let {
+                    StatusRow("Connected in",
+                              org.otrv4plus.android.connection.ConnectTiming.line(it))
+                }
+            }
         }
 
         // Registration is its own outcome, not a connection state.

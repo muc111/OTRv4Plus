@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.110 — 2026-10-17 — how long it took to connect (core 0.13.1)
+
+- **New: "Connected in" on the Connect screen**, under State. Owner
+  request: every sign-in shows how long it took, from pressing Connect (or
+  the app resuming, or the connection dropping) to signed in, retries
+  included: for example "4:10 (I2P router 2:30, sign-in 1:40), 2
+  attempts". The router's part shows only when the built-in router had to
+  be waited for.
+
 ## Android 0.7.0-experimental.rc.109 — 2026-10-17 — "Fingerprint confirmed" is not "Verified" (core 0.13.1)
 
 - **Two checks, two names** (owner: "it should not be confused with SMP

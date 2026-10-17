@@ -572,7 +572,22 @@ class OtrConnectionService : Service() {
         reconnect.onUserConnect()
         startDraining()
         if (worker?.isActive == true) return
+        startTiming()
         worker = scope.launch { connectLoop() }
+    }
+
+    /** How long the last connection took (ConnectTiming), for the Connect screen. */
+    @Volatile
+    var lastConnectTiming: ConnectTiming.Result? = null
+        private set
+
+    /** When this run began (Connect, resume, or a drop); its router wait so far. */
+    private var runStartedAt = 0L
+    private var routerWaitMs = 0L
+
+    private fun startTiming() {
+        runStartedAt = System.currentTimeMillis()
+        routerWaitMs = 0L
     }
 
     /**
@@ -704,7 +719,12 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
+                    val routerFrom = System.currentTimeMillis()
                     val samPort = chooseRouter()
+                    // Only the built-in router is waited for here; the I2P
+                    // app's, or none, returns at once.
+                    if (routerState == RouterChoice.State.RUNNING)
+                        routerWaitMs += System.currentTimeMillis() - routerFrom
                     core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
                     core.connect(password)
                 }
@@ -713,6 +733,12 @@ class OtrConnectionService : Service() {
 
             val ok = result.getOrNull()?.connected == true
             if (ok) {
+                if (runStartedAt > 0) {
+                    lastConnectTiming = ConnectTiming.Result(
+                        totalMs = System.currentTimeMillis() - runStartedAt,
+                        routerMs = routerWaitMs.takeIf { it > 0 },
+                        attempts = reconnect.attempts + 1)
+                }
                 reconnect.onConnected()
                 status = result.getOrNull() ?: ConnectionStatus()
                 failure = null
@@ -905,6 +931,8 @@ class OtrConnectionService : Service() {
                     enter(LinkPhase.FAILED, "needs the user: ${current.code}")
                     return
                 }
+                // The reconnect is timed from the drop: that is the wait.
+                startTiming()
                 // The transport's own flag went false. Python has already
                 // recorded WHY -- keepalive, or slixmpp closing the stream --
                 // so this line is where the two halves meet.

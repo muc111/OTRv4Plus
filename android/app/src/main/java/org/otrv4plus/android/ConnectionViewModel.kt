@@ -168,6 +168,10 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     val connectingLabel: String get() = login.label(phase)
 
     /** The I2P router's line for the connection screen, or null. */
+    /** How long the last connection took (ConnectTiming). */
+    var connectTiming by mutableStateOf<org.otrv4plus.android.connection.ConnectTiming.Result?>(null)
+        private set
+
     /** How long the built-in router has run, while in use (ConnectProblem). */
     var bundledRouterUpMs by mutableStateOf<Long?>(null)
         private set
@@ -273,6 +277,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     login.observe(it.phase)
                     routerLabel = it.routerLabel()
                     bundledRouterUpMs = it.bundledRouterUpMs()
+                    connectTiming = it.lastConnectTiming
                 }
                 // Even with no service bound: the handover deadline in
                 // LoginProgress expires on the clock, and nothing would

@@ -71,3 +71,19 @@ def test_a_lost_router_is_restarted_from_the_failure_path():
     fn = fn[:fn.index("\n    }\n")]
     assert "RouterChoice.shouldRestart(" in fn
     assert "routerState != RouterChoice.State.RUNNING" in fn   # ours only
+
+
+def test_the_connection_is_timed_from_start_or_drop_to_signed_in():
+    src = open(SERVICE).read()
+    start = src[src.index("fun startConnection()"):]
+    start = start[:start.index("worker = scope.launch { connectLoop() }")]
+    assert "startTiming()" in start
+    watch = src[src.index("private suspend fun watchUntilDropped"):]
+    watch = watch[:watch.index("private fun codeOf")]
+    assert "startTiming()" in watch
+    loop = src[src.index("private suspend fun connectLoop()"):]
+    ok = loop[loop.index("if (ok) {"):loop.index("reconnect.onConnected()")]
+    assert "lastConnectTiming = ConnectTiming.Result(" in ok
+    screen = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                               "android/ui/ConnectScreen.kt")).read()
+    assert 'StatusRow("Connected in"' in screen
