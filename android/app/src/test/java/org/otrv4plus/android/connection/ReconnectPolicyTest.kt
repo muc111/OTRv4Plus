@@ -216,4 +216,20 @@ class ReconnectPolicyTest {
         repeat(20) { p.nextDelayMs() }
         assertEquals(6_000L, p.nextDelayMs())
     }
+
+    // ── a settling router is retried soon, not backed off ───────────────────
+
+    @Test
+    fun `settling retries are short and do not grow`() {
+        val p = policy()
+        repeat(5) { assertEquals(ReconnectPolicy.SETTLING_RETRY_MS, p.settlingDelayMs()) }
+        assertEquals(5, p.attempts)
+    }
+
+    @Test
+    fun `settling retries still stop when the user stopped`() {
+        val p = policy()
+        p.onUserDisconnect()
+        assertNull(p.settlingDelayMs())
+    }
 }

@@ -86,6 +86,22 @@ object ConnectProblem {
         "stream_failed", "timeout",
     )
 
+    /** Failures a young built-in router produces while it settles in. */
+    private val SETTLING_FAILURES: Set<String> = SILENT_SERVER + setOf(
+        "i2p_destination_unreachable", "i2p_name_not_found", "i2p_session_failed",
+    )
+
+    /**
+     * Whether [code] is most likely the built-in router still settling in
+     * (up less than [ROUTER_SETTLING_MS]). The service then retries every
+     * few seconds instead of backing off (ReconnectPolicy.settlingDelayMs):
+     * owner's rc.110 timing, "I2P router 0:08, sign-in 5:08, 4 attempts",
+     * was 3½ minutes of backoff waiting on a router that was ready.
+     */
+    fun settling(code: String?, bundledRouterUpMs: Long?): Boolean =
+        code != null && bundledRouterUpMs != null &&
+            bundledRouterUpMs < ROUTER_SETTLING_MS && code in SETTLING_FAILURES
+
     fun routerSettling(upMs: Long): String {
         val s = upMs.coerceAtLeast(0) / 1000
         return "The built-in I2P router has been running %d:%02d and other routers cannot ".format(s / 60, s % 60) +

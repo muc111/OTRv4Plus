@@ -87,3 +87,11 @@ def test_the_connection_is_timed_from_start_or_drop_to_signed_in():
     screen = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
                                "android/ui/ConnectScreen.kt")).read()
     assert 'StatusRow("Connected in"' in screen
+
+
+def test_a_settling_router_is_retried_soon():
+    src = open(SERVICE).read()
+    loop = src[src.index("private suspend fun connectLoop()"):]
+    loop = loop[:loop.index("private suspend fun watchUntilDropped")] if "private suspend fun watchUntilDropped" in loop else loop
+    assert "ConnectProblem.settling(failure, bundledRouterUpMs())" in loop
+    assert "reconnect.settlingDelayMs()" in loop

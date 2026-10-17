@@ -759,7 +759,11 @@ class OtrConnectionService : Service() {
                 restartRouterIfLost(failure)
             }
 
-            val wait = reconnect.nextDelayMs() ?: return
+            // A young built-in router: retry soon, it is getting ready.
+            // Anything else: the usual growing backoff.
+            val wait = (if (ConnectProblem.settling(failure, bundledRouterUpMs()))
+                            reconnect.settlingDelayMs()
+                        else reconnect.nextDelayMs()) ?: return
             enter(LinkPhase.RECONNECTING, "backing off ${wait}ms")
             delay(wait)
         }

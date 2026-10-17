@@ -116,6 +116,20 @@ class ReconnectPolicy(
     }
 
     /**
+     * A short, flat wait while the built-in router settles in
+     * (ConnectProblem.settling): [SETTLING_RETRY_MS], spread by the jitter.
+     * Counted as an attempt like any other, but the delay does not grow --
+     * the router is getting better by the minute, not the server worse.
+     * Null when the user asked to stay disconnected.
+     */
+    fun settlingDelayMs(): Long? {
+        if (suppressed) return null
+        attempts += 1
+        val spread = if (jitter > 0) 1.0 + jitter * (2 * random() - 1) else 1.0
+        return (SETTLING_RETRY_MS * spread).toLong().coerceAtLeast(1L)
+    }
+
+    /**
      * How long to wait before trying again, or null for "do not".
      *
      * Null means exactly that and nothing else: the user asked to stay
@@ -155,6 +169,9 @@ class ReconnectPolicy(
         // account for it). One list, shared with the screen's wording:
         // ConnectProblem.NEEDS_YOU.
         val NEEDS_THE_USER: Set<String> = ConnectProblem.NEEDS_YOU
+
+        /** The flat retry while the built-in router settles in. */
+        const val SETTLING_RETRY_MS = 10_000L
 
         /** In the order of an I2P tunnel build, not of a clearnet retry. */
         const val DEFAULT_FIRST_DELAY_MS = 30_000L

@@ -4,6 +4,7 @@ package org.otrv4plus.android.connection
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -113,5 +114,15 @@ class ConnectProblemTest {
             val line = ConnectProblem.line(ConnectProblem.SERVER_BUSY, false, true, n)!!
             assertEquals(ConnectProblem.Tone.QUIET, line.tone)
         }
+    }
+
+    @Test
+    fun `a young router's failures count as settling, others do not`() {
+        assertTrue(ConnectProblem.settling("i2p_destination_unreachable", 60_000L))
+        assertTrue(ConnectProblem.settling("server_closed_connection", 60_000L))
+        assertFalse(ConnectProblem.settling("auth_failed", 60_000L))
+        assertFalse(ConnectProblem.settling("server_closed_connection", null))     // I2P app
+        assertFalse(ConnectProblem.settling("server_closed_connection",
+                                            ConnectProblem.ROUTER_SETTLING_MS + 1))
     }
 }

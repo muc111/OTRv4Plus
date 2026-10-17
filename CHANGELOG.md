@@ -4,6 +4,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.111 — 2026-10-17 — no long waits on a router that is nearly ready (core 0.13.1)
+
+- **Faster sign-in with the built-in router.** Owner's rc.110 timing:
+  "I2P router 0:08, sign-in 5:08, 4 attempts". About 3½ of those minutes
+  were the app waiting between attempts (30 s, then 60, then 120), on a
+  router that was ready well before then. While the built-in router is
+  settling in (its first 15 minutes) and an attempt fails the way a young
+  router's do, the app now retries every ~10 seconds instead of backing
+  off. Every other failure keeps the growing backoff.
+
 ## Android 0.7.0-experimental.rc.110 — 2026-10-17 — how long it took to connect (core 0.13.1)
 
 - **New: "Connected in" on the Connect screen**, under State. Owner
