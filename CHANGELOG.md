@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.102 — 2026-10-17 — sound and vibration for messages and requests (core 0.13.1)
+
+- **Messages vibrate as well as sound.** In the background, the message
+  notification now sounds and vibrates (a new channel: Android fixes a
+  channel's sound and vibration when it is created). On screen, in another
+  conversation, a tone and two short pulses.
+- **New: verification requests and group invitations alert you.** In the
+  background, one notification that says only "Verification requested",
+  "Group invitation" or "2 things need your attention": never who, never
+  which group, hidden entirely on a locked screen, gone when you open the
+  app. On screen, a tone and a buzz.
+- **A group's password prompt** sounds and buzzes when it appears.
+- **The phone's ring mode decides:** normal, a tone and a buzz; vibrate, a
+  buzz; silent, nothing.
+- **Server:** `prosody/install-server-limits.sh` installs both server
+  modules and the limits in one command (SERVER_HARDENING.md).
+
 ## Android 0.7.0-experimental.rc.101 — 2026-10-17 — sign-ins paced, retries spread (core 0.13.1)
 
 - **Server: sign-in pacing** in `prosody/mod_otrv4plus_capacity.lua`

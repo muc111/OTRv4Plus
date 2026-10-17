@@ -785,6 +785,9 @@ class OtrConnectionService : Service() {
                                     CallAlert.Change.STOP -> cancelCallNotification()
                                 }
                             }
+                            // A verification request or a group invitation:
+                            // the kind only, never who (Attention).
+                            org.otrv4plus.android.chat.Attention.of(event)?.let { needAttention(it) }
                             // A group call starting rings once (SoundPolicy).
                             if (event is org.otrv4plus.android.bridge.OtrEvent.GroupChanged &&
                                 event.change == "call_ringing") announceCall(group = true)
@@ -907,6 +910,7 @@ class OtrConnectionService : Service() {
         // conversation the user cannot see happens to be the open one.
         chat.setUiVisible(visible)
         if (alerts.setUiVisible(visible)) cancelArrivalNotification()
+        if (visible) cancelAttentionNotification()
         // XEP-0352: the server may hold back presence floods and "typing..."
         // while nobody is looking, which saves battery and radio.
         scope.launch(Dispatchers.IO) { runCatching { core.setClientActive(visible) } }
@@ -940,26 +944,60 @@ class OtrConnectionService : Service() {
         }
     }
 
-    /** The system's notification sound, once, without a notification. */
-    private fun playInAppTone() {
-        runCatching {
-            val uri = android.media.RingtoneManager.getDefaultUri(
-                android.media.RingtoneManager.TYPE_NOTIFICATION) ?: return
-            android.media.RingtoneManager.getRingtone(applicationContext, uri)?.apply {
-                audioAttributes = android.media.AudioAttributes.Builder()
-                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_EVENT)
-                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build()
-                play()
-            }
-        }
-    }
+    /** Tone and buzz, as the ring mode allows, without a notification. */
+    private fun playInAppTone() = AlertFeedback.inApp(this)
 
     private fun announceArrival() {
         val alert = alerts.note() ?: return
         runCatching {
             getSystemService(NotificationManager::class.java)
                 ?.notify(MESSAGE_NOTIFICATION_ID, buildArrivalNotification(alert))
+        }
+    }
+
+    /** Kinds waiting since the app was last on screen, oldest first. */
+    private val pendingAttention = mutableListOf<org.otrv4plus.android.chat.Attention.Kind>()
+
+    /**
+     * Something needs the user (Attention): on screen, a tone and a buzz --
+     * the app shows the request itself; otherwise one notification that
+     * says the kind and nothing more, hidden on a locked screen.
+     */
+    private fun needAttention(kind: org.otrv4plus.android.chat.Attention.Kind) {
+        if (alerts.uiVisible) {
+            playInAppTone()
+            return
+        }
+        synchronized(pendingAttention) { pendingAttention.add(kind) }
+        val text = synchronized(pendingAttention) {
+            org.otrv4plus.android.chat.Attention.text(pendingAttention.toList())
+        }
+        val open = PendingIntent.getActivity(
+            this, 5,
+            Intent(this, MainActivity::class.java)
+                .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE,
+        )
+        val notification = NotificationCompat.Builder(this, ATTENTION_CHANNEL_ID)
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_notify_more)
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .setShowWhen(false)
+            .setVisibility(NotificationCompat.VISIBILITY_SECRET)
+            .build()
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.notify(ATTENTION_NOTIFICATION_ID, notification)
+        }
+    }
+
+    private fun cancelAttentionNotification() {
+        synchronized(pendingAttention) { pendingAttention.clear() }
+        runCatching {
+            getSystemService(NotificationManager::class.java)
+                ?.cancel(ATTENTION_NOTIFICATION_ID)
         }
     }
 
@@ -1122,6 +1160,39 @@ class OtrConnectionService : Service() {
             // already the most this may say.
             setShowBadge(false)
             lockscreenVisibility = Notification.VISIBILITY_SECRET
+            // Sound AND vibration, set here because a channel's are fixed
+            // once it exists (owner, 2026-10-17: "a sound & vibrate"); the
+            // channel without them is deleted below.
+            setSound(
+                android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION),
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_COMMUNICATION_INSTANT)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            enableVibration(true)
+            vibrationPattern = AlertFeedback.PATTERN
+        }
+        // Verification requests, group invitations: the kind, never who.
+        // HIGH, so it shows over what is on screen -- a verification request
+        // waits for an answer.
+        val attention = NotificationChannel(
+            ATTENTION_CHANNEL_ID,
+            getString(R.string.attention_channel_name),
+            NotificationManager.IMPORTANCE_HIGH,
+        ).apply {
+            description = getString(R.string.attention_channel_description)
+            setShowBadge(false)
+            lockscreenVisibility = Notification.VISIBILITY_SECRET
+            setSound(
+                android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION),
+                android.media.AudioAttributes.Builder()
+                    .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION_EVENT)
+                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build(),
+            )
+            enableVibration(true)
+            vibrationPattern = AlertFeedback.PATTERN
         }
         // A THIRD channel, for calls, and HIGH so it can appear heads-up: a
         // call that waits in the shade for somebody to look is a missed call.
@@ -1151,11 +1222,13 @@ class OtrConnectionService : Service() {
             vibrationPattern = longArrayOf(0, 800, 600, 800, 600)
         }
         runCatching {
-            getSystemService(NotificationManager::class.java)
-                ?.deleteNotificationChannel(OLD_CALL_CHANNEL_ID)
+            getSystemService(NotificationManager::class.java)?.apply {
+                deleteNotificationChannel(OLD_CALL_CHANNEL_ID)
+                deleteNotificationChannel(OLD_MESSAGE_CHANNEL_ID)
+            }
         }
         getSystemService(NotificationManager::class.java)
-            ?.createNotificationChannels(listOf(channel, messages, calls))
+            ?.createNotificationChannels(listOf(channel, messages, attention, calls))
     }
 
     /**
@@ -1237,7 +1310,13 @@ class OtrConnectionService : Service() {
         private const val CHANNEL_ID = "otrv4plus.connection"
         private const val NOTIFICATION_ID = 1
 
-        private const val MESSAGE_CHANNEL_ID = "otrv4plus.messages"
+        /** With sound and vibration (rc.102); the old id had neither set. */
+        private const val MESSAGE_CHANNEL_ID = "otrv4plus.messages.alert"
+        private const val OLD_MESSAGE_CHANNEL_ID = "otrv4plus.messages"
+
+        private const val ATTENTION_CHANNEL_ID = "otrv4plus.attention"
+        /** One id for every verification request and invitation. */
+        private const val ATTENTION_NOTIFICATION_ID = 6
 
         /**
          * ONE id for every arrival.

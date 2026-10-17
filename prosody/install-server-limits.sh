@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# Install the OTRv4+ server modules and limits on a Prosody built from
+# source (the T450 layout: /usr/local). Safe to run again: it changes only
+# what is not already so.
+#
+#   cd ~/OTRv4Plus && git pull && sudo bash prosody/install-server-limits.sh
+#
+# What it does (SECURITY_SESSIONS.md, SERVER_HARDENING.md):
+#   1. backs up prosody.cfg.lua next to itself (prosody.cfg.lua.bak-<time>);
+#   2. installs mod_otrv4plus_one_session (newest sign-in wins) and
+#      mod_otrv4plus_capacity (online cap, sign-in pacing, sign-up limits);
+#   3. replaces "c2s_limit_sessions" with "otrv4plus_one_session" and adds
+#      "otrv4plus_capacity" in modules_enabled;
+#   4. sets max_resources = 1, max_online_users = 2000, login_rate = 10,
+#      login_burst = 40, max_registrations_per_hour = 30 and
+#      muc_event_rate = 10;
+#   5. runs `prosodyctl check config` -- and puts the backup back if it
+#      fails -- then restarts Prosody and shows the new error-log lines.
+#
+# Override any value from the environment, e.g.
+#   sudo LOGIN_RATE=20 bash prosody/install-server-limits.sh
+set -euo pipefail
+
+CFG="${PROSODY_CFG:-/usr/local/etc/prosody/prosody.cfg.lua}"
+MODDIR="${PROSODY_MODULES:-/usr/local/lib/prosody/custom_modules}"
+LOG="${PROSODY_LOG:-/usr/local/var/log/prosody/prosody.err}"
+PROSODYCTL="${PROSODYCTL:-prosodyctl}"
+RESTART="${RESTART:-1}"
+
+MAX_RESOURCES="${MAX_RESOURCES:-1}"
+MAX_ONLINE_USERS="${MAX_ONLINE_USERS:-2000}"
+LOGIN_RATE="${LOGIN_RATE:-10}"
+LOGIN_BURST="${LOGIN_BURST:-40}"
+MAX_REGISTRATIONS_PER_HOUR="${MAX_REGISTRATIONS_PER_HOUR:-30}"
+MUC_EVENT_RATE="${MUC_EVENT_RATE:-10}"
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+say() { printf '==> %s\n' "$*"; }
+die() { printf 'STOPPED: %s\n' "$*" >&2; exit 1; }
+
+[ "$RESTART" = 0 ] || [ "$(id -u)" -eq 0 ] || die "run it with sudo"
+[ -f "$CFG" ] || die "no Prosody configuration at $CFG (set PROSODY_CFG)"
+grep -q '^[[:space:]]*modules_enabled[[:space:]]*=[[:space:]]*{' "$CFG" \
+    || die "no modules_enabled = { ... } list in $CFG"
+
+BACKUP="$CFG.bak-$(date +%Y%m%d-%H%M%S)"
+cp -a "$CFG" "$BACKUP"
+say "backup: $BACKUP"
+
+say "installing the modules into $MODDIR"
+mkdir -p "$MODDIR"
+install -m 644 "$HERE/mod_otrv4plus_one_session.lua" "$MODDIR/"
+install -m 644 "$HERE/mod_otrv4plus_capacity.lua" "$MODDIR/"
+grep -q "$MODDIR" "$CFG" \
+    || say "NOTE: $MODDIR is not in plugin_paths; add it, or Prosody will not find the modules"
+
+say "modules_enabled"
+# The old one-session module refuses the NEW sign-in; ours replaces the old
+# one. The two must not run together.
+sed -i 's/"c2s_limit_sessions";/"otrv4plus_one_session";/' "$CFG"
+add_module() {
+    grep -q "\"$1\"" "$CFG" && return 0
+    sed -i "0,/^\([[:space:]]*modules_enabled[[:space:]]*=[[:space:]]*{\)/s//\1\n\t\"$1\";/" "$CFG"
+}
+add_module otrv4plus_one_session
+add_module otrv4plus_capacity
+
+say "limits"
+set_option() {
+    local key="$1" value="$2"
+    if grep -qE "^[[:space:]]*$key[[:space:]]*=" "$CFG"; then
+        sed -i -E "s|^([[:space:]]*$key[[:space:]]*=).*|\1 $value|" "$CFG"
+    elif grep -q '^VirtualHost' "$CFG"; then
+        # Global options belong before the first VirtualHost.
+        sed -i "0,/^VirtualHost/s//$key = $value\nVirtualHost/" "$CFG"
+    else
+        printf '%s = %s\n' "$key" "$value" >> "$CFG"
+    fi
+}
+set_option max_resources "$MAX_RESOURCES"
+set_option max_online_users "$MAX_ONLINE_USERS"
+set_option login_rate "$LOGIN_RATE"
+set_option login_burst "$LOGIN_BURST"
+set_option max_registrations_per_hour "$MAX_REGISTRATIONS_PER_HOUR"
+set_option muc_event_rate "$MUC_EVENT_RATE"
+
+say "checking the configuration"
+if ! "$PROSODYCTL" check config; then
+    cp -a "$BACKUP" "$CFG"
+    die "prosodyctl check config failed: the backup is back in place, nothing restarted"
+fi
+
+if [ "$RESTART" = 1 ]; then
+    lines=0
+    [ -f "$LOG" ] && lines=$(wc -l < "$LOG")
+    say "restarting Prosody"
+    systemctl restart prosody
+    sleep 3
+    systemctl is-active --quiet prosody || die "Prosody did not start: sudo journalctl -u prosody -n 40"
+    say "Prosody is running. New lines in $LOG (empty is good):"
+    [ -f "$LOG" ] && tail -n +"$((lines + 1))" "$LOG" | tail -20
+fi
+
+say "now in $CFG:"
+grep -nE '"otrv4plus_|c2s_limit_sessions|^[[:space:]]*(max_resources|max_online_users|login_rate|login_burst|max_registrations_per_hour|muc_event_rate)[[:space:]]*=' "$CFG"
+say "done. To undo: sudo cp $BACKUP $CFG && sudo systemctl restart prosody"

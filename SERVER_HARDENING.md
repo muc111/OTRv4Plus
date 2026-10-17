@@ -5,6 +5,21 @@ creation being used to flood it. Written for the ThinkPad T450 server
 (Prosody from source in `/usr/local`, i2pd in front); the settings apply to
 any Prosody behind I2P.
 
+## The one command
+
+On the T450 (Prosody from source in `/usr/local`), everything below in one
+go -- both modules, the limits, and the room rate raised to 10:
+
+```bash
+cd ~/OTRv4Plus && git pull && sudo bash prosody/install-server-limits.sh
+```
+
+It backs up `prosody.cfg.lua` first, runs `prosodyctl check config` and
+puts the backup back if that fails, restarts Prosody and prints the settings
+it ended with and any new error-log lines. Running it again changes nothing.
+Override a value from the environment, e.g. `sudo LOGIN_RATE=20 bash
+prosody/install-server-limits.sh`.
+
 ## What protects the server today
 
 | Protection | State | What it does |

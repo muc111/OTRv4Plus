@@ -41,6 +41,8 @@
     <string name="message_channel_name">Messages</string>
     <string name="message_channel_description">Tells you a message arrived. Never shows who it is from or what it says.</string>
     <string name="message_arrived_one">New message</string>
+    <string name="attention_channel_name">Requests</string>
+    <string name="attention_channel_description">Verification requests and group invitations. Never shows who sent them or which group.</string>
     <string name="message_arrived_many">%1$d new messages</string>
     <!-- Calls follow the same rule as messages: nothing about who. A caller's
          name on a locked screen would announce who talks to this device. -->

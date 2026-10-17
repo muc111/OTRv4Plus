@@ -21,6 +21,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- The short buzz for something arriving while the app is on screen
+         (AlertFeedback); notifications vibrate through their channels. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
 
     <!--
       THE MOMENT THIS WAITED FOR. This declaration was deliberately held

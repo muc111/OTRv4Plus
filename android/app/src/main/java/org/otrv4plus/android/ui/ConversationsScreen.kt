@@ -244,7 +244,15 @@ fun ConversationsScreen(
 
             // A password-protected group's room (device report, 2026-10-16:
             // the join failed with "not_authorized" and nothing asked).
-            model.groupRoomPasswordFor?.let { room -> GroupRoomPasswordPrompt(model, room) }
+            model.groupRoomPasswordFor?.let { room ->
+                // A tone and a buzz when the prompt appears (owner,
+                // 2026-10-17), once per room asked about.
+                val context = androidx.compose.ui.platform.LocalContext.current
+                LaunchedEffect(room) {
+                    org.otrv4plus.android.connection.AlertFeedback.inApp(context)
+                }
+                GroupRoomPasswordPrompt(model, room)
+            }
 
             if (BuildConfig.DEV_DIAGNOSTICS && model.droppedEvents > 0) {
                 Text(
