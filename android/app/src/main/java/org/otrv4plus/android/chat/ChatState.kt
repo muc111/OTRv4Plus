@@ -923,7 +923,9 @@ class ChatState(
         )
         if (added) deleted.restore(room)
         if (added && uiVisible && openConversation == room) store.markRead(room)
-        return added
+        // A room's replayed history (on joining) or its archive is stored,
+        // never announced: twenty old lines are not twenty new messages.
+        return added && event.source == "live"
     }
 
     fun receive(event: OtrEvent.MessageReceived): Boolean {

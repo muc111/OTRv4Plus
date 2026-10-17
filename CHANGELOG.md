@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.106 — 2026-10-17 — a room's history is shown whole, corrections included (core 0.13.1)
+
+- **Fixed: your own earlier messages in a room were missing after signing
+  in again.** When you join, the room replays its recent history (the
+  Welcome room on the T450: its last 20 messages). Every line from your own
+  nickname was taken for the room echoing what you had just sent, and
+  dropped, so after Sign out, or on another phone, your own messages and
+  your corrections to them were gone. Replayed history is now told apart
+  from a live echo: your lines are shown as yours, and a correction in the
+  history replaces the original, for you as for everyone.
+- **Replayed history keeps its own time and makes no sound.** The replay
+  marker was read through a part of slixmpp the app does not load, so it was
+  never seen: old lines were stamped with the time you joined, and on a
+  fresh sign-in could sound as new messages. Twenty old lines are now
+  stored with their real times, and never announced.
+
 ## Android 0.7.0-experimental.rc.105 — 2026-10-17 — an old connection can no longer break the new one (core 0.13.1)
 
 - **Fixed: a reconnect could be undone by the connection it replaced.**

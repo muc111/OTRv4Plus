@@ -2532,26 +2532,38 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         if not body or not nick:
             return
         own = nick == self._our_nick(room)
+        # A <delay> on a room message is the room replaying its history as
+        # we join (XEP-0045 §7.2.15): "history", not news. Read from the XML:
+        # slixmpp's stanza["delay"] needs the xep_0203 plugin, which is not
+        # loaded, and silently reads as no delay at all.
+        stamp = 0.0
         try:
-            item = self._room_item(stanza.xml)
+            delay = stanza.xml.find("{urn:xmpp:delay}delay")
+        except Exception:
+            delay = None
+        history = delay is not None
+        if history:
+            import otrv4plus_roomsync as _RS
+            stamp = _RS.parse_stamp(delay.get("stamp") or "") or 0.0
+        try:
+            item = self._room_item(stanza.xml, "history" if history else "live")
         except Exception:
             item = None
-        # Our own reflection is not shown again -- except a secure group's MLS
-        # frames, which need it: a commit learns it won the epoch by coming
-        # back first (android_bridge.groups). A plain one goes up only to say
-        # which id the room gave our message (its stanza-id), which is what
-        # reactions and deletions in a room name.
-        if own and not body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
+        # Our own LIVE reflection is not shown again -- except a secure
+        # group's MLS frames, which need it: a commit learns it won the epoch
+        # by coming back first (android_bridge.groups). A plain one goes up
+        # only to say which id the room gave our message (its stanza-id),
+        # which is what reactions and deletions in a room name.
+        #
+        # Our own message in the room's HISTORY is not an echo: it is what we
+        # said before this session -- before Sign out, or on another phone --
+        # and it is shown, and our corrections in it applied (owner,
+        # 2026-10-17: "messages in the public room should be displayed for
+        # all users who login ... the corrected must overwrite the original").
+        if own and not history and not body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
             if item is not None and item.own_id and item.stanza_id:
                 self._room_route(room, nick, "", item.when, True, item)
             return
-        stamp = 0.0
-        try:
-            delay = stanza["delay"]["stamp"]
-            if delay:
-                stamp = delay.timestamp()
-        except Exception:
-            stamp = 0.0
         if own:
             args, kwargs = (room, nick, body, stamp or time.time()), {"own": True}
         else:

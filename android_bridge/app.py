@@ -664,8 +664,10 @@ class OtrApp:
         refs.remember(room, item.own_id, item.ref)
         if not refs.first_time(item):
             return True
-        if own and item.source != "archive":
+        if own and item.source == "live":
             # The room's id for a message we sent: say so, show nothing.
+            # (Our own from its history or archive is shown: see
+            # XmppTransport._on_groupchat.)
             if item.own_id and item.stanza_id:
                 self._emit(RoomMessageAcked(peer=room, message_id=item.own_id,
                                             stanza_id=item.stanza_id))
