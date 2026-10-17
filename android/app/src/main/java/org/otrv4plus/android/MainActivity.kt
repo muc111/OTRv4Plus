@@ -389,6 +389,11 @@ class MainActivity : ComponentActivity() {
                                     model = chat,
                                     onBack = { selectTab(MainTab.CHATS) },
                                     onOpenChat = ::openChat,
+                                    onOpenProfile = { who ->
+                                        profileOf = who
+                                        profileBack = Screen.PEOPLE
+                                        screen = Screen.PROFILE
+                                    },
                                     showBack = false,
                                 )
                             }

@@ -4,6 +4,12 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.107 — 2026-10-17 — a profile from People (core 0.13.1)
+
+- **New: "Profile" in People.** Tapping a person on the People tab offered
+  only Close and Open chat. It now also offers Profile: their profile, where
+  tapping the picture shows it full screen. Back returns to People.
+
 ## Android 0.7.0-experimental.rc.106 — 2026-10-17 — a room's history is shown whole, corrections included (core 0.13.1)
 
 - **Fixed: your own earlier messages in a room were missing after signing

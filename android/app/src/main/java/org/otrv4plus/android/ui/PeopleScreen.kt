@@ -37,6 +37,8 @@ fun PeopleScreen(
     model: ChatViewModel,
     onBack: () -> Unit,
     onOpenChat: (String) -> Unit,
+    /** Their profile (picture full screen from there). Owner, 2026-10-17. */
+    onOpenProfile: (String) -> Unit = {},
     /** False when shown as a tab: the bottom bar is the way out. */
     showBack: Boolean = true,
 ) {
@@ -119,6 +121,7 @@ fun PeopleScreen(
             PersonDetails(
                 entry,
                 onChat = { showing = null; onOpenChat(entry.jid) },
+                onProfile = { showing = null; onOpenProfile(entry.jid) },
                 onAdd = { model.addContact(entry.jid) },
                 onAccept = { model.answerSubscription(entry.jid, true) },
                 onDismiss = { showing = null },
@@ -184,6 +187,7 @@ private fun RelationAction(entry: OnlineUsers.Entry, onAdd: () -> Unit, onAccept
 private fun PersonDetails(
     entry: OnlineUsers.Entry,
     onChat: () -> Unit,
+    onProfile: () -> Unit,
     onAdd: () -> Unit,
     onAccept: () -> Unit,
     onDismiss: () -> Unit,
@@ -202,7 +206,12 @@ private fun PersonDetails(
                 RelationAction(entry, onAdd, onAccept)
             }
         },
-        confirmButton = { TextButton(onClick = onChat) { Text("Open chat") } },
+        confirmButton = {
+            Row {
+                TextButton(onClick = onProfile) { Text("Profile") }
+                TextButton(onClick = onChat) { Text("Open chat") }
+            }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Close") } },
     )
 }

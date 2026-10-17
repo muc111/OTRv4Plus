@@ -95,3 +95,19 @@ class TestEveryoneOnScreenGetsATone:
         manifest = open(os.path.join(ROOT, "android", "app", "src", "main",
                                      "AndroidManifest.xml")).read()
         assert "android.permission.VIBRATE" in manifest
+
+
+class TestPeopleOpenAProfile:
+    """Owner (2026-10-17): People's details had only Close and Open chat."""
+
+    def test_the_details_offer_profile(self):
+        people = _read("ui", "PeopleScreen.kt")
+        assert 'TextButton(onClick = onProfile) { Text("Profile") }' in people
+        assert "onProfile = { showing = null; onOpenProfile(entry.jid) }" in people
+
+    def test_it_opens_the_contact_profile_and_back_returns_to_people(self):
+        main = _read("MainActivity.kt")
+        i = main.index("PeopleScreen(")
+        block = main[i:i + 600]
+        assert "profileBack = Screen.PEOPLE" in block
+        assert "screen = Screen.PROFILE" in block
