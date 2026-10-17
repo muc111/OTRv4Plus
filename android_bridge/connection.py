@@ -350,8 +350,26 @@ class ConnectionController:
         return getattr(transport, "subscription_policy",
                        SubscriptionPolicy.ACCEPT)
 
+    def retire(self) -> None:
+        """Kotlin is replacing this controller with a new one (each connect
+        attempt builds one). From now on nothing this controller's transport
+        reports may touch the app: a late "disconnected" or "replaced" from
+        the old stream used to clear the NEW connection's rooms and presence
+        (owner report, 2026-10-17: typing in the Welcome room, then the
+        connection fell over and did not come back). A transport that is no
+        longer connected is also closed here, so its I2P tunnel and client
+        cannot linger beside the new one. A live one is left alone: retiring
+        is not disconnecting."""
+        self._retired = True
+        transport = self._transport
+        if transport is not None and not getattr(transport, "is_connected", False):
+            self._release_transport(clear_app=False)
+
     def _on_transport_state(self, state: str, _server: str) -> None:
         """Translate a transport state into a stage, and never invent one."""
+        if getattr(self, "_retired", False):
+            _TRACE.record("controller", "stale_state_ignored", "info", state=state)
+            return
         if state == "replaced":
             # Another sign-in of this account took the server's only slot
             # (transport.REPLACED_TEXT). A failure the user must act on, not
@@ -879,7 +897,7 @@ class ConnectionController:
                       "detail": "Disconnected."}
         return dict(self._last)
 
-    def _release_transport(self) -> None:
+    def _release_transport(self, clear_app: bool = True) -> None:
         """Close the transport and forget it. Never raises.
 
         `close` rather than `disconnect`: the worker thread and the SAM tunnel
@@ -888,21 +906,25 @@ class ConnectionController:
         transport is exactly the shape that leaked a loop thread per attempt.
         """
         transport, self._transport = self._transport, None
-        # The call path goes with the connection it was built for.
-        try:
-            import otrv4plus_warmpath
-            otrv4plus_warmpath.WARM.close()
-        except Exception:
-            pass
+        # The call path goes with the connection it was built for -- unless
+        # this is a retired controller's leftover: the new connection holds
+        # the call path now (it is shared, one per process).
+        if clear_app:
+            try:
+                import otrv4plus_warmpath
+                otrv4plus_warmpath.WARM.close()
+            except Exception:
+                pass
         if transport is not None:
             try:
                 transport.close()
             except Exception:
                 pass
-        try:
-            self._app._transport = None
-        except Exception:
-            pass
+        if clear_app and getattr(self._app, "_transport", None) is transport:
+            try:
+                self._app._transport = None
+            except Exception:
+                pass
 
     def drain_events(self, limit: int = 0) -> List[Dict[str, Any]]:
         """Hand the UI everything that has happened since it last asked.

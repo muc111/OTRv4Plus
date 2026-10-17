@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.105 — 2026-10-17 — an old connection can no longer break the new one (core 0.13.1)
+
+- **Fixed: a reconnect could be undone by the connection it replaced.**
+  Owner report: typing in the Welcome room, the connection fell over and
+  did not come back. Every connect attempt builds a new connection object;
+  the old one was dropped but not shut out. A late "disconnected" from it
+  cleared the NEW connection's rooms and who is online, and since the
+  server keeps one session per account (the newest), the old stream being
+  signed out could fail the new connection with "signed in on another
+  device", which stops reconnecting. The old one is now retired before the
+  new one is built: its dead tunnel is closed and anything it reports later
+  is ignored.
+
 ## Android 0.7.0-experimental.rc.104 — 2026-10-17 — a lost built-in router is restarted (core 0.13.1)
 
 - **The built-in router restarts itself when it has lost its way.** Since

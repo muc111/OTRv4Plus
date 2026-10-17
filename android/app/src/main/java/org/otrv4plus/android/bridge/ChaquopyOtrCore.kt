@@ -281,6 +281,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 .callAttr("set_system_resolvers", activeDnsServers().toTypedArray())
         }
         val module = python.getModule("android_bridge.connection")
+        // The old controller first: its dead transport is closed, and nothing
+        // it reports later may touch the app the new one is about to use.
+        controller?.let { old -> runCatching { old.callAttr("retire") } }
         controller = module.callAttr(
             "controller_for", requireApp(), jid, server, samHost, samPort)
         return connectionStatus()
