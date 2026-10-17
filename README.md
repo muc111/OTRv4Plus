@@ -43,16 +43,8 @@ newest Android build is kept there, so the one you see is the one to test.
 I2P app already running on the phone, and its own router otherwise. The first
 start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+.
 
-**What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms,
-OTRv4+ encryption, SMP identity verification, encrypted file transfer with a
-Termux peer, two-way voice calls (app to app, and app to Termux),
-end-to-end encrypted group chat (four accounts on two phones: two in the app,
-two in Termux, all sending and receiving), and
-account creation and login on an ordinary clearnet server (yax.im, over
-TLS with the certificate verified).
-**Not yet tested on a phone:** the newest additions listed in
-[CHANGELOG.md](CHANGELOG.md). The step-by-step test list
-is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
+**What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms, OTRv4+ encryption, SMP identity verification, encrypted file transfer with a Termux peer, two-way voice calls (app to app, and app to Termux), end-to-end encrypted group chat (four accounts on two phones: two in the app, two in Termux, all sending and receiving), and account creation and login on an ordinary clearnet server (yax.im, over TLS with the certificate verified).
+**Not yet tested on a phone:** the newest additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 
 ## Project status
 
@@ -66,6 +58,18 @@ is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
 | Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls are implemented but **not yet tested on a phone**. Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
 | Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) and [SECURITY_AUDIT_2026-10-11.md](SECURITY_AUDIT_2026-10-11.md) |
+
+## Server capacity (stress test)
+
+One 2015 ThinkPad T450 running Prosody, measured with the built-in stress test: every user in an encrypted (MLS) group of 20, each sending a message a minute, far more than people do. Local connections; I2P not yet measured.
+
+| Users online | Prosody CPU (of one core) | Memory | Delivery time, typical / slowest 5% | Delivered |
+|---|---|---|---|---|
+| 200 | 8.5% | 53 MB | 0.11 s / 0.23 s | ~100% |
+| 400 | 17.5% | 106 MB | 0.17 s / 0.34 s | ~100% |
+| 800 | 37% | 303 MB | 0.31 s / 0.56 s | ~100% |
+
+Load grows in a straight line: about **1,700 users** at 80% of the one core Prosody uses. The server is capped at **2,000 online**, lets sign-ins in 10 a second so a restart does not spike it, and limits new accounts per hour. Method and raw results: [STRESS_TEST.md](STRESS_TEST.md); limits: [SERVER_HARDENING.md](SERVER_HARDENING.md).
 
 ## Security assessment and audit status
 
@@ -220,14 +224,9 @@ Building on musl (Alpine), every option and all commands: [TECHNICAL.md](TECHNIC
 
 ## Documentation
 
-- [TECHNICAL.md](TECHNICAL.md): the full technical reference
-- [SPEC.md](SPEC.md): wire-level protocol specification
-- [SECURITY.md](SECURITY.md): threat model and known issues
-- [CHANGELOG.md](CHANGELOG.md): what changed in each version
-- [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md): encrypted group chat (MLS) design and threat model
-- [OTRV4PLUS_CAPABILITY.md](OTRV4PLUS_CAPABILITY.md): how the app decides who can receive OTRv4+
-- [PROSODY_USER_DISCOVERY.md](PROSODY_USER_DISCOVERY.md): the People list and the Welcome room
-- [CONTRIBUTING.md](CONTRIBUTING.md): how to contribute
+[TECHNICAL.md](TECHNICAL.md) (full reference) · [SPEC.md](SPEC.md) (wire protocol) · [SECURITY.md](SECURITY.md) (threat model, known issues) · [CHANGELOG.md](CHANGELOG.md) · [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md) (group chat design) · [OTRV4PLUS_CAPABILITY.md](OTRV4PLUS_CAPABILITY.md) (who can receive OTRv4+) · [PROSODY_USER_DISCOVERY.md](PROSODY_USER_DISCOVERY.md) (People list, Welcome room) · [CONTRIBUTING.md](CONTRIBUTING.md)
+
+Running a server: [STRESS_TEST.md](STRESS_TEST.md) · [SERVER_HARDENING.md](SERVER_HARDENING.md) (limits, one-command install) · [SECURITY_SESSIONS.md](SECURITY_SESSIONS.md) (one session per account)
 
 ## License
 
