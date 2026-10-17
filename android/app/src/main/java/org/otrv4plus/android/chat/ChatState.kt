@@ -699,6 +699,7 @@ class ChatState(
         requests = pendingSubscriptions,
         discovered = discoveredOnline(),
         self = account.bareJid,
+        isRoom = { isRoom(it) || isSecureRoom(it) },
     )
 
     /**

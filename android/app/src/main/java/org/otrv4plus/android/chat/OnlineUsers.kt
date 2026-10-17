@@ -89,8 +89,15 @@ object OnlineUsers {
         requests: List<OtrEvent.SubscriptionRequested>,
         discovered: Set<String>,
         self: String,
+        /** Rooms and secure groups this account knows: never a person. */
+        isRoom: (String) -> Boolean = { false },
     ): List<Entry> {
         val me = ChatState.bare(self)
+        // People only (owner, 2026-10-17: "Rooms should not be listed in the
+        // people tab, only users"). A room is not a person, and neither is
+        // anything on a subdomain of our server (conference.<domain>, an
+        // upload or proxy service): accounts live at the domain itself.
+        fun person(jid: String): Boolean = isPerson(jid, me) && !isRoom(jid)
         val byJid = LinkedHashMap<String, Entry>()
         val known = conversations.associateBy { ChatState.bare(it.jid) }
         fun security(jid: String): Pair<Boolean, Boolean> {
@@ -105,7 +112,7 @@ object OnlineUsers {
 
         for (r in requests) {
             val jid = ChatState.bare(r.peer)
-            if (jid.isEmpty() || jid == me) continue
+            if (jid.isEmpty() || jid == me || !person(jid)) continue
             // Under ACCEPT the server was answered already; nothing to decide.
             if (r.policy != SubscriptionPolicy.ASK) continue
             val (enc, ver) = security(jid)
@@ -113,7 +120,7 @@ object OnlineUsers {
         }
         for (c in conversations) {
             val jid = ChatState.bare(c.jid)
-            if (!c.saved || jid == me || jid in byJid || !jid.contains('@')) continue
+            if (!c.saved || jid == me || jid in byJid || !person(jid)) continue
             val relation = when (c.presence) {
                 Presence.PENDING -> Relation.PENDING
                 Presence.ONLINE -> Relation.ADDED_ONLINE
@@ -128,13 +135,29 @@ object OnlineUsers {
         }
         for (raw in discovered) {
             val jid = ChatState.bare(raw)
-            if (jid.isEmpty() || jid == me || jid in byJid || !jid.contains('@')) continue
+            if (jid.isEmpty() || jid == me || jid in byJid || !person(jid)) continue
             val (enc, ver) = security(jid)
             byJid[jid] = Entry(jid, name(jid), Relation.ONLINE_ADD, enc, ver)
         }
         return byJid.values.sortedWith(
             compareBy<Entry> { it.relation.ordinal }
                 .thenBy { it.displayName.lowercase() })
+    }
+
+    /**
+     * Whether [jid] can be a person's account: `name@domain`, no resource,
+     * and not on a subdomain of our own server's domain ([self]'s), which is
+     * where XMPP services live (conference.otrv4plus.i2p is the rooms
+     * service, not a user).
+     */
+    @JvmStatic
+    fun isPerson(jid: String, self: String): Boolean {
+        val bare = ChatState.bare(jid)
+        val local = bare.substringBefore('@', "")
+        val domain = bare.substringAfter('@', "")
+        if (local.isEmpty() || domain.isEmpty() || '/' in bare) return false
+        val ours = ChatState.bare(self).substringAfter('@', "")
+        return ours.isEmpty() || !domain.endsWith(".$ours")
     }
 
     /** The chat list's button beside the connection state: "People (2)",

@@ -160,6 +160,7 @@ installed), and with the Termux client.
 | Password rooms | Rooms: tap Join on a room marked 🔒: the password is asked for first; a wrong one asks again in red; the right one joins. An encrypted group you have not been invited to says to ask for an invitation instead of joining | rc.113 |
 | Ask to join | Rooms: three sections (your encrypted groups; encrypted groups on the server; plain rooms, marked not encrypted). Ask to join on a group you are not in: a member sees "… asks to join" with Invite / Dismiss; Invite sends the invitation. New encrypted groups offer no password | rc.114 |
 | Sign-in retries | Sign in with the built-in router: the attempts count should be lower and "sign-in" shorter than before | rc.115 |
+| People only | People tab: no rooms (nothing @conference.…), only accounts | rc.116 |
 | Change password | Profile → **Change password…**: a wrong current password is refused without contacting the server; a good change says **"Password changed"**; then close the app and open it again: it signs in with the new password without asking; another device with the old password cannot sign in | rc.96 |
 | Pictures and profiles | Tap a contact's picture in the chat list, or at the top of their chat: their profile opens; Back returns to where you were. Tap the profile picture: it fills the screen; tap to close | rc.97 |
 | Busy group | In a secure group where several people send at once (or after reconnecting to a busy group), every message arrives; none silently missing | rc.93 |

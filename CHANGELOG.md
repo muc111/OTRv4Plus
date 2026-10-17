@@ -4,6 +4,14 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.116 — 2026-10-17 — People lists people only (core 0.13.1)
+
+- **Rooms are no longer listed on People** (owner report). The list, and
+  the count on its button, now show accounts only: never a room or
+  encrypted group, and never anything on a subdomain of the server
+  (`conference.otrv4plus.i2p` and other services). Accounts on other
+  servers are still listed.
+
 ## Android 0.7.0-experimental.rc.115 — 2026-10-17 — sign-in retries reuse their tunnels (core 0.13.1)
 
 - **Fewer, faster sign-in attempts.** Owner's timing: "I2P router 0:02,

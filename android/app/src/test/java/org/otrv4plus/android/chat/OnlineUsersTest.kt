@@ -155,4 +155,27 @@ class OnlineUsersTest {
         assertTrue("timed out" in OnlineUsers.welcomeCreated(false, "timeout", "timed out",
                                                              emptyList()))
     }
+
+    @Test
+    fun `rooms and services are never listed as people`() {
+        val list = OnlineUsers.directory(
+            conversations = emptyList(),
+            requests = emptyList(),
+            discovered = setOf(alice, "welcome@conference.otrv4plus.i2p",
+                               "team@otrv4plus.i2p", "conference.otrv4plus.i2p",
+                               "upload.otrv4plus.i2p"),
+            self = me,
+            isRoom = { it == "team@otrv4plus.i2p" },
+        )
+        assertEquals(listOf(alice), list.map { it.jid })
+    }
+
+    @Test
+    fun `a person is name at domain, not on a subdomain of ours`() {
+        assertTrue(OnlineUsers.isPerson(bob, me))
+        assertFalse(OnlineUsers.isPerson("lobby@conference.otrv4plus.i2p", me))
+        assertFalse(OnlineUsers.isPerson("conference.otrv4plus.i2p", me))
+        // Another server's accounts are still people.
+        assertTrue(OnlineUsers.isPerson("carol@other.i2p", me))
+    }
 }
