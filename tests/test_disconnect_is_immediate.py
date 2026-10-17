@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""Disconnect and Sign out show at once (owner report, 2026-10-16).
+"""Sign out shows at once (owner report, 2026-10-16), and only the
+deliberate ends stop the built-in router.
 
 The screens read the service's `status`. A disconnect tore the connection
 down on a background thread -- up to ~15 s over I2P: the stream, the SAM
@@ -17,7 +18,7 @@ SERVICE = os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
 
 def _stop_connection() -> str:
     src = open(SERVICE).read()
-    body = src[src.index("fun stopConnection(explicit: Boolean)"):]
+    body = src[src.index("fun stopConnection(explicit: Boolean"):]
     return body[:body.index("private suspend fun connectLoop")]
 
 
@@ -39,4 +40,23 @@ def test_sign_out_goes_through_the_same_path():
     src = open(SERVICE).read()
     logout = src[src.index("ACTION_LOGOUT ->"):]
     logout = logout[:logout.index("credentials.clear()")]
-    assert "stopConnection(explicit = true)" in logout
+    assert "stopConnection(explicit = true, stopRouter = true)" in logout
+
+
+def test_only_sign_out_wipe_closing_and_stop_take_the_router():
+    """rc.100: no Disconnect; the built-in router stays warm between
+    connections, because one started cold cannot be reached for minutes."""
+    src = open(SERVICE).read()
+    body = _stop_connection()
+    assert "if (stopRouter) {" in body
+    assert "fun stopConnection(explicit: Boolean, stopRouter: Boolean = false)" in body
+    destroy = src[src.index("override fun onDestroy()"):]
+    destroy = destroy[:destroy.index("super.onDestroy()")]
+    assert "stopConnection(explicit = true, stopRouter = true)" in destroy
+    stop = src[src.index("ACTION_STOP ->"):src.index("ACTION_LOGOUT ->")]
+    assert "stopRouter = !keepRouter" in stop
+    vm = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                           "android/ConnectionViewModel.kt")).read()
+    assert "fun disconnect()" not in vm
+    cancel = vm[vm.index("fun cancelConnect()"):]
+    assert "keepRouter = true" in cancel[:cancel.index("}")]

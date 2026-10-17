@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.100 — 2026-10-17 — no Disconnect; the built-in router stays warm (core 0.13.1)
+
+- **Disconnect is gone** (owner decision). The app stays connected until
+  **Sign out**, or until it is closed (swiped away, or Stop in its
+  notification). Wipe & Exit is unchanged.
+- **The built-in I2P router keeps running between connections.** It was
+  stopped on every Disconnect, and a router started cold cannot be reached
+  for 5-10 minutes, so reconnecting meant waiting through that every time
+  (rc.98). Now only Sign out, Wipe & Exit, the notification's Stop and the
+  app being closed stop it. Cancel during sign-in leaves it running.
+
 ## Android 0.7.0-experimental.rc.99 — 2026-10-16 — a full server says so; server limits (core 0.13.1)
 
 - **New server module `prosody/mod_otrv4plus_capacity.lua`:** a hard cap on

@@ -441,18 +441,15 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                                    server.trim())
     }
 
-    /** Stop an attempt that is still running. */
+    /**
+     * Stop an attempt that is still running. The built-in router keeps
+     * running: there is no Disconnect any more (owner, 2026-10-16) -- Sign
+     * out, or closing the app, ends everything.
+     */
     fun cancelConnect() {
         login.cancelled()
         revision++
-        OtrConnectionService.stop(getApplication())
-    }
-
-    /** The user asked to disconnect, which also stops reconnecting. */
-    fun disconnect() {
-        login.cancelled()
-        revision++
-        OtrConnectionService.stop(getApplication())
+        OtrConnectionService.stop(getApplication(), keepRouter = true)
     }
 
     /**

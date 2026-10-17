@@ -359,22 +359,15 @@ fun ConnectScreen(
             Button(onClick = onConnected, modifier = Modifier.fillMaxWidth().height(52.dp)) {
                 Text("Open conversations")
             }
-            // DISCONNECT ends the connection and keeps the account. SIGN OUT
-            // forgets this account (credentials and history) and keeps the
-            // app. Wipe & Exit (in ⋮) destroys everything. None is ever
-            // described as another.
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(
-                    enabled = busy == null,
-                    onClick = { model.disconnect() },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Disconnect") }
-                OutlinedButton(
-                    enabled = busy == null,
-                    onClick = { model.logout() },
-                    modifier = Modifier.weight(1f),
-                ) { Text("Sign out") }
-            }
+            // No Disconnect (owner, 2026-10-16): the app stays connected,
+            // and its built-in router warm, until SIGN OUT, which forgets
+            // this account (credentials and history), or until the app is
+            // closed. Wipe & Exit (in ⋮) destroys everything.
+            OutlinedButton(
+                enabled = busy == null,
+                onClick = { model.logout() },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Sign out") }
         }
 
         // Only while an attempt is actually running. The one control that is

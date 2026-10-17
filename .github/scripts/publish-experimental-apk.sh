@@ -154,8 +154,9 @@ installed), and with the Termux client.
 | Group status and call limit | A new group reads **"Encrypted Chat \| 0/1 users verified"**; the count rises only as verification succeeds (you count once a verification you took part in succeeds); a group of **6 or more has no call button** ("Text only") | rc.84–rc.90 |
 | Signed in elsewhere | Sign in with the same account on a second device: the first shows **"Your account is also signed in on another device"**; as server admin, **Sign out other devices** ends the second session (your own stays up) | rc.91 |
 | One session per account | With `mod_otrv4plus_one_session` and `max_resources = 1` (SECURITY_SESSIONS.md), sign in on a second device: it gets in, and the first says **"Signed out: this account signed in on another device"** and does **not** reconnect by itself. Drop the connection (airplane mode) and reconnect: you get straight back in | rc.95 |
-| Disconnect / Sign out | Pressing either shows the sign-in screen at once (the teardown carries on in the background) | rc.95 |
-| Change password | Profile → **Change password…**: a wrong current password is refused without contacting the server; a good change says **"Password changed"**; then Disconnect and Connect again: it signs in with the new password without asking; another device with the old password cannot sign in | rc.96 |
+| Sign out | Shows the sign-in screen at once (the teardown carries on in the background). There is no Disconnect: the app stays connected until Sign out or until it is closed | rc.95, rc.100 |
+| Built-in router stays warm | With the built-in router: Cancel a sign-in, then sign in again: it connects without the 5-10 minute warm-up | rc.100 |
+| Change password | Profile → **Change password…**: a wrong current password is refused without contacting the server; a good change says **"Password changed"**; then close the app and open it again: it signs in with the new password without asking; another device with the old password cannot sign in | rc.96 |
 | Pictures and profiles | Tap a contact's picture in the chat list, or at the top of their chat: their profile opens; Back returns to where you were. Tap the profile picture: it fills the screen; tap to close | rc.97 |
 | Busy group | In a secure group where several people send at once (or after reconnecting to a busy group), every message arrives; none silently missing | rc.93 |
 | Invite several | In a secure group, "Invite people online…": tick several, "Invite N people"; each gets an invitation and those who accept join | rc.94 |
@@ -250,7 +251,8 @@ app uses an I2P app already running on the phone when its SAM bridge answers,
 and starts its own otherwise, so no separate I2P app is needed. It relays a
 little traffic for others (bandwidth class L, at most 50 transit tunnels),
 is never a floodfill, opens no ports on your home router (no UPnP), and is
-stopped on Disconnect, Sign out and Wipe & Exit. The icon is a
+kept running between connections (a router started cold cannot be reached
+for minutes) and stopped on Sign out, Wipe & Exit and when the app is closed. The icon is a
 **placeholder** (AI-generated, no licence asserted -- see \`ASSETS.md\`).
 
 \`ANDROID_XMPP_MILESTONE.md\` §7 is the open gate list, item by item;

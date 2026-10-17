@@ -587,10 +587,12 @@ class TestTheAndroidSideIsWired:
         for field in ("controller = null", "app = null", "initResult = null"):
             assert field in body
 
-    def test_the_three_buttons_say_what_they_do(self):
+    def test_the_buttons_say_what_they_do(self):
+        """No Disconnect since rc.100 (owner, 2026-10-16): Sign out, or
+        closing the app, ends the connection."""
         screen = _kt("ui", "ConnectScreen.kt")
-        assert re.search(r'onClick = \{ model\.disconnect\(\) \},\s+modifier = Modifier\.weight\(1f\),\s+\) \{ Text\("Disconnect"\) \}', screen)
-        assert re.search(r'onClick = \{ model\.logout\(\) \},\s+modifier = Modifier\.weight\(1f\),\s+\) \{ Text\("Sign out"\) \}', screen)
+        assert 'Text("Disconnect")' not in screen
+        assert re.search(r'onClick = \{ model\.logout\(\) \},\s+modifier = Modifier\.fillMaxWidth\(\),\s+\) \{ Text\("Sign out"\) \}', screen)
         # Wipe & Exit is in the screen's menu (owner, 2026-10-14: three
         # buttons in a row looked cluttered), with the one shared
         # confirmation (ui/WipeControl.kt) that carries the task removal.

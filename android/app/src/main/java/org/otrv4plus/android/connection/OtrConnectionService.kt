@@ -258,9 +258,14 @@ class OtrConnectionService : Service() {
                 // Recorded because this is one of only three ways the app can
                 // reach DISCONNECTING, and telling them apart afterwards is
                 // the whole question.
+                // Cancel during sign-in keeps the built-in router: it may be
+                // minutes into its warm-up. The notification's Stop is the
+                // app being closed and takes the router with it.
+                val keepRouter = intent.getBooleanExtra(EXTRA_KEEP_ROUTER, false)
                 runCatching { core.note("service", "stop_requested", "info",
-                                        "the user asked to disconnect") }
-                stopConnection(explicit = true)
+                                        if (keepRouter) "the user cancelled the attempt"
+                                        else "the user stopped the app") }
+                stopConnection(explicit = true, stopRouter = !keepRouter)
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -269,7 +274,7 @@ class OtrConnectionService : Service() {
                 // Explicit logout: stop, and forget. The history goes with the
                 // credentials -- leaving a conversation behind for the next
                 // person to sign in on this phone would be worse than useless.
-                stopConnection(explicit = true)
+                stopConnection(explicit = true, stopRouter = true)
                 runCatching { credentials.clear() }
                 // This account's history, not the whole vault: another
                 // account's entries live under another prefix and are not
@@ -409,7 +414,7 @@ class OtrConnectionService : Service() {
         // last client unbinding from one that was never started.
         runCatching { core.note("service", "destroyed", "warning",
                                 "the service is being torn down") }
-        stopConnection(explicit = true)
+        stopConnection(explicit = true, stopRouter = true)
         drainer?.cancel()
         drainer = null
         scope.cancel()
@@ -599,10 +604,16 @@ class OtrConnectionService : Service() {
      * Stop, and mean it.
      *
      * `explicit` latches the reconnect policy, which is what separates "the
-     * user pressed Disconnect" from "the stream dropped". Only the first
-     * should stop the app coming back.
+     * user stopped it" from "the stream dropped". Only the first should stop
+     * the app coming back.
+     *
+     * [stopRouter]: also stop the built-in I2P router. Only Sign out, Wipe &
+     * Exit, the notification's Stop and the service going away do. A router
+     * kept running is reachable at once on the next connection; one started
+     * cold is not, for 5-10 minutes (owner, 2026-10-16: "it should keep
+     * running ... only logout").
      */
-    fun stopConnection(explicit: Boolean) {
+    fun stopConnection(explicit: Boolean, stopRouter: Boolean = false) {
         runCatching {
             core.note("service", "stop_connection",
                       if (explicit) "info" else "warning",
@@ -644,7 +655,7 @@ class OtrConnectionService : Service() {
                 // After the engine has closed its SAM sessions. Only on a
                 // stop the user asked for: a dropped stream reconnects, and
                 // through the same router.
-                if (explicit) {
+                if (stopRouter) {
                     runCatching { router.stop() }
                     routerState = RouterChoice.State.NOT_USED
                 }
@@ -1250,6 +1261,7 @@ class OtrConnectionService : Service() {
 
         const val ACTION_START = "org.otrv4plus.android.START"
         const val ACTION_STOP = "org.otrv4plus.android.STOP"
+        const val EXTRA_KEEP_ROUTER = "keep_router"
         const val ACTION_LOGOUT = "org.otrv4plus.android.LOGOUT"
         const val ACTION_WIPE = "org.otrv4plus.android.WIPE"
         const val EXTRA_DELETE_ACCOUNT = "delete_account"
@@ -1289,10 +1301,15 @@ class OtrConnectionService : Service() {
             ContextCompat.startForegroundService(context, intent)
         }
 
-        /** Stop it, and latch the reconnect policy so it stays stopped. */
-        fun stop(context: Context) {
+        /**
+         * Stop it, and latch the reconnect policy so it stays stopped.
+         * [keepRouter]: leave the built-in router running (Cancel during
+         * sign-in), so the next attempt does not start it cold.
+         */
+        fun stop(context: Context, keepRouter: Boolean = false) {
             val intent = Intent(context, OtrConnectionService::class.java)
                 .setAction(ACTION_STOP)
+                .putExtra(EXTRA_KEEP_ROUTER, keepRouter)
             ContextCompat.startForegroundService(context, intent)
         }
 
