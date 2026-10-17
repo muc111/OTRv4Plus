@@ -4,6 +4,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.103 — 2026-10-17 — one word for chats (core 0.13.1)
+
+- **"Chats" everywhere** (owner): the sign-in screen's button said "Open
+  conversations" while the list it opens, and its tab, say "Chats". Now
+  "Open chats"; the empty list says "No chats yet" (desktop too, with
+  "Select a chat").
+
 ## Android 0.7.0-experimental.rc.102 — 2026-10-17 — sound and vibration for messages and requests (core 0.13.1)
 
 - **Messages vibrate as well as sound.** In the background, the message

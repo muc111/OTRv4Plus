@@ -357,7 +357,7 @@ fun ConnectScreen(
             // No object is handed over. The chat screens read the core from
             // the ViewModel that owns it.
             Button(onClick = onConnected, modifier = Modifier.fillMaxWidth().height(52.dp)) {
-                Text("Open conversations")
+                Text("Open chats")
             }
             // No Disconnect (owner, 2026-10-16): the app stays connected,
             // and its built-in router warm, until SIGN OUT, which forgets

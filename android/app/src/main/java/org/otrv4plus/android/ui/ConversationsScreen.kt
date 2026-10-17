@@ -487,7 +487,7 @@ private fun EmptyConversations(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Text("No conversations yet",
+        Text("No chats yet",
             style = MaterialTheme.typography.titleMedium)
         Spacer(Modifier.height(8.dp))
         Text(

@@ -169,7 +169,7 @@ private fun ChatsPane(model: AppModel) {
                  fontWeight = FontWeight.SemiBold)
             val list = model.conversations()
             if (list.isEmpty()) {
-                Text("No conversations yet. Open People to start one.",
+                Text("No chats yet. Open People to start one.",
                      Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
                      style = MaterialTheme.typography.bodyMedium)
             }
@@ -194,7 +194,7 @@ private fun EmptyPane() {
         Icon(Icons.AutoMirrored.Filled.Chat, null, Modifier.size(56.dp),
              tint = MaterialTheme.colorScheme.outline)
         Spacer(Modifier.padding(6.dp))
-        Text("Select a conversation", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text("Select a chat", color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text("Keys never leave the engine; this window only shows what it is told.",
              style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.outline)
     }
