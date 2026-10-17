@@ -4,6 +4,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.112 — 2026-10-17 — one scrolling line above a group (core 0.13.1)
+
+- **The group's encryption line scrolls on one line** instead of a
+  four-line paragraph at the top of every group and room (owner request).
+  The whole sentence is kept -- screen readers read it in full -- and it
+  only moves when it does not fit.
+
 ## Android 0.7.0-experimental.rc.111 — 2026-10-17 — no long waits on a router that is nearly ready (core 0.13.1)
 
 - **Faster sign-in with the built-in router.** Owner's rc.110 timing:

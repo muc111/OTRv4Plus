@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -381,7 +382,14 @@ private fun RoomHeader(model: ChatViewModel, jid: String) {
             style = MaterialTheme.typography.bodySmall,
             color = if (secure) MaterialTheme.colorScheme.onSurfaceVariant
                     else MaterialTheme.colorScheme.error,
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
+            // One line that scrolls, not a four-line paragraph above every
+            // group (owner, 2026-10-17). The whole sentence is still the
+            // text: screen readers read it in full; it only moves when it
+            // does not fit.
+            maxLines = 1,
+            modifier = Modifier.fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 6.dp)
+                .basicMarquee(iterations = Int.MAX_VALUE),
         )
       }
     }
