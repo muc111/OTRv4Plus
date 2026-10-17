@@ -60,3 +60,14 @@ def test_only_sign_out_wipe_closing_and_stop_take_the_router():
     assert "fun disconnect()" not in vm
     cancel = vm[vm.index("fun cancelConnect()"):]
     assert "keepRouter = true" in cancel[:cancel.index("}")]
+
+
+def test_a_lost_router_is_restarted_from_the_failure_path():
+    src = open(SERVICE).read()
+    loop = src[src.index("private suspend fun connectLoop()"):]
+    loop = loop[:loop.index("val wait = reconnect.nextDelayMs()")]
+    assert "restartRouterIfLost(failure)" in loop
+    fn = src[src.index("private fun restartRouterIfLost("):]
+    fn = fn[:fn.index("\n    }\n")]
+    assert "RouterChoice.shouldRestart(" in fn
+    assert "routerState != RouterChoice.State.RUNNING" in fn   # ours only

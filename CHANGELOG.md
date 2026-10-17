@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.104 — 2026-10-17 — a lost built-in router is restarted (core 0.13.1)
+
+- **The built-in router restarts itself when it has lost its way.** Since
+  rc.100 it keeps running between connections instead of starting fresh
+  each time. Owner report: "CANT_REACH_PEER", and "the built-in router
+  worked better around rc.87". The router itself and its settings have not
+  changed since rc.53; what changed is that a router that has lost its
+  routes (a long sleep, a network change) was no longer replaced. Now, if
+  it has run 15 minutes or more and 4 attempts in a row fail to reach the
+  server, it is restarted, at most once per half hour. A young router is
+  still left to settle (rc.98).
+
 ## Android 0.7.0-experimental.rc.103 — 2026-10-17 — one word for chats (core 0.13.1)
 
 - **"Chats" everywhere** (owner): the sign-in screen's button said "Open

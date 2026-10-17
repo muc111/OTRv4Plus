@@ -49,6 +49,35 @@ object RouterChoice {
      * router carried their traffic. [bundled] is whether this APK carries a
      * router at all.
      */
+    /** What a router that cannot find its way round I2P makes a connection fail with. */
+    private val UNREACHABLE = setOf(
+        "i2p_destination_unreachable", "i2p_name_not_found", "i2p_session_failed",
+        "server_closed_connection", "timeout",
+    )
+
+    /** The built-in router has been up at least this long... */
+    const val RESTART_AFTER_UP_MS = 15 * 60_000L
+    /** ...and this many attempts in a row have failed reaching the server... */
+    const val RESTART_AFTER_FAILURES = 4
+    /** ...and it was not itself restarted in this long. */
+    const val RESTART_COOLDOWN_MS = 30 * 60_000L
+
+    /**
+     * Whether to restart the built-in router. Since rc.100 it runs from one
+     * sign-in to the next instead of starting fresh each time; a router that
+     * has lost its way round the network (a long sleep, a network change)
+     * then fails to reach the server again and again where a fresh one would
+     * not (owner, 2026-10-17: "the built-in router worked better around
+     * rc.87"). Never for a young router -- that is still settling (rc.98) --
+     * and at most once per [RESTART_COOLDOWN_MS], since a restart costs its
+     * own 5-10 minutes.
+     */
+    fun shouldRestart(code: String?, routerUpMs: Long, failuresInARow: Int,
+                      sinceLastRestartMs: Long): Boolean =
+        code in UNREACHABLE && routerUpMs >= RESTART_AFTER_UP_MS &&
+            failuresInARow >= RESTART_AFTER_FAILURES &&
+            sinceLastRestartMs >= RESTART_COOLDOWN_MS
+
     fun decide(externalAnswers: Boolean, bundled: Boolean): Use =
         if (externalAnswers || !bundled) Use.EXTERNAL else Use.BUILT_IN
 

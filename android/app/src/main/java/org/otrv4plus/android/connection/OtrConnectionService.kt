@@ -730,12 +730,36 @@ class OtrConnectionService : Service() {
                     enter(LinkPhase.FAILED, "needs the user: $failure")
                     return
                 }
+                restartRouterIfLost(failure)
             }
 
             val wait = reconnect.nextDelayMs() ?: return
             enter(LinkPhase.RECONNECTING, "backing off ${wait}ms")
             delay(wait)
         }
+    }
+
+    /** When the built-in router was last restarted for being lost; 0: never. */
+    private var routerRestartedAt = 0L
+
+    /**
+     * Restart the built-in router when it has been up a while and keeps
+     * failing to reach the server (RouterChoice.shouldRestart). The next
+     * attempt starts it again (chooseRouter).
+     */
+    private fun restartRouterIfLost(failure: String?) {
+        if (routerState != RouterChoice.State.RUNNING || router.startedAt == 0L) return
+        val now = System.currentTimeMillis()
+        if (!RouterChoice.shouldRestart(failure, now - router.startedAt, reconnect.attempts,
+                                        now - routerRestartedAt)) return
+        runCatching {
+            core.note("service", "router_restart", "warning",
+                      "built-in router up ${(now - router.startedAt) / 60_000} min, " +
+                          "${reconnect.attempts} failures in a row ($failure)")
+        }
+        runCatching { router.stop() }
+        routerState = RouterChoice.State.NOT_USED
+        routerRestartedAt = now
     }
 
     /**

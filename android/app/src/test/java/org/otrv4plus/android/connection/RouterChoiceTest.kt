@@ -132,4 +132,38 @@ class RouterChoiceTest {
         assertEquals("exited with code 1: bad option", RouterChoice.scrub(
             "exited with code 1: bad option"))
     }
+
+    // ── a router that has lost its way is restarted, once in a while ────────
+
+    private val min = 60_000L
+
+    @Test
+    fun `a long-running router that keeps failing to reach the server is restarted`() {
+        assertTrue(RouterChoice.shouldRestart("i2p_destination_unreachable",
+            routerUpMs = 40 * min, failuresInARow = 4, sinceLastRestartMs = Long.MAX_VALUE))
+    }
+
+    @Test
+    fun `a young router is left to settle`() {
+        assertFalse(RouterChoice.shouldRestart("i2p_destination_unreachable",
+            routerUpMs = 5 * min, failuresInARow = 9, sinceLastRestartMs = Long.MAX_VALUE))
+    }
+
+    @Test
+    fun `one or two failures are not enough`() {
+        assertFalse(RouterChoice.shouldRestart("timeout",
+            routerUpMs = 40 * min, failuresInARow = 2, sinceLastRestartMs = Long.MAX_VALUE))
+    }
+
+    @Test
+    fun `not again within half an hour`() {
+        assertFalse(RouterChoice.shouldRestart("timeout",
+            routerUpMs = 40 * min, failuresInARow = 6, sinceLastRestartMs = 10 * min))
+    }
+
+    @Test
+    fun `a wrong password never restarts the router`() {
+        assertFalse(RouterChoice.shouldRestart("auth_failed",
+            routerUpMs = 40 * min, failuresInARow = 6, sinceLastRestartMs = Long.MAX_VALUE))
+    }
 }
