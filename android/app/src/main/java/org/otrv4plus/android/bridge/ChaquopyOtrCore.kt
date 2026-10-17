@@ -463,7 +463,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                                      entry(item, "occupants").toIntOrNull(),
                                      secure = flag(item, "secure"),
                                      claimsSecure = flag(item, "claims_secure"),
-                                     password = flag(item, "password"))
+                                     password = flag(item, "password"),
+                                     hidden = flag(item, "hidden"))
             }
         }
         return outcomeOf(result) to rooms
@@ -671,6 +672,23 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
     /** Whether this account administers its server (XEP-0133 commands
      *  listed to it); null when the server did not say. */
+    /**
+     * A server admin's moderation of [account]: "status", "ban" ([days] 0 =
+     * permanent) or "unban". The server runs it for its admins only
+     * (prosody/mod_otrv4plus_moderation.lua).
+     */
+    fun moderate(op: String, account: String, days: Int = 0, reason: String = ""): Moderation {
+        val result = call("moderate", op, account, days, reason)
+            ?: return Moderation(notPrepared())
+        val value = listValue(result)
+        return Moderation(
+            outcome = outcomeOf(result),
+            banned = value?.let { flag(it, "banned") } ?: false,
+            until = value?.let { entry(it, "until").toLongOrNull() } ?: -1,
+            said = value?.let { entry(it, "message") }.orEmpty(),
+        )
+    }
+
     fun serverAdmin(): Boolean? {
         val result = call("server_admin") ?: return null
         if (!outcomeOf(result).ok) return null

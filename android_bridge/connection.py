@@ -384,6 +384,20 @@ class ConnectionController:
         if getattr(self, "_retired", False):
             _TRACE.record("controller", "stale_state_ignored", "info", state=state)
             return
+        if state == "banned":
+            # A server admin banned this account (transport.BANNED_CODE).
+            # Never reconnected: it would only be refused again.
+            from .transport import BANNED_CODE
+            text = getattr(self._transport, "banned_text", "") or "This account is banned."
+            try:
+                self._app.note_presence_lost()
+            except Exception:
+                _log.warning("could not clear presence on a transport drop")
+            forget = getattr(self._app, "forget_rooms", None)
+            if forget is not None:
+                forget()
+            self._fail(BANNED_CODE, text)
+            return
         if state == "replaced":
             # Another sign-in of this account took the server's only slot
             # (transport.REPLACED_TEXT). A failure the user must act on, not
@@ -1022,7 +1036,45 @@ class ConnectionController:
         offers joining a room by address.
         """
         result = self._muc_call("discover_rooms", service)
-        return self._with_held_groups(result, service)
+        return self._with_held_groups(self._with_admin_rooms(result, service), service)
+
+    def _with_admin_rooms(self, result: Dict[str, Any], service: str) -> Dict[str, Any]:
+        """A server admin sees EVERY room, hidden ones too (owner,
+        2026-10-17: "all rooms should be available for Alice"), from the
+        server's own admin command (mod_otrv4plus_moderation "List all
+        rooms"). Anyone else -- or a server without the module -- gets the
+        public listing unchanged."""
+        if not result.get("ok"):
+            return result
+        transport = self._transport
+        # Only once the poll has found we are an admin (transport caches
+        # it): no extra round trip for everyone else.
+        if getattr(transport, "_server_admin", None) is not True:
+            return result
+        try:
+            code, _detail, value = transport.moderation("rooms")
+        except Exception:
+            return result
+        if code != "ok" or not value or not value.get("available") or value.get("refused"):
+            return result
+        rooms = list(result.get("value") or [])
+        by_jid = {str(r.get("jid", "")).lower(): r for r in rooms}
+        suffix = "@" + str(service).lower()
+        for item in value.get("rooms") or []:
+            jid = str(item.get("jid", "")).lower()
+            if not jid.endswith(suffix) or len(jid) > 320:
+                continue
+            row = by_jid.get(jid)
+            if row is None:
+                row = {"jid": jid, "name": str(item.get("name", ""))[:200],
+                       "occupants": item.get("occupants"), "secure": False,
+                       "claims_secure": str(item.get("description", "")).strip()
+                       == _muc.SECURE_GROUP_DESC,
+                       "password": bool(item.get("password"))}
+                rooms.append(row)
+                by_jid[jid] = row
+            row["hidden"] = bool(item.get("hidden"))
+        return dict(result, value=rooms)
 
     def _with_held_groups(self, result: Dict[str, Any], service: str) -> Dict[str, Any]:
         """Groups this account holds are secure whatever the listing says, and
@@ -1786,6 +1838,36 @@ class ConnectionController:
 
     def joined_rooms(self) -> Dict[str, Any]:
         return self._muc_call("joined_rooms")
+
+    def moderate(self, op: str, account: str = "", days: int = 0,
+                 reason: str = "") -> Dict[str, Any]:
+        """Server admins only, and the SERVER enforces it: "status", "ban"
+        (days 0 = permanent), "unban" or "rooms" (every room, hidden ones
+        too). See transport.moderation."""
+        if op not in ("status", "ban", "unban", "rooms"):
+            return {"ok": False, "code": "bad_request", "detail": "unknown operation",
+                    "value": None}
+        if op != "rooms":
+            account = str(account).strip().lower()
+            if "@" not in account or "/" in account or len(account) > 320:
+                return {"ok": False, "code": "bad_request",
+                        "detail": "Enter an account address.", "value": None}
+        try:
+            days = int(days)
+        except (TypeError, ValueError):
+            days = -1
+        if op == "ban" and not 0 <= days <= 3650:
+            return {"ok": False, "code": "bad_request",
+                    "detail": "Days must be from 0 (permanent) to 3650.", "value": None}
+        result = self._muc_call("moderation", op, account, days, str(reason or ""))
+        value = result.get("value") or {}
+        if result.get("ok") and value.get("refused"):
+            return {"ok": False, "code": "moderation_refused",
+                    "detail": value.get("message") or "The server refused.", "value": value}
+        if result.get("ok") and not value.get("available", True):
+            return {"ok": False, "code": "moderation_unavailable",
+                    "detail": value.get("message", ""), "value": value}
+        return result
 
     def server_admin(self) -> Dict[str, Any]:
         """Whether we administer the server: Delete is then offered on every

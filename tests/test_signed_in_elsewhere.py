@@ -38,8 +38,8 @@ def _transport():
     return t
 
 
-def _stanza(condition):
-    return {"condition": condition, "text": "Replaced by a newer sign-in"}
+def _stanza(condition, text="Replaced by a newer sign-in"):
+    return {"condition": condition, "text": text}
 
 
 class TestTheTransportSaysReplaced:
@@ -191,3 +191,30 @@ class TestSignInPacing:
         import inspect
         src = inspect.getsource(X)
         assert "secrets.randbelow(501)" in src
+
+
+class TestABanIsNamedAndNotRetried:
+    """A server admin's ban (mod_otrv4plus_moderation) ends the stream with
+    policy-violation; the drop is reported as "banned", never a reconnect."""
+
+    def test_the_live_ban_becomes_banned(self):
+        t = _transport()
+        t._on_live_stream_error(_stanza(
+            "policy-violation", "This account is banned from this server permanently (until=0)."))
+        t._on_disconnected(None)
+        assert t.states == ["banned"]
+
+    def test_the_controller_fails_with_the_ban(self):
+        app = FakeApp()
+        ctl = ConnectionController(
+            app, ConnectionProfile(jid=JID),
+            transport_factory=lambda *a, **k: None,
+            prober=lambda _p, **_kw: SamProbe(True, "ok", "fine", "3.1"))
+        ctl._transport = type("T", (), {"banned_text": "This account is banned from "
+                                        "this server permanently by its administrator."})()
+        ctl._on_transport_state("banned", "otrv4plus.i2p")
+        status = ctl.status()
+        assert status["stage"] == "failed"
+        assert status["last"]["code"] == T.BANNED_CODE
+        assert "banned" in status["last"]["detail"]
+

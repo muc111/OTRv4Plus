@@ -929,7 +929,8 @@ class OtrConnectionService : Service() {
                 // Replaced by a newer sign-in of this account: stop, and say
                 // so. Reconnecting would sign that device out, and it would
                 // do the same back.
-                if (current.code == ConnectProblem.SIGNED_IN_ELSEWHERE) {
+                if (current.code == ConnectProblem.SIGNED_IN_ELSEWHERE ||
+                    current.code == ConnectProblem.ACCOUNT_BANNED) {
                     failure = current.code
                     reconnect.onFailure(current.code)
                     enter(LinkPhase.FAILED, "needs the user: ${current.code}")

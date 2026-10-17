@@ -883,6 +883,49 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    // ── moderation (server admins only; the SERVER decides every use) ──────
+
+    /** The shown profile's ban state, for a server admin; null otherwise. */
+    var moderation by mutableStateOf<org.otrv4plus.android.bridge.Moderation?>(null)
+        private set
+    var moderationBusy by mutableStateOf(false)
+        private set
+
+    /** Read [jid]'s ban state. Asked only when this account is a server admin. */
+    fun loadModeration(jid: String) {
+        moderation = null
+        val c = core ?: return
+        if (!isServerAdmin || jid.isEmpty()) return
+        moderationOp(c, "status", jid)
+    }
+
+    /** "ban" ([days] 0 = permanent) or "unban", then the state is read again. */
+    fun moderate(jid: String, op: String, days: Int = 0) {
+        val c = core ?: return
+        if (!isServerAdmin || moderationBusy) return
+        moderationOp(c, op, jid, days)
+    }
+
+    private fun moderationOp(c: org.otrv4plus.android.bridge.ChaquopyOtrCore,
+                             op: String, jid: String, days: Int = 0) {
+        moderationBusy = true
+        viewModelScope.launch {
+            try {
+                val done = withContext(Dispatchers.IO) {
+                    runCatching { c.moderate(op, jid, days) }.getOrNull()
+                }
+                moderation = if (done != null && done.outcome.ok && op != "status") {
+                    val now = withContext(Dispatchers.IO) {
+                        runCatching { c.moderate("status", jid) }.getOrNull()
+                    }
+                    now?.copy(said = done.said) ?: done
+                } else done
+            } finally {
+                moderationBusy = false
+            }
+        }
+    }
+
     fun loadProfile(jid: String = "") {
         val core = this.core ?: run { profileStatus = "Connect first."; return }
         profileJid = jid

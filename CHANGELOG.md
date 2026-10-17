@@ -4,6 +4,26 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.117 — 2026-10-17 — rooms list comes back; admins can ban (core 0.13.1)
+
+- **The Rooms tab lists the server's rooms and groups again** (owner
+  report: "it now says this server does not advertise a rooms service").
+  One lost reply over I2P, or asking before sign-in had finished, was taken
+  as "this server has no rooms service". Each question is now asked up to
+  three times, a failed ask is never taken as an answer, the screen tries
+  again by itself (every 15 s, three times), and a **Look again** button
+  is shown until it answers.
+- **Server admins can ban accounts** (owner request). On someone's profile
+  an admin sees **Moderation (server admin)**: Ban for N days, Ban
+  permanently, Unban, each confirmed first, with the current state ("Banned
+  until …"). Nobody else sees it: the server offers these commands only to
+  its admins, and refuses a ban on an admin or on yourself. A banned
+  account is signed out at once; its app says until when and stops trying.
+  Needs the new server module `mod_otrv4plus_moderation` (run the install
+  script again; SERVER_HARDENING.md).
+- **Admins see every room**, hidden ones included (marked "hidden (admins
+  see it)"), from the same module.
+
 ## Android 0.7.0-experimental.rc.116 — 2026-10-17 — People lists people only (core 0.13.1)
 
 - **Rooms are no longer listed on People** (owner report). The list, and

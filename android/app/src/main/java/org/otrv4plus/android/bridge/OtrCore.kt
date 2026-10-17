@@ -726,6 +726,8 @@ data class RoomSummary(
     val claimsSecure: Boolean = false,
     /** The room needs a password to enter. */
     val password: Boolean = false,
+    /** Not in the public listing: only a server admin sees it here. */
+    val hidden: Boolean = false,
 ) {
     /** The part before the `@`, for a service that advertises no name. */
     val label: String get() = name.ifBlank { jid.substringBefore('@') }
@@ -738,8 +740,19 @@ data class RoomSummary(
         secure -> "Encrypted group"
         claimsSecure -> "Says it is an encrypted group (you hold no keys for it)"
         else -> "Channel"
-    } + (if (password) ", password needed" else "")
+    } + (if (password) ", password needed" else "") +
+        (if (hidden) ", hidden (admins see it)" else "")
 }
+
+/** What a moderation command said (ChaquopyOtrCore.moderate). [until] is
+ *  0 for a permanent ban and -1 when not banned. */
+data class Moderation(
+    val outcome: RoomOutcome,
+    val banned: Boolean = false,
+    val until: Long = -1,
+    /** The server's own sentence for what it did ("Banned … until …"). */
+    val said: String = "",
+)
 
 /**
  * What we are in a room, and therefore what we may do in it.

@@ -73,8 +73,14 @@ fun RoomsScreen(
     // Keyed on the core rather than on Unit: the service binding can land
     // after this screen is composed, and a Unit key would mean a screen opened
     // in that window asked a null core, gave up, and never tried again.
-    LaunchedEffect(model.core, model.discovered) {
-        if (model.core != null && !model.discovered) model.discover()
+    LaunchedEffect(model.core, model.discovered, model.discoverTries) {
+        // Again by itself a few times when the answer did not come (lost over
+        // I2P, or asked before sign-in finished), then on "Look again".
+        if (model.core != null && !model.discovered &&
+            model.discoverTries < RoomsViewModel.MAX_AUTO_DISCOVER) {
+            if (model.discoverTries > 0) kotlinx.coroutines.delay(RoomsViewModel.DISCOVER_RETRY_MS)
+            model.discover()
+        }
     }
 
     Column(
@@ -127,6 +133,16 @@ fun RoomsScreen(
 
         // ── Which service ─────────────────────────────────────────────────
         val service = model.roomService
+        if (!model.discovered && busy == null && model.discoverTries > 0) {
+            // Not an answer yet: the question did not get through.
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("The server's rooms list has not answered yet (replies " +
+                         "can be lost over I2P).",
+                     style = MaterialTheme.typography.bodySmall,
+                     modifier = Modifier.weight(1f))
+                TextButton(onClick = { model.discover() }) { Text("Look again") }
+            }
+        }
         if (model.discovered && service == null) {
             // A finding, not an empty screen. "We asked and there is no rooms
             // service here" is different from "we have not asked".

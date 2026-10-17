@@ -149,9 +149,15 @@ class RoomsViewModel : ViewModel() {
         private set
 
     /** Find the rooms service. Safe to call more than once. */
+    /** Discovery runs so far without a real answer; the screen retries a
+     *  few times by itself (MAX_AUTO_DISCOVER), then offers "Look again". */
+    var discoverTries by mutableStateOf(0)
+        private set
+
     fun discover() {
         val c = core ?: return
         if (busy != null) return
+        discoverTries++
         busy = "Looking for a rooms service..."
         last = null
         viewModelScope.launch {
@@ -159,14 +165,24 @@ class RoomsViewModel : ViewModel() {
             val (outcome, found) = withContext(Dispatchers.IO) {
                 c.discoverServices()
             }
-            services.clear()
-            services.addAll(found)
             // The FIRST conference/text identity. A server with two is
             // unusual; picking one and saying which beats refusing to choose
             // and showing a list of components nobody can interpret.
-            roomService = found.firstOrNull { it.hostsRooms }?.jid
-            discovered = true
-            last = outcome
+            val service = found.firstOrNull { it.hostsRooms }?.jid
+            // ONLY A REAL ANSWER COUNTS (owner, 2026-10-17: "it now says this
+            // server does not advertise a rooms service ... it always did
+            // list all rooms"). A failed ask -- not connected yet, a reply
+            // lost over I2P -- is not "this server has none": nothing is
+            // marked found, a service found earlier is kept, and the screen
+            // offers to look again.
+            if (outcome.ok && (service != null || found.isNotEmpty())) {
+                services.clear()
+                services.addAll(found)
+                roomService = service ?: roomService
+                discovered = roomService != null || found.none { it.category.isEmpty() }
+            }
+            if (discovered) discoverTries = 0
+            last = if (outcome.ok) null else outcome
             } finally {
                 // ALWAYS. Without it a throw from the bridge left `busy` set
                 // and the screen stuck on its label -- see `call()`.
@@ -497,5 +513,10 @@ class RoomsViewModel : ViewModel() {
 
     companion object {
         const val ALREADY_IN_ROOM = "already_in_room"
+
+        /** Automatic discovery attempts before the screen waits for "Look again". */
+        const val MAX_AUTO_DISCOVER = 3
+        /** Between automatic attempts: a lost I2P reply, or still signing in. */
+        const val DISCOVER_RETRY_MS = 15_000L
     }
 }

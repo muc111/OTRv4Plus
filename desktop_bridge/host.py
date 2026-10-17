@@ -68,6 +68,7 @@ CONTROLLER_OPS: Dict[str, tuple] = {
     "discover_rooms": ("service",),
     "join_room": ("room", "nick", "password"),
     "request_group_entry": ("room",),
+    "moderate": ("op", "account", "days", "reason"),
     "create_room": ("room", "nick"),
     "leave_room": ("room", "nick"),
     "block_contact": ("jid", "report"),

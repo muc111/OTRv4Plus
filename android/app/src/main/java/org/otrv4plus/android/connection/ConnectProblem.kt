@@ -65,6 +65,15 @@ object ConnectProblem {
      *  the other device out, and that one would do the same back. */
     const val SIGNED_IN_ELSEWHERE = "signed_in_elsewhere"
 
+    /** A server admin banned this account (transport.BANNED_CODE,
+     *  prosody/mod_otrv4plus_moderation.lua). Never retried: it would only
+     *  be refused again. The detail says until when. */
+    const val ACCOUNT_BANNED = "account_banned"
+
+    const val ACCOUNT_BANNED_TEXT =
+        "This account is banned from this server by its administrator. " +
+            "Sign-in will not work until the ban ends."
+
     const val SIGNED_IN_ELSEWHERE_TEXT =
         "Signed out: this account signed in on another device, and the " +
             "server keeps only the newest sign-in. Connect again to use it " +
@@ -119,7 +128,7 @@ object ConnectProblem {
         "i2p_destination_changed", "i2p_name_invalid",
         "tls_required", "certificate_failure", "no_safe_auth_mechanism",
         "route_refused", "malformed_server", "bad_transport", "no_server",
-        SIGNED_IN_ELSEWHERE,
+        SIGNED_IN_ELSEWHERE, ACCOUNT_BANNED,
     )
 
     /** Codes I2P produces on its way up; retrying is the remedy. */
@@ -203,6 +212,7 @@ object ConnectProblem {
             "The server's encryption could not be verified, so nothing was sent."
         "profile_incomplete" -> "Fill in the address and password."
         SIGNED_IN_ELSEWHERE -> SIGNED_IN_ELSEWHERE_TEXT
+        ACCOUNT_BANNED -> ACCOUNT_BANNED_TEXT
         else -> "The connection needs your attention ($code)."
     }
 

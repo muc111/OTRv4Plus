@@ -11,9 +11,10 @@
 # What it does (SECURITY_SESSIONS.md, SERVER_HARDENING.md):
 #   1. backs up prosody.cfg.lua next to itself (prosody.cfg.lua.bak-<time>);
 #   2. installs mod_otrv4plus_one_session (newest sign-in wins) and
-#      mod_otrv4plus_capacity (online cap, sign-in pacing, sign-up limits);
+#      mod_otrv4plus_capacity (online cap, sign-in pacing, sign-up limits)
+#      and mod_otrv4plus_moderation (admins ban, unban, list every room);
 #   3. replaces "c2s_limit_sessions" with "otrv4plus_one_session" and adds
-#      "otrv4plus_capacity" in modules_enabled;
+#      "otrv4plus_capacity" and "otrv4plus_moderation" in modules_enabled;
 #   4. sets max_resources = 1, max_online_users = 2000, login_rate = 10,
 #      login_burst = 40, max_registrations_per_hour = 30 and
 #      muc_event_rate = 10;
@@ -54,6 +55,7 @@ say "installing the modules into $MODDIR"
 mkdir -p "$MODDIR"
 install -m 644 "$HERE/mod_otrv4plus_one_session.lua" "$MODDIR/"
 install -m 644 "$HERE/mod_otrv4plus_capacity.lua" "$MODDIR/"
+install -m 644 "$HERE/mod_otrv4plus_moderation.lua" "$MODDIR/"
 grep -q "$MODDIR" "$CFG" \
     || say "NOTE: $MODDIR is not in plugin_paths; add it, or Prosody will not find the modules"
 
@@ -67,6 +69,7 @@ add_module() {
 }
 add_module otrv4plus_one_session
 add_module otrv4plus_capacity
+add_module otrv4plus_moderation
 
 say "limits"
 set_option() {

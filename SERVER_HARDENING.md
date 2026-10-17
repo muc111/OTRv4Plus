@@ -8,7 +8,7 @@ any Prosody behind I2P.
 ## The one command
 
 On the T450 (Prosody from source in `/usr/local`), everything below in one
-go -- both modules, the limits, and the room rate raised to 10:
+go -- the three modules, the limits, and the room rate raised to 10:
 
 ```bash
 cd ~/OTRv4Plus && git pull && sudo bash prosody/install-server-limits.sh
@@ -101,6 +101,28 @@ one core, at one message per user per minute. Real people send far less, so
 everyone reconnecting at once after a restart (joining was the expensive
 part of every test), and i2pd's own CPU with 2,000 real I2P clients. Start
 at 1,000 and raise it once a real I2P test shows the headroom.
+
+## `mod_otrv4plus_moderation`: bans and every room, for admins
+
+[`prosody/mod_otrv4plus_moderation.lua`](prosody/mod_otrv4plus_moderation.lua)
+gives this server's admins (the `admins = { ... }` list) four ad-hoc
+commands, offered to nobody else:
+
+| Command | What it does |
+|---|---|
+| Ban an account | For 1 to 3650 days, or permanently (0). The account's sessions close at once, and every sign-in is refused until the ban ends. Admins and yourself cannot be banned. |
+| Lift a ban | The account can sign in again straight away. |
+| Ban status | Whether an account is banned, and until when. |
+| List all rooms | Every room on the rooms service, hidden ones included. |
+
+In the app, an admin sees **Moderation (server admin)** on other people's
+profiles (Ban for N days, Ban permanently, Unban), and every room,
+hidden ones marked, on the Rooms tab. A banned person's app says until when
+and stops trying. Bans are kept in Prosody's storage, so they survive a
+restart; each is logged at `warn` in `prosody.err`.
+
+The one command above installs and enables it. If the rooms service is not
+`conference.<domain>`, set `otrv4plus_muc_host = "rooms.example.i2p"`.
 
 ## Prosody settings worth adding
 

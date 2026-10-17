@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures as _futures
+import json
 import logging
 import threading
 import time
@@ -846,6 +847,31 @@ REPLACED_TEXT = (
     "Signed out: this account signed in on another device, and the server "
     "keeps only the newest sign-in. Connect again to use it here (that signs "
     "the other device out). If it was not you, change your password.")
+
+
+#: A server admin banned this account (prosody/mod_otrv4plus_moderation.lua,
+#: stream error policy-violation). Never retried: it would be refused again.
+BANNED_CODE = "account_banned"
+
+
+def _is_ban(condition: str, text: str) -> bool:
+    return condition == "policy-violation" and "banned" in (text or "").lower()
+
+
+def _ban_text(server_text: str) -> str:
+    """For a person, built here: only the end time is read from the server's
+    text ("(until=<unix time>)", 0 for permanent)."""
+    import re
+    m = re.search(r"until=(\d+)", server_text or "")
+    until = int(m.group(1)) if m else -1
+    if until == 0:
+        when = "permanently"
+    elif until > 0:
+        when = "until " + time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(until))
+    else:
+        when = "for now"
+    return ("This account is banned from this server %s by its administrator. "
+            "The app will not sign in again until the ban ends." % when)
 
 
 def _is_session_limit(condition: str, text: str) -> bool:
@@ -1747,6 +1773,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             except Exception:
                 said = ""
             if not started.done():
+                if _is_ban(cond, said):
+                    started.set_exception(TransportError(BANNED_CODE, _ban_text(said)))
+                    return
                 if _is_session_limit(cond, said):
                     # Signed in, refused at resource bind: the server allows
                     # one session per account and another holds it
@@ -3117,7 +3146,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                 # Asked per item, because disco#items gives a name and nothing
                 # about what the thing IS. Failures are swallowed per item: one
                 # component that will not answer must not empty the list.
-                info = await disco.get_info(jid=jid, timeout=CALL_TIMEOUT)
+                info = await self._disco_info_retrying(disco, jid)
                 for category, itype, _lang, iname in \
                         info["disco_info"]["identities"]:
                     entry["category"] = str(category)
@@ -3131,6 +3160,21 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                 _log.info("a service did not answer a disco#info")
             out.append(entry)
         return out
+
+    #: disco#info tries per item. Owner (2026-10-17): the Rooms tab said
+    #: "this server does not advertise a rooms service" -- one lost reply
+    #: over I2P left the rooms service without its identity, so nothing
+    #: looked like one.
+    DISCO_INFO_TRIES = 3
+
+    async def _disco_info_retrying(self, disco, jid):
+        last = None
+        for _ in range(self.DISCO_INFO_TRIES):
+            try:
+                return await disco.get_info(jid=jid, timeout=CALL_TIMEOUT)
+            except Exception as exc:          # a lost reply: ask again
+                last = exc
+        raise last
 
     def discover_rooms(self, service: str) -> "tuple[str, str, list]":
         """The public rooms a MUC service lists.
@@ -3875,6 +3919,93 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         return any(str(node or "").startswith(self.ADMIN_COMMAND_PREFIX)
                    for _jid, node, _name in items["disco_items"].get_items())
 
+    # -- moderation (server admins; prosody/mod_otrv4plus_moderation.lua) ----
+    #
+    # Owner (2026-10-17): "Alice should be able to ban any user on their user
+    # profile ... set amount of days or Perm ban or unban ... for server admin
+    # / mod use only." XEP-0050 commands the SERVER offers to its admins
+    # only; this side never decides who is one.
+
+    MODERATION_NS = "https://otrv4plus.i2p/protocol/admin#"
+
+    @property
+    def banned_text(self) -> str:
+        return getattr(self, "_banned", "")
+
+    def moderation(self, op: str, account: str = "", days: int = 0,
+                   reason: str = "") -> "tuple[str, str, dict]":
+        """Run one moderation command: "status", "ban", "unban" or "rooms".
+
+        value: {"available": bool, "banned": bool, "until": int (0 = for
+        good, -1 = not banned), "message": str, "rooms": [dict]}."""
+        return self._room_call(self._moderation(op, account, days, reason))
+
+    async def _moderation(self, op, account, days, reason):
+        client = self._client
+        domain = str(client.boundjid.domain)
+        items = await client["xep_0030"].get_items(
+            jid=domain, node=self.COMMANDS_NODE, timeout=CALL_TIMEOUT)
+        offered = {str(node) for _jid, node, _name in items["disco_items"].get_items()}
+        node = self.MODERATION_NS + {"status": "ban-status", "ban": "ban-user",
+                                     "unban": "unban-user", "rooms": "list-rooms"}[op]
+        out = {"available": node in offered, "banned": False, "until": -1,
+               "message": "", "rooms": [], "refused": False}
+        if not out["available"]:
+            out["message"] = ("The server does not offer moderation to this "
+                              "account (an admin needs mod_otrv4plus_moderation "
+                              "on the server).")
+            return out
+        values = {"accountjid": account}
+        if op == "ban":
+            values.update(days=str(int(days)), reason=reason[:200])
+        done = await self._run_command(domain, node, values if op != "rooms" else None)
+        command = done["command"]
+        notes = command["notes"] or []
+        for kind, text in notes:
+            # The server's own sentence (mod_otrv4plus_moderation's): shown
+            # to the admin who asked, never traced.
+            out["message"] = str(text)[:300]
+            if kind == "error":
+                out["refused"] = True
+                return out
+        try:
+            fields = command["form"].get_fields()
+        except Exception:
+            fields = {}
+        if "banned" in fields:
+            out["banned"] = str(fields["banned"]["value"]).lower() in ("1", "true")
+            raw = str(fields["until"]["value"] or "") if "until" in fields else ""
+            out["until"] = int(raw) if raw.isdigit() and out["banned"] else -1
+        if "rooms" in fields:
+            lines = fields["rooms"]["value"] or []
+            if isinstance(lines, str):
+                lines = lines.split("\n")
+            for line in lines:
+                try:
+                    out["rooms"].append(json.loads(line))
+                except Exception:
+                    continue
+        return out
+
+    async def _run_command(self, domain, node, values):
+        """Execute an ad-hoc command; fill its form from `values` (None: no
+        form expected) and complete it."""
+        commands = self._client["xep_0050"]
+        first = await commands.send_command(domain, node, action="execute",
+                                            timeout=CALL_TIMEOUT)
+        if values is None or first["command"]["status"] == "completed":
+            return first
+        form = first["command"]["form"]
+        submit = self._client["xep_0004"].make_form(ftype="submit")
+        for var, field in form.get_fields().items():
+            if not var:
+                continue
+            value = values.get(var, field["value"])
+            submit.add_field(var=var, ftype=field["type"], value=value)
+        return await commands.send_command(
+            domain, node, action="complete", payload=submit,
+            sessionid=first["command"]["sessionid"], timeout=CALL_TIMEOUT)
+
     # -- our account signed in somewhere else ---------------------------------
     #
     # Owner (2026-10-16): "I was able to login with alice on terminal but
@@ -4182,6 +4313,13 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                       condition=cond or "unknown")
         if cond == "conflict":
             self._replaced = True
+        elif cond == "policy-violation":
+            try:
+                said = str(stanza["text"] or "")
+            except Exception:
+                said = ""
+            if _is_ban(cond, said):
+                self._banned = _ban_text(said)
 
     def _note_inbound(self, stanza):
         """Record that the stream delivered something. Returns it unchanged.
@@ -4684,6 +4822,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         if getattr(self, "_replaced", False):
             self._replaced = False
             self._emit_state("replaced")
+            return
+        if getattr(self, "_banned", ""):
+            # Read by the controller (`banned_text`) while it handles
+            # "banned", which runs inside this call; cleared after.
+            self._emit_state("banned")
+            self._banned = ""
             return
         self._emit_state("disconnected")
 

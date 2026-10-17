@@ -187,6 +187,10 @@ fun ProfileScreen(
 
         IdentitySection(model, own, jid, onVerify)
 
+        // Server admins only: the server lists its admin commands to them
+        // and to nobody else (model.isServerAdmin), and runs every ban.
+        if (!own && model.isServerAdmin) ModerationSection(model, jid)
+
         if (own) {
             Button(
                 onClick = { model.saveProfile(edits.toMap()) },
@@ -300,6 +304,83 @@ private fun IdentitySection(model: ChatViewModel, own: Boolean, jid: String,
                 }
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+/**
+ * Ban [jid] for some days or for good, or lift the ban (owner, 2026-10-17).
+ * Every action asks first; the server refuses a ban on an admin or on
+ * ourselves, and says so here.
+ */
+@Composable
+private fun ModerationSection(model: ChatViewModel, jid: String) {
+    val text = org.otrv4plus.android.chat.ModerationText
+    LaunchedEffect(jid) { model.loadModeration(jid) }
+    var daysTyped by remember(jid) { mutableStateOf("7") }
+    var confirmDays by remember(jid) { mutableStateOf<Int?>(null) }
+    var confirmUnban by remember(jid) { mutableStateOf(false) }
+    val m = model.moderation
+    val busy = model.moderationBusy
+    HorizontalDivider()
+    Text(text.TITLE, style = MaterialTheme.typography.titleMedium,
+         color = MaterialTheme.colorScheme.error)
+    Text(text.NOTE, style = MaterialTheme.typography.bodySmall,
+         color = MaterialTheme.colorScheme.onSurfaceVariant)
+    if (busy) LinearProgressIndicator(Modifier.fillMaxWidth())
+    Text(text.status(m), style = MaterialTheme.typography.bodyMedium)
+    m?.said?.takeIf { it.isNotBlank() && m.outcome.ok }?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall)
+    }
+    val days = text.days(daysTyped)
+    Row(verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedTextField(
+            value = daysTyped,
+            onValueChange = { daysTyped = it.filter(Char::isDigit).take(4) },
+            label = { Text("Days") },
+            singleLine = true,
+            enabled = !busy,
+            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
+            modifier = Modifier.width(96.dp),
+        )
+        OutlinedButton(enabled = !busy && days != null, onClick = { confirmDays = days }) {
+            Text("Ban for ${days ?: "…"} days", color = MaterialTheme.colorScheme.error)
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(enabled = !busy, onClick = { confirmDays = 0 }) {
+            Text("Ban permanently", color = MaterialTheme.colorScheme.error)
+        }
+        if (m?.banned == true) {
+            Button(enabled = !busy, onClick = { confirmUnban = true }) { Text("Unban") }
+        }
+    }
+    confirmDays?.let { d ->
+        AlertDialog(
+            onDismissRequest = { confirmDays = null },
+            title = { Text(if (d == 0) "Ban permanently?" else "Ban for $d days?") },
+            text = { Text(text.confirm(jid, d)) },
+            confirmButton = {
+                TextButton(onClick = { confirmDays = null; model.moderate(jid, "ban", d) }) {
+                    Text("Ban", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDays = null }) { Text("Cancel") } },
+        )
+    }
+    if (confirmUnban) {
+        AlertDialog(
+            onDismissRequest = { confirmUnban = false },
+            title = { Text("Lift the ban?") },
+            text = { Text("$jid can sign in again straight away.") },
+            confirmButton = {
+                TextButton(onClick = { confirmUnban = false; model.moderate(jid, "unban") }) {
+                    Text("Unban")
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmUnban = false }) { Text("Cancel") } },
         )
     }
 }
