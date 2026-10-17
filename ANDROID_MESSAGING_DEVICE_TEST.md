@@ -95,7 +95,7 @@ such.
 | # | Do | Expect | If it differs |
 |---|---|---|---|
 | 1 | Connect the app as bob (`ANDROID_DEVICE_TEST.md` §3 steps 1-8) | "Connected", then the conversation list appears on its own | Stopping on the Connect screen means `onConnected` is not firing |
-| 2 | Look at the conversation list | Either rows for everyone on bob's roster, or "No conversations yet" if the roster is empty | An empty list with a non-empty roster means the roster fetch or `applyRoster` is not running — export Diagnostics |
+| 2 | Look at the conversation list | Either rows for everyone on bob's roster, or "No chats yet" if the roster is empty | An empty list with a non-empty roster means the roster fetch or `applyRoster` is not running — export Diagnostics |
 | 3 | Read the presence under each row | The word `online`, `offline`, or `presence unknown` | `offline` where you expect `presence unknown` is the bug from the original report: it claims knowledge nobody has |
 | 4 | In Termux as alice, `/add bob@<server>` if not already on the roster, and accept on the app side if prompted | — | — |
 | 5 | In the app, press **+** and add `alice@<server>` | A row for alice appears at once, with `presence unknown` | A row that never appears means `addContact` failed — Diagnostics |
