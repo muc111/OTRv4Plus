@@ -55,4 +55,18 @@ class RoomPasswordTest {
     fun `it never claims to be encryption`() {
         assertTrue("not end-to-end encrypted" in RoomPassword.NOT_ENCRYPTION)
     }
+
+    @Test
+    fun `a room the list marks as protected is asked about before joining`() {
+        val p = RoomPassword.beforeJoin("club@conference.otrv4plus.i2p", "alice", needsPassword = true)
+        assertNotNull(p)
+        assertFalse(p!!.retry)
+        assertNull(RoomPassword.beforeJoin("open@conference.otrv4plus.i2p", "alice", needsPassword = false))
+    }
+
+    @Test
+    fun `an encrypted group explains that the password is not enough`() {
+        assertTrue(RoomPassword.NEEDS_INVITE.contains("invite you"))
+        assertTrue(RoomPassword.NEEDS_INVITE.contains("only lets you into the room"))
+    }
 }

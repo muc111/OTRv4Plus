@@ -126,6 +126,7 @@ fun RoomsPane(model: AppModel) {
             }
         }
         model.groupPasswordFor?.let { room -> GroupRoomPasswordDialog(model, room) }
+        model.roomPasswordPrompt?.let { prompt -> RoomPasswordDialog(model, prompt) }
         val rooms = (model.groups + model.conversations().map { it.jid }.filter { model.chat.isRoom(it) }).distinct()
         if (rooms.isEmpty()) {
             Text("No rooms yet. An encrypted group is end-to-end encrypted with MLS " +
@@ -301,6 +302,36 @@ fun TextPrompt(title: String, hint: String, confirm: String, onDone: (String?) -
                                    modifier = Modifier.fillMaxWidth()) },
         confirmButton = { Button(onClick = { onDone(value.trim()) }, enabled = value.isNotBlank()) { Text(confirm) } },
         dismissButton = { TextButton(onClick = { onDone(null) }) { Text("Cancel") } },
+    )
+}
+
+/** A password-protected room refused us: ask, and say what the password is not. */
+@androidx.compose.runtime.Composable
+private fun RoomPasswordDialog(model: AppModel, prompt: org.otrv4plus.android.chat.RoomPassword.Prompt) {
+    var password by androidx.compose.runtime.remember(prompt) { androidx.compose.runtime.mutableStateOf("") }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { model.roomPasswordPrompt = null },
+        title = { Text("Room password") },
+        text = {
+            Column {
+                Text(prompt.message,
+                     color = if (prompt.retry) MaterialTheme.colorScheme.error
+                             else MaterialTheme.colorScheme.onSurface)
+                androidx.compose.material3.OutlinedTextField(
+                    value = password, onValueChange = { password = it }, singleLine = true,
+                    label = { Text("Password") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation())
+                Text(org.otrv4plus.android.chat.RoomPassword.NOT_ENCRYPTION,
+                     style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(enabled = password.isNotBlank(),
+                onClick = { model.joinRoom(prompt.room, prompt.nick, password); password = "" }) { Text("Join") }
+        },
+        dismissButton = {
+            androidx.compose.material3.TextButton(onClick = { model.roomPasswordPrompt = null }) { Text("Cancel") }
+        },
     )
 }
 

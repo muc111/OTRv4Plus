@@ -292,7 +292,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun removeContact(jid: String) = controller("remove_contact", "jid" to jid)
     fun answerSubscription(jid: String, approve: Boolean) =
         controller("answer_subscription", "jid" to jid, "approve" to approve)
-    fun joinRoom(room: String, nick: String) = controller("join_room", "room" to room, "nick" to nick)
+    fun joinRoom(room: String, nick: String, password: String = "") =
+        controller("join_room", "room" to room, "nick" to nick, "password" to password)
     fun leaveRoom(room: String, nick: String) = controller("leave_room", "room" to room, "nick" to nick)
     fun blockContact(jid: String, report: String) = controller("block_contact", "jid" to jid, "report" to report)
     fun unblockContact(jid: String) = controller("unblock_contact", "jid" to jid)

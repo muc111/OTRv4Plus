@@ -39,6 +39,31 @@ object RoomPassword {
                 "password to join.", false)
     }
 
+    /**
+     * The prompt to show BEFORE joining a room the list already marks as
+     * needing a password, or null. Asking first saves a refused round trip,
+     * which over I2P is tens of seconds (owner, 2026-10-17: "ensure proper
+     * prompts for entering password and joining").
+     */
+    @JvmStatic
+    fun beforeJoin(room: String, nick: String, needsPassword: Boolean): Prompt? =
+        if (needsPassword) Prompt(room, nick, "This room is password protected. " +
+            "Enter its password to join.", false) else null
+
+    /**
+     * Said instead of a password prompt for an encrypted group whose keys
+     * this phone does not hold. Its password admits to the ROOM only; what
+     * is said there is encrypted for the group's members, and only a member
+     * can add someone (with an invitation over OTRv4+).
+     */
+    const val NEEDS_INVITE_TITLE = "Ask for an invitation"
+    const val NEEDS_INVITE =
+        "This is an end-to-end encrypted group. Its password only lets you " +
+            "into the room: the conversation is encrypted for the group's " +
+            "members, and nobody can read it without being added. Ask " +
+            "someone in the group to invite you; the invitation arrives in " +
+            "your chats, and accepting it brings the password with it."
+
     /** Null if [password] may be used; otherwise why not. */
     @JvmStatic
     fun problem(password: String): String? = when {

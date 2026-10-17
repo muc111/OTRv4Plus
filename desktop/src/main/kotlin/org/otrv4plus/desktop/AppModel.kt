@@ -685,9 +685,26 @@ class AppModel(
         chat.clearSubscription(jid)
         outcome { core.answerSubscription(jid, approve) }
     }
-    fun joinRoom(room: String, nick: String) {
-        outcome { core.joinRoom(room.trim(), nick.trim()) }
-        chat.noteRoom(room.trim())
+    /** The password question for a room that refused us (RoomPassword), or null. */
+    var roomPasswordPrompt by mutableStateOf<org.otrv4plus.android.chat.RoomPassword.Prompt?>(null)
+
+    fun joinRoom(room: String, nick: String, password: String = "") {
+        roomPasswordPrompt = null
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.joinRoom(room.trim(), nick.trim(), password) }
+            // Refused for want of a password: ask, as the phone does. A wrong
+            // one asks again, saying so. The password is never kept here.
+            val ask = org.otrv4plus.android.chat.RoomPassword.afterJoin(
+                room.trim(), nick.trim(),
+                org.otrv4plus.android.bridge.RoomOutcome(r.ok, r.code, r.detail),
+                triedPassword = password.isNotEmpty())
+            when {
+                ask != null -> roomPasswordPrompt = ask
+                r.ok -> chat.noteRoom(room.trim())
+                else -> chat.note(r.detail.ifBlank { "That did not work (${r.code})." })
+            }
+            changed()
+        }
     }
     fun createSecureGroup(room: String) {
         outcome { core.createSecureGroup(room.trim()) }

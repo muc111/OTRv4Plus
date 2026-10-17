@@ -417,6 +417,15 @@ fun RoomsScreen(
             )
         }
 
+        model.inviteNeeded?.let {
+            AlertDialog(
+                onDismissRequest = { model.inviteNeeded = null },
+                title = { Text(RoomPassword.NEEDS_INVITE_TITLE) },
+                text = { Text(RoomPassword.NEEDS_INVITE) },
+                confirmButton = { TextButton(onClick = { model.inviteNeeded = null }) { Text("OK") } },
+            )
+        }
+
         // ── What the service advertises ───────────────────────────────────
         if (service != null) {
             Spacer(Modifier.height(4.dp))
@@ -467,7 +476,7 @@ fun RoomsScreen(
                         TextButton(
                             enabled = busy == null && nick.isNotBlank() &&
                                 !model.joined.containsKey(room.jid),
-                            onClick = { model.join(room.jid, nick.trim()) },
+                            onClick = { model.joinListed(room, nick.trim()) },
                         ) {
                             Text(if (model.joined.containsKey(room.jid)) "In"
                                  else "Join")

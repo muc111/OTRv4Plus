@@ -272,6 +272,25 @@ class RoomsViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Join a room from the list, which already says what it needs: a
+     * password is asked for first; an encrypted group this phone holds no
+     * keys for is explained instead (RoomPassword.NEEDS_INVITE), since its
+     * password alone reads nothing.
+     */
+    fun joinListed(room: org.otrv4plus.android.bridge.RoomSummary, nick: String) {
+        if (room.claimsSecure && !room.secure) {
+            inviteNeeded = room.jid
+            return
+        }
+        val ask = RoomPassword.beforeJoin(room.jid, nick, room.password)
+        if (ask != null) passwordPrompt = ask else join(room.jid, nick)
+    }
+
+    /** An encrypted group joined without keys: the "ask for an invitation" note. */
+    var inviteNeeded by mutableStateOf<String?>(null)
+        internal set
+
     /** The password question for a room that refused us, or null. */
     var passwordPrompt by mutableStateOf<RoomPassword.Prompt?>(null)
         internal set

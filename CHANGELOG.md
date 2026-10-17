@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.113 — 2026-10-17 — password rooms ask first (core 0.13.1)
+
+- **A 🔒 room in the list asks for its password before joining**, instead
+  of joining without one, being refused (tens of seconds over I2P) and only
+  then asking. A wrong password asks again, in red. Typing a room's name
+  still asks once the server says it needs one.
+- **An encrypted group you are not in explains itself** instead of
+  joining: its password only lets you into the room; the conversation is
+  encrypted for members, so a member has to invite you (the invitation
+  brings the password with it).
+- **Desktop:** joining a room by address now asks for its password when the
+  room needs one, and again when it was wrong, with the same words.
+
 ## Android 0.7.0-experimental.rc.112 — 2026-10-17 — one scrolling line above a group (core 0.13.1)
 
 - **The group's encryption line scrolls on one line** instead of a
