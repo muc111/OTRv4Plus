@@ -80,6 +80,15 @@ object GroupText {
         "${event.peer} invited you to the secure group ${event.room}" +
             if (event.verified) "." else " (this contact is not SMP-verified)."
 
+    /** "bob@x asks to join the encrypted group team@rooms.x." */
+    fun entryRequest(requester: String, room: String): String =
+        "$requester asks to join the encrypted group $room."
+
+    /** Under every request: what Invite does, and why a false claim is harmless. */
+    const val ENTRY_REQUEST_NOTE =
+        "Invite sends the usual invitation over OTRv4+ to that address, so " +
+            "only its real owner can accept it. Do you know them?"
+
     /** "2 of 4 verified · about 1 min 30 s left · excluded: c@x (wrong passphrase)" */
     fun verifyProgress(done: Int, total: Int, etaSeconds: Int,
                        members: Map<String, String>, excluded: List<String>): String {

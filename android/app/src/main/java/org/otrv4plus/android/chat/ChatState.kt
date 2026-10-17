@@ -540,6 +540,10 @@ class ChatState(
                 if (room.isNotEmpty()) groupInvites[room] = event
                 false
             }
+            is OtrEvent.GroupEntryRequested -> {
+                noteEntryRequest(event)
+                false
+            }
             is OtrEvent.GroupChanged -> {
                 noteGroupChange(event)
                 false
@@ -863,6 +867,35 @@ class ChatState(
         get() = groupInvites.values.toList()
 
     fun clearGroupInvite(room: String) { groupInvites.remove(bare(room)) }
+
+    /** "X asks to join", by (room, requester), oldest first. At most
+     *  [MAX_ENTRY_REQUESTS]: a flood of requests cannot grow it. */
+    private val entryRequests = LinkedHashMap<Pair<String, String>, OtrEvent.GroupEntryRequested>()
+
+    private fun noteEntryRequest(event: OtrEvent.GroupEntryRequested) {
+        val room = bare(event.room)
+        val who = bare(event.requester)
+        if (room.isEmpty() || who.isEmpty() || who == bare(account.bareJid)) return
+        val key = room to who
+        if (key in entryRequests || key in dismissedEntryRequests) return
+        entryRequests[key] = event.copy(room = room, requester = who)
+        while (entryRequests.size > MAX_ENTRY_REQUESTS) entryRequests.remove(entryRequests.keys.first())
+    }
+
+    /** Dismissed this session: history replays them on every sign-in. */
+    private val dismissedEntryRequests = mutableSetOf<Pair<String, String>>()
+
+    /** Requests for groups we are in, from people not already members. */
+    fun pendingEntryRequests(members: (String) -> Collection<String>): List<OtrEvent.GroupEntryRequested> =
+        entryRequests.values.filter { r ->
+            isSecureRoom(r.room) && members(r.room).none { bare(it) == r.requester }
+        }
+
+    fun clearEntryRequest(room: String, requester: String) {
+        val key = bare(room) to bare(requester)
+        entryRequests.remove(key)
+        dismissedEntryRequests.add(key)
+    }
 
     private fun noteGroupChange(event: OtrEvent.GroupChanged) {
         val room = bare(event.room)
@@ -1433,6 +1466,9 @@ class ChatState(
     }
 
     companion object {
+        /** Most "asks to join" banners held at once. */
+        const val MAX_ENTRY_REQUESTS = 20
+
         /**
          * The bare JID, case-folded. One contact, one key.
          *

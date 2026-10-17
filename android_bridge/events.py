@@ -38,7 +38,7 @@ __all__ = [
     "RoomMessageReceived", "MessageDelivered", "QueuedSent", "SmpProgress", "SmpResult", "FingerprintChanged",
     "CallStateChanged", "ErrorOccurred", "SubscriptionRequested",
     "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
-    "GroupInvite", "GroupChanged",
+    "GroupInvite", "GroupChanged", "GroupEntryRequested",
     "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
     "MessageChanged", "RoomMessageAcked",
 ]
@@ -272,6 +272,20 @@ class GroupInvite(Event):
 
     room: str = ""
     verified: bool = False
+
+
+@dataclass(frozen=True)
+class GroupEntryRequested(Event):
+    """Somebody asked, in the secure group `peer`'s room, to be invited.
+
+    `requester` is the address they CLAIM: the request is a plaintext line
+    anybody in the room could post. That is harmless by construction -- a
+    member who taps Invite sends the ordinary invitation, over an OTRv4+
+    session, to that address, and only its owner can accept it. `live` is
+    False for a request replayed from the room's history."""
+
+    requester: str = ""
+    live: bool = True
 
 
 @dataclass(frozen=True)

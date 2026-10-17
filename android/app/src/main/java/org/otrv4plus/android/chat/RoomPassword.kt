@@ -56,13 +56,14 @@ object RoomPassword {
      * is said there is encrypted for the group's members, and only a member
      * can add someone (with an invitation over OTRv4+).
      */
-    const val NEEDS_INVITE_TITLE = "Ask for an invitation"
+    const val NEEDS_INVITE_TITLE = "Ask to join this group?"
     const val NEEDS_INVITE =
-        "This is an end-to-end encrypted group. Its password only lets you " +
-            "into the room: the conversation is encrypted for the group's " +
-            "members, and nobody can read it without being added. Ask " +
-            "someone in the group to invite you; the invitation arrives in " +
-            "your chats, and accepting it brings the password with it."
+        "This is an end-to-end encrypted group: only its members can read " +
+            "it, and only a member can add you. Ask to join posts your " +
+            "address in the group's room, once. Its members see that you " +
+            "asked and can invite you; the invitation arrives in your chats " +
+            "over OTRv4+. Anyone in the room, and the server, can see that " +
+            "you asked."
 
     /** Null if [password] may be used; otherwise why not. */
     @JvmStatic

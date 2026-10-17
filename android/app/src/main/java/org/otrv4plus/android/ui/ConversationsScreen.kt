@@ -242,6 +242,35 @@ fun ConversationsScreen(
                 }
             }
 
+            // "X asks to join" (owner, 2026-10-17: request entry instead of
+            // a room password). Invite sends the usual OTRv4+ invitation to
+            // the address they gave; Dismiss hides it.
+            for (request in model.entryRequests()) {
+                Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text(
+                            org.otrv4plus.android.chat.GroupText.entryRequest(
+                                request.requester, request.room),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                        Text(
+                            org.otrv4plus.android.chat.GroupText.ENTRY_REQUEST_NOTE,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(onClick = {
+                                model.answerEntryRequest(request.room, request.requester, true)
+                            }) { Text("Invite") }
+                            TextButton(onClick = {
+                                model.answerEntryRequest(request.room, request.requester, false)
+                            }) { Text("Dismiss") }
+                        }
+                    }
+                }
+            }
+
             // A password-protected group's room (device report, 2026-10-16:
             // the join failed with "not_authorized" and nothing asked).
             model.groupRoomPasswordFor?.let { room ->

@@ -734,6 +734,19 @@ class AppModel(
     }
     fun inviteToGroup(room: String, peer: String) = outcome { core.inviteToGroup(room, peer.trim()) }
 
+    /** "X asks to join" for our groups, from people not already members. */
+    fun entryRequests(): List<OtrEvent.GroupEntryRequested> =
+        chat.pendingEntryRequests { room -> groupMembers[room].orEmpty().map { it.jid } }
+
+    /** Invite: the ordinary OTRv4+ invitation to the address they gave. */
+    fun answerEntryRequest(room: String, requester: String, invite: Boolean) {
+        chat.clearEntryRequest(room, requester)
+        if (invite) inviteToGroup(room, requester) else changed()
+    }
+
+    /** Ask the members of an encrypted group we are not in to invite us. */
+    fun requestGroupEntry(room: String) = outcome { core.requestGroupEntry(room.trim()) }
+
     /** Online people not yet in [room] (owner, 2026-10-16: tick and invite). */
     fun groupInviteCandidates(room: String): List<org.otrv4plus.android.chat.GroupInvitePicker.Candidate> =
         org.otrv4plus.android.chat.GroupInvitePicker.candidates(

@@ -1006,6 +1006,15 @@ sealed interface OtrEvent {
     /** [peer] invited us to the secure group [room], over OTRv4+. Never auto-accepted. */
     data class GroupInvited(val peer: String, val room: String, val verified: Boolean) : OtrEvent
 
+    /** Somebody asked, in the encrypted group [room]'s room, to be invited.
+     *  [requester] is the address they CLAIM (a plaintext line anyone can
+     *  post): inviting goes over OTRv4+ to that address, so a false claim
+     *  invites the real owner of it, never the poster. [live] is false for
+     *  a request replayed from the room's history. */
+    data class GroupEntryRequested(
+        val room: String, val requester: String, val live: Boolean,
+    ) : OtrEvent
+
     /** A secure group moved: see `android_bridge.events.GroupChanged` for [change]. */
     data class GroupChanged(
         val room: String, val change: String, val epoch: Long, val detail: String,

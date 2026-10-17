@@ -65,8 +65,8 @@ class RoomPasswordTest {
     }
 
     @Test
-    fun `an encrypted group explains that the password is not enough`() {
-        assertTrue(RoomPassword.NEEDS_INVITE.contains("invite you"))
-        assertTrue(RoomPassword.NEEDS_INVITE.contains("only lets you into the room"))
+    fun `asking to join an encrypted group says who will see it`() {
+        assertTrue(RoomPassword.NEEDS_INVITE.contains("can invite you"))
+        assertTrue(RoomPassword.NEEDS_INVITE.contains("can see that you asked"))
     }
 }

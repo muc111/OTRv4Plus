@@ -26,6 +26,7 @@ object Attention {
         VERIFICATION("Verification requested"),
         GROUP_INVITE("Group invitation"),
         PASSWORD_NEEDED("A group needs its password"),
+        ENTRY_REQUEST("Someone asks to join a group"),
     }
 
     /** The kind [event] calls for, or null: most events need nobody. */
@@ -35,6 +36,8 @@ object Attention {
         is OtrEvent.SmpProgressed ->
             if (event.progress.state == SmpState.SECRET_REQUIRED) Kind.VERIFICATION else null
         is OtrEvent.GroupInvited -> Kind.GROUP_INVITE
+        // History replays old requests on every sign-in: banner, no buzz.
+        is OtrEvent.GroupEntryRequested -> if (event.live) Kind.ENTRY_REQUEST else null
         else -> null
     }
 

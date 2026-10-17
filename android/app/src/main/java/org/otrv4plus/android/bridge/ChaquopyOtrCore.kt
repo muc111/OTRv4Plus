@@ -598,6 +598,13 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    /** Ask the members of the encrypted group [room] to invite us
+     *  (`ConnectionController.request_group_entry`). */
+    fun requestGroupEntry(room: String): RoomOutcome {
+        val result = call("request_group_entry", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
     /** [password]: the room's, when the user typed it (the inviter's, sent
      *  with the invitation, is used otherwise). */
     fun acceptGroupInvite(room: String, password: String = ""): RoomOutcome {
@@ -1775,6 +1782,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
             "GroupInvite" ->
                 OtrEvent.GroupInvited(str("peer"), str("room"), flag("verified"))
+
+            "GroupEntryRequested" ->
+                OtrEvent.GroupEntryRequested(str("peer"), str("requester"), flag("live"))
 
             "GroupChanged" ->
                 OtrEvent.GroupChanged(

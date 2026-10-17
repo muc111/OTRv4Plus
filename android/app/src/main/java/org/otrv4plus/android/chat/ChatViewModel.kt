@@ -356,6 +356,19 @@ class ChatViewModel : ViewModel() {
         groupCall("Declining") { it.declineGroupInvite(room) }
     }
 
+    /** Somebody asked to join one of our groups ("X asks to join"). */
+    fun entryRequests(): List<OtrEvent.GroupEntryRequested> {
+        observe()
+        return state?.pendingEntryRequests { room -> groupMembers(room).map { it.jid } }.orEmpty()
+    }
+
+    /** Invite: the ordinary OTRv4+ invitation to the address they gave. */
+    fun answerEntryRequest(room: String, requester: String, invite: Boolean) {
+        state?.clearEntryRequest(room, requester)
+        revision++
+        if (invite) inviteToGroup(room, requester)
+    }
+
     fun inviteToGroup(room: String, peer: String) {
         // A user name alone ("bob") means a user on our own server.
         val typed = peer.trim()

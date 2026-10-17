@@ -307,6 +307,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         controller("accept_group_invite", "room" to room, "password" to password)
     fun declineGroupInvite(room: String) = controller("decline_group_invite", "room" to room)
     fun inviteToGroup(room: String, peer: String) = controller("invite_to_group", "room" to room, "peer" to peer)
+    fun requestGroupEntry(room: String) = controller("request_group_entry", "room" to room)
     fun startGroupVerify(room: String, passphrase: String) =
         controller("start_group_verify", "room" to room, "passphrase" to passphrase)
     fun startGroupCall(room: String) = controller("start_group_call", "room" to room)
@@ -508,6 +509,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                     replyTo = str("reply_to"), source = str("source").ifBlank { "live" },
                     own = flag("own"))
                 "GroupInvite" -> OtrEvent.GroupInvited(str("peer"), str("room"), flag("verified"))
+                "GroupEntryRequested" ->
+                    OtrEvent.GroupEntryRequested(str("peer"), str("requester"), flag("live"))
                 "GroupChanged" -> OtrEvent.GroupChanged(
                     str("peer"), str("change"), e["epoch"].asLong(), str("detail"))
                 "SmpProgress" -> OtrEvent.SmpProgressed(

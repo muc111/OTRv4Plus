@@ -40,6 +40,7 @@ result code rather than an argument.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -1380,6 +1381,58 @@ class ConnectionController:
                                    room, joined=False)
         self._bookmark(room, nick, "", keep=False)
         return result
+
+    def request_group_entry(self, room: str) -> Dict[str, Any]:
+        """Ask the members of an encrypted group we are not in to invite us.
+
+        An encrypted group is invite-only: the room lets anyone in, but its
+        messages are MLS and only an invitation (sent over OTR by a member)
+        gives the keys. So we step into the room for a moment, post ONE
+        request carrying our address, and leave. Members' apps show "X asks
+        to join" with Invite and Dismiss; nothing happens unless one taps
+        Invite. Not bookmarked, not remembered, and while we are in the room
+        for this, nothing it says reaches the app (`note_knocking`)."""
+        problem = _muc.validate_room(room)
+        if problem is not None:
+            return {"ok": False, "code": problem[0], "detail": problem[1], "value": None}
+        if self._transport is None:
+            return {"ok": False, "code": "network",
+                    "detail": "Connect before using rooms.", "value": None}
+        if self._is_group_room(room):
+            return {"ok": False, "code": "already_member",
+                    "detail": "You are already in this group.", "value": None}
+        bare = self._profile.jid.split("/", 1)[0].lower()
+        nick = bare.split("@", 1)[0]
+        body = self._app.ENTRY_REQUEST_PREFIX + json.dumps({"jid": bare})
+        if self._app.is_room(room):
+            # In it already (it was a plain room to this device): just ask.
+            try:
+                self._transport.send_room_message(room, body)
+            except Exception:
+                return {"ok": False, "code": "send_failed",
+                        "detail": "The request could not be sent. Try again.",
+                        "value": None}
+            return {"ok": True, "code": "ok", "detail": "", "value": None}
+        self._app.note_knocking(room, True)
+        try:
+            joined = self._muc_call("join_room", room, nick, "")
+            if not joined.get("ok"):
+                if joined.get("code") == "not_authorized":
+                    return dict(joined, detail="This group's room has a password. "
+                                "Ask one of its members to invite you.")
+                return joined
+            try:
+                self._transport.send_room_message(room, body)
+            except Exception:
+                return {"ok": False, "code": "send_failed",
+                        "detail": "The request could not be sent. Try again.",
+                        "value": None}
+            finally:
+                if joined.get("ok"):
+                    self._muc_call("leave_room", room, nick)
+            return {"ok": True, "code": "ok", "detail": "", "value": None}
+        finally:
+            self._app.note_knocking(room, False)
 
     def destroy_room(self, room: str, reason: str = "") -> Dict[str, Any]:
         """Delete a room. Owners only, and the SERVICE is what enforces it."""

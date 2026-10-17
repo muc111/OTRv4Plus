@@ -19,6 +19,7 @@ import org.otrv4plus.android.bridge.RoomStanding
 import org.otrv4plus.android.bridge.RoomSummary
 import org.otrv4plus.android.chat.RoomAddress
 import org.otrv4plus.android.chat.RoomPassword
+import org.otrv4plus.android.chat.RoomSections
 
 /**
  * Rooms: finding the service, listing what it advertises, and being in one.
@@ -250,15 +251,13 @@ class RoomsViewModel : ViewModel() {
      * message. The bridge creates the room, then the group, and leaves the
      * room again if the group could not be made -- so a failure never leaves
      * a plaintext room the user believes is encrypted.
+     *
+     * NO ROOM PASSWORD (owner, 2026-10-17): an encrypted group is invite-only
+     * already, and its room password would only admit to a room whose
+     * messages nobody outside can read. Outsiders ask to join instead.
+     * Groups made earlier with a password keep working.
      */
-    fun createSecure(typed: String, nick: String, password: String = "",
-                     passphrase: String = "") {
-        if (password.isNotEmpty()) {
-            RoomPassword.problem(password)?.let {
-                last = RoomOutcome(false, "bad_request", it)
-                return
-            }
-        }
+    fun createSecure(typed: String, nick: String, passphrase: String = "") {
         if (passphrase.isNotEmpty() && passphrase.length < 8) {
             last = RoomOutcome(false, "bad_request",
                 "The group passphrase must be 8 characters or more.")
@@ -266,30 +265,64 @@ class RoomsViewModel : ViewModel() {
         }
         val jid = resolve(typed) ?: return
         enter("Creating the secure group...", jid) { c ->
-            val made = c.createSecureGroup(jid, password, passphrase)
+            val made = c.createSecureGroup(jid, "", passphrase)
             val standing = if (made.ok) c.roomStanding(jid, nick).second else RoomStanding()
             made to standing
         }
     }
 
     /**
-     * Join a room from the list, which already says what it needs: a
-     * password is asked for first; an encrypted group this phone holds no
-     * keys for is explained instead (RoomPassword.NEEDS_INVITE), since its
-     * password alone reads nothing.
+     * Join a plain room from the list, which already says whether it needs
+     * a password: asked for first. An encrypted group this phone holds no
+     * keys for is not joined at all -- the user is asked whether to ask its
+     * members for an invitation ([askToJoinFor]).
      */
     fun joinListed(room: org.otrv4plus.android.bridge.RoomSummary, nick: String) {
         if (room.claimsSecure && !room.secure) {
-            inviteNeeded = room.jid
+            askToJoinFor = room.jid
             return
         }
         val ask = RoomPassword.beforeJoin(room.jid, nick, room.password)
         if (ask != null) passwordPrompt = ask else join(room.jid, nick)
     }
 
-    /** An encrypted group joined without keys: the "ask for an invitation" note. */
-    var inviteNeeded by mutableStateOf<String?>(null)
+    /** The encrypted group an "Ask to join?" question is open for, or null. */
+    var askToJoinFor by mutableStateOf<String?>(null)
         internal set
+
+    fun cancelAskToJoin() { askToJoinFor = null }
+
+    /** When this phone last asked each group (RoomSections.ASK_EVERY_MS). */
+    private val askedAt = HashMap<String, Long>()
+
+    /** The user confirmed: post one request in the group's room
+     *  (`ConnectionController.request_group_entry`). */
+    fun askToJoin(room: String) {
+        askToJoinFor = null
+        val key = room.lowercase()
+        val now = System.currentTimeMillis()
+        val before = askedAt[key]
+        if (!RoomSections.mayAsk(before, now)) {
+            last = RoomOutcome(false, "rate_limited", RoomSections.askAgainIn(before!!, now))
+            return
+        }
+        val c = core ?: return
+        if (busy != null) return
+        busy = "Asking to join..."
+        last = null
+        viewModelScope.launch {
+            try {
+                val outcome = withContext(Dispatchers.IO) {
+                    runCatching { c.requestGroupEntry(room) }
+                        .getOrElse { RoomOutcome(false, "unknown", "That did not work.") }
+                }
+                if (outcome.ok) askedAt[key] = now
+                last = if (outcome.ok) outcome.copy(detail = RoomSections.ASKED) else outcome
+            } finally {
+                busy = null
+            }
+        }
+    }
 
     /** The password question for a room that refused us, or null. */
     var passwordPrompt by mutableStateOf<RoomPassword.Prompt?>(null)

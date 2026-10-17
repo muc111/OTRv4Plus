@@ -125,6 +125,26 @@ fun RoomsPane(model: AppModel) {
                 }
             }
         }
+        // "X asks to join" (owner, 2026-10-17): Invite sends the usual
+        // OTRv4+ invitation to the address they gave.
+        for (request in model.entryRequests()) {
+            Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+                Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(org.otrv4plus.android.chat.GroupText.entryRequest(
+                            request.requester, request.room))
+                        Text(org.otrv4plus.android.chat.GroupText.ENTRY_REQUEST_NOTE,
+                             style = MaterialTheme.typography.bodySmall)
+                    }
+                    TextButton(onClick = {
+                        model.answerEntryRequest(request.room, request.requester, false)
+                    }) { Text("Dismiss") }
+                    Button(onClick = {
+                        model.answerEntryRequest(request.room, request.requester, true)
+                    }) { Text("Invite") }
+                }
+            }
+        }
         model.groupPasswordFor?.let { room -> GroupRoomPasswordDialog(model, room) }
         model.roomPasswordPrompt?.let { prompt -> RoomPasswordDialog(model, prompt) }
         val rooms = (model.groups + model.conversations().map { it.jid }.filter { model.chat.isRoom(it) }).distinct()

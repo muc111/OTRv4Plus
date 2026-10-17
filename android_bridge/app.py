@@ -23,13 +23,14 @@ thread.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 import time
 from dataclasses import dataclass
 from collections import OrderedDict
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # The shared wire format. A dependency-free leaf, which is why importing it at
 # module scope does not breach the transport boundary from 22fc255 -- see
@@ -49,6 +50,7 @@ from otrv4plus_mode import OtrMode
 from .events import (
     CallState, CallStateChanged, ConnectionState, ConnectionStateChanged,
     ChatStateChanged, ErrorOccurred, Event, EventSink, FingerprintChanged,
+    GroupEntryRequested,
     HistorySynced, MessageChanged, MessageDelivered, MessageDisplayed, MessageReceived,
     MessageSentElsewhere, OtrCapabilityChanged, QueuedSent, RoomMessageAcked, RoomMessageReceived,
     SecurityState, SessionStateChanged, SmpProgress, SmpResult, SmpState,
@@ -285,6 +287,11 @@ class OtrApp:
         #: its text goes out as plaintext group chat and it never gets an OTR
         #: session, SMP, a call or a file. See `note_room_joined`.
         self._rooms: set = set()
+        # Rooms we are only briefly in to ask to join (request_group_entry):
+        # nothing from them is registered, shown or reported.
+        self._knocking: set = set()
+        # (room, requester) -> when its last request was shown.
+        self._entry_seen: Dict[Tuple[str, str], float] = {}
         #: peer -> monotonic time a handshake was first seen, for "elapsed".
         self._handshake_seen: dict = {}
         #: THE OUTBOX. peer -> lines typed before the conversation was ready
@@ -508,6 +515,8 @@ class OtrApp:
         if self._wiped:
             return
         room = self.canonical_peer(room)
+        if room in self._knocking:
+            return
         self._rooms.add(room)
         # A secure group whose own commit was lost with the old stream: post
         # it again now we are back in the room. Off this thread -- it is the
@@ -517,6 +526,56 @@ class OtrApp:
         if groups is not None and getattr(groups, "on_room_rejoined", None):
             threading.Thread(target=self._quietly, args=(groups.on_room_rejoined, room),
                              name="group-rejoin", daemon=True).start()
+
+    def note_knocking(self, room: str, on: bool) -> None:
+        """We are about to be (or have stopped being) in [room] only to ask
+        its members for an invitation: see ConnectionController.
+        request_group_entry."""
+        room = self.canonical_peer(room)
+        if on:
+            self._knocking.add(room)
+        else:
+            self._knocking.discard(room)
+            self._rooms.discard(room)
+
+    #: A request to be invited, posted in an encrypted group's room.
+    ENTRY_REQUEST_PREFIX = "?OTRv4Plus-ASK:"
+    #: The same requester in the same room is shown at most once per hour.
+    ENTRY_REQUEST_EVERY = 3600.0
+    #: Replayed history older than this is not shown at all.
+    ENTRY_REQUEST_MAX_AGE = 24 * 3600.0
+
+    def _entry_requested(self, room: str, body: str, timestamp: float,
+                         own: bool, item: Any) -> None:
+        """A request to be invited (ENTRY_REQUEST_PREFIX + {"jid": ...}).
+        Shown to members as an address and two buttons; nothing happens
+        unless one of them taps Invite."""
+        if own:
+            return
+        try:
+            data = json.loads(body[len(self.ENTRY_REQUEST_PREFIX):][:600])
+            raw = str(data.get("jid", ""))
+            jid = self.canonical_peer(raw)
+        except Exception:
+            return
+        if "/" in raw:
+            # A bare address or nothing: an invitation goes to an account.
+            return
+        local, _, domain = jid.partition("@")
+        if (not local or not domain or len(jid) > 320 or "/" in jid
+                or any(c.isspace() or ord(c) < 32 for c in jid)):
+            return
+        if jid == self._own_bare():
+            return
+        now = self._clock()
+        live = item is None or getattr(item, "source", "live") == "live"
+        if not live and timestamp and now - timestamp > self.ENTRY_REQUEST_MAX_AGE:
+            return
+        key = (room, jid)
+        if now - self._entry_seen.get(key, 0.0) < self.ENTRY_REQUEST_EVERY:
+            return
+        self._entry_seen[key] = now
+        self._emit(GroupEntryRequested(peer=room, requester=jid, live=live))
 
     def note_room_rejected(self, room: str, condition: str = "") -> None:
         """The server bounced a message we sent to `room`. For a secure group
@@ -579,10 +638,13 @@ class OtrApp:
         marks the room reflecting our own message back, which MLS needs (it
         is how a commit learns it won) and a plain room does not show."""
         room = self.canonical_peer(room)
-        if room not in self._rooms:
+        if room not in self._rooms or room in self._knocking:
             return
         groups = self._groups
         secure = groups is not None and groups.is_secure(room)
+        if secure and body.startswith(self.ENTRY_REQUEST_PREFIX):
+            self._entry_requested(room, body, timestamp, own, item)
+            return
         if item is not None and (item.action or not body) and secure:
             # A plaintext action on a secure group's message is not
             # authenticated: ignored, never applied.

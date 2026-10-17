@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.114 — 2026-10-17 — ask to join encrypted groups; Rooms tab by kind (core 0.13.1)
+
+- **Ask to join instead of a password** (owner request). An encrypted group
+  you are not in has an **Ask to join** button. It asks first (your address
+  is posted in the group's room, which its occupants and the server can
+  see), then steps into the room, posts one request and leaves. Members see
+  "bob@… asks to join the encrypted group …" with **Invite** and
+  **Dismiss**, with a tone and buzz for a new request (none for one replayed
+  from the room's history). Invite sends the usual invitation over OTRv4+
+  to that address, so a false claim only invites the address's real owner.
+  Requests are limited to once per group per 10 minutes on the asker's
+  phone and are shown at most once per hour per person to members.
+- **New encrypted groups have no room password.** They are invite-only
+  already: a password would only admit to a room nobody outside can read.
+  Groups made earlier with a password keep working.
+- **The Rooms tab is arranged by kind:** 🔐 your encrypted groups (with
+  "New encrypted group"), encrypted groups on this server you can ask to
+  join, and **Plain rooms (not encrypted)** under a warning that the server
+  can read them. The password option is offered only there.
+- **Desktop:** the "asks to join" card with Invite and Dismiss.
+
 ## Android 0.7.0-experimental.rc.113 — 2026-10-17 — password rooms ask first (core 0.13.1)
 
 - **A 🔒 room in the list asks for its password before joining**, instead

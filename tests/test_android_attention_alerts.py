@@ -68,7 +68,8 @@ class TestARequestNamesNobody:
         src = _read("chat", "Attention.kt")
         texts = re.findall(r'[A-Z_]+\("([^"]+)"\)', src)
         assert texts == ["Verification requested", "Group invitation",
-                         "A group needs its password"]
+                         "A group needs its password",
+                         "Someone asks to join a group"]
 
     def test_coming_to_the_front_takes_it_down(self):
         assert "if (visible) cancelAttentionNotification()" in SERVICE
