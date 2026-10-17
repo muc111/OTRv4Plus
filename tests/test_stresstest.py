@@ -213,3 +213,53 @@ def test_several_groups_add_one_at_a_time_and_add_up():
 def test_the_defaults_add_like_the_app():
     args = st.build_parser().parse_args(["--admin", "a@x"])
     assert args.batch == 1 and args.groups == 1
+
+
+class TestAPacedServer:
+    """mod_otrv4plus_capacity login_rate answers a crowd "busy": the bots
+    retry like the apps, and the run says how many were paced."""
+
+    def test_a_busy_answer_is_retried_until_let_in(self, monkeypatch):
+        import asyncio
+        import otrv4plus_stresstest as S
+
+        class Client:
+            def __init__(self):
+                self.handlers = {}
+                self.tries = 0
+                self.presence = False
+
+            def add_event_handler(self, name, fn):
+                self.handlers.setdefault(name, []).append(fn)
+
+            def del_event_handler(self, name, fn):
+                self.handlers[name].remove(fn)
+
+            def connect(self, host, port):
+                self.tries += 1
+                if self.tries < 3:
+                    for fn in list(self.handlers["stream_error"]):
+                        fn({"condition": "resource-constraint",
+                            "text": "The server is busy letting people in."})
+                else:
+                    for fn in list(self.handlers["session_start"]):
+                        fn(None)
+
+            def send_presence(self):
+                self.presence = True
+
+        async def no_wait(_s):
+            return None
+
+        monkeypatch.setattr(S.asyncio, "sleep", no_wait)
+        S.PACED["n"] = 0
+        c = Client()
+        asyncio.run(S._online(c, "127.0.0.1", 5222, timeout=1))
+        assert c.tries == 3 and c.presence
+        assert S.PACED["n"] == 2
+        assert all(not v for v in c.handlers.values())
+
+    def test_full_is_not_busy(self):
+        import otrv4plus_stresstest as S
+        assert not S._is_busy({"condition": "resource-constraint",
+                               "text": "This server is full"})

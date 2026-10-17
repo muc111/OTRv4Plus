@@ -106,4 +106,12 @@ class ConnectProblemTest {
         assertEquals(ConnectProblem.Tone.QUIET, line.tone)
         assertTrue(line.text.startsWith("The server is full"))
     }
+
+    @Test
+    fun `a busy server is never an alarm`() {
+        for (n in listOf(1, 5, 20)) {
+            val line = ConnectProblem.line(ConnectProblem.SERVER_BUSY, false, true, n)!!
+            assertEquals(ConnectProblem.Tone.QUIET, line.tone)
+        }
+    }
 }

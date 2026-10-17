@@ -40,6 +40,16 @@ class ReconnectPolicy(
     private val firstDelayMs: Long = DEFAULT_FIRST_DELAY_MS,
     private val maxDelayMs: Long = DEFAULT_MAX_DELAY_MS,
     private val factor: Double = 2.0,
+    /**
+     * Spread each delay by up to this fraction either way (0.25: 75-125%).
+     * When a server restarts, every phone drops at the same moment; without
+     * a spread they would all retry at the same second too, and the
+     * server's sign-in pacing (mod_otrv4plus_capacity) would turn most of
+     * them away (owner, 2026-10-17: "smooth login without peaking CPU").
+     */
+    private val jitter: Double = 0.0,
+    /** A uniform draw in [0, 1); replaceable so tests are exact. */
+    private val random: () -> Double = { kotlin.random.Random.nextDouble() },
 ) {
 
     /** Consecutive failures since the last success or user action. */
@@ -118,11 +128,15 @@ class ReconnectPolicy(
         val step = attempts
         attempts = step + 1
         var delay = firstDelayMs.toDouble()
-        repeat(step) {
+        for (i in 0 until step) {
             delay *= factor
-            if (delay >= maxDelayMs) return maxDelayMs
+            if (delay >= maxDelayMs) break
         }
-        return delay.toLong().coerceIn(firstDelayMs, maxDelayMs)
+        val base = delay.coerceIn(firstDelayMs.toDouble(), maxDelayMs.toDouble())
+        // After the cap, so phones that have all reached it still spread.
+        // Never below (1 - jitter) of the first delay: no busy loop.
+        val spread = if (jitter > 0) 1.0 + jitter * (2 * random() - 1) else 1.0
+        return (base * spread).toLong().coerceAtLeast(1L)
     }
 
     companion object {

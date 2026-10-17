@@ -199,4 +199,21 @@ class ReconnectPolicyTest {
         p.onUserDisconnect()
         assertNull(p.nextDelayMs())
     }
+
+    // ── a server restart is not met by every phone at the same second ───────
+
+    @Test
+    fun `jitter spreads a delay both ways, around the same backoff`() {
+        val low = ReconnectPolicy(1_000, 8_000, 2.0, jitter = 0.25, random = { 0.0 })
+        val high = ReconnectPolicy(1_000, 8_000, 2.0, jitter = 0.25, random = { 0.999999 })
+        assertEquals(750L, low.nextDelayMs())
+        assertEquals(1_249L, high.nextDelayMs())
+    }
+
+    @Test
+    fun `phones at the cap still spread`() {
+        val p = ReconnectPolicy(1_000, 8_000, 2.0, jitter = 0.25, random = { 0.0 })
+        repeat(20) { p.nextDelayMs() }
+        assertEquals(6_000L, p.nextDelayMs())
+    }
 }

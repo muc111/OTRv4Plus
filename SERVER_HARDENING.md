@@ -36,6 +36,7 @@ i2pd sees the connecting I2P destination (see the i2pd section).
 | Option | Default | Effect |
 |---|---|---|
 | `max_online_users` | `2000` | A new person signing in when this many are online is refused with `resource-constraint`. The apps say "The server is full… The app keeps trying and gets in when someone leaves." Someone already online who reconnects is never refused. `0` turns it off. |
+| `login_rate` | `10` | New sign-ins let in per second; `login_burst` (`40`) of them at once. Anyone over the rate is told "busy" at the very first step, before TLS or the password check, so turning them away costs almost nothing. The apps say "The server is busy letting people in, a few at a time" and retry after a randomised delay, so the crowd arrives spread out. `0` turns it off. |
 | `max_registrations_per_hour` | `30` | New accounts per hour, server-wide. Above it, sign-up says "The server is refusing new accounts right now. Try again later." Failed attempts (a name already taken) do not count. `0` turns it off. |
 | `max_registered_users` | `0` (none) | Accounts in total. |
 
@@ -50,6 +51,8 @@ In `prosody.cfg.lua`, before any `VirtualHost`, with the other options:
 
 ```lua
 max_online_users = 2000
+login_rate = 10
+login_burst = 40
 max_registrations_per_hour = 30
 -- max_registered_users = 5000
 ```
@@ -60,8 +63,21 @@ Add `"otrv4plus_capacity";` to `modules_enabled`, then:
 sudo prosodyctl check config && sudo systemctl restart prosody
 ```
 
-Each refusal is logged at `warn` in `/usr/local/var/log/prosody/prosody.err`,
-so you can see when the limits are reached.
+Each refusal of a sign-in or account is logged at `warn` in
+`/usr/local/var/log/prosody/prosody.err`, so you can see when the limits are
+reached. Paced sign-ins are logged at `info`.
+
+**Sign-in pacing: why and how much.** When the server restarts, every phone
+drops at the same moment and comes back together. Each sign-in costs a TLS
+handshake and a password check, and then the person's rooms and secure
+groups are rejoined, all on Prosody's one core. At `login_rate = 10`, 2,000
+people are back in about 3½ minutes, at a steady load instead of one spike.
+The apps also spread their retries by ±25%, so they do not all knock at the
+same second. To tune it, restart Prosody with a stress test running
+(STRESS_TEST.md) and watch `pidstat`. If Prosody stays well under 80% while
+everyone signs back in, raise `login_rate`; if it pins at 100%, lower it.
+The stress test retries "busy" like the apps and reports how many sign-ins
+were paced.
 
 **Is 2,000 right for the T450?** The stress test measured steady chat at
 about 0.046% of one core per user, about 1,700 users at 80% of Prosody's

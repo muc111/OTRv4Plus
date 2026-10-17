@@ -165,6 +165,20 @@ class TestAFullServer:
         assert took < 10
 
 
+BUSY = FULL.replace("This server is full",
+                    "The server is busy letting people in. Try again in a moment.")
+
+
+class TestABusyServer:
+    """mod_otrv4plus_capacity login_rate: paced, not full."""
+
+    def test_it_is_named_busy(self, monkeypatch):
+        err, took = _attempt(XmppServer(HEADER + BUSY), monkeypatch)
+        assert err.code == "server_busy"
+        assert "a few at a time" in err.detail
+        assert took < 10
+
+
 class TestSignInRulesAreUnchanged:
 
     def test_plain_only_is_still_refused_and_said_at_once(self, monkeypatch):

@@ -95,7 +95,7 @@ class OtrConnectionService : Service() {
 
     private val binder = LocalBinder()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-    private val reconnect = ReconnectPolicy()
+    private val reconnect = ReconnectPolicy(jitter = RECONNECT_JITTER)
 
     /** The one core. Built on first use, never rebuilt. */
     val core: ChaquopyOtrCore by lazy { ChaquopyOtrCore(applicationContext) }
@@ -1261,6 +1261,9 @@ class OtrConnectionService : Service() {
 
         const val ACTION_START = "org.otrv4plus.android.START"
         const val ACTION_STOP = "org.otrv4plus.android.STOP"
+
+        /** Reconnect delays spread by ±25% (ReconnectPolicy.jitter). */
+        const val RECONNECT_JITTER = 0.25
         const val EXTRA_KEEP_ROUTER = "keep_router"
         const val ACTION_LOGOUT = "org.otrv4plus.android.LOGOUT"
         const val ACTION_WIPE = "org.otrv4plus.android.WIPE"

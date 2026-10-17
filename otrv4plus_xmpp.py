@@ -2574,11 +2574,15 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             return
         if "resource-constraint" in (str(condition), raw) or \
                 "<resource-constraint" in raw:
-            # mod_otrv4plus_capacity: as many people online as it allows.
-            # Not fatal: the reconnect loop tries again, and gets in once
-            # someone leaves.
-            print("[server] the server is full (as many people online as it "
-                  "allows); trying again shortly.")
+            # mod_otrv4plus_capacity: as many people online as it allows,
+            # or sign-ins paced. Not fatal: the reconnect loop tries again
+            # (with a randomised delay), and gets in once there is room.
+            if "busy" in raw.lower():
+                print("[server] the server is letting people in a few at a "
+                      "time; trying again in a moment.")
+            else:
+                print("[server] the server is full (as many people online as "
+                      "it allows); trying again shortly.")
             return
         for name in self._FATAL_STREAM_ERRORS:
             if name == str(condition) or ("<%s " % name) in raw or (
@@ -2604,7 +2608,11 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
         """Exponential-backoff reconnect. Re-establishes the I2P SAM tunnel
         before reconnecting slixmpp when running over I2P."""
         while not self._shutting_down:
-            delay = self._reconnect_delay
+            # Spread by ±25%, as the app does: after a server restart every
+            # client drops at once, and the server paces sign-ins
+            # (mod_otrv4plus_capacity), so arriving together means waiting.
+            delay = round(self._reconnect_delay
+                          * (0.75 + secrets.randbelow(501) / 1000), 1)
             print(f"[reconnect] waiting {delay}s before reconnecting...")
             await asyncio.sleep(delay)
             if self._shutting_down:

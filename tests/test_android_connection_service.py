@@ -92,7 +92,7 @@ class TestItOwnsTheConnection:
         """The backoff, the single-flight gate and the disconnect latch are
         decisions with executed tests. Reimplementing them here would put them
         beyond reach again."""
-        assert "ReconnectPolicy()" in service
+        assert "ReconnectPolicy(jitter = RECONNECT_JITTER)" in service
         code = _code_only(service)
         assert "beginAttempt()" in code
         assert "endAttempt()" in code

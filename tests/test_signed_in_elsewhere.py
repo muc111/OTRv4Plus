@@ -163,3 +163,31 @@ class TestAFullServer:
         assert 'SERVER_FULL = "server_full"' in kt
         needs = kt[kt.index("val NEEDS_YOU"):kt.index("val TRANSIENT")]
         assert "SERVER_FULL" not in needs        # retried, never latched
+
+
+class TestSignInPacing:
+    """mod_otrv4plus_capacity login_rate: a crowd of sign-ins (a server
+    restart) is let in a few a second; the rest retry, spread out."""
+
+    SRC = open(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")).read()
+
+    def test_the_module_refuses_before_tls_once_per_connection(self):
+        assert 'get_option_number("login_rate", 10)' in self.SRC
+        assert 'module:hook("stream-features"' in self.SRC
+        assert 'session.type ~= "c2s_unauthed" or session.otrv4plus_admitted' in self.SRC
+        assert "busy" in self.SRC
+
+    def test_the_app_says_busy_not_full(self):
+        assert T.SERVER_BUSY_CODE == "server_busy"
+        kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                               "android/connection/ConnectProblem.kt")).read()
+        assert 'SERVER_BUSY = "server_busy"' in kt
+
+    def test_reconnects_are_spread(self):
+        svc = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read()
+        assert "ReconnectPolicy(jitter = RECONNECT_JITTER)" in svc
+        import otrv4plus_xmpp as X
+        import inspect
+        src = inspect.getsource(X)
+        assert "secrets.randbelow(501)" in src

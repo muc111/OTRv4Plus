@@ -830,6 +830,15 @@ SERVER_FULL_TEXT = (
     "keeps trying and gets in when someone leaves.")
 
 
+#: The server is pacing sign-ins (mod_otrv4plus_capacity login_rate): this
+#: one arrived in a crowd, after a server restart for instance. Retried after
+#: a randomised delay, which is what spreads the crowd out.
+SERVER_BUSY_CODE = "server_busy"
+SERVER_BUSY_TEXT = (
+    "The server is busy letting people in, a few at a time. The app tries "
+    "again in a moment.")
+
+
 #: Shown when the server closed our session for a newer sign-in of the same
 #: account. Retrying would push that one out, so the app stops and says so.
 REPLACED_CODE = "signed_in_elsewhere"
@@ -1743,8 +1752,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                         "session_limit", SESSION_LIMIT_TEXT))
                     return
                 if cond == "resource-constraint":
+                    busy = "busy" in said.lower()
                     started.set_exception(TransportError(
-                        SERVER_FULL_CODE, SERVER_FULL_TEXT))
+                        SERVER_BUSY_CODE if busy else SERVER_FULL_CODE,
+                        SERVER_BUSY_TEXT if busy else SERVER_FULL_TEXT))
                     return
                 started.set_exception(TransportError(
                     "xmpp_stream_failure",

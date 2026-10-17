@@ -370,15 +370,57 @@ def _client(jid: str, password: str, host: str):
     return c
 
 
-async def _online(c, host: str, port: int, timeout: float = 60.0) -> None:
-    ready = asyncio.get_running_loop().create_future()
-    c.add_event_handler("session_start",
-                        lambda _e: ready.done() or ready.set_result(True))
-    c.add_event_handler("failed_auth",
-                        lambda _e: ready.done() or ready.set_exception(
-                            RuntimeError("authentication failed")))
-    c.connect(host, port)
-    await asyncio.wait_for(ready, timeout)
+#: Sign-ins the server asked to retry (mod_otrv4plus_capacity login_rate).
+PACED = {"n": 0}
+
+
+def _is_busy(stanza) -> bool:
+    try:
+        return (str(stanza["condition"]) == "resource-constraint"
+                and "busy" in str(stanza["text"] or "").lower())
+    except Exception:
+        return False
+
+
+async def _online(c, host: str, port: int, timeout: float = 60.0,
+                  retry_for: float = 900.0) -> None:
+    """Sign [c] in. A server pacing sign-ins (login_rate) answers a crowd
+    "busy"; like the apps, retry after a randomised pause until let in."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + retry_for
+    while True:
+        ready = loop.create_future()
+        busy = loop.create_future()
+
+        def started(_e):
+            ready.done() or ready.set_result(True)
+
+        def refused(_e):
+            ready.done() or ready.set_exception(RuntimeError("authentication failed"))
+
+        def stream_error(stanza):
+            if _is_busy(stanza):
+                busy.done() or busy.set_result(True)
+
+        c.add_event_handler("session_start", started)
+        c.add_event_handler("failed_auth", refused)
+        c.add_event_handler("stream_error", stream_error)
+        try:
+            c.connect(host, port)
+            await asyncio.wait({ready, busy}, timeout=timeout,
+                               return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            c.del_event_handler("session_start", started)
+            c.del_event_handler("failed_auth", refused)
+            c.del_event_handler("stream_error", stream_error)
+        if ready.done():
+            ready.result()
+            break
+        if busy.done() and loop.time() < deadline:
+            PACED["n"] += 1
+            await asyncio.sleep(1 + secrets.randbelow(4000) / 1000)
+            continue
+        raise asyncio.TimeoutError("not signed in within %ds" % timeout)
     c.send_presence()
 
 
@@ -562,7 +604,9 @@ async def run(args) -> int:
                                for sw in swarms))
         others = [b for b in bots if b is not b.swarm.owner]
         await asyncio.gather(*(bring_up(b, pw_of[b.jid]) for b in others))
-        say("[stress] %d users online in %d room(s)" % (len(clients), len(swarms)))
+        say("[stress] %d users online in %d room(s)%s" % (
+            len(clients), len(swarms),
+            ", %d sign-ins paced by the server" % PACED["n"] if PACED["n"] else ""))
 
         # 3. the groups, filled the way the app fills them: one person per
         # change as they accept, several together only when they accept

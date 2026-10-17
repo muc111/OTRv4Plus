@@ -5,6 +5,8 @@
 -- can carry, and keep account creation from being used to flood it.
 --
 --   max_online_users           = 2000  -- people signed in at once (0: none)
+--   login_rate                 = 10    -- new sign-ins let in per second (0: none)
+--   login_burst                = 40    -- ...of which this many at once
 --   max_registrations_per_hour = 30    -- new accounts, server-wide (0: none)
 --   max_registered_users       = 0     -- accounts in total (0: none)
 --
@@ -24,7 +26,49 @@ local max_online = module:get_option_number("max_online_users", 2000);
 local per_hour = module:get_option_number("max_registrations_per_hour", 30);
 local max_registered = module:get_option_number("max_registered_users", 0);
 
+local login_rate = module:get_option_number("login_rate", 10);
+local login_burst = module:get_option_number("login_burst", 40);
+
 local host_sessions = prosody.hosts[module.host].sessions;
+
+-- SIGN-IN PACING (owner, 2026-10-17: "schedule them at the server for a
+-- smooth login without peaking CPU"). Two thousand phones reconnecting at
+-- once after a restart would each cost a TLS handshake, a SCRAM password
+-- check and then their rooms and groups, all in the same seconds, on
+-- Prosody's one core. A token bucket lets in login_rate new connections a
+-- second (login_burst at once); the rest are turned away with
+-- resource-constraint "busy" at their FIRST stream features, before TLS or
+-- any password work, which costs almost nothing. The apps retry after a
+-- randomised delay, so the crowd arrives spread out instead of together.
+local now = require "util.time".now;
+local tokens, refilled = login_burst, now();
+
+local function admit()
+	local t = now();
+	tokens = math.min(login_burst, tokens + (t - refilled) * login_rate);
+	refilled = t;
+	if tokens >= 1 then
+		tokens = tokens - 1;
+		return true;
+	end
+	return false;
+end
+
+module:hook("stream-features", function (event)
+	if login_rate <= 0 then return; end
+	local session = event.origin;
+	-- Once per connection, at its first features (before STARTTLS).
+	if session.type ~= "c2s_unauthed" or session.otrv4plus_admitted then return; end
+	if admit() then
+		session.otrv4plus_admitted = true;
+		return;
+	end
+	module:log("info", "Sign-ins arriving faster than login_rate = %d/s: "
+		.. "one asked to retry", login_rate);
+	session:close({ condition = "resource-constraint",
+		text = "The server is busy letting people in. Try again in a moment." });
+	return true;
+end, 1000);
 
 local function online_users()
 	local n = 0;

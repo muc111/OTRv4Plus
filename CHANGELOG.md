@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.101 — 2026-10-17 — sign-ins paced, retries spread (core 0.13.1)
+
+- **Server: sign-in pacing** in `prosody/mod_otrv4plus_capacity.lua`
+  (`login_rate`, 10 a second; `login_burst`, 40). Owner request: no CPU
+  spike when everyone signs in at once, after a server restart for
+  instance. Sign-ins over the rate are told "busy" at the very first step,
+  before TLS or the password check.
+- **The apps say so and come back later:** "The server is busy letting
+  people in, a few at a time. The app tries again in a moment." Shown
+  quietly, never as an error. Android, desktop and the terminal client.
+- **Retries are spread by ±25%** (Android and the terminal client), so
+  phones that dropped together do not all retry at the same second.
+- **The stress test** retries "busy" like the apps and reports how many
+  sign-ins the server paced.
+
 ## Android 0.7.0-experimental.rc.100 — 2026-10-17 — no Disconnect; the built-in router stays warm (core 0.13.1)
 
 - **Disconnect is gone** (owner decision). The app stays connected until

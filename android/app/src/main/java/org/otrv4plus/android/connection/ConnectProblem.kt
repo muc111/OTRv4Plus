@@ -52,6 +52,14 @@ object ConnectProblem {
         "The server is full: it has as many people online as it allows. " +
             "The app keeps trying and gets in when someone leaves."
 
+    /** The server is pacing sign-ins (mod_otrv4plus_capacity login_rate).
+     *  Retried after a randomised delay; never an alarm. */
+    const val SERVER_BUSY = "server_busy"
+
+    const val SERVER_BUSY_TEXT =
+        "The server is busy letting people in, a few at a time. The app " +
+            "tries again in a moment."
+
     /** The server closed this session for a newer sign-in of the account
      *  (transport.REPLACED_CODE). Never retried by itself: a retry would sign
      *  the other device out, and that one would do the same back. */
@@ -140,6 +148,7 @@ object ConnectProblem {
         // another session of the account holds its only slot. Said every
         // time; retrying is still right (a session that lost its network is
         // timed out by the server).
+        if (code == SERVER_BUSY) return Line(SERVER_BUSY_TEXT, Tone.QUIET)
         if (code == SERVER_FULL) {
             return Line(SERVER_FULL_TEXT, if (retrying) Tone.QUIET else Tone.ERROR)
         }
