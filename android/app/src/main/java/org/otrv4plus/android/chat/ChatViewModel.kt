@@ -838,6 +838,28 @@ class ChatViewModel : ViewModel() {
     var profileStatus: String? by mutableStateOf(null)
 
     /** Load [jid]'s profile; blank means our own. */
+    /** The identity shown on a contact's profile: the key from the OTRv4+
+     *  session with them (ProfileIdentity), never from their vCard. */
+    var profileIdentity by mutableStateOf<org.otrv4plus.android.bridge.SecurityDetails?>(null)
+        private set
+    /** Our own fingerprint, for our profile and for comparing side by side. */
+    var ownFingerprint by mutableStateOf("")
+        private set
+
+    fun loadIdentity(jid: String = "") {
+        val c = core ?: return
+        profileIdentity = null
+        viewModelScope.launch {
+            val (details, own) = withContext(Dispatchers.IO) {
+                (if (jid.isEmpty()) null
+                 else runCatching { c.securityDetails(jid) }.getOrNull()) to
+                    runCatching { c.localFingerprint() }.getOrDefault("")
+            }
+            profileIdentity = details
+            ownFingerprint = own
+        }
+    }
+
     fun loadProfile(jid: String = "") {
         val core = this.core ?: run { profileStatus = "Connect first."; return }
         profileJid = jid

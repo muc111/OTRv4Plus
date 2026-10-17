@@ -48,6 +48,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/chat/OnlineUsers.kt",
     "org/otrv4plus/android/chat/PersistentMessageStore.kt",
     "org/otrv4plus/android/chat/PostLogin.kt",
+    "org/otrv4plus/android/chat/ProfileIdentity.kt",
     "org/otrv4plus/android/chat/ProfileText.kt",
     "org/otrv4plus/android/chat/RoomAddress.kt",
     "org/otrv4plus/android/chat/RoomPassword.kt",

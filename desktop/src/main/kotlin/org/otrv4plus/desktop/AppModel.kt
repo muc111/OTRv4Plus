@@ -930,8 +930,24 @@ class AppModel(
         }
     }
 
+    /** The identity on a contact's profile: the session's key, never the vCard's. */
+    var profileIdentity by mutableStateOf<org.otrv4plus.android.bridge.SecurityDetails?>(null)
+        private set
+
+    /** From a profile: open the chat with the verification prompt up. */
+    fun verifyFromProfile(jid: String) {
+        closeProfile()
+        open(jid)
+        verifyFor = ChatState.bare(jid)
+        changed()
+    }
+
     fun viewProfile(jid: String) {
+        profileIdentity = null
         ui.launch {
+            profileIdentity = withContext(Dispatchers.IO) {
+                runCatching { core.securityDetails(jid) }.getOrNull()
+            }
             if (profileFields.isEmpty()) profileFields = withContext(Dispatchers.IO) { core.profileFields() }
             val (r, values) = withContext(Dispatchers.IO) { core.profileGet(jid) }
             if (r.ok) viewing = jid to values

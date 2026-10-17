@@ -30,9 +30,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import org.otrv4plus.android.chat.ProfileIdentity
 import org.otrv4plus.android.chat.ProfileText
 import org.otrv4plus.android.connection.PasswordChange
 import org.otrv4plus.desktop.AppModel
@@ -156,9 +158,35 @@ fun ProfileDialog(model: AppModel, jid: String, values: Map<String, String>) {
                         SelectionContainer { Text(values[f.key].orEmpty()) }
                     }
                 }
+                // Whose key, and whether anyone checked: the session's key,
+                // never anything from the profile above (ProfileIdentity).
+                val identity = ProfileIdentity.of(model.profileIdentity)
+                Text("Identity", style = MaterialTheme.typography.labelMedium,
+                     color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Medium)
+                Text(identity.status, style = MaterialTheme.typography.bodyMedium,
+                     color = if (identity.alarm) MaterialTheme.colorScheme.error
+                             else MaterialTheme.colorScheme.onSurface)
+                if (identity.theirs.isNotEmpty()) {
+                    val mono = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace)
+                    Text("Their fingerprint", style = MaterialTheme.typography.labelSmall)
+                    SelectionContainer { Text(identity.theirs, style = mono) }
+                    if (identity.ours.isNotEmpty()) {
+                        Text("Yours", style = MaterialTheme.typography.labelSmall)
+                        SelectionContainer { Text(identity.ours, style = mono) }
+                    }
+                    Text(ProfileIdentity.COMPARE, style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         },
-        confirmButton = { TextButton(onClick = { model.closeProfile() }) { Text("Close") } },
+        confirmButton = {
+            Row {
+                if (ProfileIdentity.of(model.profileIdentity).offerVerify) {
+                    TextButton(onClick = { model.verifyFromProfile(jid) }) { Text("Verify Identity") }
+                }
+                TextButton(onClick = { model.closeProfile() }) { Text("Close") }
+            }
+        },
     )
 }
 

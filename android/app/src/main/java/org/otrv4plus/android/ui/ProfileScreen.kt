@@ -50,11 +50,13 @@ fun ProfileScreen(
     showBack: Boolean = true,
     /** Account actions under our own profile (Change password). */
     account: @Composable () -> Unit = {},
+    /** A contact's profile: open their chat with the verification prompt. */
+    onVerify: ((String) -> Unit)? = null,
 ) {
     val own = jid.isBlank()
     val context = LocalContext.current
     var enlarged by remember(jid) { mutableStateOf(false) }
-    LaunchedEffect(jid) { model.loadProfile(jid) }
+    LaunchedEffect(jid) { model.loadProfile(jid); model.loadIdentity(jid) }
 
     // Our edits, keyed by field; reset whenever a profile is (re)loaded.
     val edits = remember(model.profileValues, jid) {
@@ -183,6 +185,8 @@ fun ProfileScreen(
 
         model.profileStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
+        IdentitySection(model, own, jid, onVerify)
+
         if (own) {
             Button(
                 onClick = { model.saveProfile(edits.toMap()) },
@@ -228,5 +232,53 @@ private fun FullScreenPicture(picture: ImageBitmap, onClose: () -> Unit) {
                 modifier = Modifier.fillMaxWidth().aspectRatio(1f),
             )
         }
+    }
+}
+
+/**
+ * Whose key, and whether anyone checked (ProfileIdentity). The fingerprint is
+ * the one the OTRv4+ session saw -- never anything from the profile above,
+ * which the server stores and could change.
+ */
+@Composable
+private fun IdentitySection(model: ChatViewModel, own: Boolean, jid: String,
+                            onVerify: ((String) -> Unit)?) {
+    HorizontalDivider()
+    Text("Identity", style = MaterialTheme.typography.titleMedium)
+    val mono = MaterialTheme.typography.bodyMedium.copy(
+        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+    if (own) {
+        Text("Your fingerprint", style = MaterialTheme.typography.labelMedium)
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            Text(org.otrv4plus.android.chat.ProfileIdentity.group(model.ownFingerprint)
+                     .ifBlank { "…" }, style = mono)
+        }
+        Text(org.otrv4plus.android.chat.ProfileIdentity.OWN_NOTE,
+             style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        return
+    }
+    val view = org.otrv4plus.android.chat.ProfileIdentity.of(
+        model.profileIdentity?.copy(localFingerprint = model.ownFingerprint))
+    Text(view.status, style = MaterialTheme.typography.bodyMedium,
+         color = if (view.alarm) MaterialTheme.colorScheme.error
+                 else MaterialTheme.colorScheme.onSurface)
+    if (view.theirs.isNotEmpty()) {
+        Text("Their fingerprint", style = MaterialTheme.typography.labelMedium)
+        androidx.compose.foundation.text.selection.SelectionContainer {
+            Text(view.theirs, style = mono)
+        }
+        if (view.ours.isNotEmpty()) {
+            Text("Yours", style = MaterialTheme.typography.labelMedium)
+            androidx.compose.foundation.text.selection.SelectionContainer {
+                Text(view.ours, style = mono)
+            }
+        }
+        Text(org.otrv4plus.android.chat.ProfileIdentity.COMPARE,
+             style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+    if (view.offerVerify && onVerify != null) {
+        Button(onClick = { onVerify(jid) }) { Text("Verify Identity") }
     }
 }

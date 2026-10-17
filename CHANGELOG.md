@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.108 — 2026-10-17 — identity on the profile (core 0.13.1)
+
+- **New: an Identity section on every profile** (Android and desktop). A
+  contact's profile says, in one sentence, whether their key is verified,
+  encrypted but not checked, or **changed since you last spoke** (in red:
+  "They may have reinstalled -- or it may not be them"). It shows their
+  fingerprint and yours in groups of four for reading aloud, and a
+  **Verify Identity** button that opens the chat with the verification
+  prompt. Your own profile shows your fingerprint and that a wipe or new
+  install makes a new one.
+- **The fingerprint is the one the encrypted session saw**, never anything
+  from the profile: a profile is stored on the server, which could change
+  it. With no encrypted chat yet, no key is shown.
+
 ## Android 0.7.0-experimental.rc.107 — 2026-10-17 — a profile from People (core 0.13.1)
 
 - **New: "Profile" in People.** Tapping a person on the People tab offered

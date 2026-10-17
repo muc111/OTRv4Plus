@@ -291,6 +291,12 @@ class MainActivity : ComponentActivity() {
                                     ownJid = connection.status.jid,
                                     jid = profileOf,
                                     onBack = { screen = profileBack },
+                                    // The chat, with the verification prompt
+                                    // open: the one place SMP runs.
+                                    onVerify = { who ->
+                                        chat.requestVerification(who)
+                                        openChat(who)
+                                    },
                                 )
                             }
                         }
