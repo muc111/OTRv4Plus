@@ -95,13 +95,17 @@ object RouterChoice {
     /**
      * i2pd.conf for the bundled router.
      *
-     * Owner's choices (2026-10-10): limited transit, so the phone helps the
-     * network a little without becoming a relay that drains the battery.
+     * Owner's choices: no transit (2026-10-17, replacing the "limited
+     * transit" of 2026-10-10). The router now stays up between connections
+     * (rc.100), and relaying other people's tunnels was the largest battery
+     * cost the user gets nothing from. Our own tunnels, and so sign-in and
+     * call speed, are unaffected.
      *
      *  - SAM on loopback only, on a random port. Nothing else listens:
      *    no web console, no HTTP or SOCKS proxy, no BOB, I2CP or I2PControl.
-     *  - Transit allowed but small: bandwidth class L (32 KB/s), half of it
-     *    for others, at most 50 transit tunnels. Never floodfill.
+     *  - No transit: other people's tunnels are refused (notransit), and
+     *    the limit below stays as a backstop. Bandwidth class L
+     *    (32 KB/s). Never floodfill.
      *  - No UPnP: the app does not open ports on the user's router.
      *  - Reseed downloads checked against the bundled certificates.
      *  - The address book stays on, so names like otrv4plus.i2p resolve.
@@ -114,9 +118,9 @@ object RouterChoice {
         |ipv4 = true
         |ipv6 = true
         |floodfill = false
-        |notransit = false
+        |notransit = true
         |bandwidth = L
-        |share = 50
+        |share = 0
         |
         |[limits]
         |transittunnels = 50

@@ -64,13 +64,15 @@ class RouterChoiceTest {
     }
 
     @Test
-    fun `the configuration listens on loopback only and limits transit`() {
+    fun `the configuration listens on loopback only and carries no transit`() {
         val conf = RouterChoice.config(23_456)
         val lines = conf.lines().map { it.trim() }
         assertTrue("address = 127.0.0.1" in lines)
         assertTrue("port = 23456" in lines)
         assertTrue("floodfill = false" in lines)
         assertTrue("bandwidth = L" in lines)
+        assertTrue("notransit = true" in lines)
+        assertTrue("share = 0" in lines)
         assertTrue("transittunnels = 50" in lines)
         assertTrue("verify = true" in lines)
         // Every listener but SAM is off.

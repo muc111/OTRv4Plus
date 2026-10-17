@@ -25,3 +25,17 @@ def test_the_installer_installs_and_enables_it():
         script = fh.read()
     assert 'install -m 644 "$HERE/mod_otrv4plus_moderation.lua"' in script
     assert "add_module otrv4plus_moderation" in script
+
+
+def test_the_installer_arms_xmpp_guard_maintenance_mode():
+    with open(os.path.join(ROOT, "prosody", "install-server-limits.sh")) as fh:
+        script = fh.read()
+    arm = script.index('touch "$GUARD_STATE/maintenance"')
+    assert arm < script.index('cp -a "$CFG" "$BACKUP"')
+
+
+def test_capacity_refusals_reach_xmpp_guard():
+    with open(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")) as fh:
+        mod = fh.read()
+    assert mod.count('module:fire_event("user-limits/refused"') == 2
+    assert 'what = "online"' in mod and 'what = "registration"' in mod

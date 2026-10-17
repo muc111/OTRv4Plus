@@ -87,9 +87,12 @@ class TestConfig:
                         "i2pcontrol", "upnp"):
             assert re.search(r"\|\[%s\]\n\s*\|enabled = false" % section, conf), section
 
-    def test_limited_transit_never_floodfill(self):
+    def test_no_transit_never_floodfill(self):
         conf = _read(self.KT)
         assert "|floodfill = false" in conf
+        # Owner, 2026-10-17: the phone relays nobody's tunnels (battery).
+        assert "|notransit = true" in conf
+        assert "|share = 0" in conf
         assert "|bandwidth = L" in conf
         assert "|transittunnels = 50" in conf
         assert "|verify = true" in conf

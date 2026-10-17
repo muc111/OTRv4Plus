@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.118 — 2026-10-17 — the built-in router relays nobody's traffic (core 0.13.1)
+
+- **Less battery with the built-in router** (owner request). Since rc.100
+  the router stays up between connections, and it was also relaying other
+  people's I2P tunnels ("limited transit", 2026-10-10): the largest battery
+  cost the user got nothing back for. It now carries only this app's own
+  tunnels (`notransit = true`). Sign-in and call speed are unchanged (the
+  owner's rc.117 timing: router 1:02, 2 attempts). The cost: the phone no
+  longer helps carry the I2P network.
+- **Server: works with XMPP Guard.** The install script turns on XMPP
+  Guard's maintenance mode when XMPP Guard is installed, so the modules and
+  config change it makes become the new baseline instead of "may be a
+  backdoor" alerts. A sign-in refused because the server is full, and an
+  account refused because the account cap is reached, now show in XMPP
+  Guard as "At capacity" / "Server full".
+
 ## Android 0.7.0-experimental.rc.117 — 2026-10-17 — rooms list comes back; admins can ban (core 0.13.1)
 
 - **The Rooms tab lists the server's rooms and groups again** (owner

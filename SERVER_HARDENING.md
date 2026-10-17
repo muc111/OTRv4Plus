@@ -14,7 +14,9 @@ go -- the three modules, the limits, and the room rate raised to 10:
 cd ~/OTRv4Plus && git pull && sudo bash prosody/install-server-limits.sh
 ```
 
-It backs up `prosody.cfg.lua` first, runs `prosodyctl check config` and
+If XMPP Guard (i2pd-dash) is installed, the script turns on its maintenance
+mode first, so its own changes become XMPP Guard's new baseline instead of
+integrity alerts. It backs up `prosody.cfg.lua` first, runs `prosodyctl check config` and
 puts the backup back if that fails, restarts Prosody and prints the settings
 it ended with and any new error-log lines. Running it again changes nothing.
 Override a value from the environment, e.g. `sudo LOGIN_RATE=20 bash

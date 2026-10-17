@@ -88,6 +88,9 @@ module:hook("pre-resource-bind", function (event)
 	if n >= max_online then
 		module:log("warn", "Refused a sign-in: %d people online (max_online_users = %d)",
 			n, max_online);
+		-- XMPP Guard (mod_xmppguard) shows this as "At capacity".
+		module:fire_event("user-limits/refused",
+			{ session = session, what = "online", count = n, limit = max_online });
 		event.error = { condition = "resource-constraint",
 			text = "This server is full: it allows " .. max_online
 				.. " people online at once. Try again later." };
@@ -129,6 +132,8 @@ module:hook("user-registering", function (event)
 		if n >= max_registered then
 			module:log("warn", "Refused a new account: %d accounts "
 				.. "(max_registered_users = %d)", n, max_registered);
+			module:fire_event("user-limits/refused", { session = event.session,
+				what = "registration", count = n, limit = max_registered });
 			refuse(event, "This server is not taking new accounts: it is full.");
 			return;
 		end
