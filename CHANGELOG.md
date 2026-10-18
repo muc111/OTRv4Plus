@@ -4,6 +4,37 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.119 — 2026-10-18 — three regressions fixed and gated; MLS+ (core 0.13.1)
+
+- **First sign-in with the built-in router never shows a red error again.**
+  rc.111's 10-second retries reached three failures in about 30 s, and the
+  Connect screen then said "Can't reach the server: its I2P service seems to
+  be offline" while the router was only setting up. It now says "Still
+  setting up…" quietly for the router's whole settling window, as rc.82
+  promised; a real failure after that is still said.
+- **Deleting rooms and groups tells you what happened.** A refused delete of
+  a room said "you may be banned"; it now says only the room's owner or a
+  server admin can delete it. A Delete confirmed while the Rooms tab was
+  still asking the server (for minutes, over I2P) did nothing at all; it now
+  says to wait for that. Who may delete is unchanged since rc.88: the
+  creator and the server admin; everyone else gets Leave only. If the server
+  admin's Delete is refused, the server is not counting the admin as owner
+  of the rooms service's rooms (with Prosody, check the account is in the
+  global `admins` list, not only inside its VirtualHost), and the app now
+  says so.
+- **Secure groups are called MLS+ everywhere** — the group header, the
+  Rooms tab, the encryption selector, the desktop and the terminal — with
+  "Post-quantum MLS+ (not compatible with standard MLS clients)" under "New
+  encrypted group". MLS+ is MLS (RFC 9420) on the private hybrid
+  post-quantum suite 0xF0A1; Wire, Element and other RFC 9420 clients
+  cannot join. Nothing on the wire changed.
+- **Gates:** `test_signin_status.py`, `test_room_destroy.py` and
+  `test_mls_plus_labeling.py` in CI, with Kotlin `ConnectProblemTest` and
+  `RoomDeletionTest`; handset items 12 and 13 in ANDROID_XMPP_MILESTONE.md
+  §7.
+- **Stress test:** empty rooms left by earlier, interrupted runs are removed
+  at the start and end of a run, and big runs raise the open-files limit.
+
 ## Android 0.7.0-experimental.rc.118 — 2026-10-17 — the built-in router relays nobody's traffic (core 0.13.1)
 
 - **Less battery with the built-in router** (owner request). Since rc.100

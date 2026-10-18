@@ -555,7 +555,31 @@ procedure; the additions this milestone needs are:
     the app reaches connected. (Regression rc.111 → rc.118; unit-tested by
     `ConnectProblemTest` and gated by `tests/test_signin_status.py`.)
 
+13. **Room/group deletion, per role** (full steps in
+    `ANDROID_MESSAGING_DEVICE_TEST.md`, "Room/group deletion, per role").
+    Creator: Delete on rooms and MLS+ groups they made, and the room is gone
+    from the server. Server admin: Delete on every room and group, including
+    other people's and hidden ones. Room admin and ordinary member: Leave
+    only. A refusal says who may delete; a Delete pressed while another
+    operation runs says to wait — neither is ever silent.
+
 Steps 8, 10 and 11 are the ones that cannot be delegated to CI. The tests assert
 the rules this milestone wrote down; only a person reading a real export can
 say whether the rules were the right ones, and only a handset can say whether
 the audio path produced sound.
+
+### 7.2 Regression gates
+
+Each regression that reached a release gets a gate that fails before the
+next one ships. The pytest gates run in CI's existing `pytest tests/` step
+(the same step as `test_licence_declarations_agree.py`); the Kotlin tests
+run in `:app:testDebugUnitTest`. Neither needs the unpacked APK.
+
+| Regression | Gate (CI) | Device check |
+|---|---|---|
+| Bare "MLS" in user-facing text (MLS+ is not standard MLS) | `tests/test_mls_plus_labeling.py` | — |
+| Delete missing, refused without a reason, or silently dropped (rc.83 / rc.88 roles) | `tests/test_room_destroy.py`, `RoomDeletionTest` | 7.1 item 13 |
+| "Can't reach the server" / "Connection lost" during the built-in router's first sign-in (rc.82; broken by rc.111) | `tests/test_signin_status.py`, `ConnectProblemTest` | 7.1 item 12 |
+
+A handset acceptance run is not passed while items 12 or 13 fail.
+
