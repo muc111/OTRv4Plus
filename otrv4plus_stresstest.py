@@ -16,7 +16,9 @@ admins only; anybody else is refused by the server itself, not by this file.
 The admin's password is asked for, never taken from the command line or kept.
 Every account it makes is deleted again at the end ("delete-user") unless
 --keep is given, and each group's room is destroyed (it is also created
-not persistent, so a killed run's rooms go when the last bot leaves).
+not persistent, so a killed run's rooms go when the last bot leaves). Empty
+stress rooms that earlier runs left behind are removed at the start and end
+(needs mod_otrv4plus_moderation's "List all rooms").
 
 WHAT IT DOES
   1. Signs in as the admin and checks the server lists the admin commands.
@@ -442,6 +444,85 @@ async def _command(c, node: str, fields: Dict[str, object]) -> None:
         raise RuntimeError("server refused: %s" % note)
 
 
+#: mod_otrv4plus_moderation's "List all rooms" (hidden ones too).
+LIST_ROOMS = "https://otrv4plus.i2p/protocol/admin#list-rooms"
+
+
+def _stale_stress_rooms(rooms: List[Dict[str, object]], muc: str) -> List[str]:
+    """Rooms an earlier run left behind: named like ours, on this service,
+    and EMPTY. A room with anyone in it may belong to a run still going
+    (STRESS_TEST.md suggests two processes for big runs), so it is kept."""
+    import re
+    pattern = re.compile(r"^stress-[0-9a-f]+-g\d+@" + re.escape(muc) + r"$")
+    out = []
+    for room in rooms:
+        jid = str(room.get("jid", "")).lower()
+        try:
+            occupants = int(room.get("occupants") or 0)
+        except (TypeError, ValueError):
+            occupants = 1
+        if pattern.match(jid) and occupants == 0:
+            out.append(jid)
+    return out
+
+
+async def _sweep_leftover_rooms(c, muc: str, say) -> int:
+    """Destroy stress rooms earlier runs left behind (owner, 2026-10-17: 90
+    of them, from runs killed before their own clean-up). Needs the server's
+    "List all rooms" command (mod_otrv4plus_moderation); without it nothing
+    is touched and the run says so. Server admins own every room, so the
+    admin account may destroy them."""
+    try:
+        first = await c["xep_0050"].send_command(c.boundjid.domain, LIST_ROOMS,
+                                                 action="execute", timeout=60)
+        field = first["command"]["form"].get_fields().get("rooms")
+        lines = field["value"] if field is not None else []
+        if isinstance(lines, str):
+            lines = lines.split("\n")
+        rooms = []
+        for line in lines or []:
+            try:
+                rooms.append(json.loads(line))
+            except ValueError:
+                continue
+    except Exception:
+        say("[stress] leftover rooms not checked: the server has no \"List all "
+            "rooms\" command (install mod_otrv4plus_moderation)")
+        return 0
+    stale = _stale_stress_rooms(rooms, muc)
+    for jid in stale:
+        try:
+            await c["xep_0045"].destroy(jid, "left over from an earlier stress test",
+                                        timeout=30)
+        except Exception as exc:
+            say("[stress] could not destroy %s: %s" % (jid, str(exc)[:60]))
+    if stale:
+        say("[stress] removed %d empty room(s) left by earlier runs" % len(stale))
+    return len(stale)
+
+
+def _raise_open_files(users: int, say) -> None:
+    """One socket per user, plus Python's own: 2,000 users pass Linux's
+    default limit of 1,024 open files. Raised to the hard limit if needed."""
+    try:
+        import resource
+    except ImportError:
+        return
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    need = users + 256
+    if soft >= need:
+        return
+    target = need if hard == resource.RLIM_INFINITY else min(need, hard)
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, target), hard))
+    except (ValueError, OSError):
+        pass
+    soft = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+    if soft < need:
+        say("[stress] warning: only %d open files allowed for %d users; run "
+            "`ulimit -n %d` first" % (soft, users, need))
+
+
 async def _is_admin(c) -> bool:
     items = await c["xep_0030"].get_items(jid=c.boundjid.domain, node=COMMANDS_NODE,
                                           timeout=60)
@@ -477,6 +558,9 @@ async def run(args) -> int:
         return 2
     domain = admin.boundjid.domain
     muc = args.muc or await _muc_service(admin)
+    _raise_open_files(args.users, say)
+    if not args.keep:
+        await _sweep_leftover_rooms(admin, muc, say)
     run_id = secrets.token_hex(3)
     n_groups = max(1, min(args.groups, args.users // 2))
     rooms = ["stress-%s-g%02d@%s" % (run_id, g, muc) for g in range(n_groups)]
@@ -691,6 +775,13 @@ async def run(args) -> int:
             except Exception:
                 pass
         creds.clear()
+        if not args.keep:
+            # Our own rooms whose destroy failed above (their owner had
+            # dropped): empty now that every bot is gone.
+            try:
+                await _sweep_leftover_rooms(admin, muc, say)
+            except Exception:
+                pass
         admin.disconnect()
     return 0
 

@@ -263,3 +263,32 @@ class TestAPacedServer:
         import otrv4plus_stresstest as S
         assert not S._is_busy({"condition": "resource-constraint",
                                "text": "This server is full"})
+
+
+def test_only_empty_rooms_of_earlier_runs_are_swept():
+    """Owner, 2026-10-17: 90 rooms left by killed runs. A room with anyone
+    in it may be a parallel run's, so it is kept; real rooms never match."""
+    muc = "conference.x.i2p"
+    rooms = [{"jid": "stress-1345de-g07@" + muc, "occupants": 0},
+             {"jid": "stress-d045a4-g01@" + muc, "occupants": 3},
+             {"jid": "welcome@" + muc, "occupants": 0},
+             {"jid": "stress-talk@" + muc, "occupants": 0},
+             {"jid": "stress-885e11-g05@other.i2p", "occupants": 0}]
+    assert st._stale_stress_rooms(rooms, muc) == ["stress-1345de-g07@" + muc]
+
+
+def test_the_open_files_limit_is_raised_for_big_runs(monkeypatch):
+    import sys
+    import types
+    limits = {"now": (1024, 4096)}
+    fake = types.SimpleNamespace(
+        RLIMIT_NOFILE=7, RLIM_INFINITY=-1,
+        getrlimit=lambda _which: limits["now"],
+        setrlimit=lambda _which, value: limits.__setitem__("now", value))
+    monkeypatch.setitem(sys.modules, "resource", fake)
+    said = []
+    st._raise_open_files(2000, said.append)
+    assert limits["now"] == (2256, 4096) and said == []
+    limits["now"] = (1024, 1024)            # the hard limit is too low
+    st._raise_open_files(2000, said.append)
+    assert said and "ulimit -n 2256" in said[0]
