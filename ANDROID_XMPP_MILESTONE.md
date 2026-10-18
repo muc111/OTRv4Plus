@@ -547,6 +547,14 @@ procedure; the additions this milestone needs are:
     replaced by a sentence rather than offering a protocol that cannot work
     there.
 
+12. **Bundled router, first sign-in.** Clear the app's data (or install
+    fresh), choose the built-in router and sign in. For the entire warm-up
+    window the screen says "Setting up (2–5 minutes, normal)" or "Still
+    setting up: …" in the quiet colour; **no red line and no "Connection
+    lost"/"Can't reach the server"** appears, however many tries it counts;
+    the app reaches connected. (Regression rc.111 → rc.118; unit-tested by
+    `ConnectProblemTest` and gated by `tests/test_signin_status.py`.)
+
 Steps 8, 10 and 11 are the ones that cannot be delegated to CI. The tests assert
 the rules this milestone wrote down; only a person reading a real export can
 say whether the rules were the right ones, and only a handset can say whether

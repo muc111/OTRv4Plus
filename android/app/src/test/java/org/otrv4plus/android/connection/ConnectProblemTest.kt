@@ -87,6 +87,45 @@ class ConnectProblemTest {
     }
 
     @Test
+    fun `the first sign-in with the built-in router is never an alarm`() {
+        // Regression (rc.111 -> rc.118): 10 s retries reached three failures
+        // in ~30 s and the screen said "Can't reach the server ... offline"
+        // while the router was only setting up. rc.82: "setting up", never
+        // "Connection lost" or any error, for the whole settling window.
+        val alarms = listOf("Connection lost", "Can't reach", "offline",
+                            "not answering", "keeps", "not responding", "dropped")
+        for (code in listOf("i2p_destination_unreachable", "i2p_name_not_found",
+                            "i2p_session_failed", "server_closed_connection",
+                            "stream_failed", "timeout")) {
+            for (seconds in listOf(0L, 30L, 120L, 299L, 600L, 899L)) {
+                for (tries in listOf(1, 3, 10, 30)) {
+                    val line = ConnectProblem.line(code, connected = false,
+                        retrying = true, failuresInARow = tries,
+                        bundledRouterUpMs = seconds * 1000L)!!
+                    assertEquals(ConnectProblem.Tone.QUIET, line.tone, "$code ${seconds}s x$tries")
+                    for (word in alarms) {
+                        assertTrue(word !in line.text, "$code ${seconds}s x$tries: ${line.text}")
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `after the settling window a real failure is said`() {
+        val line = ConnectProblem.line("i2p_destination_unreachable", false, true, 3,
+            bundledRouterUpMs = ConnectProblem.ROUTER_SETTLING_MS + 1_000L)!!
+        assertEquals(ConnectProblem.Tone.ERROR, line.tone)
+        assertTrue(line.text.contains("Can't reach the server"))
+    }
+
+    @Test
+    fun `connected means no line at all`() {
+        assertNull(ConnectProblem.line("i2p_destination_unreachable", connected = true,
+            retrying = false, failuresInARow = 9, bundledRouterUpMs = 60_000L))
+    }
+
+    @Test
     fun `a settled router or the I2P app gets the usual words`() {
         val settled = ConnectProblem.line("server_closed_connection", false, true, 5,
             bundledRouterUpMs = ConnectProblem.ROUTER_SETTLING_MS + 1)!!

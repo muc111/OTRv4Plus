@@ -169,6 +169,15 @@ object ConnectProblem {
                             if (retrying) " Still trying." else "",
                         if (retrying) Tone.QUIET else Tone.ERROR)
         }
+        // The rest of a young router's failures (name not found yet, peer
+        // unreachable, session not built). rc.111 retries these every ~10 s,
+        // so the three-in-a-row that used to take minutes of backoff came
+        // within half a minute, and the first sign-in showed "Can't reach
+        // the server" while it was only setting up (rc.82's promise:
+        // "setting up", never an alarm). Quiet while it retries.
+        if (retrying && settling(code, bundledRouterUpMs)) {
+            return Line(stillSettingUp(code, failuresInARow), Tone.QUIET)
+        }
         // Not "still setting up": the server refused this sign-in because
         // another session of the account holds its only slot. Said every
         // time; retrying is still right (a session that lost its network is
@@ -186,16 +195,17 @@ object ConnectProblem {
                 failuresInARow >= PERSISTENT_AFTER ->
                     Line(persistent(code) + if (retrying) " Still trying." else "",
                          Tone.ERROR)
-                retrying -> Line("Still setting up: ${transient(code)} " +
-                                 "Nothing is wrong; it carries on by itself" +
-                                 (if (failuresInARow > 0) " (try ${failuresInARow + 1})."
-                                  else "."), Tone.QUIET)
+                retrying -> Line(stillSettingUp(code, failuresInARow), Tone.QUIET)
                 else -> Line(persistent(code), Tone.ERROR)
             }
             Kind.OTHER -> if (retrying) null
                           else Line("The connection did not come up ($code).", Tone.ERROR)
         }
     }
+
+    private fun stillSettingUp(code: String, failuresInARow: Int): String =
+        "Still setting up: ${transient(code)} Nothing is wrong; it carries on by itself" +
+            (if (failuresInARow > 0) " (try ${failuresInARow + 1})." else ".")
 
     private fun needsYou(code: String): String = when (code) {
         "auth_failed", "password_not_applied" ->
