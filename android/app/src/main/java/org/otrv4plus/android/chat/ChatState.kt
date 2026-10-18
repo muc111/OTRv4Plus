@@ -857,7 +857,8 @@ class ChatState(
 
     fun noteServerAdmin(admin: Boolean) { serverAdmin = admin }
 
-    fun canDeleteRoom(jid: String): Boolean = serverAdmin || bare(jid) in ownedRooms
+    fun canDeleteRoom(jid: String): Boolean =
+        RoomDeletion.mayDelete(owner = bare(jid) in ownedRooms, serverAdmin = serverAdmin)
 
     fun noteSecureRooms(jids: Collection<String>) {
         secureRooms.clear()

@@ -18,6 +18,7 @@ import org.otrv4plus.android.bridge.RoomOutcome
 import org.otrv4plus.android.bridge.RoomStanding
 import org.otrv4plus.android.bridge.RoomSummary
 import org.otrv4plus.android.chat.RoomAddress
+import org.otrv4plus.android.chat.RoomDeletion
 import org.otrv4plus.android.chat.RoomPassword
 import org.otrv4plus.android.chat.RoomSections
 
@@ -111,7 +112,7 @@ class RoomsViewModel : ViewModel() {
     private fun groupOp(label: String, room: String,
                         op: (ChaquopyOtrCore) -> RoomOutcome) {
         val c = core ?: return
-        if (busy != null) return
+        if (refuseWhileBusy()) return
         busy = label
         viewModelScope.launch {
             try {
@@ -443,7 +444,7 @@ class RoomsViewModel : ViewModel() {
      */
     fun destroy(room: String, reason: String = "") {
         val c = core ?: return
-        if (busy != null) return
+        if (refuseWhileBusy()) return
         busy = "Deleting the room..."
         viewModelScope.launch {
             try {
@@ -478,9 +479,9 @@ class RoomsViewModel : ViewModel() {
      */
     fun canDelete(typed: String): Boolean {
         val jid = resolve(typed.trim())?.lowercase() ?: return false
-        if (serverAdmin) return true
-        return jid in ownedRooms ||
+        val owner = jid in ownedRooms ||
             joined.entries.any { it.key.equals(jid, ignoreCase = true) && it.value.destroy }
+        return RoomDeletion.mayDelete(owner = owner, serverAdmin = serverAdmin)
     }
 
     fun deleteRoom(typed: String) {
@@ -490,7 +491,7 @@ class RoomsViewModel : ViewModel() {
             return
         }
         val c = core ?: return
-        if (busy != null) return
+        if (refuseWhileBusy()) return
         busy = "Deleting the room..."
         viewModelScope.launch {
             try {
@@ -506,6 +507,19 @@ class RoomsViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Something else is running (one at a time on this screen): say so
+     * instead of doing nothing. A Delete confirmed while discovery was still
+     * asking the server -- which over I2P can take minutes -- used to be
+     * dropped without a word, and read as "Delete does not work".
+     */
+    private fun refuseWhileBusy(): Boolean {
+        val running = busy ?: return false
+        last = RoomOutcome(false, BUSY,
+            RoomDeletion.waitFor(running))
+        return true
+    }
+
     /** Dismiss the last result. */
     fun clearLast() {
         last = null
@@ -513,6 +527,9 @@ class RoomsViewModel : ViewModel() {
 
     companion object {
         const val ALREADY_IN_ROOM = "already_in_room"
+
+        /** [last]'s code when an action was refused because another runs. */
+        const val BUSY = "busy"
 
         /** Automatic discovery attempts before the screen waits for "Look again". */
         const val MAX_AUTO_DISCOVER = 3

@@ -308,3 +308,28 @@ worth reporting — a log nobody can use is not a safer log, it is a missing one
 Step 30 is the one that used to read as a broken app: their presence was
 unknown, permanently, and nothing said why. Confirm the sentence is there and
 that it names the remedy rather than only the symptom.
+
+## Room/group deletion, per role
+
+Two accounts and, for the admin check, the server admin (in Prosody's
+`admins` list). Regression gates: `tests/test_room_destroy.py`,
+`RoomDeletionTest` (Kotlin).
+
+- **Group creator.** Create a room and a secure (MLS+) group. Delete shows on
+  both; tapping it removes them from the server (from a second client, try to
+  rejoin: the room is gone).
+- **Server admin.** Delete shows on every room and every secure group in
+  Rooms, including other people's and hidden ones. Delete one you did not
+  create: it is gone for everyone. If the app instead says "Only the room's
+  owner … or a server admin can delete it … the server did not count this
+  account as either", the server does not treat this admin as owner of the
+  rooms service's rooms (Prosody: the account must be in the *global*
+  `admins` list, not only inside the `VirtualHost`), not an app fault.
+- **Room admin (moderator).** Not offered Delete: XEP-0045 lets only an
+  owner destroy a room, and the server would refuse.
+- **Ordinary member.** Only Leave shows. Tapping Leave removes you; the room
+  still exists for everyone else.
+- **While something else runs** (for example "Looking for a rooms service…"
+  right after opening Rooms), tapping Delete says to wait for it, instead of
+  doing nothing.
+

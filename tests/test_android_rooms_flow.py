@@ -180,7 +180,11 @@ class TestEveryOperationAnswersTheSameWay:
         got = getattr(ctl, name)(*args)
         assert got["ok"] is False
         assert got["code"] == "forbidden"
-        assert got["detail"] == muc.CODES["forbidden"]
+        if name == "destroy_room":
+            # A refused destroy is about ownership, not a ban (XEP-0045 10.9).
+            assert got["detail"] == ctl.DESTROY_REFUSED
+        else:
+            assert got["detail"] == muc.CODES["forbidden"]
 
 
 class TestWhatReachesTheTransport:

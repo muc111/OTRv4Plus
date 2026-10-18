@@ -1500,12 +1500,22 @@ class ConnectionController:
         finally:
             self._app.note_knocking(room, False)
 
+    #: What a refused destroy means. The service's generic sentences for these
+    #: codes are about joining ("you may be banned"), which is not what
+    #: happened: XEP-0045 10.9 lets only the room's owner destroy it, and
+    #: Prosody counts its server admins as owners of every room.
+    DESTROY_REFUSED = ("Only the room's owner (whoever created it) or a server "
+                       "admin can delete it for everyone, and the server did not "
+                       "count this account as either. Leave it instead.")
+
     def destroy_room(self, room: str, reason: str = "") -> Dict[str, Any]:
         """Delete a room. Owners only, and the SERVICE is what enforces it."""
         result = self._noting_room(self._muc_call("destroy_room", room, reason),
                                    room, joined=False)
         if result.get("ok"):
             self._bookmark(room, "", "", keep=False)
+        elif result.get("code") in ("forbidden", "not_allowed", "not_authorized"):
+            result = dict(result, detail=self.DESTROY_REFUSED)
         return result
 
     # -- bookmarks (XEP-0402) and rooms that forgot us (XEP-0410) -------------
