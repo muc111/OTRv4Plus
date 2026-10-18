@@ -1521,7 +1521,11 @@ class ConnectionController:
             # room was deleted." in red and the room stayed listed -- Prosody
             # keeps a destroyed room as a tombstone (31 days by default) and
             # answers a destroy of it with <gone/>. That is the outcome asked
-            # for, not a failure.
+            # for, not a failure. Its record still sits on the server's room
+            # list (prosodyctl muc:list) until the tombstone expires; an
+            # admin removes it too.
+            if result.get("code") == "room_gone":
+                self._destroy_as_admin(room, reason)
             result = {"ok": True, "code": "ok", "value": None,
                       "detail": "That room was already deleted."}
         if result.get("ok"):

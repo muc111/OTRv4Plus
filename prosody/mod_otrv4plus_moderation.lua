@@ -271,7 +271,14 @@ local destroy_handler = adhoc_simple(destroy_form, function (fields, err, data)
 	end
 	for room in rooms do
 		if room.jid == want and is_tombstone(room) then
-			return { status = "completed", info = want .. " was already deleted." };
+			-- Destroying a tombstone removes it for good (mod_muc lets it
+			-- through: "Allow destruction of tombstone"), so it leaves
+			-- muc:list as well. Owner (2026-10-18): after deleting "lol" on
+			-- the phone it was still on the server's list.
+			room:destroy(nil, (fields.reason or ""):sub(1, 200));
+			module:log("warn", "%s removed the record of the deleted room %s",
+				jid.bare(data.from), want);
+			return { status = "completed", info = want .. " was already deleted; its record is removed too." };
 		elseif room.jid == want then
 			room:destroy(nil, (fields.reason or ""):sub(1, 200));
 			module:log("warn", "%s destroyed the room %s", jid.bare(data.from), want);

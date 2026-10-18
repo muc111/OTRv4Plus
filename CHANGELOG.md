@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.123 — 2026-10-18 — the admin's Delete clears the server's list too (core 0.13.1)
+
+- **"lol" stayed on the server's room list after the phone said "This room
+  was deleted."** It had already been deleted: Prosody keeps the record of
+  a deleted room (a tombstone, 31 days) and `prosodyctl muc:list` shows it.
+  Deleting it again from the phone now removes that record as well, for a
+  server admin, so the room is gone from `muc:list` too. Needs the updated
+  module on the server (run `prosody/install-server-limits.sh` again).
+
 ## Android 0.7.0-experimental.rc.122 — 2026-10-18 — deleted rooms leave the admin's list (core 0.13.1)
 
 - **Fixed "it says the room was deleted, in red, and it is still listed".**

@@ -71,5 +71,5 @@ check("destroy-room: unknown room said", run("destroy-room", {roomjid="nope@conf
 local listed = provided["list-rooms"].handler(nil, {}).result.values.rooms
 check("list-rooms leaves out tombstones", listed:find("lol@", 1, true) and not listed:find("old@", 1, true))
 local t = run("destroy-room", {roomjid="old@conference.x.i2p"})
-check("destroy-room: a tombstone is already deleted", t.info and t.info:find("already deleted") and #destroyed == 1)
+check("destroy-room: a tombstone is already deleted, and removed", t.info and t.info:find("already deleted") and #destroyed == 2 and destroyed[2]:find("^old@"))
 return table.concat(out, "\n")

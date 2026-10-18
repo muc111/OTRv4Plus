@@ -239,7 +239,7 @@ def test_the_admin_list_and_destroy_know_tombstones():
     mod = _read("prosody", "mod_otrv4plus_moderation.lua")
     assert "local function is_tombstone(room)" in mod
     assert "if not is_tombstone(room) then" in mod
-    assert 'was already deleted."' in mod
+    assert 'was already deleted; its record is removed too."' in mod
 
 
 def test_a_secure_group_keeps_what_the_admin_route_said():
@@ -248,3 +248,12 @@ def test_a_secure_group_keeps_what_the_admin_route_said():
     c._on_room_destroyed = lambda room: None
     out = c.delete_secure_group(ROOM)
     assert not out["ok"] and out["detail"] == ConnectionController.DESTROY_NEEDS_MODULE
+
+
+def test_an_admin_deleting_a_tombstone_removes_its_record_too():
+    """Owner, 2026-10-18: "lol" stayed on muc:list after Delete said it was
+    deleted -- Prosody's tombstone. The admin route removes it."""
+    t = _AdminTransport()
+    t.destroy_room = lambda room, reason: ("room_gone", M.CODES["room_gone"], None)
+    assert _ctl(t).destroy_room(ROOM)["ok"]
+    assert ("moderation", "destroy", ROOM) in t.calls
