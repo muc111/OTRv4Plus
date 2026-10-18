@@ -145,6 +145,16 @@ I2P. Steady = the minutes after everyone had joined.
 | 200 | 10 | ~8.5% | 53 MB | 0.11 s / 0.23 s | ~100% |
 | 400 | 20 | ~17.5% | 106 MB | 0.17 s / 0.34 s | ~100% |
 | 800 | 40 | ~37% | 303 MB | 0.31 s / 0.56 s | 99.8-100.5% |
+| 1,200 ¹ | 60 | ~28.5% (peak 40%) | 262 MB | 0.23 s / 0.42 s | 98.6-101.6% |
+
+¹ 2026-10-18, run c4cde6: `--users 1200 --groups 60 --batch 1 --ramp 15
+--observers 2`, the default `--interval 120` (one line per user every two
+minutes, ~600 lines a minute) where the rows above sent one a minute.
+Per line sent it matches them: **about 0.047% of one core per line a
+minute** to a group of 20 (800 lines/min = 37%, 600 lines/min = 28.5%).
+Joining (1,200 people into 60 groups in 20 minutes, ~60 additions a minute)
+ran Prosody at 65-90%, peaks 100%. All 1,200 accounts were deleted at the
+end. XMPP Guard was running throughout (~4-6% of a core of its own).
 
 **Steady chat grows in a straight line: about 0.046% of one core per user.**
 No room errors, no disconnects and no refused joins in any run.
@@ -188,6 +198,22 @@ vmstat's low "free" is page cache, which the kernel hands back.
 - Still unmeasured: the I2P router. Every real user arrives through I2P
   tunnels, and the router's CPU is probably the next limit. Measure it with
   real I2P clients before going past a few hundred users.
+
+### Big groups growing together are what saturates Prosody (2026-10-18)
+
+Same 1,200 users in **15 groups of 80, added 8 at a time** (`--groups 15
+--batch 8 --ramp 10`): Prosody sat at 99-100% of its core from the first
+minute, loopback carried ~6 MB/s, groups stalled at ~375 members after 12
+minutes, p95 latency reached 52 s, and the run was stopped. Every MLS+ add
+carries the new member's KeyPackage (~9 KB: ML-KEM-1024 and ML-DSA-87 keys
+and an ML-DSA-87 signature), so a batch of 8 is a ~75 KB commit fanned out
+to every member, and each Welcome carries the whole tree. Fifteen groups
+doing that at once is more than one core can route. The app adds people one
+at a time as they accept, so this pattern is a test artefact, but it is
+the server's worst case: **many large groups growing at the same moment.**
+
+**XMPP Guard was not the cause:** with all four of its services stopped,
+Prosody stayed at 100%.
 
 ## The room rate limit (`mod_muc_limits`)
 
