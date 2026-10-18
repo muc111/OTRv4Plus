@@ -118,19 +118,13 @@ Details, design notes and caveats are in [TECHNICAL.md](TECHNICAL.md) and
 
 ## Encrypted group chat (MLS)
 
-Secure groups use **MLS** (RFC 9420, through OpenMLS) with every primitive
-from the same Rust core: hybrid KEM **X448 + ML-KEM-1024**, composite
-signature **Ed448 + ML-DSA-87** (both must verify), AES-256-GCM, HKDF-SHA-384
-(ciphersuite 0xF0A1). Standard MLS suites have no post-quantum protection;
-these groups resist "record now, decrypt later". The XMPP room carries only
-`?OTRv4MLS1:` ciphertext. Invitations and Welcomes travel inside 1:1 OTRv4+
-sessions; keys move on at every membership change and on a timer;
-a removed member reads nothing after the removal; messages typed while a
-group resyncs wait instead of being lost. The server still sees the room,
-its members and message timing. 0xF0A1 is a private code point and the
-hybrid constructions are this project's own, not independently audited.
-Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls),
-[MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md).
+> **MLS+** — MLS (RFC 9420) on a hybrid post-quantum ciphersuite (`0xF0A1`, X448 + ML-KEM-1024 / Ed448 + ML-DSA-87). Not interoperable with standard MLS.
+
+Secure groups use **MLS+** through OpenMLS, with every primitive from the same Rust core: hybrid KEM **X448 + ML-KEM-1024**, composite signature **Ed448 + ML-DSA-87** (both must verify), AES-256-GCM, HKDF-SHA-384 (ciphersuite 0xF0A1). Standard MLS suites have no post-quantum protection; these groups resist "record now, decrypt later". The XMPP room carries only `?OTRv4MLS1:` ciphertext. Invitations and Welcomes travel inside 1:1 OTRv4+ sessions; keys move on at every membership change and on a timer; a removed member reads nothing after the removal; messages typed while a group resyncs wait instead of being lost. The server still sees the room, its members and message timing. 0xF0A1 is a private code point and the hybrid constructions are this project's own, not independently audited. Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls), [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md).
+
+**Known limits**
+- **MLS+ is not standard MLS.** Groups use a private ciphersuite (`0xF0A1`) and cannot be joined by Wire, Element, or any other RFC 9420 implementation.
+- **About 100 members per group.** A Welcome carries the whole ratchet tree (~9.4 KB per member) and the core refuses MLS+ messages over 1 MiB, so joins stop near 100 members ([STRESS_TEST.md](STRESS_TEST.md)).
 
 ## Quick start
 

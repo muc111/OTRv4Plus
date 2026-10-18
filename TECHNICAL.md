@@ -1032,6 +1032,12 @@ XMPP support is newer than IRC and has had fewer live runs. Treat it as more exp
 
 ## Encrypted group chat (MLS)
 
+> **MLS+** — MLS (RFC 9420) on a hybrid post-quantum ciphersuite (`0xF0A1`, X448 + ML-KEM-1024 / Ed448 + ML-DSA-87). Not interoperable with standard MLS.
+
+The apps call these groups **MLS+**, as OTRv4+ is OTRv4 plus the same
+hybrid post-quantum layer: the framing is RFC 9420's, the ciphersuite is
+private, and no other MLS implementation can join.
+
 Secure groups use **MLS**, the IETF's group messaging protocol (RFC 9420),
 through OpenMLS, with every primitive supplied by the same Rust core as
 1:1 chat. The XMPP room only carries ciphertext: the server, and anyone
