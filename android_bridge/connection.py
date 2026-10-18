@@ -1047,9 +1047,7 @@ class ConnectionController:
         if not result.get("ok"):
             return result
         transport = self._transport
-        # Only once the poll has found we are an admin (transport caches
-        # it): no extra round trip for everyone else.
-        if getattr(transport, "_server_admin", None) is not True:
+        if not self._is_server_admin():
             return result
         try:
             code, _detail, value = transport.moderation("rooms")
@@ -1520,22 +1518,52 @@ class ConnectionController:
             self._bookmark(room, "", "", keep=False)
         return result
 
+    #: An admin whose server has not got the destroy-room command yet.
+    DESTROY_NEEDS_MODULE = ("The server refused this as an owner delete, and its "
+                            "moderation module is too old to delete rooms for an "
+                            "admin. On the server, run install-server-limits.sh "
+                            "again and restart Prosody.")
+
+    def _is_server_admin(self) -> bool:
+        """Whether this account administers its server, asked for THIS
+        stream. Owner (2026-10-18): rc.120 still could not delete -- the
+        transport forgets the answer on every reconnect (and over I2P that
+        is often), while the screens remember it, so the admin route was
+        skipped as "not an admin". Asks once per stream; cached after."""
+        transport = self._transport
+        if getattr(transport, "_server_admin", None) is True:
+            return True
+        try:
+            code, _detail, value = transport.server_admin()
+        except Exception:
+            return False
+        return code == "ok" and value is True
+
     def _destroy_as_admin(self, room: str, reason: str) -> Optional[Dict[str, Any]]:
         """The server refused the owner destroy, but we are its admin: use
         the admin command instead (mod_otrv4plus_moderation "Destroy a
         room"). Owner's server, 2026-10-18: Prosody did not count the admin
         as owner of other people's rooms (get_affiliation = nil), so every
-        admin Delete was refused. None when we are not an admin or the
-        server has no such command -- the refusal then stands."""
-        transport = self._transport
-        if getattr(transport, "_server_admin", None) is not True:
+        admin Delete was refused. None when we are not an admin -- the
+        refusal then stands; otherwise what the admin command said."""
+        if not self._is_server_admin():
             return None
         try:
-            code, _detail, value = transport.moderation("destroy", room, 0, reason)
+            code, detail, value = self._transport.moderation("destroy", room, 0, reason)
         except Exception:
             return None
-        if code != "ok" or not value or not value.get("available") or value.get("refused"):
-            return None
+        if code != "ok" or not value:
+            _TRACE.record("muc", "destroy_room", "warning", result="admin_" + str(code))
+            return {"ok": False, "code": code, "value": None,
+                    "detail": detail or self.DESTROY_REFUSED}
+        if not value.get("available"):
+            _TRACE.record("muc", "destroy_room", "warning", result="admin_no_command")
+            return {"ok": False, "code": "forbidden", "value": None,
+                    "detail": self.DESTROY_NEEDS_MODULE}
+        if value.get("refused"):
+            _TRACE.record("muc", "destroy_room", "warning", result="admin_refused")
+            return {"ok": False, "code": "forbidden", "value": None,
+                    "detail": str(value.get("message") or "") or self.DESTROY_REFUSED}
         _TRACE.record("muc", "destroy_room", "info", result="ok_as_admin")
         return self._noting_room({"ok": True, "code": "ok", "detail": "", "value": None},
                                  room, joined=False)

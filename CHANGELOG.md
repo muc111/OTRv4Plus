@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.121 — 2026-10-18 — the admin's Delete survives a reconnect (core 0.13.1)
+
+- **Fixed "rc.120 still doesn't let me delete the hidden rooms".** The app
+  forgot that Alice is the server's admin every time the I2P stream
+  reconnected, while the Rooms tab still remembered it. Delete was offered,
+  refused as an owner delete, and the admin route was then skipped as if
+  she were nobody. The app now asks the server again on that stream.
+- **A refused admin Delete says why.** It shows the server's own reason
+  ("There is no such room.") or, on a server whose moderation module
+  predates rc.120, that `install-server-limits.sh` needs running again.
+
 ## Android 0.7.0-experimental.rc.120 — 2026-10-18 — the server admin's Delete works on every room (core 0.13.1)
 
 - **Found the cause of "I still can't delete these rooms as Alice".** On

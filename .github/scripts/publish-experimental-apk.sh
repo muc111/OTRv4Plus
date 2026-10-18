@@ -165,6 +165,7 @@ installed), and with the Termux client.
 | No transit | Built-in router: sign-in as fast as rc.117, and less battery over a day with the app left running | rc.118 |
 | Regressions | Fresh install, built-in router: no red line while it sets up, however many tries. Rooms: Delete as creator and as admin removes the room; as a member only Leave; a refusal says why. Group header and Rooms say MLS+ | rc.119 |
 | Admin delete | After updating mod_otrv4plus_moderation on the server: as the admin, Delete a room someone else made (Rooms tab); it disappears for everyone | rc.120 |
+| Admin delete after reconnect | As the admin, sign in, wait for a reconnect (or toggle flight mode), then Delete a hidden room someone else made; it disappears for everyone | rc.121 |
 | Change password | Profile → **Change password…**: a wrong current password is refused without contacting the server; a good change says **"Password changed"**; then close the app and open it again: it signs in with the new password without asking; another device with the old password cannot sign in | rc.96 |
 | Pictures and profiles | Tap a contact's picture in the chat list, or at the top of their chat: their profile opens; Back returns to where you were. Tap the profile picture: it fills the screen; tap to close | rc.97 |
 | Busy group | In a secure group where several people send at once (or after reconnecting to a busy group), every message arrives; none silently missing | rc.93 |

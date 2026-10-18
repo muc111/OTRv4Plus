@@ -203,8 +203,9 @@ class TestWhatReachesTheTransport:
     def test_discovery_passes_the_service(self):
         ctl, made = build()
         ctl.discover_rooms(MUC_SERVICE)
-        assert made["transport"].calls[-1] == \
-            ("discover_rooms", MUC_SERVICE)
+        # Then whether we are its admin (for the hidden rooms), asked once
+        # per stream by the real transport.
+        assert ("discover_rooms", MUC_SERVICE) in made["transport"].calls
 
     def test_the_value_comes_back_untouched(self):
         rooms = [{"jid": ROOM, "name": "General"}]

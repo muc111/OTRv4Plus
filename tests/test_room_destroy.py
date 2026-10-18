@@ -146,7 +146,13 @@ class _AdminTransport:
 
     def __init__(self, admin=True, command=True, refused=False):
         self._server_admin = admin
+        self.admin_answer = bool(admin)
         self.command, self.refused, self.calls = command, refused, []
+
+    def server_admin(self):
+        # As transport.server_admin: asked when this stream has not been.
+        self.calls.append(("server_admin",))
+        return ("ok", "", self.admin_answer)
 
     def destroy_room(self, room, reason):
         self.calls.append(("destroy_room", room))
@@ -175,17 +181,39 @@ def test_an_admin_refused_as_owner_destroys_through_the_admin_command():
     assert t.calls == [("destroy_room", ROOM), ("moderation", "destroy", ROOM)]
 
 
-@pytest.mark.parametrize("admin,command,refused", [
-    (False, True, False),      # not an admin: never tried
-    (True, False, False),      # no mod_otrv4plus_moderation on the server
-    (True, True, True)])       # the server refused that too
-def test_otherwise_the_refusal_stands(admin, command, refused):
-    t = _AdminTransport(admin, command, refused)
+def test_an_admin_after_a_reconnect_still_gets_the_admin_route():
+    """rc.120 on the owner's phone: the transport forgets _server_admin on
+    every reconnect while the screen remembers it, so Delete was offered
+    and then refused as if Alice were nobody. Asked again, not assumed."""
+    t = _AdminTransport(admin=None)
+    t.admin_answer = True
+    result = _ctl(t).destroy_room(ROOM)
+    assert result["ok"], result
+    assert t.calls == [("destroy_room", ROOM), ("server_admin",),
+                       ("moderation", "destroy", ROOM)]
+
+
+def test_not_an_admin_the_refusal_stands():
+    t = _AdminTransport(admin=False)
     result = _ctl(t).destroy_room(ROOM)
     assert not result["ok"] and result["code"] == "forbidden"
     assert result["detail"] == ConnectionController.DESTROY_REFUSED
-    if not admin:
-        assert t.calls == [("destroy_room", ROOM)]
+    assert ("moderation", "destroy", ROOM) not in t.calls
+
+
+def test_an_admin_on_an_old_module_is_told_to_update_it():
+    result = _ctl(_AdminTransport(command=False)).destroy_room(ROOM)
+    assert not result["ok"]
+    assert result["detail"] == ConnectionController.DESTROY_NEEDS_MODULE
+    assert "install-server-limits.sh" in result["detail"]
+
+
+def test_an_admin_refused_by_the_command_sees_what_the_server_said():
+    t = _AdminTransport(refused=True)
+    t.moderation = lambda *a, **k: ("ok", "", {"available": True, "refused": True,
+                                               "message": "There is no such room."})
+    result = _ctl(t).destroy_room(ROOM)
+    assert not result["ok"] and result["detail"] == "There is no such room."
 
 
 def test_the_admin_command_is_in_the_module_and_admin_only():
