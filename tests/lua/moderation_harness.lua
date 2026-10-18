@@ -53,9 +53,14 @@ check("expired ban lifts itself", hooks["pre-resource-bind"](ev) == nil and stor
 check("list-rooms without muc errors", provided["list-rooms"].handler(nil, {}).error ~= nil)
 check("destroy without muc errors", run("destroy-room", {roomjid="lol@conference.x.i2p"}).error ~= nil)
 local destroyed = {}
-local function room(j) return { jid = j, destroy = function(self, _, why) destroyed[#destroyed+1] = self.jid .. "|" .. why end } end
+local function room(j, gone) return { jid = j, _data = { destroyed = gone },
+	destroy = function(self, _, why) destroyed[#destroyed+1] = self.jid .. "|" .. why end,
+	each_occupant = function() return function() end end,
+	get_name = function() return "" end, get_description = function() return "" end,
+	get_password = function() end, get_hidden = function() return true end } end
 prosody.hosts["conference.x.i2p"] = { modules = { muc = { each_room = function()
-	local list, i = { room("lol@conference.x.i2p"), room("team@conference.x.i2p") }, 0
+	local list, i = { room("lol@conference.x.i2p"), room("team@conference.x.i2p"),
+		room("old@conference.x.i2p", true) }, 0
 	return function() i = i + 1; return list[i] end
 end } } }
 check("perm destroy-room", provided["destroy-room"].perm == "admin")
@@ -63,4 +68,8 @@ local d = run("destroy-room", {roomjid="lol@conference.x.i2p", reason="clean up"
 check("destroy-room destroys exactly that room", d.info and destroyed[1] == "lol@conference.x.i2p|clean up" and #destroyed == 1)
 check("destroy-room: another host refused", run("destroy-room", {roomjid="lol@elsewhere.i2p"}).error ~= nil and #destroyed == 1)
 check("destroy-room: unknown room said", run("destroy-room", {roomjid="nope@conference.x.i2p"}).error.message == "There is no such room.")
+local listed = provided["list-rooms"].handler(nil, {}).result.values.rooms
+check("list-rooms leaves out tombstones", listed:find("lol@", 1, true) and not listed:find("old@", 1, true))
+local t = run("destroy-room", {roomjid="old@conference.x.i2p"})
+check("destroy-room: a tombstone is already deleted", t.info and t.info:find("already deleted") and #destroyed == 1)
 return table.concat(out, "\n")

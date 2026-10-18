@@ -16,7 +16,7 @@ def test_ban_unban_status_and_the_bind_refusal():
     with open(os.path.join(ROOT, "tests", "lua", "moderation_harness.lua")) as fh:
         report = lua.execute(fh.read())
     lines = report.splitlines()
-    assert len(lines) >= 24
+    assert len(lines) >= 26
     assert [l for l in lines if not l.startswith("ok ")] == []
 
 

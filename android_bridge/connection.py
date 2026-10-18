@@ -1389,9 +1389,11 @@ class ConnectionController:
         result = self.destroy_room(room, "secure group deleted")
         if result.get("ok"):
             self._on_room_destroyed(room)
-        elif result.get("code") in ("forbidden", "not_allowed"):
+        elif (result.get("code") in ("forbidden", "not_allowed")
+              and not result.get("from_admin")):
             # The service's refusal of a destroy is about ownership; its
-            # generic sentence for "forbidden" ("banned") is not.
+            # generic sentence for "forbidden" ("banned") is not. (What the
+            # admin route said, when it ran, is kept.)
             result = dict(result, detail="Only the group's creator (the room's "
                           "owner) can delete it for everyone. Leave it instead "
                           "to remove it from this phone.")
@@ -1514,6 +1516,14 @@ class ConnectionController:
                                                             "not_authorized"):
             result = self._destroy_as_admin(room, reason) or dict(
                 result, detail=self.DESTROY_REFUSED)
+        if not result.get("ok") and result.get("code") in ("room_gone", "item_not_found"):
+            # Already deleted. Owner (2026-10-18): Delete on "lol" said "This
+            # room was deleted." in red and the room stayed listed -- Prosody
+            # keeps a destroyed room as a tombstone (31 days by default) and
+            # answers a destroy of it with <gone/>. That is the outcome asked
+            # for, not a failure.
+            result = {"ok": True, "code": "ok", "value": None,
+                      "detail": "That room was already deleted."}
         if result.get("ok"):
             self._bookmark(room, "", "", keep=False)
         return result
@@ -1554,15 +1564,15 @@ class ConnectionController:
             return None
         if code != "ok" or not value:
             _TRACE.record("muc", "destroy_room", "warning", result="admin_" + str(code))
-            return {"ok": False, "code": code, "value": None,
+            return {"ok": False, "code": code, "value": None, "from_admin": True,
                     "detail": detail or self.DESTROY_REFUSED}
         if not value.get("available"):
             _TRACE.record("muc", "destroy_room", "warning", result="admin_no_command")
-            return {"ok": False, "code": "forbidden", "value": None,
+            return {"ok": False, "code": "forbidden", "value": None, "from_admin": True,
                     "detail": self.DESTROY_NEEDS_MODULE}
         if value.get("refused"):
             _TRACE.record("muc", "destroy_room", "warning", result="admin_refused")
-            return {"ok": False, "code": "forbidden", "value": None,
+            return {"ok": False, "code": "forbidden", "value": None, "from_admin": True,
                     "detail": str(value.get("message") or "") or self.DESTROY_REFUSED}
         _TRACE.record("muc", "destroy_room", "info", result="ok_as_admin")
         return self._noting_room({"ok": True, "code": "ok", "detail": "", "value": None},

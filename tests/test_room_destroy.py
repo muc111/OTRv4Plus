@@ -222,3 +222,29 @@ def test_the_admin_command_is_in_the_module_and_admin_only():
             in mod)
     tr = _read("android_bridge", "transport.py")
     assert '"destroy": "destroy-room"' in tr
+
+
+@pytest.mark.parametrize("code", ["room_gone", "item_not_found"])
+def test_deleting_a_room_already_deleted_is_done_not_red(code):
+    """Owner, 2026-10-18: Delete on "lol" said "This room was deleted." in
+    red and the room stayed listed -- Prosody's tombstone answered <gone/>."""
+    t = _AdminTransport()
+    t.destroy_room = lambda room, reason: (code, M.CODES.get(code, ""), None)
+    result = _ctl(t).destroy_room(ROOM)
+    assert result["ok"] and result["code"] == "ok"
+    assert "already deleted" in result["detail"]
+
+
+def test_the_admin_list_and_destroy_know_tombstones():
+    mod = _read("prosody", "mod_otrv4plus_moderation.lua")
+    assert "local function is_tombstone(room)" in mod
+    assert "if not is_tombstone(room) then" in mod
+    assert 'was already deleted."' in mod
+
+
+def test_a_secure_group_keeps_what_the_admin_route_said():
+    t = _AdminTransport(command=False)
+    c = _ctl(t)
+    c._on_room_destroyed = lambda room: None
+    out = c.delete_secure_group(ROOM)
+    assert not out["ok"] and out["detail"] == ConnectionController.DESTROY_NEEDS_MODULE

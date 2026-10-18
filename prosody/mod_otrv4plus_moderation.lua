@@ -206,6 +206,14 @@ local function each_room()
 	return (muc.all_rooms or muc.each_room)();
 end
 
+-- A destroyed persistent room that Prosody keeps as a tombstone
+-- (muc_tombstones, 31 days by default) so that returning members are told
+-- it is gone. Owner (2026-10-18): a deleted "lol" stayed on the admin's
+-- list, and deleting it again was answered "This room was deleted.".
+local function is_tombstone(room)
+	return room._data ~= nil and room._data.destroyed ~= nil and room._data.destroyed ~= false;
+end
+
 local function list_rooms_handler(_, data)
 	local rooms = each_room();
 	if not rooms then
@@ -214,17 +222,19 @@ local function list_rooms_handler(_, data)
 	end
 	local lines = {};
 	for room in rooms do
-		local occupants = 0;
-		for _ in room:each_occupant() do occupants = occupants + 1; end
-		lines[#lines + 1] = json.encode({
-			jid = room.jid,
-			name = room:get_name() or "",
-			description = room:get_description() or "",
-			password = room:get_password() ~= nil,
-			hidden = room:get_hidden() and true or false,
-			occupants = occupants,
-		});
-		if #lines >= 1000 then break; end
+		if not is_tombstone(room) then
+			local occupants = 0;
+			for _ in room:each_occupant() do occupants = occupants + 1; end
+			lines[#lines + 1] = json.encode({
+				jid = room.jid,
+				name = room:get_name() or "",
+				description = room:get_description() or "",
+				password = room:get_password() ~= nil,
+				hidden = room:get_hidden() and true or false,
+				occupants = occupants,
+			});
+			if #lines >= 1000 then break; end
+		end
 	end
 	return { status = "completed", result = { layout = rooms_result,
 		values = { rooms = table.concat(lines, "\n") } } };
@@ -260,7 +270,9 @@ local destroy_handler = adhoc_simple(destroy_form, function (fields, err, data)
 			error = { message = "No rooms service at " .. muc_host .. " (set otrv4plus_muc_host)." } };
 	end
 	for room in rooms do
-		if room.jid == want then
+		if room.jid == want and is_tombstone(room) then
+			return { status = "completed", info = want .. " was already deleted." };
+		elseif room.jid == want then
 			room:destroy(nil, (fields.reason or ""):sub(1, 200));
 			module:log("warn", "%s destroyed the room %s", jid.bare(data.from), want);
 			return { status = "completed", info = "Destroyed " .. want .. "." };

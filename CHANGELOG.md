@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.122 — 2026-10-18 — deleted rooms leave the admin's list (core 0.13.1)
+
+- **Fixed "it says the room was deleted, in red, and it is still listed".**
+  Prosody keeps a deleted room as a tombstone for 31 days, so members
+  coming back are told it is gone. The admin's all-rooms list included
+  those tombstones, and deleting one again was answered "This room was
+  deleted." and shown as a failure. The list now leaves tombstones out, and
+  deleting a room that is already gone counts as done: it leaves the list,
+  and the line is no longer red. Needs the updated module on the server
+  (run `prosody/install-server-limits.sh` again).
+
 ## Android 0.7.0-experimental.rc.121 — 2026-10-18 — the admin's Delete survives a reconnect (core 0.13.1)
 
 - **Fixed "rc.120 still doesn't let me delete the hidden rooms".** The app
