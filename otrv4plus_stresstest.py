@@ -444,6 +444,121 @@ async def _command(c, node: str, fields: Dict[str, object]) -> None:
         raise RuntimeError("server refused: %s" % note)
 
 
+def _why(exc: BaseException) -> str:
+    """A failed command, said without the stanza (which str() of a slixmpp
+    error is, cut to nothing useful: run of 2026-10-18 printed 300 lines of
+    "<iq id=... type=set to=otr")."""
+    name = type(exc).__name__
+    if name in ("IqTimeout", "TimeoutError"):
+        return "no answer from the server"
+    try:
+        condition = exc.iq["error"]["condition"]
+        if condition:
+            text = exc.iq["error"]["text"] or ""
+            return condition + (": " + text if text else "")
+    except Exception:
+        pass
+    if isinstance(exc, RuntimeError):
+        return str(exc)[:120]
+    return name
+
+
+async def _admin_back(admin, host: str, port: int, say) -> bool:
+    """Sign the admin in again if its session has gone. Run of 2026-10-18:
+    the admin account's phone signed in mid-run, the server (one session
+    per account) ended the test's admin session, and every delete-user at
+    the end failed: 300 accounts left behind."""
+    try:
+        if admin.is_connected() and admin.authenticated:
+            return True
+    except Exception:
+        pass
+    say("[stress] the admin's session had ended (signed in somewhere else? "
+        "the server allows one session per account) -- signing in again")
+    try:
+        await _online(admin, host, port)
+        return True
+    except Exception as exc:
+        say("[stress] could not sign the admin in again: %s" % _why(exc))
+        return False
+
+
+#: Prosody shell line that removes every stress account, for when the run
+#: could not (one line, in `sudo prosodyctl shell`).
+CLEANUP_HINT = ('> local um = require "core.usermanager" local d = "%s" local l = {} '
+                'for u in um.users(d) do if u:match("^stress%%-%%x+%%-%%d+$") then '
+                'l[#l+1] = u end end for _, u in ipairs(l) do um.delete_user(u, d) end '
+                'return #l .. " stress accounts deleted"')
+
+
+class ServerSampler:
+    """Prosody's CPU and memory, read from /proc on this machine (the run is
+    on the server). Owner (2026-10-18): "did we record the peak usage?" --
+    the run measured the bots, not the server. Sampled every few seconds;
+    each minute's row gets that minute's peak and average, and the end of
+    the run says the peak. Nothing if Prosody is not found here."""
+
+    def __init__(self):
+        import os
+        self._os = os
+        self._tick = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+        self.pid = self._find()
+        self._last = None
+        self.minute_cpu: List[float] = []
+        self.minute_rss = 0.0
+        self.peak_cpu = 0.0
+        self.peak_rss = 0.0
+
+    def _find(self) -> Optional[int]:
+        try:
+            for name in self._os.listdir("/proc"):
+                if not name.isdigit():
+                    continue
+                try:
+                    with open("/proc/%s/cmdline" % name, "rb") as fh:
+                        cmd = fh.read().replace(b"\0", b" ")
+                except OSError:
+                    continue
+                if b"prosody" in cmd and b"prosodyctl" not in cmd and b"lua" in cmd:
+                    return int(name)
+        except OSError:
+            pass
+        return None
+
+    def sample(self) -> None:
+        if self.pid is None:
+            return
+        try:
+            with open("/proc/%d/stat" % self.pid) as fh:
+                fields = fh.read().rsplit(")", 1)[1].split()
+            cpu_s = (int(fields[11]) + int(fields[12])) / float(self._tick)
+            rss = 0.0
+            with open("/proc/%d/status" % self.pid) as fh:
+                for line in fh:
+                    if line.startswith("VmRSS:"):
+                        rss = int(line.split()[1]) / 1024.0
+        except (OSError, ValueError, IndexError):
+            self.pid = self._find()
+            self._last = None
+            return
+        now = time.time()
+        if self._last is not None and now > self._last[0]:
+            pct = 100.0 * (cpu_s - self._last[1]) / (now - self._last[0])
+            self.minute_cpu.append(pct)
+            self.peak_cpu = max(self.peak_cpu, pct)
+        self._last = (now, cpu_s)
+        self.minute_rss = max(self.minute_rss, rss)
+        self.peak_rss = max(self.peak_rss, rss)
+
+    def minute(self) -> Dict[str, object]:
+        cpu = self.minute_cpu
+        out = {"prosody_cpu_avg_pct": round(sum(cpu) / len(cpu), 1) if cpu else "",
+               "prosody_cpu_peak_pct": round(max(cpu), 1) if cpu else "",
+               "prosody_rss_mib": round(self.minute_rss, 1) if self.pid else ""}
+        self.minute_cpu, self.minute_rss = [], 0.0
+        return out
+
+
 #: mod_otrv4plus_moderation's "List all rooms" (hidden ones too).
 LIST_ROOMS = "https://otrv4plus.i2p/protocol/admin#list-rooms"
 
@@ -496,7 +611,7 @@ async def _sweep_leftover_rooms(c, muc: str, say) -> int:
             await c["xep_0045"].destroy(jid, "left over from an earlier stress test",
                                         timeout=30)
         except Exception as exc:
-            say("[stress] could not destroy %s: %s" % (jid, str(exc)[:60]))
+            say("[stress] could not destroy %s: %s" % (jid, _why(exc)))
     if stale:
         say("[stress] removed %d empty room(s) left by earlier runs" % len(stale))
     return len(stale)
@@ -558,6 +673,9 @@ async def run(args) -> int:
         admin.disconnect()
         return 2
     domain = admin.boundjid.domain
+    say("[stress] keep %s signed out everywhere else until the run ends: the "
+        "server allows one session per account, and the run needs this one "
+        "to delete its accounts at the end" % admin_jid)
     muc = args.muc or await _muc_service(admin)
     _raise_open_files(args.users, say)
     if not args.keep:
@@ -704,10 +822,18 @@ async def run(args) -> int:
                     for k, sw in enumerate(swarms)}
         next_row = start + 60
         end = start + args.minutes * 60
+        server = ServerSampler()
+        if server.pid is None:
+            say("[stress] Prosody's process is not visible from here: no server "
+                "CPU/memory in the numbers (run this on the server)")
+        next_sample = start
         with open(csv_path, "w", newline="") as fh:
             writer = None
             while time.time() < end:
                 now = time.time()
+                if now >= next_sample:
+                    server.sample()
+                    next_sample = now + 5
                 for sw in swarms:
                     todo = waiting[id(sw)]
                     if todo and now >= next_add[id(sw)] and not sw.pending_adds:
@@ -719,6 +845,7 @@ async def run(args) -> int:
                 if now >= next_row:
                     online = sum(1 for c in clients.values() if c.is_connected())
                     row = combine_rows(swarms, now - start, online, lag[0])
+                    row.update(server.minute())
                     lag[0] = 0.0
                     if writer is None:
                         writer = csv.DictWriter(fh, fieldnames=list(row))
@@ -731,7 +858,10 @@ async def run(args) -> int:
                         "latency p50 %(lat_p50_s).2fs p95 %(lat_p95_s).2fs  "
                         "commits %(commits)d  room errors %(room_errors)d  lost %(lost)d  "
                         "undecryptable %(undecryptable)d  disconnects %(disconnects)d  "
-                        "harness lag %(harness_lag_s).1fs" % row)
+                        "harness lag %(harness_lag_s).1fs" % row
+                        + ("  prosody cpu %s%% (peak %s%%) mem %s MiB" % (
+                            row["prosody_cpu_avg_pct"], row["prosody_cpu_peak_pct"],
+                            row["prosody_rss_mib"]) if server.pid else ""))
                     next_row += 60
                 before = time.time()
                 await asyncio.sleep(0.5)
@@ -744,6 +874,9 @@ async def run(args) -> int:
                   if sw.stats.join_refused_at is not None]
         say("[stress] done. Joins refused: %d%s" % (
             refused, " (first at %d members)" % min(firsts) if firsts else ""))
+        if server.pid:
+            say("[stress] Prosody peak: %.0f%% of one core, %.0f MiB memory "
+                "(sampled every 5 s)" % (server.peak_cpu, server.peak_rss))
     finally:
         if not args.keep:
             # Destroy each room while its owner is still signed in; servers
@@ -757,19 +890,39 @@ async def run(args) -> int:
                     await c["xep_0045"].destroy(sw.room, "stress test finished",
                                                 timeout=30)
                 except Exception as exc:
-                    say("[stress] could not destroy %s: %s" % (sw.room, str(exc)[:60]))
+                    say("[stress] could not destroy %s: %s" % (sw.room, _why(exc)))
         for c in clients.values():
             try:
                 c.disconnect()
             except Exception:
                 pass
-        if not args.keep:
+        if not args.keep and creds:
             say("[stress] deleting %d accounts ..." % len(creds))
+            failed, in_a_row = 0, 0
+            admin_ok = await _admin_back(admin, args.host, args.port, say)
             for jid, _pw in creds:
+                if not admin_ok:
+                    failed += 1
+                    continue
                 try:
                     await _command(admin, ADMIN_DELETE, {"accountjids": [jid]})
+                    in_a_row = 0
                 except Exception as exc:
-                    say("[stress] could not delete %s: %s" % (jid, str(exc)[:60]))
+                    failed += 1
+                    in_a_row += 1
+                    if in_a_row <= 3:
+                        say("[stress] could not delete %s: %s" % (jid, _why(exc)))
+                    if in_a_row == 3:
+                        # Most likely the session went again: once more.
+                        admin_ok = await _admin_back(admin, args.host, args.port, say)
+                    elif in_a_row >= 10:
+                        admin_ok = False
+            if failed:
+                say("[stress] %d accounts were NOT deleted. Remove them with this one "
+                    "line in `sudo prosodyctl shell`:" % failed)
+                say(CLEANUP_HINT % domain)
+            else:
+                say("[stress] all %d accounts deleted" % len(creds))
         for b in bots:
             try:
                 b.mls.wipe()
@@ -780,7 +933,8 @@ async def run(args) -> int:
             # Our own rooms whose destroy failed above (their owner had
             # dropped): empty now that every bot is gone.
             try:
-                await _sweep_leftover_rooms(admin, muc, say)
+                if await _admin_back(admin, args.host, args.port, say):
+                    await _sweep_leftover_rooms(admin, muc, say)
             except Exception:
                 pass
         admin.disconnect()
