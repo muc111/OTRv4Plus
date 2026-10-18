@@ -273,8 +273,10 @@ def test_only_empty_rooms_of_earlier_runs_are_swept():
              {"jid": "stress-d045a4-g01@" + muc, "occupants": 3},
              {"jid": "welcome@" + muc, "occupants": 0},
              {"jid": "stress-talk@" + muc, "occupants": 0},
-             {"jid": "stress-885e11-g05@other.i2p", "occupants": 0}]
-    assert st._stale_stress_rooms(rooms, muc) == ["stress-1345de-g07@" + muc]
+             {"jid": "stress-885e11-g05@other.i2p", "occupants": 0},
+             {"jid": "stress-19bd5a@" + muc, "occupants": 0}]      # before --groups
+    assert st._stale_stress_rooms(rooms, muc) == ["stress-1345de-g07@" + muc,
+                                                  "stress-19bd5a@" + muc]
 
 
 def test_the_open_files_limit_is_raised_for_big_runs(monkeypatch):

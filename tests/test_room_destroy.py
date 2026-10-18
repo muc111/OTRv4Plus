@@ -9,6 +9,11 @@ muc#owner <destroy/> -- relying on Prosody counting its server admins as
 owners of every room. No affiliation grant, no ad-hoc command, before it.
 A room ADMIN affiliation is not enough (10.9 is owner-only): not offered.
 
+When the server refuses a SERVER ADMIN's owner destroy -- the owner's server
+(2026-10-18) did not count its admin as owner of other people's rooms --
+the app falls back to mod_otrv4plus_moderation's admin-only "Destroy a
+room" command, after the owner destroy and only for an admin.
+
 MLS+ groups are MUC rooms carrying ciphertext: the same destroy, no special
 case. The real slixmpp stanzas are captured here, not hand-built ones.
 """
@@ -133,3 +138,59 @@ def test_delete_is_never_dropped_silently():
         body = body[:body.index("viewModelScope.launch")]
         assert "if (busy != null) return" not in body, fn
         assert "refuseWhileBusy()" in body, fn
+
+
+class _AdminTransport:
+    """destroy_room refused (as on the owner's server, 2026-10-18: Prosody
+    did not count the admin as owner); the moderation command available."""
+
+    def __init__(self, admin=True, command=True, refused=False):
+        self._server_admin = admin
+        self.command, self.refused, self.calls = command, refused, []
+
+    def destroy_room(self, room, reason):
+        self.calls.append(("destroy_room", room))
+        return ("forbidden", M.CODES["forbidden"], None)
+
+    def moderation(self, op, account="", days=0, reason=""):
+        self.calls.append(("moderation", op, account))
+        return ("ok", "", {"available": self.command, "refused": self.refused,
+                           "message": "Destroyed."})
+
+
+def _ctl(t):
+    c = ConnectionController.__new__(ConnectionController)
+    c._app = types.SimpleNamespace(groups=None)
+    c._transport = t
+    c._noting_room = lambda result, room, joined: result
+    c._bookmark = lambda *a, **k: None
+    return c
+
+
+def test_an_admin_refused_as_owner_destroys_through_the_admin_command():
+    t = _AdminTransport()
+    result = _ctl(t).destroy_room(ROOM, "clean up")
+    assert result["ok"], result
+    # (b) first, exactly as rc.88; the admin command only after its refusal.
+    assert t.calls == [("destroy_room", ROOM), ("moderation", "destroy", ROOM)]
+
+
+@pytest.mark.parametrize("admin,command,refused", [
+    (False, True, False),      # not an admin: never tried
+    (True, False, False),      # no mod_otrv4plus_moderation on the server
+    (True, True, True)])       # the server refused that too
+def test_otherwise_the_refusal_stands(admin, command, refused):
+    t = _AdminTransport(admin, command, refused)
+    result = _ctl(t).destroy_room(ROOM)
+    assert not result["ok"] and result["code"] == "forbidden"
+    assert result["detail"] == ConnectionController.DESTROY_REFUSED
+    if not admin:
+        assert t.calls == [("destroy_room", ROOM)]
+
+
+def test_the_admin_command_is_in_the_module_and_admin_only():
+    mod = _read("prosody", "mod_otrv4plus_moderation.lua")
+    assert ('adhoc_new("Destroy a room", NS .. "destroy-room", destroy_handler, "admin")'
+            in mod)
+    tr = _read("android_bridge", "transport.py")
+    assert '"destroy": "destroy-room"' in tr

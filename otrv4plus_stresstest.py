@@ -453,7 +453,8 @@ def _stale_stress_rooms(rooms: List[Dict[str, object]], muc: str) -> List[str]:
     and EMPTY. A room with anyone in it may belong to a run still going
     (STRESS_TEST.md suggests two processes for big runs), so it is kept."""
     import re
-    pattern = re.compile(r"^stress-[0-9a-f]+-g\d+@" + re.escape(muc) + r"$")
+    # stress-<run>-gNN, and stress-<run> from runs before --groups.
+    pattern = re.compile(r"^stress-[0-9a-f]{6}(-g\d+)?@" + re.escape(muc) + r"$")
     out = []
     for room in rooms:
         jid = str(room.get("jid", "")).lower()

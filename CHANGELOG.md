@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.120 — 2026-10-18 — the server admin's Delete works on every room (core 0.13.1)
+
+- **Found the cause of "I still can't delete these rooms as Alice".** On
+  the owner's server Prosody counts Alice as owner only of the room she
+  created (`get_affiliation` = `nil` everywhere else, although she is in the
+  global `admins` list), so it refused her ordinary Delete (XEP-0045 lets
+  only owners destroy) on every other room.
+- **Fix:** `mod_otrv4plus_moderation` gains an admin-only **Destroy a room**
+  command. When the server refuses a server admin's ordinary Delete, the
+  app now uses it instead; the creator's Delete is unchanged, and nobody
+  else sees Delete. Needs the updated module on the server (run
+  `prosody/install-server-limits.sh` again).
+- **Stress test:** its leftover-room sweep also removes rooms from runs
+  before `--groups` (`stress-<run>@…`).
+
 ## Android 0.7.0-experimental.rc.119 — 2026-10-18 — three regressions fixed and gated; MLS+ (core 0.13.1)
 
 - **First sign-in with the built-in router never shows a red error again.**

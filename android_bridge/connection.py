@@ -1512,11 +1512,33 @@ class ConnectionController:
         """Delete a room. Owners only, and the SERVICE is what enforces it."""
         result = self._noting_room(self._muc_call("destroy_room", room, reason),
                                    room, joined=False)
+        if not result.get("ok") and result.get("code") in ("forbidden", "not_allowed",
+                                                            "not_authorized"):
+            result = self._destroy_as_admin(room, reason) or dict(
+                result, detail=self.DESTROY_REFUSED)
         if result.get("ok"):
             self._bookmark(room, "", "", keep=False)
-        elif result.get("code") in ("forbidden", "not_allowed", "not_authorized"):
-            result = dict(result, detail=self.DESTROY_REFUSED)
         return result
+
+    def _destroy_as_admin(self, room: str, reason: str) -> Optional[Dict[str, Any]]:
+        """The server refused the owner destroy, but we are its admin: use
+        the admin command instead (mod_otrv4plus_moderation "Destroy a
+        room"). Owner's server, 2026-10-18: Prosody did not count the admin
+        as owner of other people's rooms (get_affiliation = nil), so every
+        admin Delete was refused. None when we are not an admin or the
+        server has no such command -- the refusal then stands."""
+        transport = self._transport
+        if getattr(transport, "_server_admin", None) is not True:
+            return None
+        try:
+            code, _detail, value = transport.moderation("destroy", room, 0, reason)
+        except Exception:
+            return None
+        if code != "ok" or not value or not value.get("available") or value.get("refused"):
+            return None
+        _TRACE.record("muc", "destroy_room", "info", result="ok_as_admin")
+        return self._noting_room({"ok": True, "code": "ok", "detail": "", "value": None},
+                                 room, joined=False)
 
     # -- bookmarks (XEP-0402) and rooms that forgot us (XEP-0410) -------------
 

@@ -51,4 +51,16 @@ check("perm text", closed[#closed].text:find("permanently %(until=0%)"))
 store.bob["until"] = os.time() - 5
 check("expired ban lifts itself", hooks["pre-resource-bind"](ev) == nil and store.bob == nil)
 check("list-rooms without muc errors", provided["list-rooms"].handler(nil, {}).error ~= nil)
+check("destroy without muc errors", run("destroy-room", {roomjid="lol@conference.x.i2p"}).error ~= nil)
+local destroyed = {}
+local function room(j) return { jid = j, destroy = function(self, _, why) destroyed[#destroyed+1] = self.jid .. "|" .. why end } end
+prosody.hosts["conference.x.i2p"] = { modules = { muc = { each_room = function()
+	local list, i = { room("lol@conference.x.i2p"), room("team@conference.x.i2p") }, 0
+	return function() i = i + 1; return list[i] end
+end } } }
+check("perm destroy-room", provided["destroy-room"].perm == "admin")
+local d = run("destroy-room", {roomjid="lol@conference.x.i2p", reason="clean up"})
+check("destroy-room destroys exactly that room", d.info and destroyed[1] == "lol@conference.x.i2p|clean up" and #destroyed == 1)
+check("destroy-room: another host refused", run("destroy-room", {roomjid="lol@elsewhere.i2p"}).error ~= nil and #destroyed == 1)
+check("destroy-room: unknown room said", run("destroy-room", {roomjid="nope@conference.x.i2p"}).error.message == "There is no such room.")
 return table.concat(out, "\n")

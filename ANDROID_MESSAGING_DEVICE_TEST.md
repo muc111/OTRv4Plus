@@ -323,8 +323,9 @@ Two accounts and, for the admin check, the server admin (in Prosody's
   create: it is gone for everyone. If the app instead says "Only the room's
   owner … or a server admin can delete it … the server did not count this
   account as either", the server does not treat this admin as owner of the
-  rooms service's rooms (Prosody: the account must be in the *global*
-  `admins` list, not only inside the `VirtualHost`), not an app fault.
+  rooms service's rooms and has no `mod_otrv4plus_moderation` (since rc.120
+  the app falls back to its "Destroy a room" command): install it with
+  `prosody/install-server-limits.sh`.
 - **Room admin (moderator).** Not offered Delete: XEP-0045 lets only an
   owner destroy a room, and the server would refuse.
 - **Ordinary member.** Only Leave shows. Tapping Leave removes you; the room

@@ -2,8 +2,9 @@
 -- Copyright (C) 2025-2026 muc111
 --
 -- mod_otrv4plus_moderation: server admins ban accounts for a number of days
--- or for good, lift a ban, and see every room on the server -- hidden ones
--- included. Owner (2026-10-17): "Alice should be able to ban any user on
+-- or for good, lift a ban, see every room on the server -- hidden ones
+-- included -- and destroy any room.
+-- Owner (2026-10-17): "Alice should be able to ban any user on
 -- their user profile ... for set amount of days or Perm ban or unban ...
 -- for server admin / mod use only. No one else should see it."
 --
@@ -229,6 +230,46 @@ local function list_rooms_handler(_, data)
 		values = { rooms = table.concat(lines, "\n") } } };
 end
 
+-- Destroy any room on the rooms service. Owner (2026-10-18): signed in as
+-- the server admin, Delete was refused on every room the admin had not
+-- created -- XEP-0045 10.9 lets only a room's owner destroy it, and this
+-- server does not count its admins as owners of the rooms service's rooms
+-- (get_affiliation(admin) = nil). This command is the admin's own route,
+-- offered to admins only, as the others above.
+local destroy_form = dataforms_new {
+	title = "Destroy a room";
+	{ name = "FORM_TYPE", type = "hidden", value = NS .. "destroy-room" };
+	{ name = "roomjid", type = "jid-single", required = true, label = "Room" };
+	{ name = "reason", type = "text-single", label = "Reason (shown to occupants)" };
+};
+
+local destroy_handler = adhoc_simple(destroy_form, function (fields, err, data)
+	if err then
+		return { status = "completed", error = { message = "The form was not filled in." } };
+	end
+	local want = jid.prep(fields.roomjid or "");
+	want = want and jid.bare(want);
+	local _, h = jid.split(want or "");
+	if not want or h ~= muc_host then
+		return { status = "completed",
+			error = { message = "Only rooms on " .. muc_host .. " can be destroyed here." } };
+	end
+	local rooms = each_room();
+	if not rooms then
+		return { status = "completed",
+			error = { message = "No rooms service at " .. muc_host .. " (set otrv4plus_muc_host)." } };
+	end
+	for room in rooms do
+		if room.jid == want then
+			room:destroy(nil, (fields.reason or ""):sub(1, 200));
+			module:log("warn", "%s destroyed the room %s", jid.bare(data.from), want);
+			return { status = "completed", info = "Destroyed " .. want .. "." };
+		end
+	end
+	return { status = "completed", error = { message = "There is no such room." } };
+end);
+
+module:provides("adhoc", adhoc_new("Destroy a room", NS .. "destroy-room", destroy_handler, "admin"));
 module:provides("adhoc", adhoc_new("Ban an account", NS .. "ban-user", ban_handler, "admin"));
 module:provides("adhoc", adhoc_new("Lift a ban", NS .. "unban-user", unban_handler, "admin"));
 module:provides("adhoc", adhoc_new("Ban status", NS .. "ban-status", status_handler, "admin"));

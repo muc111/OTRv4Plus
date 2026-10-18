@@ -3934,7 +3934,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
 
     def moderation(self, op: str, account: str = "", days: int = 0,
                    reason: str = "") -> "tuple[str, str, dict]":
-        """Run one moderation command: "status", "ban", "unban" or "rooms".
+        """Run one moderation command: "status", "ban", "unban", "rooms" or
+        "destroy" (`account` is then the room).
 
         value: {"available": bool, "banned": bool, "until": int (0 = for
         good, -1 = not banned), "message": str, "rooms": [dict]}."""
@@ -3947,7 +3948,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             jid=domain, node=self.COMMANDS_NODE, timeout=CALL_TIMEOUT)
         offered = {str(node) for _jid, node, _name in items["disco_items"].get_items()}
         node = self.MODERATION_NS + {"status": "ban-status", "ban": "ban-user",
-                                     "unban": "unban-user", "rooms": "list-rooms"}[op]
+                                     "unban": "unban-user", "rooms": "list-rooms",
+                                     "destroy": "destroy-room"}[op]
         out = {"available": node in offered, "banned": False, "until": -1,
                "message": "", "rooms": [], "refused": False}
         if not out["available"]:
@@ -3958,6 +3960,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         values = {"accountjid": account}
         if op == "ban":
             values.update(days=str(int(days)), reason=reason[:200])
+        elif op == "destroy":
+            # `account` carries the room's address for this one.
+            values = {"roomjid": account, "reason": reason[:200]}
         done = await self._run_command(domain, node, values if op != "rooms" else None)
         command = done["command"]
         notes = command["notes"] or []

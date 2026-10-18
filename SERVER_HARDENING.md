@@ -116,6 +116,7 @@ commands, offered to nobody else:
 | Lift a ban | The account can sign in again straight away. |
 | Ban status | Whether an account is banned, and until when. |
 | List all rooms | Every room on the rooms service, hidden ones included. |
+| Destroy a room | Any room on the rooms service. The app uses it when the server refuses an admin's ordinary Delete because it does not count the admin as owner of other people's rooms (check: in `prosodyctl shell`, `room:get_affiliation("admin@…")` is `nil`). |
 
 In the app, an admin sees **Moderation (server admin)** on other people's
 profiles (Ban for N days, Ban permanently, Unban), and every room,
