@@ -111,6 +111,6 @@ class MlsProvider(
          * "Coming soon" in a security control is a claim about a roadmap made
          * to somebody deciding whether to trust a message.
          */
-        const val NOT_YET = "MLS is not implemented in this build."
+        const val NOT_YET = "MLS+ is not implemented in this build."
     }
 }

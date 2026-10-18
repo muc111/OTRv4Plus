@@ -149,7 +149,7 @@ fun RoomsPane(model: AppModel) {
         model.roomPasswordPrompt?.let { prompt -> RoomPasswordDialog(model, prompt) }
         val rooms = (model.groups + model.conversations().map { it.jid }.filter { model.chat.isRoom(it) }).distinct()
         if (rooms.isEmpty()) {
-            Text("No rooms yet. An encrypted group is end-to-end encrypted with MLS " +
+            Text("No rooms yet. An encrypted group is end-to-end encrypted with MLS+ " +
                  "(X448 + ML-KEM-1024); an ordinary room is not.",
                  Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }

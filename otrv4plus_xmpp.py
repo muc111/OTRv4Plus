@@ -5223,7 +5223,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
                 pass
         if is_group:
             print("[to] now talking in the secure group %s: just type, it goes "
-                  "MLS-encrypted to the group. /to <name> to switch."
+                  "MLS+ encrypted to the group. /to <name> to switch."
                   % _sanitise(target, 96))
         else:
             print("[to] now talking to %s: just type. /to <name> to switch."
@@ -5888,7 +5888,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, ClientXMPP):
             "                       (prompts, hidden; advanced/compat)\n"
             "  /smp-secret <s>      store it inline (ECHOED — prefer the above)\n"
             "  /trust-reset <jid>   clear a pinned fingerprint (deliberate)\n"
-            "  /group help          secure groups (MLS): create, invite,\n"
+            "  /group help          secure groups (MLS+): create, invite,\n"
             "                       accept, say, members, remove, leave\n"
             "  /wipe                destroy ALL local state (secure groups\n"
             "                       too) and exit; /quit keeps your groups\n"

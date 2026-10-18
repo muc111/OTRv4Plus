@@ -102,7 +102,7 @@ fun RoomsScreen(
         // how group chat works everywhere, and dressing it as an alarm would
         // make it something to dismiss rather than something to know.
         Text(
-            "Two kinds of group. An encrypted group (\uD83D\uDD10, MLS) is " +
+            "Two kinds of group. An encrypted group (\uD83D\uDD10, MLS+) is " +
                 "private: only its members can read it, and members join by " +
                 "invitation over an encrypted OTRv4+ conversation. A plain " +
                 "room (#) is not end-to-end encrypted: " +
@@ -231,6 +231,8 @@ fun RoomsScreen(
             // the saved state. No room password: see
             // RoomsViewModel.createSecure.
             Text("New encrypted group", style = MaterialTheme.typography.titleSmall)
+            Text(RoomSections.MLS_PLUS_NOTE, style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
             var groupName by rememberSaveable { mutableStateOf("") }
             var groupPassphrase by remember { mutableStateOf("") }
             OutlinedTextField(

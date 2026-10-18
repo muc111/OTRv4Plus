@@ -14,7 +14,7 @@ import org.otrv4plus.android.bridge.OtrEvent
 object GroupText {
 
     const val SECURE_HEADER =
-        "End-to-end encrypted group (MLS, hybrid X448 + ML-KEM-1024 and " +
+        "End-to-end encrypted group (MLS+, hybrid X448 + ML-KEM-1024 and " +
             "Ed448 + ML-DSA-87). The room and its server carry only " +
             "ciphertext; they still see who is in the room and when."
 
@@ -62,11 +62,11 @@ object GroupText {
 
     /** Between accepting an invitation and the group's keys arriving.
      *  Device report (2026-10-16): the room was shown as unencrypted then. */
-    const val JOINING_HEADER = "Secure group (MLS): setting up end-to-end encryption… " +
+    const val JOINING_HEADER = "Secure group (MLS+): setting up end-to-end encryption… " +
         "This can take a minute over I2P. Nothing can be sent until it is ready."
 
     /** While a secure group catches up after a sign-in or reconnect. */
-    const val SYNCING_HEADER = "Secure group (MLS), syncing: messages you type wait " +
+    const val SYNCING_HEADER = "Secure group (MLS+), syncing: messages you type wait " +
         "until it is back in sync, then go encrypted."
 
     fun memberLine(jid: String, me: Boolean, verified: Boolean, bound: Boolean): String = when {

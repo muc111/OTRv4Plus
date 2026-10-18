@@ -120,7 +120,7 @@ enum class EncryptionKind(
     OMEMO_2("OMEMO 2.0", suitsDirect = true, suitsGroup = true),
 
     /** Prototype, over I2P datagrams. Not production. */
-    MLS("MLS", suitsDirect = false, suitsGroup = true),
+    MLS("MLS+", suitsDirect = false, suitsGroup = true),
 
     /**
      * No encryption.

@@ -58,9 +58,12 @@ object RoomSections {
         "Asked. The group's members see your request; if one of them invites " +
             "you, the invitation appears in your chats."
 
+    /** Under "New encrypted group": MLS+ is not standard MLS (RFC 9420). */
+    const val MLS_PLUS_NOTE = "Post-quantum MLS+ (not compatible with standard MLS clients)"
+
     const val MINE_TITLE = "Your encrypted groups"
     const val MINE_NOTE =
-        "End-to-end encrypted (MLS). Only members can read them, and members " +
+        "End-to-end encrypted (MLS+). Only members can read them, and members " +
             "join by invitation over OTRv4+. No room password is needed."
 
     const val ON_SERVER_TITLE = "Encrypted groups on this server"
