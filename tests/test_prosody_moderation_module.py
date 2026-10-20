@@ -20,6 +20,23 @@ def test_ban_unban_status_and_the_bind_refusal():
     assert [l for l in lines if not l.startswith("ok ")] == []
 
 
+def test_the_same_with_prosody_roles_and_no_legacy_is_admin():
+    """Prosody 13 has roles: the module must use them, never is_admin()."""
+    with open(os.path.join(ROOT, "tests", "lua", "moderation_harness.lua")) as fh:
+        harness = fh.read()
+    stub = '  is_admin=function(j) return j=="alice@x.i2p" end,'
+    assert stub in harness
+    harness = harness.replace(stub,
+        '  get_jid_role=function(j) if j=="alice@x.i2p" then return {name="prosody:admin"} end '
+        'return {name="prosody:registered"} end,\n'
+        '  is_admin=function() error("the legacy is_admin() API was used") end,')
+    lua = lupa.LuaRuntime()
+    lua.globals().arg_path = os.path.join(ROOT, "prosody", "mod_otrv4plus_moderation.lua")
+    lines = lua.execute(harness).splitlines()
+    assert len(lines) >= 26
+    assert [l for l in lines if not l.startswith("ok ")] == []
+
+
 def test_the_installer_installs_and_enables_it():
     with open(os.path.join(ROOT, "prosody", "install-server-limits.sh")) as fh:
         script = fh.read()

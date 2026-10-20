@@ -39,7 +39,17 @@ local muc_host = module:get_option_string("otrv4plus_muc_host", "conference." ..
 local NS = "https://otrv4plus.i2p/protocol/admin#";
 local MAX_DAYS = 3650;
 
+-- Through Prosody's roles where it has them (0.12+/13: get_jid_role), so the
+-- server stops warning "Usage of legacy is_admin() API, which will be
+-- disabled in a future build" on every ban (owner's log, 2026-10-20). The
+-- legacy call is kept only for a Prosody without roles.
+local ADMIN_ROLES = { ["prosody:admin"] = true, ["prosody:operator"] = true };
+
 local function is_admin(user_jid)
+	if usermanager.get_jid_role then
+		local ok, role = pcall(usermanager.get_jid_role, user_jid, host);
+		return ok and role ~= nil and ADMIN_ROLES[role.name] == true;
+	end
 	local ok, admin = pcall(usermanager.is_admin, user_jid, host);
 	return ok and admin;
 end
