@@ -100,8 +100,16 @@ EOF
 step "Done"
 echo "Start it from your applications menu (OTRv4+) or with: otrv4plus-desktop"
 echo "Update later by running this script again: bash $REPO/desktop/install.sh"
-if ! systemctl is-active --quiet i2pd 2>/dev/null; then
-    echo "Note: the I2P router is not running yet: sudo systemctl enable --now i2pd"
+# Only when NO router is running at all. A machine that hosts the server runs
+# its own router (i2pd-xmpp) and keeps the stock i2pd.service masked, and a
+# second router started by hand counts too: telling that owner to enable
+# i2pd would start a duplicate router (owner report, 2026-10-20).
+if ! pgrep -x i2pd >/dev/null 2>&1 && ! systemctl is-active --quiet i2pd 2>/dev/null; then
+    if [ "$(systemctl is-enabled i2pd 2>/dev/null)" = "masked" ]; then
+        echo "Note: no I2P router is running (i2pd.service is masked here, so start the router you use)."
+    else
+        echo "Note: the I2P router is not running yet: sudo systemctl enable --now i2pd"
+    fi
 fi
 if [ "$RUN" = 1 ]; then
     exec "$LAUNCHER"
