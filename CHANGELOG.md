@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.128 and Desktop — 2026-10-20 — closing sessions no longer stops part-way (core 0.13.1)
+
+- **Shutting down, signing out and Wipe & Exit close every OTR session.**
+  On the desktop, closing the app after a call printed `DakeOutput is
+  unsendable, but is being dropped on another thread` and stopped at the
+  first session. The handshake's key holder was tied to the thread that made
+  it, and teardown runs on another. It now holds its keys behind a lock and
+  can be released from any thread. Messages are still handled one at a time,
+  in order, as before.
+- The Rust build no longer fails Clippy on newer Rust (1.99) over a test.
+
 ## Android 0.7.0-experimental.rc.127 and Desktop — 2026-10-20 — voice notes show their waveform (core 0.13.1)
 
 - **A voice-note bubble shows the note's waveform**, sent or received, on the

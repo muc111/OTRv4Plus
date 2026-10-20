@@ -150,10 +150,10 @@ class TestEveryOtrEntryPointUsesThatExecutor:
         assert "None, self.otr" not in src
 
 
-class TestOnlyDakeOutputIsUnsendable:
-    """If another unsendable class appears, this analysis needs redoing."""
+class TestNoPyclassIsUnsendable:
+    """If an unsendable class appears, this analysis needs redoing."""
 
-    def test_the_rust_core_declares_one_unsendable_pyclass(self):
+    def test_the_rust_core_declares_no_unsendable_pyclass(self):
         import pathlib
         root = pathlib.Path(__file__).resolve().parent.parent / "Rust" / "src"
         if not root.is_dir():
@@ -181,10 +181,16 @@ class TestOnlyDakeOutputIsUnsendable:
                     marked = stripped.rstrip(" {")
                     break
                 found.append("%s: %s" % (path.name, marked))
-        assert found == ["dake.rs: pub struct DakeOutput"], (
-            "the set of unsendable pyclasses changed: %r. Each one is pinned "
-            "to its creating thread, so any new one has to be checked against "
-            "the executor boundary." % found)
+        # NONE since 2026-10-20: DakeOutput holds its keys in a Mutex and may
+        # be released on any thread. It had to be: teardown (shutdown,
+        # logout, Wipe & Exit) runs on another thread and raised
+        # "DakeOutput is unsendable, but is being dropped on another thread",
+        # stopping part-way (desktop report). The one-worker executor stays:
+        # OTR is a stateful ratchet and must still be driven in order.
+        assert found == [], (
+            "an unsendable pyclass appeared: %r. It is pinned to its creating "
+            "thread, so it must be checked against the executor boundary and "
+            "against teardown on another thread." % found)
 
 
 class TestTheDakeOutputLifecycleStaysInbound:

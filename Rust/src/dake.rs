@@ -177,7 +177,7 @@ pub enum DakePhase {
 //  DakeOutput - Phase 4 opaque session-key handle
 //
 //  Replaces Dakeresult's `Vec<u8>` PyO3 getter-set fields with a private
-//  RefCell<Option<DakeSessionKeys>>.  Python NEVER sees the secret key bytes
+//  Mutex<Option<DakeSessionKeys>>.  Python NEVER sees the secret key bytes
 //  as PyBytes - they are moved directly into a RustDoubleRatchet via
 //  consume_into_ratchet(), without crossing the FFI boundary.
 //
@@ -190,15 +190,20 @@ pub enum DakePhase {
 //  v10.6.3+, Dakeresult and its associated PyO3 methods will be removed.
 // ─────────────────────────────────────────────────────────────────────────────
 
-use std::cell::RefCell;
+use std::sync::Mutex;
 
-#[pyclass(unsendable)]
+// NOT unsendable. Created on the client's network thread and released on
+// whichever thread tears the session down (shutdown, logout, Wipe & Exit);
+// an unsendable class raised "DakeOutput is unsendable, but is being dropped
+// on another thread" there and stopped the teardown part-way (desktop report,
+// 2026-10-20). A Mutex makes every access safe from any thread.
+#[pyclass]
 pub struct DakeOutput {
     // Secret material - private, no PyO3 getter.  Consumed by
     // consume_into_ratchet().  Wrapped in Option so we can .take() it out
-    // when consuming; wrapped in RefCell so consume_into_ratchet can take
+    // when consuming; wrapped in a Mutex so consume_into_ratchet can take
     // &self (PyO3 method receiver) rather than &mut self.
-    inner: RefCell<Option<DakeSessionKeys>>,
+    inner: Mutex<Option<DakeSessionKeys>>,
 
     // Public material - exposed via #[pyo3(get)].  These are NOT secrets:
     //   ssid is a session identifier (8 bytes) public to both parties
@@ -218,7 +223,7 @@ impl DakeOutput {
     /// True after consume_into_ratchet has moved the secret keys into a
     /// ratchet.  Subsequent calls to consume_into_ratchet will raise.
     #[getter]
-    fn consumed(&self) -> bool { self.inner.borrow().is_none() }
+    fn consumed(&self) -> bool { self.inner.lock().map(|g| g.is_none()).unwrap_or(true) }
 
     /// Destroy the session keys without building a ratchet from them.
     ///
@@ -227,16 +232,15 @@ impl DakeOutput {
     /// so taking it out of the cell and dropping it here is the wipe; doing it
     /// explicitly means it does not wait on the last Python reference going.
     ///
-    /// Unsendable: this must run on the thread that created the output, like
-    /// every other access. Idempotent.
+    /// Safe from any thread (the cell is a Mutex). Idempotent.
     fn discard(&self) {
-        let taken = self.inner.borrow_mut().take();
+        let taken = self.inner.lock().ok().and_then(|mut g| g.take());
         drop(taken);
     }
 
     /// Move the secret session keys into a new RustDoubleRatchet.
     /// The keys NEVER become PyBytes - they transit from the private
-    /// RefCell<Option<DakeSessionKeys>> directly into the ratchet's owned
+    /// Mutex<Option<DakeSessionKeys>> directly into the ratchet's owned
     /// SecretBytes fields via DoubleRatchet::new().
     ///
     /// Calling consume_into_ratchet a second time raises PyValueError.
@@ -273,8 +277,8 @@ impl DakeOutput {
         let mut dh_pub_local_arr = [0u8; 56];
         dh_pub_local_arr.copy_from_slice(dh_pub_local);
 
-        // Take the session keys out of the RefCell, consuming them.
-        let keys = self.inner.borrow_mut().take().ok_or_else(|| {
+        // Take the session keys out of the cell, consuming them.
+        let keys = self.inner.lock().ok().and_then(|mut g| g.take()).ok_or_else(|| {
             PyValueError::new_err(
                 "DakeOutput has already been consumed - cannot consume twice",
             )
@@ -301,7 +305,7 @@ impl DakeOutput {
     ) -> Self {
         let ssid = *keys.ssid.expose();
         Self {
-            inner: RefCell::new(Some(keys)),
+            inner: Mutex::new(Some(keys)),
             ssid,
             remote_identity_pub,
             remote_mldsa_pub,

@@ -1096,7 +1096,7 @@ mod tests {
             .map(|n| 0.3 * (2.0 * std::f64::consts::PI * 200.0 * n as f64 / r).sin()).collect();
         x.extend((0..(RATE as usize * 3 / 10))
             .map(|n| 0.006 * (2.0 * std::f64::consts::PI * 200.0 * n as f64 / r).sin()));
-        x.extend(std::iter::repeat(0.0).take(RATE as usize));
+        x.extend(std::iter::repeat_n(0.0, RATE as usize));
         trim(&mut x);
         let seconds = x.len() as f64 / r;
         assert!(seconds >= 1.3, "the end was cut: {:.2} s kept", seconds);
