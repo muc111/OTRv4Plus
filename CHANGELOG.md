@@ -4,13 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Desktop — 2026-10-20 — sign in with a username, create an account, the app's own icon (core 0.13.1)
+## Desktop — 2026-10-20 — names, not addresses: sign-in, accounts and rooms; the app's own icon (core 0.13.1)
 
 - **A username is enough**, as on the phone: `b` signs in as
   `b@otrv4plus.i2p`, and the field says which address it will use. A full
   address is still used as typed.
 - **Create account** on the start screen, under Connect. Once the server has
   made the account the app signs in with it straight away.
+- **A room or group name is enough**: Join room and New encrypted group
+  take `team`, and the app adds this server's rooms service (found by
+  asking the server, as the phone does). A full `room@service` address is
+  still used as typed.
 - **The OTRv4+ icon** in the dock and the window, not a generic one named
   `org-otrv4plus-desktop-MainKt`: the window now carries the icon, and the
   menu entry names the window class so the desktop can match them. Run

@@ -40,6 +40,7 @@ import org.otrv4plus.android.crypto.OtrV4PlusProvider
 import org.otrv4plus.android.crypto.Verification
 import org.otrv4plus.android.theme.ThemeTokens
 import org.otrv4plus.desktop.engine.DesktopCore
+import org.otrv4plus.desktop.engine.str
 import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
@@ -243,6 +244,9 @@ class AppModel(
                 chat.bindAccount(AccountScope.of(account))
                 chat.applyConnection(status)
                 screen = Screen.MAIN
+                roomService = null
+                // Ready before Join room is pressed; asked again there if not.
+                launch { runCatching { findRoomService() } }
             } else {
                 failuresInARow++
             }
@@ -731,10 +735,45 @@ class AppModel(
     /** The password question for a room that refused us (RoomPassword), or null. */
     var roomPasswordPrompt by mutableStateOf<org.otrv4plus.android.chat.RoomPassword.Prompt?>(null)
 
-    fun joinRoom(room: String, nick: String, password: String = "") {
+    /** The server's rooms service (XEP-0030), found once per sign-in. */
+    var roomService by mutableStateOf<String?>(null)
+        private set
+
+    /** Ask the server for its rooms service, unless already known. A failed
+     *  ask finds nothing and is asked again next time. */
+    private suspend fun findRoomService(): String? {
+        roomService?.let { return it }
+        val r = withContext(Dispatchers.IO) { core.controller("discover_services") }
+        val found = (r.value as? kotlinx.serialization.json.JsonArray).orEmpty()
+            .mapNotNull { it as? kotlinx.serialization.json.JsonObject }
+            .firstOrNull { it.str("category") == "conference" && it.str("type") == "text" }
+            ?.str("jid")?.takeIf { it.isNotBlank() }
+        if (found != null) roomService = found
+        return found
+    }
+
+    /**
+     * What was typed in Join room / New encrypted group, as a room address.
+     * Owner (2026-10-20): "it wants me to type the full name including server
+     * when i need it to only need the room name entered". A name alone gets
+     * this server's rooms service, as on the phone (RoomAddress); a full
+     * address is used as typed. Null, with the reason shown, when it cannot be.
+     */
+    private suspend fun roomFor(typed: String): String? {
+        val service = if (typed.contains('@')) roomService else findRoomService()
+        return when (val o = org.otrv4plus.android.chat.RoomAddress.resolve(typed, service)) {
+            is org.otrv4plus.android.chat.RoomAddress.Outcome.Resolved -> o.jid
+            is org.otrv4plus.android.chat.RoomAddress.Outcome.Rejected -> {
+                chat.note(o.reason); changed(); null
+            }
+        }
+    }
+
+    fun joinRoom(typed: String, nick: String, password: String = "") {
         roomPasswordPrompt = null
         ui.launch {
-            val r = withContext(Dispatchers.IO) { core.joinRoom(room.trim(), nick.trim(), password) }
+            val room = roomFor(typed) ?: return@launch
+            val r = withContext(Dispatchers.IO) { core.joinRoom(room, nick.trim(), password) }
             // Refused for want of a password: ask, as the phone does. A wrong
             // one asks again, saying so. The password is never kept here.
             val ask = org.otrv4plus.android.chat.RoomPassword.afterJoin(
@@ -749,9 +788,14 @@ class AppModel(
             changed()
         }
     }
-    fun createSecureGroup(room: String) {
-        outcome { core.createSecureGroup(room.trim()) }
-        chat.noteRoom(room.trim())
+    fun createSecureGroup(typed: String) {
+        ui.launch {
+            val room = roomFor(typed) ?: return@launch
+            val r = withContext(Dispatchers.IO) { core.createSecureGroup(room) }
+            if (r.ok) chat.noteRoom(room)
+            else chat.note(r.detail.ifBlank { "That did not work (${r.code})." })
+            changed()
+        }
     }
     /** A password-protected group's room the user must type the password
      *  for (the inviter's did not come, or was refused). */

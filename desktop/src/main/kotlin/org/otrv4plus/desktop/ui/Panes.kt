@@ -176,10 +176,11 @@ fun RoomsPane(model: AppModel) {
             }
         }
     }
-    if (joining) TextPrompt("Join room", "room@conference.server.i2p", "Join",
+    // A name is enough; the app adds this server's rooms service (RoomAddress).
+    if (joining) TextPrompt("Join room", "Room name", "Join",
                             onDone = { v -> joining = false
                                 if (v != null) model.joinRoom(v, model.jid.substringBefore('@')) })
-    if (creating) TextPrompt("New encrypted group", "group@conference.server.i2p", "Create",
+    if (creating) TextPrompt("New encrypted group", "Group name", "Create",
                              onDone = { v -> creating = false; if (v != null) model.createSecureGroup(v) })
 }
 

@@ -51,6 +51,11 @@ class AppFlowTest {
     private fun answers(op: String, args: JsonObject): JsonElement? = when (op) {
         "prepare", "status" -> status()
         "connect" -> { connected = true; status() }
+        "discover_services" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","value":[
+            {"jid":"upload.otrv4plus.i2p","name":"","category":"store","type":"file"},
+            {"jid":"conference.otrv4plus.i2p","name":"Rooms","category":"conference","type":"text"}]}""")
+        "create_secure_group" -> { createdGroups += args["room"]!!.jsonPrimitive.content
+            Json.parseToJsonElement("""{"ok":true,"code":"ok","detail":""}""") }
         "register" -> Json.parseToJsonElement("""{"ok":true,"stage":"idle","code":"ok","detail":"Account created."}""")
         "contacts" -> contacts
         "local_fingerprint" -> JsonPrimitive("6338F2F9 F00A1ED0")
@@ -87,6 +92,30 @@ class AppFlowTest {
     }
 
     private val verifyPassphrases = mutableListOf<String>()
+    private val createdGroups = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    /** Owner, 2026-10-20: a group's name alone, not room@conference.server. */
+    @Test
+    fun aGroupNameAloneGetsTheServersRoomsService() {
+        val host = FakeHost(::answers)
+        val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui),
+                             Notifier({ "7" }, available = false, play = {}))
+        model.jid = "alice"
+        host.ready()
+        model.start()
+        waitFor("connect screen") { model.screen == AppModel.Screen.CONNECT }
+        model.connect("pw")
+        waitFor("main screen") { model.screen == AppModel.Screen.MAIN }
+        model.createSecureGroup("Team2")
+        waitFor("group created") { createdGroups.isNotEmpty() }
+        assertEquals(listOf("team2@conference.otrv4plus.i2p"), createdGroups)
+        assertEquals("conference.otrv4plus.i2p", model.roomService)
+        // A full address is used as typed.
+        model.createSecureGroup("other@rooms.elsewhere.i2p")
+        waitFor("second group") { createdGroups.size == 2 }
+        assertEquals("other@rooms.elsewhere.i2p", createdGroups[1])
+    }
 
     /** A 48x48 purple gradient as RGBA, base64: what the engine's decoder hands over. */
     private fun pixels(): String {
