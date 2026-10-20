@@ -1046,6 +1046,12 @@ sealed interface OtrEvent {
         val state: String,
         val reason: String,
     ) : OtrEvent
+    /** A voice note arrived and was kept, sealed, at [path] (a received
+     *  container, played through `open_received_to` / `voice_note_play`).
+     *  [sender] is the member who sent it, in a group; blank 1:1. */
+    data class VoiceNoteReceived(
+        val peer: String, val transferId: String, val path: String, val sender: String,
+    ) : OtrEvent
     /** Whether this contact has a resource that speaks OTRv4Plus. See `OtrAvailability`. */
     data class CapabilityChanged(val peer: String, val state: String) : OtrEvent
     /** [count] lines the user typed before the conversation was ready have

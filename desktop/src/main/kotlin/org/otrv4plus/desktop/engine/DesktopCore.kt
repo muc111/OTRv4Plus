@@ -258,6 +258,11 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         org.otrv4plus.android.chat.VoiceNoteFile(d.str("path"), d["seconds"].asDouble(),
                                                  d.str("mode").ifBlank { mode }, d.str("error"))
     }.getOrDefault(org.otrv4plus.android.chat.VoiceNoteFile("", 0.0, mode, "failed"))
+    /** The [sendFile] outcome, and the sealed copy kept for playback ("" when none). */
+    fun sendVoiceNote(peer: String, path: String): Pair<String, String> = runCatching {
+        val d = call("send_voice_note", "peer" to peer, "path" to path) as JsonObject
+        d.str("outcome").ifBlank { "failed" } to d.str("path")
+    }.getOrElse { ((it as? OtrBridgeException)?.code ?: "failed") to "" }
     fun voiceNoteCancel() { runCatching { call("voice_note_cancel") } }
     fun voiceNoteDiscard(path: String) { runCatching { call("voice_note_discard", "path" to path) } }
     /** Play a note (preview or received) through the engine's audio output. */
@@ -537,6 +542,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "FileTransferChanged" -> OtrEvent.FileTransferChanged(
                     str("peer"), str("transfer_id"), str("filename"), e["size"].asLong(),
                     flag("outgoing"), str("state"), str("reason"))
+                "VoiceNoteReceived" -> OtrEvent.VoiceNoteReceived(
+                    str("peer"), str("transfer_id"), str("path"), str("sender"))
                 "ErrorOccurred" -> OtrEvent.Failed(str("peer").ifBlank { null }, str("code"))
                 else -> null
             }

@@ -1787,6 +1787,8 @@ class ChatViewModel : ViewModel() {
         val bare = ChatState.bare(jid)
         return runCatching { core.transfers() }.getOrDefault(emptyList())
             .filter { ChatState.bare(it.peer) == bare }
+            // Voice notes are bubbles in the chat, not files.
+            .filterNot { VoiceNotes.looksLikeNote(it.filename) }
     }
 
     /** A verified received file the user asked to view, or null. */
@@ -2138,11 +2140,48 @@ class ChatViewModel : ViewModel() {
     /** Where notes are written; set by the screen (it has the Context). */
     var voiceDir: java.io.File? = null
 
-    /** Send the ready note as a file; the copy is deleted once offered. */
+    /**
+     * Send the ready note. It travels as an encrypted file, but shows in the
+     * chat as a voice-note bubble that plays, from a sealed copy the engine
+     * keeps (owner, 2026-10-20). The plaintext in the cache goes either way.
+     */
     fun sendVoiceNote(jid: String) {
         val ready = voiceSheet as? VoiceSheet.Ready ?: return
+        val state = this.state ?: return
+        val core = this.core ?: return
         voiceSheet = null
-        sendFile(jid, ready.path, strip = false)
+        val bare = ChatState.bare(jid)
+        viewModelScope.launch {
+            val (outcome, kept) = withContext(Dispatchers.IO) {
+                val result = runCatching { core.sendVoiceNote(bare, ready.path) }
+                    .getOrDefault(FileOutcome.UNAVAILABLE to "")
+                discardStaged(ready.path)
+                result
+            }
+            if (outcome == FileOutcome.STARTED) {
+                if (kept.isNotEmpty()) state.addOutgoingVoiceNote(bare, kept)
+            } else {
+                val refusal = if (isRoom(jid)) TransferUi.groupRefusal(outcome)
+                              else TransferUi.refusal(outcome)
+                refusal?.let(state::note)
+            }
+            revision++
+        }
+    }
+
+    /**
+     * Decrypt a voice note's sealed copy into [directory] for the player, which
+     * deletes it when done. Only a path a voice-note message in this chat
+     * names; the engine checks again that it is a received container.
+     * Blocking; null when it does not open.
+     */
+    fun openVoiceNote(message: Message, directory: String): String? {
+        val c = core ?: return null
+        val s = state ?: return null
+        if (message.voicePath.isEmpty() ||
+            s.messages(message.conversationId).none { it.id == message.id && it.voicePath == message.voicePath })
+            return null
+        return c.openReceivedTo(message.voicePath, directory)
     }
 
     /** Close the sheet: stop any recording and delete any unsent note. */

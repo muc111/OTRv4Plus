@@ -37,7 +37,7 @@ __all__ = [
     "Event", "ConnectionStateChanged", "SessionStateChanged", "MessageReceived",
     "RoomMessageReceived", "MessageDelivered", "QueuedSent", "SmpProgress", "SmpResult", "FingerprintChanged",
     "CallStateChanged", "ErrorOccurred", "SubscriptionRequested",
-    "FileTransferChanged", "OtrCapabilityChanged", "EventSink",
+    "FileTransferChanged", "VoiceNoteReceived", "OtrCapabilityChanged", "EventSink",
     "GroupInvite", "GroupChanged", "GroupEntryRequested",
     "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
     "MessageChanged", "RoomMessageAcked",
@@ -462,6 +462,22 @@ class OtrCapabilityChanged(Event):
     """
 
     state: str = "unknown"
+
+
+@dataclass(frozen=True)
+class VoiceNoteReceived(Event):
+    """A voice note arrived and is kept, sealed, at `path` (inside the
+    received directory: a `.otrv` container only this device can open).
+
+    Owner (2026-10-20): voice notes are their own thing, not a file to
+    accept -- one from a verified contact (1:1) or a group member is taken
+    without asking, and the UI shows it as a message that plays. `sender`
+    is the group member who sent it ("" in a 1:1 chat, where `peer` is).
+    """
+
+    transfer_id: str = ""
+    path: str = ""
+    sender: str = ""
 
 
 @dataclass(frozen=True)

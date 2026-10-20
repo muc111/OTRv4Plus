@@ -59,7 +59,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Set
 
-from .events import ErrorOccurred, FileTransferChanged
+from .events import ErrorOccurred, FileTransferChanged, VoiceNoteReceived
 
 __all__ = ["FILE_PREFIX", "GroupFiles", "GroupFileOutcome"]
 
@@ -639,6 +639,16 @@ class GroupFiles:
                                        filename=inc.name, size=inc.size,
                                        outgoing=False, state=inc.state,
                                        reason=inc.reason))
+        # A group member's voice note: taken without asking, and shown as a
+        # message that plays (owner, 2026-10-20). See files.is_voice_note.
+        from .files import is_voice_note, _later
+        if is_voice_note(inc.name, inc.size):
+            if inc.state == "offered":
+                tid = inc.tid
+                _later(lambda: self.accept(tid))
+            elif inc.state == "received" and inc.path:
+                self._emit(VoiceNoteReceived(peer=inc.room, transfer_id=inc.tid,
+                                             path=inc.path, sender=inc.sender))
 
 
 def _sanitise(name: str) -> str:

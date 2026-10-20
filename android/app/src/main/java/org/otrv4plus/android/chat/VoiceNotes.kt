@@ -53,6 +53,18 @@ object VoiceNotes {
         else -> "The voice note could not be made."
     }
 
+    /** Why a note did not play: not "could not be made", which is about
+     *  recording one. */
+    fun playErrorText(code: String): String = when (code) {
+        "no_speaker" -> "The speaker could not be opened, so the voice note did not play."
+        "unavailable" -> "This build cannot decode that voice note."
+        else -> "The voice note could not be played."
+    }
+
+    /** The text a voice-note message carries: what a preview, a search or
+     *  an older build shows. The bubble shows Play instead. */
+    const val BODY = "Voice note"
+
     /** A received file that looks like one of our notes, for a Play
      *  button. The NAME only offers the button: what is played is parsed
      *  as audio, and anything else is refused there. */

@@ -46,7 +46,7 @@ import tempfile
 import threading
 from typing import Any, Optional
 
-from .events import ErrorOccurred, Event, FileTransferChanged
+from .events import ErrorOccurred, Event, FileTransferChanged, VoiceNoteReceived
 
 __all__ = ["FileBridge", "FileOutcome", "is_file_signal"]
 
@@ -97,6 +97,48 @@ def is_file_signal(body: Any) -> bool:
     module = sys.modules.get("otrv4plus_filetransfer")
     prefix = getattr(module, "FILE_PREFIX", None) if module else None
     return body.startswith(prefix or FILE_PREFIX_FALLBACK)
+
+
+def is_voice_note(filename: str, size: int) -> bool:
+    """Whether a transfer is one of our voice notes (`otrv4plus_voicenote`
+    names them voice-note-*.ogg / .wav), and no bigger than one can be.
+
+    The NAME is the sender's, so this only decides how the transfer is
+    presented and that it is taken without asking: what is kept is sealed at
+    rest like any received file, and it is only ever read as audio by the
+    bounded decoder (`otrv4plus_voicenote.decode`), which refuses anything
+    else."""
+    try:
+        import otrv4plus_voicenote as vn
+        limit = int(vn.MAX_NOTE_BYTES)
+    except Exception:
+        limit = 16 * 1024 * 1024
+    name = str(filename or "")
+    return (name.startswith("voice-note-") and (name.endswith(".ogg") or name.endswith(".wav"))
+            and 0 < int(size or 0) <= limit)
+
+
+def keep_sent_note(path: str) -> str:
+    """A sealed copy of a note we are about to send, in the received
+    directory, so its sender can play it back like a received one. ""
+    when it cannot be kept (the note is still sent)."""
+    try:
+        import otrv4plus_filetransfer as ft
+        base = os.path.basename(path or "")
+        if not base.startswith("voice-note-"):
+            return ""
+        dst = os.path.join(ft.state_dir(), "voice-note-sent-%s%s%s" % (
+            os.urandom(6).hex(), os.path.splitext(base)[1], ft.CONTAINER_SUFFIX))
+        ft._core.otrv_seal_file(ft.at_rest_dek(), path, dst)
+        return dst
+    except Exception:
+        return ""
+
+
+def _later(fn) -> None:
+    """Run [fn] off the caller's thread: an offer arrives inside the
+    inbound handler, which must not block on accepting it."""
+    threading.Thread(target=fn, name="otrv4plus-voice-note", daemon=True).start()
 
 
 class FileBridge:
@@ -235,6 +277,16 @@ class FileBridge:
                     while len(self._finished) > self.FINISHED_KEPT:
                         self._finished.pop(next(iter(self._finished)))
             self._app._emit(event)
+            if not outgoing and is_voice_note(event.filename, event.size):
+                # A voice note is not a file to accept (owner, 2026-10-20).
+                # Only a verified contact's offer gets this far.
+                if event.state == ft.TransferState.OFFERED:
+                    _later(lambda: self.accept(key))
+                elif event.state == ft.TransferState.RECEIVED:
+                    path = str(getattr(transfer, "final_path", "") or "")
+                    if path:
+                        self._app._emit(VoiceNoteReceived(
+                            peer=event.peer, transfer_id=key, path=path))
         except Exception:
             pass
 

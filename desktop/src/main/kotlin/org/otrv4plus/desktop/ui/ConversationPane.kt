@@ -348,19 +348,9 @@ private fun FileOffers(model: AppModel, jid: String) {
     }
     for (t in model.transfers.filter { it.peer.substringBefore('/') == jid }) {
         val row = TransferUi.row(t)
-        if (row.finished && !row.failed) {
-            // A received voice note: play it here (the engine decrypts it
-            // into memory and parses it as untrusted audio).
-            if (!t.outgoing && t.path.isNotEmpty() && VoiceNotes.looksLikeNote(t.filename)) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically) {
-                    Text("Voice note", style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
-                    TextButton(onClick = { model.playVoiceNote(t.path) }) { Text("Play") }
-                    TextButton(onClick = { model.stopPlaying() }) { Text("Stop") }
-                }
-            }
-            continue
-        }
+        // Voice notes are bubbles in the chat ([VoiceNoteRow]), not files.
+        if (VoiceNotes.looksLikeNote(t.filename)) continue
+        if (row.finished && !row.failed) continue
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
             Text("${t.filename} — ${row.label}", style = MaterialTheme.typography.bodySmall,
                  color = if (row.failed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface)
@@ -369,6 +359,23 @@ private fun FileOffers(model: AppModel, jid: String) {
                 Text(row.detail, style = MaterialTheme.typography.labelSmall,
                      color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+        }
+    }
+}
+
+/** A voice note, sent or received: Play and Stop. The engine decrypts the
+ *  sealed copy into memory and parses it as untrusted audio. */
+@Composable
+private fun VoiceNoteRow(m: Message, model: AppModel) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text("\uD83C\uDFA4 " + if (m.outgoing) "Voice note (sent)" else "Voice note",
+             color = if (m.outgoing) MaterialTheme.colorScheme.onPrimaryContainer
+                     else MaterialTheme.colorScheme.onSurface)
+        Spacer(Modifier.width(8.dp))
+        if (model.playingNote == m.voicePath) {
+            TextButton(onClick = { model.stopPlaying() }) { Text("Stop") }
+        } else {
+            TextButton(onClick = { model.playVoiceNote(m.voicePath) }) { Text("Play") }
         }
     }
 }
@@ -425,7 +432,8 @@ private fun Bubble(m: Message, isRoom: Boolean, model: AppModel) {
                      fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
             } else {
                 val pin = if (m.body.startsWith(Location.MARKER)) Location.parse(m.body) else null
-                if (pin != null) LocationCard(pin)
+                if (m.voicePath.isNotEmpty()) VoiceNoteRow(m, model)
+                else if (pin != null) LocationCard(pin)
                 else SelectionContainer {
                     Text(m.body, color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer
                                          else MaterialTheme.colorScheme.onSurface)

@@ -86,12 +86,45 @@ class AppFlowTest {
             {"jid":"$me","fingerprint":"AA","me":true,"verified":true,"bound":true},
             {"jid":"$bob","fingerprint":"BB","me":false,"verified":true,"bound":true},
             {"jid":"carol@otrv4plus.i2p","fingerprint":"CC","me":false,"verified":false,"bound":true}]}""")
+        "voice_note_play" -> { played += args["path"]!!.jsonPrimitive.content
+            Json.parseToJsonElement("""{"seconds":2.0}""") }
         "start_group_verify" -> { verifyPassphrases += args["passphrase"]!!.jsonPrimitive.content
             Json.parseToJsonElement("""{"ok":true,"code":"ok","detail":""}""") }
         else -> null
     }
 
     private val verifyPassphrases = mutableListOf<String>()
+    private val played = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    /** Owner, 2026-10-20: a voice note is taken without asking and is a
+     *  message that plays, not a file to accept. */
+    @Test
+    fun aReceivedVoiceNoteIsABubbleThatPlays() {
+        val host = FakeHost(::answers)
+        val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui),
+                             Notifier({ "7" }, available = false, play = {}))
+        model.jid = me
+        host.ready()
+        model.start()
+        waitFor("connect screen") { model.screen == AppModel.Screen.CONNECT }
+        model.connect("pw")
+        waitFor("main screen") { model.screen == AppModel.Screen.MAIN }
+        host.event("""{"type":"FileTransferChanged","peer":"$bob/desk","transfer_id":"t9","filename":"voice-note-ab.ogg","size":9000,"outgoing":false,"state":"offered","reason":""}""")
+        host.event("""{"type":"VoiceNoteReceived","peer":"$bob/desk","transfer_id":"t9","path":"/state/voice-note-ab.ogg.otrv","sender":""}""")
+        waitFor("voice note") { model.messages(bob).any { it.voicePath.isNotEmpty() } }
+        assertTrue(model.chat.pendingFileOffers.isEmpty(), "a voice note was offered as a file")
+        val note = model.messages(bob).single { it.voicePath.isNotEmpty() }
+        model.open(bob)
+        Thread.sleep(500)
+        render(model, "8-voice-note")
+        model.playVoiceNote(note.voicePath)
+        waitFor("played") { played.isNotEmpty() }
+        assertEquals(listOf("/state/voice-note-ab.ogg.otrv"), played)
+        assertEquals(note.voicePath, model.playingNote)
+        model.stopPlaying()
+        assertEquals(null, model.playingNote)
+    }
     private val createdGroups = java.util.concurrent.CopyOnWriteArrayList<String>()
 
     /** Owner, 2026-10-20: a group's name alone, not room@conference.server. */

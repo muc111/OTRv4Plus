@@ -19,9 +19,11 @@ package org.otrv4plus.android.chat
  * `` (RECORD SEPARATOR):
  *
  *     id US conversationId US outgoing US at US sendState US security US
- *     sender US wireId US flags US replyTo US replyPreview US reactions US body
+ *     sender US wireId US flags US replyTo US replyPreview US reactions US
+ *     author US voicePath US body
  *
- * (version 3; "2" records stop after the sender, "1" records before it).
+ * (version 5; "4" records have no voicePath, "3" no author either, "2"
+ * records stop after the sender, "1" records before it).
  * [reactions] is `who GS emoji GS emoji RS2 who GS emoji ...` with GS = U+0002
  * and RS2 = U+0003, both escaped inside every field like the separators.
  *
@@ -46,7 +48,8 @@ internal object MessageCodec {
      * body; "1" records (seven fields, no sender) still decode, so history
      * written by an older build survives the upgrade.
      */
-    private const val VERSION = "4"
+    private const val VERSION = "5"
+    private const val V4 = "4"
     private const val V3 = "3"
     private const val V2 = "2"
     private const val LEGACY_VERSION = "1"
@@ -71,7 +74,7 @@ internal object MessageCodec {
         val header = parts.firstOrNull()
         if (!isHeader(header)) return emptyList()
         val version = header?.split(FIELD)?.firstOrNull()
-        val count = when (version) { LEGACY_VERSION -> 7; V2 -> 8; V3 -> 13; else -> 14 }
+        val count = when (version) { LEGACY_VERSION -> 7; V2 -> 8; V3 -> 13; V4 -> 14; else -> 15 }
         return parts.drop(1).mapNotNull { decodeFields(it, count) }
     }
 
@@ -84,7 +87,7 @@ internal object MessageCodec {
 
     private fun isHeader(header: String?): Boolean =
         header != null && header.split(FIELD).firstOrNull()
-            .let { it == VERSION || it == V3 || it == V2 || it == LEGACY_VERSION }
+            .let { it == VERSION || it == V4 || it == V3 || it == V2 || it == LEGACY_VERSION }
 
     fun encode(message: Message): String = listOf(
         escape(message.id),
@@ -102,6 +105,7 @@ internal object MessageCodec {
             (listOf(who) + emoji).joinToString(SUB.toString()) { escape(it) }
         }),
         escape(message.author),
+        escape(message.voicePath),
         escape(message.body),
     ).joinToString(FIELD.toString())
 
@@ -126,9 +130,10 @@ internal object MessageCodec {
      */
     fun decode(line: String, legacy: Boolean = false): Message? =
         // Every field is escaped, so the raw separators count the fields
-        // exactly: 14 for v4, 13 for v3, 8 for v2 (7 when told it is v1).
+        // exactly: 15 for v5, 14 for v4, 13 for v3, 8 for v2 (7 when told it is v1).
         decodeFields(line, when {
             legacy -> 7
+            line.count { it == FIELD } >= 14 -> 15
             line.count { it == FIELD } >= 13 -> 14
             line.count { it == FIELD } >= 12 -> 13
             else -> 8
@@ -154,6 +159,7 @@ internal object MessageCodec {
             replyPreview = if (count < 13) "" else unescape(parts[10]),
             reactions = if (count < 13) emptyMap() else decodeReactions(unescape(parts[11])),
             author = if (count < 14) "" else unescape(parts[12]),
+            voicePath = if (count < 15) "" else unescape(parts[13]),
             outgoing = parts[2] == "1",
             at = at,
             sendState = SendState.entries.firstOrNull { it.name == parts[4] }

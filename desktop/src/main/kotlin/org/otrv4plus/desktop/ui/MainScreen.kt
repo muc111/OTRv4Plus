@@ -163,6 +163,10 @@ fun Notice(text: String, alarm: Boolean = false, onDismiss: () -> Unit) {
 
 @Composable
 private fun ChatsPane(model: AppModel) {
+    // Read here as well as in MainScreen: the open chat and the list are
+    // plain fields, and Compose may skip this pane when MainScreen redraws,
+    // which left a click on another chat doing nothing (owner, 2026-10-20).
+    @Suppress("UNUSED_VARIABLE") val r = model.revision
     Row(Modifier.fillMaxSize()) {
         Column(Modifier.width(320.dp).fillMaxHeight()) {
             Text("Chats", Modifier.padding(16.dp), style = MaterialTheme.typography.titleLarge,

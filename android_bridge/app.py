@@ -3051,6 +3051,8 @@ class OtrApp:
         try:
             self._voice().start()
         except vn.VoiceNoteError as exc:
+            # Which backend refused and why ("parec not found"): no content.
+            _log.warning("voice note: %s (%s)", exc.code, exc)
             return exc.code
         except Exception:
             return "no_microphone"
@@ -3083,6 +3085,24 @@ class OtrApp:
             _log.warning("voice note could not be made")
             return {"error": "bad_file"}
 
+    def send_voice_note(self, peer: str, path: str) -> Dict[str, Any]:
+        """Send a note made by `voice_note_stop`, keeping a sealed copy so it
+        can be played back from the chat like a received one (owner,
+        2026-10-20: "i should be able to play back any voice note i sent").
+
+        {"outcome": FileOutcome, "path": the kept copy, or ""}. The gates are
+        `send_file`'s; a refused note keeps nothing."""
+        from .files import keep_sent_note
+        kept = keep_sent_note(path)
+        outcome = self.send_file(peer, path, False)
+        if outcome != FileOutcome.STARTED and kept:
+            try:
+                os.unlink(kept)
+            except OSError:
+                pass
+            kept = ""
+        return {"outcome": outcome, "path": kept}
+
     def voice_note_cancel(self) -> None:
         rec = getattr(self, "_voice_recorder", None)
         if rec is not None:
@@ -3103,8 +3123,10 @@ class OtrApp:
                 player = self._voice_player = vn.Player()
             return {"seconds": round(player.play(data), 1)}
         except vn.VoiceNoteError as exc:
+            _log.warning("voice note playback: %s (%s)", exc.code, exc)
             return {"error": exc.code}
-        except Exception:
+        except Exception as exc:
+            _log.warning("voice note playback: %s", type(exc).__name__)
             return {"error": "bad_file"}
 
     def voice_note_play_stop(self) -> None:

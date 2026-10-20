@@ -1497,6 +1497,15 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             )
         }.getOrDefault(org.otrv4plus.android.chat.VoiceNoteFile("", 0.0, mode, "failed"))
 
+    /** Send a note made by [voiceNoteStop]: the [sendFile] outcome, and the
+     *  sealed copy kept so the sender can play it back ("" when none). */
+    fun sendVoiceNote(peer: String, path: String): Pair<String, String> =
+        runCatching {
+            val d = requireApp().callAttr("send_voice_note", peer, path)
+            (d.callAttr("get", "outcome")?.toString() ?: FileOutcome.UNAVAILABLE) to
+                (d.callAttr("get", "path")?.toString() ?: "")
+        }.getOrDefault(FileOutcome.UNAVAILABLE to "")
+
     fun voiceNoteCancel() {
         runCatching { requireApp().callAttr("voice_note_cancel") }
     }
@@ -1859,6 +1868,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     item.callAttr("get", "size")?.toLong() ?: 0L,
                     item.callAttr("get", "outgoing")?.toBoolean() ?: false,
                     str("state"), str("reason"))
+
+            "VoiceNoteReceived" ->
+                OtrEvent.VoiceNoteReceived(
+                    str("peer"), str("transfer_id"), str("path"), str("sender"))
 
             "ErrorOccurred" ->
                 OtrEvent.Failed(str("peer").ifBlank { null }, str("code"))

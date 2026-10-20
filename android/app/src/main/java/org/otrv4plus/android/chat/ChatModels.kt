@@ -71,6 +71,12 @@ data class Message(
      * Empty everywhere else.
      */
     val author: String = "",
+    /**
+     * A VOICE NOTE: the sealed copy on this device (a received container,
+     * or the copy kept of one we sent), played from the bubble. Empty for
+     * every other message. Local only: it never crosses the wire.
+     */
+    val voicePath: String = "",
 )
 
 /**

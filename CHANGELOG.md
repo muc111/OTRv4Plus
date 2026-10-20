@@ -4,6 +4,30 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.124 and Desktop — 2026-10-20 — voice notes are messages, not files (core 0.13.1)
+
+- **A voice note no longer asks to be accepted.** From a verified contact,
+  or a member of a secure group, it is taken straight away, like a message.
+  Any other file still asks. Only a note the app itself makes counts
+  (`voice-note-…` .ogg or .wav, no larger than a note can be); it is still
+  sealed on the device like any received file and only ever read as audio.
+- **It shows in the chat as a voice-note bubble with Play and Stop**, on the
+  phone and on the desktop, instead of a file offer and a "File received"
+  line. Only a failure leaves a line.
+- **Your own notes play back too.** Sending one keeps a sealed copy on this
+  device, shown as a sent bubble. A refused note (for example, contact not
+  verified) keeps nothing.
+- Nothing changes on the wire: a note still travels as an encrypted file
+  transfer, behind the same verification gate. Older builds still see it as
+  a file.
+- Chat history format v5 (adds the voice note's copy); history written by
+  older builds still reads.
+- Desktop: a note that cannot play now says "could not be played" or "the
+  speaker could not be opened", not "could not be made". The engine writes
+  the audio backend's reason (for example `parec not found`) to its log.
+- Desktop: **clicking another chat in Chats now opens it.** The list did not
+  redraw on a click, so the first chat opened stayed on screen.
+
 ## Desktop — 2026-10-20 — names, not addresses: sign-in, accounts and rooms; the app's own icon (core 0.13.1)
 
 - **A username is enough**, as on the phone: `b` signs in as

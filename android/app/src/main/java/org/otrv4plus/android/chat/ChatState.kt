@@ -532,6 +532,8 @@ class ChatState(
             // to act on, and only an SMP-verified peer can make one (the
             // engine drops offers from anybody else before they exist).
             is OtrEvent.FileTransferChanged -> noteTransfer(event)
+            // A voice note is a message, not a file (owner, 2026-10-20).
+            is OtrEvent.VoiceNoteReceived -> receiveVoiceNote(event)
             // An invitation is worth a banner, not a buzz: returned false.
             is OtrEvent.GroupInvited -> {
                 val room = bare(event.room)
@@ -596,6 +598,24 @@ class ChatState(
      */
     private fun noteTransfer(event: OtrEvent.FileTransferChanged): Boolean {
         val peer = bare(event.peer)
+        // A voice note is taken without asking and becomes a bubble
+        // ([receiveVoiceNote], [addOutgoingVoiceNote]): no offer, and no
+        // "file received" line. Only a failure is worth a line.
+        if (VoiceNotes.looksLikeNote(event.filename)) {
+            fileOffers.remove(event.transferId)
+            if (event.state != TransferUi.State.FAILED || peer.isEmpty()) return false
+            val added = store.append(Message(
+                id = "file:${event.transferId}:${event.state}",
+                conversationId = peer,
+                body = if (event.outgoing) "Voice note not delivered." else "A voice note could not be received.",
+                outgoing = false,
+                at = now(),
+                sendState = SendState.NONE,
+                security = SecurityLabel.SYSTEM,
+            ))
+            if (added) deleted.restore(peer)
+            return false
+        }
         var announce = false
         if (event.state == TransferUi.State.OFFERED && !event.outgoing) {
             announce = fileOffers.put(event.transferId, event) == null
@@ -617,6 +637,49 @@ class ChatState(
             if (added) deleted.restore(peer)
         }
         return announce
+    }
+
+    /** A received voice note, as a message that plays. Announced like any
+     *  message: only a verified contact (or a secure group's member) can
+     *  send one. */
+    private fun receiveVoiceNote(event: OtrEvent.VoiceNoteReceived): Boolean {
+        val peer = bare(event.peer)
+        if (peer.isEmpty() || event.path.isEmpty()) return false
+        val room = isRoom(peer) || isSecureRoom(peer)
+        val added = store.append(Message(
+            id = "voice:${event.transferId}",
+            conversationId = peer,
+            body = VoiceNotes.BODY,
+            outgoing = false,
+            at = now(),
+            sendState = SendState.NONE,
+            security = SecurityLabel.ENCRYPTED,
+            sender = if (room) event.sender.substringBefore('@') else "",
+            author = if (room) event.sender.lowercase() else "",
+            voicePath = event.path,
+        ))
+        if (added) deleted.restore(peer)
+        if (added && uiVisible && openConversation == peer) store.markRead(peer)
+        return added
+    }
+
+    /** A voice note we sent, kept (sealed) at [path] so it can be replayed. */
+    fun addOutgoingVoiceNote(jid: String, path: String): Message? {
+        val peer = bare(jid)
+        if (peer.isEmpty()) return null
+        val m = Message(
+            id = "voice:sent:${path.substringAfterLast('/')}:${now()}",
+            conversationId = peer,
+            body = VoiceNotes.BODY,
+            outgoing = true,
+            at = now(),
+            sendState = SendState.SENT,
+            security = SecurityLabel.ENCRYPTED,
+            voicePath = path,
+        )
+        if (!store.append(m)) return null
+        deleted.restore(peer)
+        return m
     }
 
     /**

@@ -71,7 +71,7 @@ def describe_mode(mode: str) -> str:
 
 class VoiceNoteError(RuntimeError):
     """`code` is for the UI: unavailable, too_short, too_long, no_speech,
-    bad_mode, no_microphone, bad_file."""
+    bad_mode, no_microphone, no_speaker, bad_file."""
 
     def __init__(self, code: str, detail: str = ""):
         super().__init__(detail or code)
@@ -431,7 +431,10 @@ class Player:
         self.stop()
         import otrv4plus_audio as audio
         opener = self._open or audio.open_playback
-        stream = opener()
+        try:
+            stream = opener()
+        except Exception as exc:
+            raise VoiceNoteError("no_speaker", str(exc))
         if isinstance(stream, tuple):
             stream = stream[0]
         out_rate = getattr(stream, "rate", 0) or audio.SAMPLE_RATE

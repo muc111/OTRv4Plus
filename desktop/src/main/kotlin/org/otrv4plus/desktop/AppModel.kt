@@ -631,28 +631,45 @@ class AppModel(
         }
     }
 
-    /** Hear the ready note, or a received one ([path] of the container). */
+    /** The voice note playing now ([playVoiceNote]'s path), or null. */
+    var playingNote by mutableStateOf<String?>(null)
+        private set
+
+    /** Hear the ready note, or one in the chat ([path] of its sealed copy). */
     fun playVoiceNote(path: String) {
+        playingNote = path
         ui.launch {
             val err = withContext(Dispatchers.IO) { core.voiceNotePlay(path) }
-            if (err.isNotEmpty()) chat.note(org.otrv4plus.android.chat.VoiceNotes.errorText(err))
+            if (err.isNotEmpty()) {
+                if (playingNote == path) playingNote = null
+                chat.note(org.otrv4plus.android.chat.VoiceNotes.playErrorText(err))
+            }
             changed()
         }
     }
 
-    fun stopPlaying() { ui.launch { withContext(Dispatchers.IO) { core.voiceNotePlayStop() } } }
+    fun stopPlaying() {
+        playingNote = null
+        ui.launch { withContext(Dispatchers.IO) { core.voiceNotePlayStop() } }
+    }
 
     fun sendVoiceNote(jid: String) {
         val ready = voiceSheet as? org.otrv4plus.android.chat.VoiceSheet.Ready ?: return
         voiceSheet = null
         // The engine deletes nothing it is handed; the note goes once offered.
+        // What stays is the sealed copy the engine keeps, which the chat's
+        // voice-note bubble plays (owner, 2026-10-20).
         ui.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                val o = core.sendFile(jid, ready.path, false)
+            val (outcome, kept) = withContext(Dispatchers.IO) {
+                val o = core.sendVoiceNote(jid, ready.path)
                 core.voiceNoteDiscard(ready.path)
                 o
             }
-            org.otrv4plus.android.crypto.TransferUi.refusal(outcome)?.let { chat.note(it) }
+            if (outcome == "started") {
+                if (kept.isNotEmpty()) chat.addOutgoingVoiceNote(jid, kept)
+            } else {
+                org.otrv4plus.android.crypto.TransferUi.refusal(outcome)?.let { chat.note(it) }
+            }
             changed()
         }
     }

@@ -38,6 +38,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.launch
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
@@ -1091,6 +1092,67 @@ private fun SecurityLine(state: SecurityState, capability: String = "unknown") {
 }
 
 /**
+ * A voice note in the chat, sent or received: Play and Stop. The sealed copy
+ * is decrypted to the cache only while it plays, and deleted after.
+ */
+@Composable
+private fun VoiceNoteBubble(message: Message, model: ChatViewModel) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var player by remember(message.id) { mutableStateOf<android.media.MediaPlayer?>(null) }
+    var transient by remember(message.id) { mutableStateOf<java.io.File?>(null) }
+    var failed by remember(message.id) { mutableStateOf(false) }
+    var busy by remember(message.id) { mutableStateOf(false) }
+    fun stop() {
+        player?.let { runCatching { it.stop() }; it.release() }
+        player = null
+        transient?.delete()
+        transient = null
+    }
+    DisposableEffect(message.id) { onDispose { stop() } }
+    Row(verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("\uD83C\uDFA4 " + if (message.outgoing) "Voice note (sent)" else "Voice note",
+             style = MaterialTheme.typography.bodyMedium)
+        if (player != null) {
+            TextButton(onClick = { stop() }) { Text("Stop") }
+        } else {
+            TextButton(enabled = !busy, onClick = {
+                busy = true
+                failed = false
+                scope.launch {
+                    val dir = java.io.File(context.cacheDir, "voice-play").absolutePath
+                    val path = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        runCatching { model.openVoiceNote(message, dir) }.getOrNull()
+                    }
+                    busy = false
+                    val file = path?.let { java.io.File(it) }
+                    val p = file?.let { f ->
+                        runCatching {
+                            android.media.MediaPlayer().apply { setDataSource(f.absolutePath); prepare() }
+                        }.getOrNull()
+                    }
+                    if (p == null) {
+                        file?.delete()
+                        failed = true
+                        return@launch
+                    }
+                    transient = file
+                    player = p
+                    p.setOnCompletionListener { stop() }
+                    p.start()
+                }
+            }) { Text(if (busy) "Opening…" else "Play") }
+        }
+    }
+    if (failed) {
+        Text("This voice note could not be played.",
+             style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.error)
+    }
+}
+
+/**
  * One message.
  *
  * Long bodies wrap and long words break rather than pushing the bubble off
@@ -1146,7 +1208,9 @@ private fun Bubble(message: Message, model: ChatViewModel) {
                 // A pin is shown as a card; anything else (or a pin a client
                 // mangled) as the text it is.
                 val pin = if (message.body.startsWith(Location.MARKER)) Location.parse(message.body) else null
-                if (pin != null) {
+                if (message.voicePath.isNotEmpty()) {
+                    VoiceNoteBubble(message, model)
+                } else if (pin != null) {
                     LocationCard(pin)
                 } else {
                     SelectionContainer {
