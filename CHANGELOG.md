@@ -15,6 +15,8 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   take `team`, and the app adds this server's rooms service (found by
   asking the server, as the phone does). A full `room@service` address is
   still used as typed.
+- **Verify asks for the shared passphrase only**, as on Android and
+  Termux: the optional question field is gone.
 - **The OTRv4+ icon** in the dock and the window, not a generic one named
   `org-otrv4plus-desktop-MainKt`: the window now carries the icon, and the
   menu entry names the window class so the desktop can match them. Run

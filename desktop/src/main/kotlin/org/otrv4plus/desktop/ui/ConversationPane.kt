@@ -573,24 +573,21 @@ private fun Composer(model: AppModel, jid: String, isRoom: Boolean, security: Se
 @Composable
 private fun SmpDialog(model: AppModel, jid: String, prompt: Verification.Prompt) {
     var secret by remember { mutableStateOf("") }
-    var question by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = { model.verifyFor = null; secret = "" },
         title = { Text(if (prompt == Verification.Prompt.INCOMING) "Answer verification" else "Verify identity") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 Text(Verification.explanation(prompt, jid), style = MaterialTheme.typography.bodyMedium)
-                if (prompt == Verification.Prompt.OUTGOING) {
-                    OutlinedTextField(question, { question = it }, singleLine = true,
-                                      label = { Text("Question (optional; your contact sees it)") })
-                }
+                // Passphrase only, as on Android and Termux (owner, 2026-10-20:
+                // no optional question).
                 OutlinedTextField(secret, { secret = it }, singleLine = true,
                     label = { Text("Shared passphrase (${Verification.MIN_SECRET}+ characters)") },
                     visualTransformation = PasswordVisualTransformation())
             }
         },
         confirmButton = {
-            Button(onClick = { val s = secret; secret = ""; model.submitSecret(jid, s, question) },
+            Button(onClick = { val s = secret; secret = ""; model.submitSecret(jid, s) },
                    enabled = Verification.acceptable(secret)) { Text("Verify") }
         },
         dismissButton = { TextButton(onClick = { model.verifyFor = null; secret = "" }) { Text("Cancel") } },

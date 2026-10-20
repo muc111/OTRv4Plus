@@ -517,14 +517,14 @@ class AppModel(
             requested = verifyFor == ChatState.bare(jid))
     }
 
-    fun submitSecret(jid: String, secret: String, question: String = "") {
+    fun submitSecret(jid: String, secret: String) {
         val prompt = verificationPrompt(jid) ?: return
         verifyFor = null
         ui.launch {
             val refusal = withContext(Dispatchers.IO) {
                 try {
                     if (prompt == Verification.Prompt.INCOMING) core.smpRespond(jid, secret)
-                    else core.smpStart(jid, secret, question)
+                    else core.smpStart(jid, secret, "")
                     null
                 } catch (e: OtrBridgeException) {
                     Verification.refusal(e.code) ?: "Verification could not start (${e.code})."
