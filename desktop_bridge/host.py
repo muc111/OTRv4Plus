@@ -372,6 +372,9 @@ def _real_controller(app, jid, server, sam_host, sam_port):
 
 
 def main() -> int:
+    # Before anything imports the bridge's audio: this is Linux, not Android
+    # (android_bridge.android_audio.HOST_ENV).
+    os.environ["OTRV4PLUS_HOST"] = "desktop"
     # The protocol gets its own copy of stdout; fd 1 becomes stderr, so
     # nothing the engine prints can land in a frame.
     proto = os.fdopen(os.dup(1), "w", encoding="utf-8", buffering=1)

@@ -48,7 +48,8 @@ import types
 from typing import Optional, Tuple
 
 __all__ = ["codec", "aaudio_available", "unavailable_reason", "voice_available",
-           "bind", "NO_CODEC", "NO_AAUDIO", "BACKEND"]
+           "bind", "is_desktop", "desktop_unavailable_reason",
+           "NO_CODEC", "NO_AAUDIO", "BACKEND", "HOST_ENV"]
 
 #: Said when the APK's core was built without its codec. Names the build, not
 #: a package to install: there is nothing a user can install to fix it.
@@ -58,6 +59,30 @@ NO_AAUDIO = "Android audio (AAudio) is not available on this device"
 
 #: The only audio backend the APK uses.
 BACKEND = "aaudio"
+
+
+#: Set to "desktop" by `desktop_bridge.host`, which runs this same bridge on
+#: Linux. There the Android hooks are WRONG: AAudio does not exist, and
+#: pinning it left the desktop with no microphone, no speaker and no calls
+#: (device report, 2026-10-20: "microphone could not be opened"; calls from
+#: the phone never connected). The desktop keeps the Linux hooks that
+#: importing `otrv4plus_xmpp` binds: opuslib over the system libopus, and
+#: AAudio-or-PulseAudio, which on Linux means parec/pacat.
+HOST_ENV = "OTRV4PLUS_HOST"
+
+
+def is_desktop() -> bool:
+    return os.environ.get(HOST_ENV, "").strip().lower() == "desktop"
+
+
+def desktop_unavailable_reason() -> str:
+    """The desktop's answer: the Linux client's own check. Never raises."""
+    try:
+        import otrv4plus_xmpp
+        ok, why = otrv4plus_xmpp.voice_available()
+        return "" if ok else str(why)
+    except Exception as exc:
+        return "voice is not available here: %s" % type(exc).__name__
 
 
 def codec() -> Optional[types.SimpleNamespace]:

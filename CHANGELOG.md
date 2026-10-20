@@ -27,6 +27,12 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   the audio backend's reason (for example `parec not found`) to its log.
 - Desktop: **clicking another chat in Chats now opens it.** The list did not
   redraw on a click, so the first chat opened stayed on screen.
+- Desktop: **the microphone, voice-note playback and calls use the
+  computer's audio (PulseAudio / PipeWire).** The desktop engine shares the
+  phone's call code, and setting up a call switched it to the phone's audio
+  system (AAudio), which Linux does not have: from then on recording,
+  playback and calls all failed. The desktop now keeps its own audio and the
+  Linux check for whether calls can work.
 - Desktop: **typing in the message box works again**, in every chat and in
   the Welcome room. The build's newer Kotlin turned on Compose "strong
   skipping", which left parts of the window not redrawn: the box ignored

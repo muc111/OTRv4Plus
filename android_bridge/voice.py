@@ -222,7 +222,10 @@ class CallBridge:
             # availability hooks (opuslib). The APK has its own: see
             # android_bridge.android_audio.
             from . import android_audio
-            android_audio.bind(voice)
+            # Not on the desktop, which keeps the Linux hooks that importing
+            # otrv4plus_xmpp just bound (android_audio.HOST_ENV).
+            if not android_audio.is_desktop():
+                android_audio.bind(voice)
             loop = self._ensure_loop()
             try:
                 self._manager = voice.VoiceCallManager(_VoiceClient(self._app),
@@ -246,6 +249,8 @@ class CallBridge:
         Android conversation screen.
         """
         from . import android_audio
+        if android_audio.is_desktop():
+            return android_audio.desktop_unavailable_reason()
         return android_audio.unavailable_reason()
 
     # -- the three actions ----------------------------------------------------
