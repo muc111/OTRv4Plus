@@ -1163,8 +1163,11 @@ private fun VoiceNoteBubble(message: Message, model: ChatViewModel) {
                 }
             }) { Text(if (busy) "…" else "Play") }
         }
+        // Sized by width, height from it: no fixed height in the chat screen
+        // (test_android_chat_layout), and it shrinks on a narrow phone.
         VoiceWaveformBars(bars, played, outgoing = message.outgoing,
-                          modifier = Modifier.weight(1f, fill = false).width(150.dp).height(28.dp))
+                          modifier = Modifier.weight(1f, fill = false)
+                              .widthIn(min = 96.dp, max = 160.dp).aspectRatio(5.5f))
         Text(org.otrv4plus.android.chat.VoiceNotes.clock(if (player != null) position else seconds),
              style = MaterialTheme.typography.labelSmall)
     }
