@@ -215,6 +215,49 @@ the server's worst case: **many large groups growing at the same moment.**
 **XMPP Guard was not the cause:** with all four of its services stopped,
 Prosody stayed at 100%.
 
+### 1,990 users: overload that did not recover (2026-10-18, run a9ae40)
+
+`--users 1990 --groups 100 --batch 1 --ramp 25 --observers 2 --minutes 75`,
+test and server on the same T450. Prosody reached 99.9% of its core by
+minute 12 and **stayed there for the remaining hour**, even after joining
+had all but stopped (minutes 65-74: 1,914 of 1,990 joined, ~0 commits,
+~900 lines a minute). Latency p50 rose to 100-160 s, Prosody's memory
+climbed from 240 MB to 1 GB, and the test process ran at ~98% of a core.
+The battery ran out at minute 74, before the accounts were deleted.
+
+Once Prosody fell behind it did not catch up: undelivered traffic piled up
+in memory, the Lua garbage collector had ever more to walk, and the bots
+re-sent what they thought was lost (400-2,000 pieces a minute).
+
+### 1,600 users with the generational collector (2026-10-20, run 5496d9)
+
+Prosody restarted with `gc = { mode = "generational" }` in its config;
+`--users 1600 --groups 80 --batch 1 --ramp 60 --observers 2 --minutes 75`.
+
+| Phase | Prosody (one core) | Latency p50 / p95 | Memory |
+|---|---|---|---|
+| Joining, groups up to ~12 members (min 1-11) | 25-55% | 0.13-4 s / 0.2-10 s | 129-245 MB |
+| Joining, groups 13-20 members (min 12-34) | 80-100% | 5-48 s / 16-92 s | 258-500 MB |
+| **Steady, all 1,600 joined (min 36-74)** | **37-41%** (peaks ~50%) | **0.30 s / 0.52 s** | 463 MB |
+
+~800 lines a minute, 99-101% delivered, 0 room errors, 0 refused joins, all
+1,600 accounts deleted at the end. Per line the steady cost matches every
+earlier run (**~0.05% of one core per line a minute** to a group of 20).
+
+**The overload recovered this time:** at minute 34 the last member joined
+and within two minutes Prosody was back to ~38% with normal latency. On
+2026-10-18, without the setting, Prosody stayed at 100% for an hour after
+joining stopped. Keep `gc = { mode = "generational" }` on the server.
+
+Joining costs more as groups grow (each Welcome carries the whole tree), so
+80 additions a minute saturated the core once groups passed ~13 members.
+
+**Planning figures for the T450 (one Prosody, generational GC):** steady
+chat for 1,600 at a line every two minutes uses ~40% of the core, so
+~2,000 would use ~50%. The limit is bursts (many groups growing at once, a
+mass reconnect), which now saturate the core for their duration but
+recover. The I2P router remains unmeasured.
+
 ## The room rate limit (`mod_muc_limits`)
 
 Prosody's `mod_muc_limits` caps how many messages **one room** accepts per
