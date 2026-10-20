@@ -150,7 +150,7 @@ class TestAFullServer:
     SRC = open(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")).read()
 
     def test_the_module_refuses_with_resource_constraint_and_spares_reconnects(self):
-        assert 'get_option_number("max_online_users", 2000)' in self.SRC
+        assert 'get_option_number("max_online_users", 1600)' in self.SRC
         assert 'condition = "resource-constraint"' in self.SRC
         assert "if host_sessions[session.username] then" in self.SRC
         assert 'module:hook("user-registering"' in self.SRC

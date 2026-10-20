@@ -4,7 +4,7 @@
 -- mod_otrv4plus_capacity: hard limits that keep one machine within what it
 -- can carry, and keep account creation from being used to flood it.
 --
---   max_online_users           = 2000  -- people signed in at once (0: none)
+--   max_online_users           = 1600  -- people signed in at once (0: none)
 --   login_rate                 = 10    -- new sign-ins let in per second (0: none)
 --   login_burst                = 40    -- ...of which this many at once
 --   max_registrations_per_hour = 30    -- new accounts, server-wide (0: none)
@@ -22,7 +22,7 @@
 
 local usermanager = require "core.usermanager";
 
-local max_online = module:get_option_number("max_online_users", 2000);
+local max_online = module:get_option_number("max_online_users", 1600);
 local per_hour = module:get_option_number("max_registrations_per_hour", 30);
 local max_registered = module:get_option_number("max_registered_users", 0);
 

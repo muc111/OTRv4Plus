@@ -15,9 +15,10 @@
 #      and mod_otrv4plus_moderation (admins ban, unban, list every room);
 #   3. replaces "c2s_limit_sessions" with "otrv4plus_one_session" and adds
 #      "otrv4plus_capacity" and "otrv4plus_moderation" in modules_enabled;
-#   4. sets max_resources = 1, max_online_users = 2000, login_rate = 10,
-#      login_burst = 40, max_registrations_per_hour = 30 and
-#      muc_event_rate = 10;
+#   4. sets max_resources = 1, max_online_users = 1600, login_rate = 10,
+#      login_burst = 40, max_registrations_per_hour = 30,
+#      max_registered_users = 0 (no cap on accounts), muc_event_rate = 10
+#      and gc = { mode = "generational" };
 #   5. runs `prosodyctl check config` -- and puts the backup back if it
 #      fails -- then restarts Prosody and shows the new error-log lines.
 #
@@ -32,10 +33,20 @@ PROSODYCTL="${PROSODYCTL:-prosodyctl}"
 RESTART="${RESTART:-1}"
 
 MAX_RESOURCES="${MAX_RESOURCES:-1}"
-MAX_ONLINE_USERS="${MAX_ONLINE_USERS:-2000}"
+# 1,600: what the T450 carried in STRESS_TEST.md (2026-10-20), ~40% of
+# Prosody's core in steady chat, recovering from join bursts. Raise it only
+# as far as a run on this machine shows.
+MAX_ONLINE_USERS="${MAX_ONLINE_USERS:-1600}"
 LOGIN_RATE="${LOGIN_RATE:-10}"
 LOGIN_BURST="${LOGIN_BURST:-40}"
 MAX_REGISTRATIONS_PER_HOUR="${MAX_REGISTRATIONS_PER_HOUR:-30}"
+# Accounts that are not signed in cost nothing; the online cap and the
+# hourly sign-up limit are what protect the machine. 0 = no cap.
+MAX_REGISTERED_USERS="${MAX_REGISTERED_USERS:-0}"
+# Lua's generational collector: with the default incremental one, a 1,990-
+# user run (2026-10-18) stayed at 100% for an hour after joining stopped;
+# with this, a 1,600-user run (2026-10-20) recovered within two minutes.
+PROSODY_GC="${PROSODY_GC:-{ mode = \"generational\" \}}"
 MUC_EVENT_RATE="${MUC_EVENT_RATE:-10}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -98,6 +109,8 @@ set_option max_online_users "$MAX_ONLINE_USERS"
 set_option login_rate "$LOGIN_RATE"
 set_option login_burst "$LOGIN_BURST"
 set_option max_registrations_per_hour "$MAX_REGISTRATIONS_PER_HOUR"
+set_option max_registered_users "$MAX_REGISTERED_USERS"
+set_option gc "$PROSODY_GC"
 set_option muc_event_rate "$MUC_EVENT_RATE"
 
 say "checking the configuration"
@@ -118,5 +131,5 @@ if [ "$RESTART" = 1 ]; then
 fi
 
 say "now in $CFG:"
-grep -nE '"otrv4plus_|c2s_limit_sessions|^[[:space:]]*(max_resources|max_online_users|login_rate|login_burst|max_registrations_per_hour|muc_event_rate)[[:space:]]*=' "$CFG"
+grep -nE '"otrv4plus_|c2s_limit_sessions|^[[:space:]]*(max_resources|max_online_users|login_rate|login_burst|max_registrations_per_hour|max_registered_users|muc_event_rate|gc)[[:space:]]*=' "$CFG"
 say "done. To undo: sudo cp $BACKUP $CFG && sudo systemctl restart prosody"

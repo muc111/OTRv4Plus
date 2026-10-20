@@ -69,7 +69,7 @@ One 2015 ThinkPad T450 running Prosody, measured with the built-in stress test: 
 | 400 | 17.5% | 106 MB | 0.17 s / 0.34 s | ~100% |
 | 800 | 37% | 303 MB | 0.31 s / 0.56 s | ~100% |
 
-Load grows in a straight line: about **1,700 users** at 80% of the one core Prosody uses. The server is capped at **2,000 online**, lets sign-ins in 10 a second so a restart does not spike it, and limits new accounts per hour. Method and raw results: [STRESS_TEST.md](STRESS_TEST.md); limits: [SERVER_HARDENING.md](SERVER_HARDENING.md).
+On a 2015 ThinkPad T450, **1,600 users** chatting in groups of 20 used about 40% of the one core Prosody uses (p95 0.5 s), and the server recovered within two minutes of a burst of joins. The server is capped at **1,600 online**, lets sign-ins in 10 a second so a restart does not spike it, and limits new accounts per hour (no cap on accounts in total). Method and raw results: [STRESS_TEST.md](STRESS_TEST.md); limits: [SERVER_HARDENING.md](SERVER_HARDENING.md).
 
 ## Security assessment and audit status
 
