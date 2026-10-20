@@ -17,8 +17,9 @@
 #   - apt packages: git python3 python3-venv build-essential curl libopus0
 #     pulseaudio-utils openjdk-21-jdk i2pd (asks for your sudo password)
 #   - Rust from rustup in ~/.cargo, only if cargo is missing
-#   - ~/.local/bin/otrv4plus-desktop and a menu entry in
-#     ~/.local/share/applications/otrv4plus-desktop.desktop
+#   - ~/.local/bin/otrv4plus-desktop, a menu entry in
+#     ~/.local/share/applications/otrv4plus-desktop.desktop and its icon in
+#     ~/.local/share/icons/hicolor/192x192/apps/otrv4plus.png
 set -euo pipefail
 
 RUN=1
@@ -69,7 +70,9 @@ export JAVA_HOME
 (cd desktop && ../android/gradlew --no-daemon -q -p . desktopLib)
 
 step "Adding the launcher and menu entry"
-mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
+ICONDIR="$HOME/.local/share/icons/hicolor/192x192/apps"
+mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications" "$ICONDIR"
+install -m 644 "$REPO/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" "$ICONDIR/otrv4plus.png"
 LAUNCHER="$HOME/.local/bin/otrv4plus-desktop"
 cat > "$LAUNCHER" <<EOF
 #!/bin/sh
@@ -86,7 +89,10 @@ Type=Application
 Name=OTRv4+
 Comment=End-to-end encrypted chat over I2P
 Exec=$LAUNCHER
-Icon=$REPO/icon.png
+Icon=otrv4plus
+# Java names its window after the main class; this is how the desktop matches
+# the window to this entry (and shows this icon, not a generic one).
+StartupWMClass=org-otrv4plus-desktop-MainKt
 Terminal=false
 Categories=Network;InstantMessaging;
 EOF

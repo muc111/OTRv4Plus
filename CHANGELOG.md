@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Desktop — 2026-10-20 — sign in with a username, create an account, the app's own icon (core 0.13.1)
+
+- **A username is enough**, as on the phone: `b` signs in as
+  `b@otrv4plus.i2p`, and the field says which address it will use. A full
+  address is still used as typed.
+- **Create account** on the start screen, under Connect. Once the server has
+  made the account the app signs in with it straight away.
+- **The OTRv4+ icon** in the dock and the window, not a generic one named
+  `org-otrv4plus-desktop-MainKt`: the window now carries the icon, and the
+  menu entry names the window class so the desktop can match them. Run
+  `desktop/install.sh` again to update the menu entry.
+
 ## Android 0.7.0-experimental.rc.123 — 2026-10-18 — the admin's Delete clears the server's list too (core 0.13.1)
 
 - **"lol" stayed on the server's room list after the phone said "This room

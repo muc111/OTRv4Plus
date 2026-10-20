@@ -51,6 +51,7 @@ class AppFlowTest {
     private fun answers(op: String, args: JsonObject): JsonElement? = when (op) {
         "prepare", "status" -> status()
         "connect" -> { connected = true; status() }
+        "register" -> Json.parseToJsonElement("""{"ok":true,"stage":"idle","code":"ok","detail":"Account created."}""")
         "contacts" -> contacts
         "local_fingerprint" -> JsonPrimitive("6338F2F9 F00A1ED0")
         "handshake_status" -> Json.parseToJsonElement("""{"stage":"idle"}""")
@@ -117,6 +118,34 @@ class AppFlowTest {
         } finally {
             scene.close()
         }
+    }
+
+    /** Owner, 2026-10-20: create an account from the start screen with a
+     *  username alone, and be signed in once it is made. */
+    @Test
+    fun createAccountWithAUsernameThenSignInStraightAway() {
+        val host = FakeHost(::answers)
+        val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui),
+                             Notifier({ "7" }, available = false, play = {}))
+        host.ready()
+        model.start()
+        waitFor("connect screen") { model.screen == AppModel.Screen.CONNECT }
+        model.jid = "carol"
+        assertEquals("carol@otrv4plus.i2p", model.account)
+
+        model.register("a new password")
+        waitFor("signed in") { model.screen == AppModel.Screen.MAIN }
+        assertEquals(true, model.registration?.ok)
+
+        val ops = host.requests.map { it["op"]!!.jsonPrimitive.content }
+        assertTrue(ops.indexOf("register") in 0 until ops.indexOf("connect"), ops.toString())
+        // The account the engine was given is the full address.
+        val prepare = host.requests.first { it["op"]!!.jsonPrimitive.content == "prepare" }
+        assertTrue(prepare.toString().contains("carol@otrv4plus.i2p"), prepare.toString())
+        // The password crossed for register and for connect, and nowhere else.
+        val withPassword = host.requests.filter { it.toString().contains("a new password") }
+        assertEquals(listOf("register", "connect"), withPassword.map { it["op"]!!.jsonPrimitive.content })
     }
 
     @Test

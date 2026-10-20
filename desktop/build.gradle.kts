@@ -101,6 +101,15 @@ val syncShared = tasks.register<Sync>("syncSharedFromAndroid") {
 }
 kotlin.sourceSets["main"].kotlin.srcDir(syncShared)
 
+// The window's icon is the Android launcher icon (one file, one licence entry
+// in REUSE.toml), copied into the jar as /otrv4plus.png.
+tasks.named<ProcessResources>("processResources") {
+    from("../android/app/src/main/res/mipmap-xxxhdpi") {
+        include("ic_launcher.png")
+        rename { "otrv4plus.png" }
+    }
+}
+
 
 compose.desktop {
     application {

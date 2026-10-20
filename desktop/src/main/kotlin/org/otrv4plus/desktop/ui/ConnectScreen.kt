@@ -24,6 +24,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.otrv4plus.android.connection.ConnectProblem
 import org.otrv4plus.desktop.AppModel
+import org.otrv4plus.desktop.SignInForm
 
 /**
  * Sign in. The wording of every problem line is the Android app's
@@ -56,9 +58,18 @@ fun ConnectScreen(model: AppModel) {
     var password by remember { mutableStateOf("") }
     var advanced by remember { mutableStateOf(false) }
 
+    val busy = model.connecting || model.registering
+    val ready = model.account != null && password.isNotEmpty() && !busy
+
     fun go() {
-        if (model.jid.isBlank() || password.isEmpty() || model.connecting) return
+        if (!ready) return
         model.connect(password)
+        password = ""
+    }
+
+    fun create() {
+        if (!ready) return
+        model.register(password)
         password = ""
     }
 
@@ -80,8 +91,20 @@ fun ConnectScreen(model: AppModel) {
                              color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
+                // The phone's rule (SignIn): a username alone is on the
+                // shipped server; a full address is used as typed.
                 OutlinedTextField(model.jid, { model.jid = it }, singleLine = true,
-                    label = { Text("Address (you@server.i2p)") }, modifier = Modifier.fillMaxWidth())
+                    label = { Text("Username") },
+                    placeholder = { Text("your username") },
+                    supportingText = {
+                        val account = model.account
+                        Text(when {
+                            model.jid.isBlank() -> "Or a full address, like you@server.i2p"
+                            account != null -> "Signs in as $account"
+                            else -> SignInForm.problem(model.jid) ?: ""
+                        })
+                    },
+                    modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(password, { password = it }, singleLine = true,
                     label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(),
                     keyboardActions = KeyboardActions(onDone = { go() }),
@@ -104,7 +127,7 @@ fun ConnectScreen(model: AppModel) {
                          style = MaterialTheme.typography.bodySmall,
                          color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                Button(onClick = { go() }, enabled = !model.connecting && model.jid.isNotBlank(),
+                Button(onClick = { go() }, enabled = ready,
                        modifier = Modifier.fillMaxWidth().height(48.dp)) {
                     if (model.connecting) {
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp,
@@ -112,6 +135,24 @@ fun ConnectScreen(model: AppModel) {
                         Spacer(Modifier.width(10.dp))
                         Text("Connecting over I2P…")
                     } else Text("Connect")
+                }
+                // Second and outlined, as on the phone: almost every press is
+                // a sign-in. A created account signs in straight away.
+                OutlinedButton(onClick = { create() }, enabled = ready,
+                               modifier = Modifier.fillMaxWidth().height(48.dp)) {
+                    if (model.registering) {
+                        CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(10.dp))
+                        Text("Creating the account…")
+                    } else Text("Create account")
+                }
+                model.registration?.let { r ->
+                    Text(if (r.ok) "Account created, signing in…" else "Could not create the account",
+                         style = MaterialTheme.typography.titleSmall,
+                         color = if (r.ok) MaterialTheme.colorScheme.onSurface
+                                 else MaterialTheme.colorScheme.error)
+                    if (!r.ok) Text(r.detail.ifBlank { "The server said: ${r.code}" },
+                                    style = MaterialTheme.typography.bodySmall)
                 }
                 model.problemLine()?.let { line ->
                     Text(line.text, style = MaterialTheme.typography.bodyMedium,

@@ -90,6 +90,7 @@ GenericName=Post-quantum encrypted chat
 Comment=XMPP over I2P with OTRv4+ (X448 + ML-KEM-1024, ML-DSA-87)
 Exec=otrv4plus-desktop
 Icon=otrv4plus
+StartupWMClass=org-otrv4plus-desktop-MainKt
 Terminal=false
 Categories=Network;InstantMessaging;
 EOF

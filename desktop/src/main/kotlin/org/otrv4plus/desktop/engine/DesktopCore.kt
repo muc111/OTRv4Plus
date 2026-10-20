@@ -22,6 +22,7 @@ import org.otrv4plus.android.bridge.OtrCore
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.OtrEventSink
 import org.otrv4plus.android.bridge.PeerPresence
+import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.SecurityDetails
 import org.otrv4plus.android.bridge.SecurityState
 import org.otrv4plus.android.bridge.SendOutcome
@@ -80,6 +81,14 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         statusFrom(call("connect", "password" to password))
 
     fun connectionStatus(): ConnectionStatus = statusFrom(call("status"))
+
+    /** Create the account [prepare] named (in-band registration). Does not
+     *  sign in: the caller connects next. [password] is not kept. */
+    fun register(password: String): RegistrationOutcome {
+        val r = call("register", "password" to password) as? JsonObject ?: JsonObject(emptyMap())
+        return RegistrationOutcome(ok = r["ok"].asBool(), code = r.str("code").ifBlank { "unknown" },
+                                   detail = r.str("detail"))
+    }
 
     fun disconnect() { call("disconnect") }
     fun cancel() { call("cancel") }

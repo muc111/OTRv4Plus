@@ -85,7 +85,17 @@ class AppModel(
     var samPort by mutableStateOf("7656")
     var connecting by mutableStateOf(false)
         private set
+    /** Creating an account (then signing straight in). */
+    var registering by mutableStateOf(false)
+        private set
+    /** The last Create account outcome, shown under the buttons. */
+    var registration by mutableStateOf<org.otrv4plus.android.bridge.RegistrationOutcome?>(null)
+        private set
     private var failuresInARow = 0
+
+    /** The account the form signs in as: a bare username gets the domain
+     *  ([SignInForm]); null while the field is not usable. */
+    val account: String? get() = SignInForm.account(jid, server)
 
     private val inbox = ConcurrentLinkedQueue<OtrEvent>()
     private var loop: Job? = null
@@ -211,9 +221,9 @@ class AppModel(
     )
 
     fun connect(password: String) {
-        if (connecting) return
+        if (connecting || registering) return
+        val account = this.account ?: return
         connecting = true
-        val account = jid.trim()
         ui.launch {
             val status = withContext(Dispatchers.IO) {
                 runCatching {
@@ -237,6 +247,39 @@ class AppModel(
                 failuresInARow++
             }
             changed()
+        }
+    }
+
+    /**
+     * Create the account the form names and, once the server has made it,
+     * sign straight in with it (owner, 2026-10-20: "once account is created it
+     * should auto log on"). The two stay two outcomes: [registration] says
+     * whether the account was made, and the connection line under it whether
+     * the sign-in then worked. The password goes to the engine for "register"
+     * and again for "connect", and is not kept.
+     */
+    fun register(password: String) {
+        if (connecting || registering || password.isEmpty()) return
+        val account = this.account ?: return
+        registering = true
+        registration = null
+        changed()
+        ui.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    core.prepare(account, server.trim(), samHost.trim(),
+                                 samPort.trim().toIntOrNull() ?: 0)
+                    core.register(password)
+                }.getOrElse { e ->
+                    org.otrv4plus.android.bridge.RegistrationOutcome(
+                        ok = false, code = (e as? OtrBridgeException)?.code ?: "bridge_error",
+                        detail = "")
+                }
+            }
+            registering = false
+            registration = outcome
+            changed()
+            if (outcome.ok) connect(password)
         }
     }
 

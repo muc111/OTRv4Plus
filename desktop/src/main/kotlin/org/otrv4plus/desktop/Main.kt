@@ -15,6 +15,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -42,6 +43,7 @@ fun main() = application {
         title = "Off The Record v4 Plus" +
             (AppModel::class.java.`package`?.implementationVersion?.let { " $it" } ?: ""),
         state = rememberWindowState(size = DpSize(1180.dp, 780.dp)),
+        icon = remember { appIcon() },
     ) {
         DisposableEffect(Unit) { onDispose { model.shutdown() } }
         // Notifications for messages only while the window is not in front.
@@ -50,6 +52,15 @@ fun main() = application {
         App(model, onWipe = { model.wipeAndExit { exitProcess(0) } })
     }
 }
+
+/** The app's icon (the Android launcher icon, put in the jar by the build),
+ *  or none: a missing icon must not stop the app starting. */
+private fun appIcon(): androidx.compose.ui.graphics.painter.Painter? = runCatching {
+    AppModel::class.java.getResourceAsStream("/otrv4plus.png")?.use { stream ->
+        androidx.compose.ui.graphics.painter.BitmapPainter(
+            org.jetbrains.skia.Image.makeFromEncoded(stream.readBytes()).toComposeImageBitmap())
+    }
+}.getOrNull()
 
 @Composable
 fun App(model: AppModel, onWipe: () -> Unit) {
