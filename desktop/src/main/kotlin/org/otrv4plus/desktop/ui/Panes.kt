@@ -73,7 +73,7 @@ fun PeoplePane(model: AppModel) {
                 }
             }
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        ScrollLazyColumn(Modifier.fillMaxSize()) {
             items(model.chat.directory(), key = { it.jid }) { e ->
                 Row(Modifier.fillMaxWidth().clickable { model.open(e.jid) }
                         .padding(horizontal = 16.dp, vertical = 10.dp),
@@ -153,7 +153,7 @@ fun RoomsPane(model: AppModel) {
                  "(X448 + ML-KEM-1024); an ordinary room is not.",
                  Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        LazyColumn(Modifier.fillMaxSize()) {
+        ScrollLazyColumn(Modifier.fillMaxSize()) {
             items(rooms, key = { it }) { room ->
                 val secure = room in model.groups || model.chat.isSecureRoom(room)
                 Row(Modifier.fillMaxWidth().clickable { model.chat.noteRoom(room); model.open(room) }
@@ -189,14 +189,22 @@ fun RoomsPane(model: AppModel) {
 @Composable
 fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
     var confirmWipe by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
+    ScrollColumn(Modifier.fillMaxSize()) {
         PaneTitle("Settings")
         Section("Account") {
             Text(model.chat.account.bareJid.ifBlank { model.jid })
             Text(model.chat.connection.sam.let { if (it.isBlank()) "" else "I2P SAM bridge: $it" },
                  style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Spacer(Modifier.padding(4.dp))
-            OutlinedButton(onClick = { model.disconnect() }) { Text("Sign out") }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = { model.disconnect() }) { Text("Sign out") }
+                // The same dialog as Wipe & Exit at the bottom, here too so
+                // nobody has to scroll to find it (owner, 2026-10-20).
+                TextButton(onClick = { confirmWipe = true },
+                           colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)) {
+                    Text("Wipe & Exit or delete account…")
+                }
+            }
         }
         Section("Profile") { ProfileSection(model) }
         Section("Group calls") {
@@ -261,7 +269,8 @@ fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
                  "terminal client run.", style = MaterialTheme.typography.bodyMedium)
         }
         Section("Wipe & Exit") {
-            Text("Destroys this device's keys, sessions and received files, then closes the app.",
+            Text("Destroys this device's keys, sessions, chats and received files, then closes " +
+                 "the app. You can also delete your account from the server: tick it in the next step.",
                  style = MaterialTheme.typography.bodyMedium)
             Spacer(Modifier.padding(4.dp))
             Button(onClick = { confirmWipe = true },
@@ -270,6 +279,7 @@ fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
                 Text("Wipe & Exit")
             }
         }
+        Spacer(Modifier.padding(12.dp))
     }
     if (confirmWipe) AlertDialog(
         onDismissRequest = { confirmWipe = false; model.wipeDeletesAccount = false },

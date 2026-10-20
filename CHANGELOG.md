@@ -27,6 +27,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   the audio backend's reason (for example `parec not found`) to its log.
 - Desktop: **clicking another chat in Chats now opens it.** The list did not
   redraw on a click, so the first chat opened stayed on screen.
+- Desktop: **scroll bars you can see and drag** on Settings, Chats, People,
+  Rooms, a conversation and a group's members, so the bottom of Settings
+  can be reached without a scroll wheel.
+- Desktop: **Wipe & Exit or delete account…** is now also under Account at
+  the top of Settings. It opens the same confirmation as before, where
+  "Also delete my account on the server" removes the account from the
+  server as well.
 
 ## Desktop — 2026-10-20 — names, not addresses: sign-in, accounts and rooms; the app's own icon (core 0.13.1)
 

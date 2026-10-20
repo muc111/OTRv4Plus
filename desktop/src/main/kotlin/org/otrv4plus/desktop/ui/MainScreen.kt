@@ -177,7 +177,7 @@ private fun ChatsPane(model: AppModel) {
                      Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
                      style = MaterialTheme.typography.bodyMedium)
             }
-            LazyColumn(Modifier.fillMaxSize()) {
+            ScrollLazyColumn(Modifier.fillMaxSize()) {
                 items(list, key = { it.jid }) { c ->
                     ConversationRow(model, c, selected = model.openConversation == c.jid)
                 }

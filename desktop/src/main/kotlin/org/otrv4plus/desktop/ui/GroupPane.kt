@@ -182,7 +182,7 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
     var invitee by remember(room) { mutableStateOf("") }
     var picking by remember(room) { mutableStateOf(false) }
     var ending by remember(room) { mutableStateOf("") }
-    Column(modifier.fillMaxHeight().verticalScroll(rememberScrollState()).padding(16.dp),
+    ScrollColumn(modifier.fillMaxHeight().padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 4.dp),
            verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text("Members", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
         val members = model.groupMembers[room].orEmpty()

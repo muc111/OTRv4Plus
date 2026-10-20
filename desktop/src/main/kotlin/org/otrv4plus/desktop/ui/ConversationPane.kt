@@ -387,7 +387,7 @@ private fun Messages(model: AppModel, jid: String, isRoom: Boolean, modifier: Mo
     val messages = model.messages(jid)
     val listState = rememberLazyListState()
     LaunchedEffect(messages.size) { if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1) }
-    LazyColumn(modifier.fillMaxWidth().padding(horizontal = 12.dp), state = listState,
+    ScrollLazyColumn(modifier.fillMaxWidth().padding(start = 12.dp), state = listState,
                verticalArrangement = Arrangement.spacedBy(6.dp)) {
         item { Spacer(Modifier.padding(4.dp)) }
         items(messages, key = { it.id }) { m -> Bubble(m, isRoom, model) }
