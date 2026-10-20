@@ -27,6 +27,11 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   the audio backend's reason (for example `parec not found`) to its log.
 - Desktop: **clicking another chat in Chats now opens it.** The list did not
   redraw on a click, so the first chat opened stayed on screen.
+- Desktop: **typing in the message box works again**, in every chat and in
+  the Welcome room. The build's newer Kotlin turned on Compose "strong
+  skipping", which left parts of the window not redrawn: the box ignored
+  typing (and, before the earlier fix, clicks in the chat list did nothing).
+  It is turned off for the desktop app.
 - Desktop: **scroll bars you can see and drag** on Settings, Chats, People,
   Rooms, a conversation and a group's members, so the bottom of Settings
   can be reached without a scroll wheel.

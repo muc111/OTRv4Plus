@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
 import org.jetbrains.compose.desktop.application.dsl.TargetFormat
+import org.jetbrains.kotlin.compose.compiler.gradle.ComposeFeatureFlag
 
 plugins {
     kotlin("jvm") version "2.0.21"
@@ -24,6 +25,18 @@ dependencies {
 }
 
 kotlin { jvmToolchain(21) }
+
+// STRONG SKIPPING OFF. Kotlin 2.0.20+ turns it on by default, and then a
+// composable whose arguments look unchanged is skipped. This UI reads the
+// model's plain fields (drafts, the open chat, the chat list) and is
+// redrawn by `AppModel.revision`, which only the top of each screen reads:
+// skipped children never saw the change. Device report, 2026-10-20: typed
+// text never appeared in the message box, and clicking another chat did
+// nothing. With it off, every composable taking the (unstable) AppModel is
+// redrawn with its parent, as the screens were written for.
+composeCompiler {
+    featureFlags.add(ComposeFeatureFlag.StrongSkipping.disabled())
+}
 
 // Shared with the Android app, compiled from ITS tree: the engine models and
 // events (bridge/OtrCore.kt), the chat state machine, the security wording,
