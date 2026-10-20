@@ -140,6 +140,12 @@ def _apply(path, edits, last=False):
     text = open(path, encoding="utf-8").read()
     if MARK in text or "maintBtn" in text:
         return None
+    for name in ("def do_POST(", "def set_maintenance(", "guard_token"):
+        # A customised copy that already has one of these would be shadowed
+        # or would shadow ours: stop rather than guess which should win.
+        if path.endswith(".py") and name in text:
+            raise SystemExit(f"STOPPED: {path} already defines {name.rstrip('(')}; "
+                             "this patch would collide with it. Nothing was changed.")
     for old, _new in edits:
         if text.count(old) < 1:
             raise SystemExit(f"STOPPED: {path} does not contain the expected line:\n  {old.strip()[:90]}\n"
