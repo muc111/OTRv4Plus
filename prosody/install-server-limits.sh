@@ -17,7 +17,7 @@
 #      "otrv4plus_capacity" and "otrv4plus_moderation" in modules_enabled;
 #   4. sets max_resources = 1, max_online_users = 1600, login_rate = 10,
 #      login_burst = 40, max_registrations_per_hour = 30,
-#      max_registered_users = 0 (no cap on accounts), muc_event_rate = 10
+#      max_registered_users = 5000, muc_event_rate = 10
 #      and gc = { mode = "generational" };
 #   5. runs `prosodyctl check config` -- and puts the backup back if it
 #      fails -- then restarts Prosody and shows the new error-log lines.
@@ -40,9 +40,10 @@ MAX_ONLINE_USERS="${MAX_ONLINE_USERS:-1600}"
 LOGIN_RATE="${LOGIN_RATE:-10}"
 LOGIN_BURST="${LOGIN_BURST:-40}"
 MAX_REGISTRATIONS_PER_HOUR="${MAX_REGISTRATIONS_PER_HOUR:-30}"
-# Accounts that are not signed in cost nothing; the online cap and the
-# hourly sign-up limit are what protect the machine. 0 = no cap.
-MAX_REGISTERED_USERS="${MAX_REGISTERED_USERS:-0}"
+# Accounts in total (0 = no cap). Accounts that are not signed in cost
+# little; this is a backstop against sign-ups filling the disk, on top of
+# the hourly limit (owner, 2026-10-20: 5,000).
+MAX_REGISTERED_USERS="${MAX_REGISTERED_USERS:-5000}"
 # Lua's generational collector: with the default incremental one, a 1,990-
 # user run (2026-10-18) stayed at 100% for an hour after joining stopped;
 # with this, a 1,600-user run (2026-10-20) recovered within two minutes.

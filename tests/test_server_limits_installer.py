@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026 muc111
 """prosody/install-server-limits.sh on a throwaway config. Owner
 (2026-10-20), after the stress runs: "remove the account cap and add 1600
-users online at once"; the generational collector is what let the 1,600
+users online at once", then a 5,000-account backstop; the generational collector is what let the 1,600
 run recover from a join burst (STRESS_TEST.md)."""
 import os
 import shutil
@@ -43,10 +43,10 @@ def _run(tmp_path, **env):
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
-def test_defaults_online_1600_no_account_cap_generational_gc(tmp_path):
+def test_defaults_online_1600_accounts_5000_generational_gc(tmp_path):
     out = _run(tmp_path)
     assert "max_online_users = 1600\n" in out
-    assert "max_registered_users = 0\n" in out
+    assert "max_registered_users = 5000\n" in out
     assert 'gc = { mode = "generational" }\n' in out
     # Global options stay before the first VirtualHost.
     assert out.index("gc =") < out.index("VirtualHost")

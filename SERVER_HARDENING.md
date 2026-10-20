@@ -55,7 +55,7 @@ i2pd sees the connecting I2P destination (see the i2pd section).
 | `max_online_users` | `1600` | A new person signing in when this many are online is refused with `resource-constraint`. The apps say "The server is full… The app keeps trying and gets in when someone leaves." Someone already online who reconnects is never refused. `0` turns it off. 1,600 is what the T450 carried in [STRESS_TEST.md](STRESS_TEST.md) (2026-10-20); raise it only as far as a run on your machine shows. |
 | `login_rate` | `10` | New sign-ins let in per second; `login_burst` (`40`) of them at once. Anyone over the rate is told "busy" at the very first step, before TLS or the password check, so turning them away costs almost nothing. The apps say "The server is busy letting people in, a few at a time" and retry after a randomised delay, so the crowd arrives spread out. `0` turns it off. |
 | `max_registrations_per_hour` | `30` | New accounts per hour, server-wide. Above it, sign-up says "The server is refusing new accounts right now. Try again later." Failed attempts (a name already taken) do not count. `0` turns it off. |
-| `max_registered_users` | `0` (none) | Accounts in total. Left off: an account that is not signed in costs nothing, and the online cap and the hourly sign-up limit are what protect the machine. |
+| `max_registered_users` | `5000` (`install-server-limits.sh`; the module's own default is `0`, none) | Accounts in total: a backstop against sign-ups filling the disk, on top of the hourly limit. At 30 an hour, 5,000 takes about a week to reach. |
 | `gc` | `{ mode = "generational" }` | Not ours: Lua's garbage collector. With the default, a 1,990-user run stayed at 100% for an hour after joining stopped; with this, 1,600 users recovered from a join burst within two minutes. `install-server-limits.sh` sets it. |
 
 Install:
@@ -72,7 +72,7 @@ max_online_users = 1600
 login_rate = 10
 login_burst = 40
 max_registrations_per_hour = 30
-max_registered_users = 0
+max_registered_users = 5000
 gc = { mode = "generational" }
 ```
 
