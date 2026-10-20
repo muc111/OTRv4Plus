@@ -53,6 +53,12 @@ DEFAULT_MODE = "synthetic"
 RATE = 16000
 MAX_SECONDS = 300
 MIN_SECONDS = 0.5
+#: Recording goes on this long after Stop (owner, 2026-10-20: "the end of my
+#: recording is cut short ... add a 2 sec extension"). What the microphone
+#: was still delivering is kept; the silence after it is trimmed by the mask.
+TAIL_SECONDS = 2.0
+#: Played after the note, so the speaker's own buffer empties before it stops.
+DRAIN_SECONDS = 0.5
 FRAME = 320                       # 20 ms Opus frames at 16 kHz
 BITRATE = 24000
 VENDOR = b"OTRv4Plus"
@@ -393,8 +399,11 @@ class Recorder:
             except Exception:
                 pass
 
-    def stop(self) -> Tuple[bytearray, int]:
-        """Stop and hand over the PCM (the caller wipes it)."""
+    def stop(self, tail: float = 0.0) -> Tuple[bytearray, int]:
+        """Stop and hand over the PCM (the caller wipes it). With [tail],
+        keep recording that many seconds first (see TAIL_SECONDS)."""
+        if tail > 0 and self.recording:
+            self._stop.wait(min(float(tail), 5.0))
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=3)
@@ -409,7 +418,7 @@ class Recorder:
             self._buf = bytearray()
 
     def cancel(self) -> None:
-        pcm, _ = self.stop()
+        pcm, _ = self.stop(0.0)
         _wipe(pcm)
 
 
@@ -443,7 +452,10 @@ class Player:
         frame_bytes = getattr(stream, "frame_bytes", 0) or audio.FRAME_BYTES
         self._stop.clear()
 
+        seconds = len(pcm) / 2 / out_rate
+
         def run():
+            started = time.monotonic()
             try:
                 for off in range(0, len(pcm), frame_bytes):
                     if self._stop.is_set():
@@ -452,6 +464,11 @@ class Player:
                     if len(chunk) < frame_bytes:
                         chunk += b"\x00" * (frame_bytes - len(chunk))
                     stream.write_frame(chunk)
+                # A backend can take audio faster than it plays it: pacat's
+                # pipe holds over a second. Stopping the stream as soon as the
+                # last frame was handed over threw that second away, so the
+                # end of every note was cut. Wait until it has been heard.
+                self._stop.wait(max(0.0, started + seconds + DRAIN_SECONDS - time.monotonic()))
             finally:
                 try:
                     stream.stop()

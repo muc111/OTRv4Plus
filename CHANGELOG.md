@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.125 and Desktop — 2026-10-20 — the end of a voice note is kept (core 0.13.1)
+
+- **The last word of a voice note is no longer cut off.** It was lost in
+  three places, and each is fixed:
+  - **Recording**: Stop now records **2 seconds more** (as asked), so what
+    the microphone was still delivering is in the note. The silence after
+    it is trimmed, so notes do not get 2 seconds longer.
+  - **The voice mask** kept only about 0.1 s after the last loud sound,
+    which clipped quiet word endings. It now keeps about 0.4 s, and its
+    noise gate stays open 300 ms after speech instead of 100 ms.
+  - **Desktop playback** stopped the speaker as soon as the last of the
+    note had been handed to it, while over a second was still waiting to
+    be played. It now waits until the note has been heard.
+
 ## Android 0.7.0-experimental.rc.124 and Desktop — 2026-10-20 — voice notes are messages, not files (core 0.13.1)
 
 - **A voice note no longer asks to be accepted.** From a verified contact,

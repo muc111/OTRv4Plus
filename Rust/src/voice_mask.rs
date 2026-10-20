@@ -479,8 +479,10 @@ fn gate(x: &[f64]) -> Vec<f64> {
     let peak = sorted[sorted.len() * 95 / 100];
     let open = (floor * 3.0).max(peak * 0.03);
     let target: Vec<f64> = rms.iter().map(|&r| if r >= open { 1.0 } else { 0.0 }).collect();
-    // Hold open 100 ms after speech, and smooth.
-    let hold = 7;
+    // Hold open 300 ms after speech, and smooth. 100 ms closed the gate
+    // on the quiet end of the last word (owner, 2026-10-20: "the end of my
+    // recording is cut short").
+    let hold = 20;
     let mut held = target.clone();
     for i in 0..target.len() {
         if target[i] > 0.0 {
@@ -515,6 +517,10 @@ fn speech_peak(rms: &[f64]) -> f64 {
     sorted[(sorted.len() * 95 / 100).min(sorted.len() - 1)]
 }
 
+/// Kept after the last frame above the trim threshold: the quiet decay of
+/// the last word. 6 hops (90 ms) clipped it.
+const TRIM_TAIL_HOPS: usize = 27; // ~400 ms
+
 fn trim(x: &mut Vec<f64>) {
     let rms = frame_rms(x);
     let peak = speech_peak(&rms);
@@ -525,7 +531,7 @@ fn trim(x: &mut Vec<f64>) {
     let first = rms.iter().position(|&r| r > peak * 0.05).unwrap_or(0);
     let last = rms.iter().rposition(|&r| r > peak * 0.05).unwrap_or(rms.len() - 1);
     let start = first.saturating_sub(5) * HOP;
-    let end = ((last + 6) * HOP + FRAME).min(x.len());
+    let end = ((last + TRIM_TAIL_HOPS) * HOP + FRAME).min(x.len());
     if start < end {
         *x = x[start..end].to_vec();
     }
@@ -1079,6 +1085,23 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trim_keeps_the_quiet_end_of_the_last_word() {
+        // One second of speech-level tone, a 300 ms decay well below the
+        // threshold, then a second of silence: the decay is kept, the
+        // silence is not.
+        let r = RATE as f64;
+        let mut x: Vec<f64> = (0..RATE as usize)
+            .map(|n| 0.3 * (2.0 * std::f64::consts::PI * 200.0 * n as f64 / r).sin()).collect();
+        x.extend((0..(RATE as usize * 3 / 10))
+            .map(|n| 0.006 * (2.0 * std::f64::consts::PI * 200.0 * n as f64 / r).sin()));
+        x.extend(std::iter::repeat(0.0).take(RATE as usize));
+        trim(&mut x);
+        let seconds = x.len() as f64 / r;
+        assert!(seconds >= 1.3, "the end was cut: {:.2} s kept", seconds);
+        assert!(seconds < 1.6, "trailing silence kept: {:.2} s", seconds);
+    }
 
     /// A synthetic "speaker": a pulse train at [f0] through formant
     /// resonators, voiced in bursts like syllables.

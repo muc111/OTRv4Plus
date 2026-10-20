@@ -3073,7 +3073,7 @@ class OtrApp:
         rec = getattr(self, "_voice_recorder", None)
         if rec is None:
             return {"error": "too_short"}
-        pcm, rate = rec.stop()
+        pcm, rate = rec.stop(vn.TAIL_SECONDS)
         try:
             if not directory:
                 import otrv4plus_filetransfer as _ft
