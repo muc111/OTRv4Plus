@@ -42,7 +42,8 @@ from typing import Callable, List, Optional, Tuple
 
 __all__ = ["MODES", "DEFAULT_MODE", "RATE", "MAX_SECONDS", "MIN_SECONDS",
            "VoiceNoteError", "mask", "encode", "decode", "write_note",
-           "Recorder", "Player", "mask_available", "describe_mode"]
+           "Recorder", "Player", "mask_available", "describe_mode", "waveform",
+           "WAVEFORM_BARS"]
 
 # Synthetic first and by default: measured, it is the one a speaker
 # recogniser matches least (VOICE_NOTES.md); owner chose it 2026-10-15.
@@ -325,6 +326,32 @@ def make_note(pcm: bytearray, rate: int, mode: str, directory: str) -> dict:
             "mode": mode, "format": ext, "bytes": len(data)}
 
 
+# -- the waveform ------------------------------------------------------------------------
+
+#: Bars in a voice-note bubble's waveform (owner, 2026-10-20: "a visual of the
+#: playback"). Enough to see the words, few enough to draw on a phone.
+WAVEFORM_BARS = 48
+
+
+def waveform(pcm: bytes, rate: int, bars: int = WAVEFORM_BARS) -> List[float]:
+    """[bars] loudness levels, 0..1, across a note's PCM (s16le mono).
+
+    Peak per slice, then a square root so quiet syllables still show, scaled
+    so the loudest bar is 1. Computed on this device from the decoded note
+    and never stored or sent: it is the note's shape, not something new."""
+    bars = max(1, min(int(bars), 200))
+    n = len(pcm) // 2
+    if n == 0:
+        return [0.0] * bars
+    samples = struct.unpack("<%dh" % n, pcm[:n * 2])
+    out = []
+    for b in range(bars):
+        lo, hi = n * b // bars, max(n * (b + 1) // bars, n * b // bars + 1)
+        out.append(max(abs(s) for s in samples[lo:min(hi, n)]) / 32768.0)
+    top = max(out) or 1.0
+    return [round(min(1.0, (v / top) ** 0.5), 3) for v in out]
+
+
 # -- recording and playing ------------------------------------------------------------
 
 class Recorder:
@@ -429,6 +456,15 @@ class Player:
         self._open = open_playback
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        self._started = 0.0
+        self.seconds = 0.0
+
+    @property
+    def position(self) -> float:
+        """Seconds played so far, for the waveform; 0 when not playing."""
+        if not self.playing:
+            return 0.0
+        return max(0.0, min(self.seconds, time.monotonic() - self._started))
 
     @property
     def playing(self) -> bool:
@@ -453,9 +489,11 @@ class Player:
         self._stop.clear()
 
         seconds = len(pcm) / 2 / out_rate
+        self.seconds = seconds
+        self._started = time.monotonic()
 
         def run():
-            started = time.monotonic()
+            started = self._started
             try:
                 for off in range(0, len(pcm), frame_bytes):
                     if self._stop.is_set():

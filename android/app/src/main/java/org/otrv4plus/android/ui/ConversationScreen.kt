@@ -1092,8 +1092,10 @@ private fun SecurityLine(state: SecurityState, capability: String = "unknown") {
 }
 
 /**
- * A voice note in the chat, sent or received: Play and Stop. The sealed copy
- * is decrypted to the cache only while it plays, and deleted after.
+ * A voice note in the chat, sent or received: Play/Stop, its waveform, and
+ * the time. The bars fill in as it plays (owner, 2026-10-20: "a visual of the
+ * playback ... within the bubble"). The sealed copy is decrypted to the cache
+ * only while it plays, and deleted after; the waveform is read in memory.
  */
 @Composable
 private fun VoiceNoteBubble(message: Message, model: ChatViewModel) {
@@ -1103,21 +1105,38 @@ private fun VoiceNoteBubble(message: Message, model: ChatViewModel) {
     var transient by remember(message.id) { mutableStateOf<java.io.File?>(null) }
     var failed by remember(message.id) { mutableStateOf(false) }
     var busy by remember(message.id) { mutableStateOf(false) }
+    var position by remember(message.id) { mutableStateOf(0.0) }
+    val wave by produceState<org.otrv4plus.android.chat.VoiceWaveform?>(null, message.id) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { model.voiceWaveform(message) }.getOrNull()
+        }
+    }
     fun stop() {
         player?.let { runCatching { it.stop() }; it.release() }
         player = null
+        position = 0.0
         transient?.delete()
         transient = null
     }
     DisposableEffect(message.id) { onDispose { stop() } }
+    LaunchedEffect(player) {
+        val p = player ?: return@LaunchedEffect
+        while (player === p) {
+            position = runCatching { p.currentPosition / 1000.0 }.getOrDefault(position)
+            kotlinx.coroutines.delay(50)
+        }
+    }
+    val seconds = wave?.seconds ?: 0.0
+    val bars = wave?.bars ?: org.otrv4plus.android.chat.VoiceNotes.placeholderBars()
+    val played = if (player != null) org.otrv4plus.android.chat.VoiceNotes.playedBars(position, seconds, bars.size) else 0
     Row(verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("\uD83C\uDFA4 " + if (message.outgoing) "Voice note (sent)" else "Voice note",
-             style = MaterialTheme.typography.bodyMedium)
+        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
         if (player != null) {
-            TextButton(onClick = { stop() }) { Text("Stop") }
+            FilledTonalButton(onClick = { stop() }, contentPadding = PaddingValues(horizontal = 12.dp)) {
+                Text("Stop")
+            }
         } else {
-            TextButton(enabled = !busy, onClick = {
+            FilledTonalButton(enabled = !busy, contentPadding = PaddingValues(horizontal = 12.dp), onClick = {
                 busy = true
                 failed = false
                 scope.launch {
@@ -1142,13 +1161,38 @@ private fun VoiceNoteBubble(message: Message, model: ChatViewModel) {
                     p.setOnCompletionListener { stop() }
                     p.start()
                 }
-            }) { Text(if (busy) "Opening…" else "Play") }
+            }) { Text(if (busy) "…" else "Play") }
         }
+        VoiceWaveformBars(bars, played, outgoing = message.outgoing,
+                          modifier = Modifier.weight(1f, fill = false).width(150.dp).height(28.dp))
+        Text(org.otrv4plus.android.chat.VoiceNotes.clock(if (player != null) position else seconds),
+             style = MaterialTheme.typography.labelSmall)
     }
     if (failed) {
         Text("This voice note could not be played.",
              style = MaterialTheme.typography.bodySmall,
              color = MaterialTheme.colorScheme.error)
+    }
+}
+
+/** The bars: played ones in the accent colour, the rest muted. */
+@Composable
+private fun VoiceWaveformBars(bars: List<Float>, played: Int, outgoing: Boolean, modifier: Modifier) {
+    val on = if (outgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
+    val off = on.copy(alpha = 0.35f)
+    androidx.compose.foundation.Canvas(modifier.semantics { contentDescription = "Voice note waveform" }) {
+        if (bars.isEmpty()) return@Canvas
+        val step = size.width / bars.size
+        val w = (step * 0.6f).coerceAtLeast(1f)
+        bars.forEachIndexed { i, level ->
+            val h = (size.height * level.coerceIn(0.08f, 1f))
+            drawRoundRect(
+                color = if (i < played) on else off,
+                topLeft = androidx.compose.ui.geometry.Offset(i * step + (step - w) / 2, (size.height - h) / 2),
+                size = androidx.compose.ui.geometry.Size(w, h),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 2, w / 2),
+            )
+        }
     }
 }
 

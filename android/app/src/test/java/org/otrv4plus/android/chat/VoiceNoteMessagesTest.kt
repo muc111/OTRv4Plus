@@ -80,4 +80,13 @@ class VoiceNoteMessagesTest {
         assertEquals("old", old.body)
         assertEquals("", old.voicePath)
     }
+
+    @Test
+    fun `the waveform fills in as the note plays`() {
+        assertEquals(0, VoiceNotes.playedBars(0.0, 4.0, 48))
+        assertEquals(24, VoiceNotes.playedBars(2.0, 4.0, 48))
+        assertEquals(48, VoiceNotes.playedBars(9.0, 4.0, 48))
+        assertEquals(0, VoiceNotes.playedBars(1.0, 0.0, 48))
+        assertEquals(48, VoiceNotes.placeholderBars().size)
+    }
 }

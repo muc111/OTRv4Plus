@@ -86,6 +86,9 @@ class AppFlowTest {
             {"jid":"$me","fingerprint":"AA","me":true,"verified":true,"bound":true},
             {"jid":"$bob","fingerprint":"BB","me":false,"verified":true,"bound":true},
             {"jid":"carol@otrv4plus.i2p","fingerprint":"CC","me":false,"verified":false,"bound":true}]}""")
+        "voice_note_play_status" -> Json.parseToJsonElement("""{"playing":true,"position":0.8,"seconds":2.0}""")
+        "voice_note_waveform" -> Json.parseToJsonElement(
+            """{"bars":[${(0 until 48).joinToString(",") { "%.2f".format(java.util.Locale.ROOT, 0.2 + 0.8 * Math.abs(Math.sin(it / 4.0))) }}],"seconds":2.0}""")
         "voice_note_play" -> { played += args["path"]!!.jsonPrimitive.content
             Json.parseToJsonElement("""{"seconds":2.0}""") }
         "start_group_verify" -> { verifyPassphrases += args["passphrase"]!!.jsonPrimitive.content
@@ -118,10 +121,15 @@ class AppFlowTest {
         model.open(bob)
         Thread.sleep(500)
         render(model, "8-voice-note")
+        waitFor("waveform") { model.waveforms[note.voicePath]?.bars?.size == 48 }
         model.playVoiceNote(note.voicePath)
         waitFor("played") { played.isNotEmpty() }
         assertEquals(listOf("/state/voice-note-ab.ogg.otrv"), played)
         assertEquals(note.voicePath, model.playingNote)
+        // The bubble follows the engine's player: 0.8 s of 2 s is 19 of 48 bars.
+        waitFor("position") { model.playPosition > 0.0 }
+        assertEquals(19, org.otrv4plus.android.chat.VoiceNotes.playedBars(model.playPosition, 2.0, 48))
+        render(model, "9-voice-note-playing")
         model.stopPlaying()
         assertEquals(null, model.playingNote)
     }

@@ -270,6 +270,18 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         (call("voice_note_play", "path" to path) as JsonObject).str("error")
     }.getOrDefault("bad_file")
     fun voiceNotePlayStop() { runCatching { call("voice_note_play_stop") } }
+    fun voiceNotePlayStatus(): org.otrv4plus.android.chat.VoicePlayback = runCatching {
+        val d = call("voice_note_play_status") as JsonObject
+        org.otrv4plus.android.chat.VoicePlayback(d["playing"].asBool(), d["position"].asDouble(),
+                                                 d["seconds"].asDouble())
+    }.getOrDefault(org.otrv4plus.android.chat.VoicePlayback(false, 0.0, 0.0))
+    /** A note's waveform for its bubble, or null when it cannot be read. */
+    fun voiceNoteWaveform(path: String): org.otrv4plus.android.chat.VoiceWaveform? = runCatching {
+        val d = call("voice_note_waveform", "path" to path, "bars" to 0) as JsonObject
+        val bars = d["bars"] as? kotlinx.serialization.json.JsonArray ?: return@runCatching null
+        org.otrv4plus.android.chat.VoiceWaveform(
+            bars.map { it.asDouble().toFloat().coerceIn(0f, 1f) }, d["seconds"].asDouble())
+    }.getOrNull()
 
     fun acceptFile(id: String): String = runCatching { call("accept_file", "transfer_id" to id).asStr() }.getOrDefault("failed")
     fun declineFile(id: String): String = runCatching { call("decline_file", "transfer_id" to id).asStr() }.getOrDefault("failed")

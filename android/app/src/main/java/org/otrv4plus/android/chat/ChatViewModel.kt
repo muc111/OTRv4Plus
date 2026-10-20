@@ -2175,6 +2175,20 @@ class ChatViewModel : ViewModel() {
      * names; the engine checks again that it is a received container.
      * Blocking; null when it does not open.
      */
+    /** The waveform for a voice-note bubble, read once per note and kept
+     *  in memory for this screen. Blocking; null when it cannot be read. */
+    fun voiceWaveform(message: Message): VoiceWaveform? {
+        val c = core ?: return null
+        val s = state ?: return null
+        if (message.voicePath.isEmpty() ||
+            s.messages(message.conversationId).none { it.id == message.id && it.voicePath == message.voicePath })
+            return null
+        waveforms[message.voicePath]?.let { return it }
+        return c.voiceNoteWaveform(message.voicePath)?.also { waveforms[message.voicePath] = it }
+    }
+
+    private val waveforms = java.util.concurrent.ConcurrentHashMap<String, VoiceWaveform>()
+
     fun openVoiceNote(message: Message, directory: String): String? {
         val c = core ?: return null
         val s = state ?: return null

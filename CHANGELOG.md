@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.127 and Desktop — 2026-10-20 — voice notes show their waveform (core 0.13.1)
+
+- **A voice-note bubble shows the note's waveform**, sent or received, on the
+  phone and the desktop: a row of bars, one per slice of the note, tall
+  where it is loud. While it plays the bars fill in from the left and the
+  time counts up; at the end the bubble goes back to Play by itself.
+- The waveform is worked out on the device from the note itself, in memory,
+  and is never stored or sent.
+
 ## Android 0.7.0-experimental.rc.126 — 2026-10-20 — calls show up in the diagnostic report (core 0.13.1)
 
 - **A call's steps are now in the diagnostic report.** A laptop-to-phone

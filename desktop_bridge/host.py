@@ -159,6 +159,8 @@ APP_OPS: Dict[str, tuple] = {
     "send_voice_note": ("peer", "path"),
     "voice_note_play": ("path",),
     "voice_note_play_stop": (),
+    "voice_note_play_status": (),
+    "voice_note_waveform": ("path", "bars"),
     "voice_note_discard": ("path",),
     "accept_file": ("transfer_id",),
     "decline_file": ("transfer_id",),

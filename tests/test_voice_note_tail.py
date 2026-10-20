@@ -105,3 +105,38 @@ def test_stop_still_stops_playback_at_once(monkeypatch):
     player.stop()
     assert spk.done.wait(2)
     assert spk.stopped_at - t < 1.5
+
+
+def test_the_waveform_follows_the_loudness_and_is_bounded():
+    quiet, loud = b"\x10\x00" * 1600, b"\x00\x40" * 1600         # 0.1 s each at 16 kHz
+    bars = vn.waveform(quiet * 4 + loud * 4, 16000, bars=8)
+    assert len(bars) == 8 and max(bars) == 1.0
+    assert all(b < 0.2 for b in bars[:4]) and all(b == 1.0 for b in bars[4:])
+    assert vn.waveform(b"", 16000, bars=5) == [0.0] * 5
+    assert len(vn.waveform(loud, 16000, bars=10_000)) == 200
+
+
+def test_the_player_reports_where_it_is(monkeypatch):
+    spk = _FastSpeaker()
+    monkeypatch.setattr(vn, "decode", lambda data: (b"\x00\x10" * 16000, 16000))
+    player = vn.Player(open_playback=lambda: (spk, []))
+    player.play(b"note")
+    time.sleep(0.3)
+    assert 0.2 < player.position < 0.6 and player.seconds == 1.0
+    player.stop()
+    assert player.position == 0.0
+
+
+def test_the_app_reads_a_waveform_only_from_a_note(monkeypatch):
+    import tempfile
+    from android_bridge.app import OtrApp
+    app = OtrApp.__new__(OtrApp)
+    d = tempfile.mkdtemp()
+    other = os.path.join(d, "passwords.txt")
+    open(other, "wb").write(b"x" * 100)
+    assert app.voice_note_waveform(other) == {"error": "bad_file"}
+    note = os.path.join(d, "voice-note-ab.wav")
+    open(note, "wb").write(vn.encode(b"\x00\x20" * 16000, prefer_opus=False)[0])
+    got = app.voice_note_waveform(note)
+    assert len(got["bars"]) == vn.WAVEFORM_BARS and got["seconds"] == 1.0
+    assert app.voice_note_play_status() == {"playing": False, "position": 0.0, "seconds": 0.0}

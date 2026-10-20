@@ -1514,6 +1514,16 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         runCatching { requireApp().callAttr("voice_note_discard", path) }
     }
 
+    /** A note's waveform for its bubble, or null when it cannot be read. */
+    fun voiceNoteWaveform(path: String): org.otrv4plus.android.chat.VoiceWaveform? =
+        runCatching {
+            val d = requireApp().callAttr("voice_note_waveform", path, 0)
+            val bars = d.callAttr("get", "bars") ?: return@runCatching null
+            org.otrv4plus.android.chat.VoiceWaveform(
+                bars.asList().map { it.toFloat().coerceIn(0f, 1f) },
+                d.callAttr("get", "seconds")?.toDouble() ?: 0.0)
+        }.getOrNull()
+
     /** Accept an offered transfer, by the id [transfers] reported. */
     fun acceptFile(transferId: String): String =
         runCatching {

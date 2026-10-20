@@ -72,6 +72,15 @@ object VoiceNotes {
         filename.startsWith("voice-note-") &&
             (filename.endsWith(".ogg") || filename.endsWith(".wav"))
 
+    /** How many of [count] waveform bars are played at [position] of
+     *  [seconds]: the bubble colours those (owner, 2026-10-20). */
+    fun playedBars(position: Double, seconds: Double, count: Int): Int =
+        if (seconds <= 0.0 || count <= 0) 0
+        else (position / seconds * count).toInt().coerceIn(0, count)
+
+    /** A flat line, while the real waveform is read or when it cannot be. */
+    fun placeholderBars(count: Int = 48): List<Float> = List(count) { 0.15f }
+
     /** Under the level bar while recording. */
     fun whileRecording(mode: String, device: String): String =
         if (mode == NATURAL) "Your own voice is kept, as recorded."
@@ -114,3 +123,9 @@ data class VoiceRecording(val recording: Boolean, val seconds: Double,
 
 data class VoiceNoteFile(val path: String, val seconds: Double, val mode: String,
                          val error: String)
+
+/** A note's waveform: [bars] levels 0..1 and its length. */
+data class VoiceWaveform(val bars: List<Float>, val seconds: Double)
+
+/** Where the engine's player is (desktop). */
+data class VoicePlayback(val playing: Boolean, val position: Double, val seconds: Double)

@@ -200,7 +200,7 @@ def test_the_app_and_desktop_host_expose_the_same_operations():
     from android_bridge.app import OtrApp
     from desktop_bridge.host import APP_OPS
     ops = [op for op in APP_OPS if op.startswith("voice_note_")]
-    assert len(ops) == 8
+    assert len(ops) == 10
     for op in ops:
         assert callable(getattr(OtrApp, op))
 

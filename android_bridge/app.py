@@ -3113,11 +3113,7 @@ class OtrApp:
         path. For hosts without a media player of their own (desktop)."""
         import otrv4plus_voicenote as vn
         try:
-            if path.endswith(".otrv"):
-                data = self.files.open_received(path)
-            else:
-                with open(path, "rb") as f:
-                    data = f.read(vn.MAX_NOTE_BYTES + 1)
+            data = self._note_bytes(path)
             player = getattr(self, "_voice_player", None)
             if player is None:
                 player = self._voice_player = vn.Player()
@@ -3128,6 +3124,40 @@ class OtrApp:
         except Exception as exc:
             _log.warning("voice note playback: %s", type(exc).__name__)
             return {"error": "bad_file"}
+
+    def _note_bytes(self, path: str) -> bytes:
+        """A note's file, decrypted in memory when it is a sealed container
+        (`files.open_received` checks it is one, in the received directory);
+        otherwise only an unsent note of ours (voice-note-*)."""
+        import otrv4plus_voicenote as vn
+        if path.endswith(".otrv"):
+            return self.files.open_received(path)
+        if not os.path.basename(path or "").startswith("voice-note-"):
+            raise ValueError("not a voice note")
+        with open(path, "rb") as f:
+            return f.read(vn.MAX_NOTE_BYTES + 1)
+
+    def voice_note_waveform(self, path: str, bars: int = 0) -> Dict[str, Any]:
+        """{"bars": [0..1, ...], "seconds"} for a note's bubble, or
+        {"error": code}. Decoded by the same bounded decoder as playback;
+        nothing is written anywhere."""
+        import otrv4plus_voicenote as vn
+        try:
+            pcm, rate = vn.decode(self._note_bytes(path))
+            return {"bars": vn.waveform(pcm, rate, int(bars or vn.WAVEFORM_BARS)),
+                    "seconds": round(len(pcm) / 2 / max(rate, 1), 1)}
+        except vn.VoiceNoteError as exc:
+            return {"error": exc.code}
+        except Exception:
+            return {"error": "bad_file"}
+
+    def voice_note_play_status(self) -> Dict[str, Any]:
+        """Where playback is, for the waveform: {"playing", "position", "seconds"}."""
+        player = getattr(self, "_voice_player", None)
+        if player is None or not player.playing:
+            return {"playing": False, "position": 0.0, "seconds": 0.0}
+        return {"playing": True, "position": round(player.position, 2),
+                "seconds": round(player.seconds, 2)}
 
     def voice_note_play_stop(self) -> None:
         player = getattr(self, "_voice_player", None)

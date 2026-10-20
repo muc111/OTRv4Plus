@@ -635,21 +635,56 @@ class AppModel(
     var playingNote by mutableStateOf<String?>(null)
         private set
 
+    /** Seconds into [playingNote], for its waveform. */
+    var playPosition by mutableStateOf(0.0)
+        private set
+    private var playPoll: Job? = null
+
+    /** Waveforms read so far, by sealed-copy path (in memory only). */
+    val waveforms = androidx.compose.runtime.mutableStateMapOf<String, org.otrv4plus.android.chat.VoiceWaveform>()
+    private val waveformAsked = java.util.Collections.synchronizedSet(HashSet<String>())
+
+    /** Read [path]'s waveform once, for its bubble. */
+    fun loadWaveform(path: String) {
+        if (path.isEmpty() || !waveformAsked.add(path)) return
+        ui.launch {
+            withContext(Dispatchers.IO) { core.voiceNoteWaveform(path) }?.let { waveforms[path] = it }
+        }
+    }
+
     /** Hear the ready note, or one in the chat ([path] of its sealed copy). */
     fun playVoiceNote(path: String) {
         playingNote = path
+        playPosition = 0.0
+        playPoll?.cancel()
         ui.launch {
             val err = withContext(Dispatchers.IO) { core.voiceNotePlay(path) }
             if (err.isNotEmpty()) {
                 if (playingNote == path) playingNote = null
                 chat.note(org.otrv4plus.android.chat.VoiceNotes.playErrorText(err))
+                changed()
+                return@launch
             }
             changed()
+            // Follow the engine's player, and let go when it finishes, so
+            // the bubble goes back to Play by itself.
+            playPoll = ui.launch {
+                delay(100)
+                while (playingNote == path) {
+                    val st = withContext(Dispatchers.IO) { core.voiceNotePlayStatus() }
+                    if (playingNote != path) break
+                    if (!st.playing) { playingNote = null; playPosition = 0.0; break }
+                    playPosition = st.position
+                    delay(80)
+                }
+            }
         }
     }
 
     fun stopPlaying() {
         playingNote = null
+        playPosition = 0.0
+        playPoll?.cancel()
         ui.launch { withContext(Dispatchers.IO) { core.voiceNotePlayStop() } }
     }
 

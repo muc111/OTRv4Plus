@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -363,20 +364,43 @@ private fun FileOffers(model: AppModel, jid: String) {
     }
 }
 
-/** A voice note, sent or received: Play and Stop. The engine decrypts the
- *  sealed copy into memory and parses it as untrusted audio. */
+/** A voice note, sent or received: Play/Stop, its waveform filling in as it
+ *  plays, and the time (owner, 2026-10-20). The engine decrypts the sealed
+ *  copy into memory and parses it as untrusted audio. */
 @Composable
 private fun VoiceNoteRow(m: Message, model: AppModel) {
+    LaunchedEffect(m.voicePath) { model.loadWaveform(m.voicePath) }
+    val wave = model.waveforms[m.voicePath]
+    val playing = model.playingNote == m.voicePath
+    val bars = wave?.bars ?: VoiceNotes.placeholderBars()
+    val seconds = wave?.seconds ?: 0.0
+    val played = if (playing) VoiceNotes.playedBars(model.playPosition, seconds, bars.size) else 0
+    val fg = if (m.outgoing) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.primary
     Row(verticalAlignment = Alignment.CenterVertically) {
-        Text("\uD83C\uDFA4 " + if (m.outgoing) "Voice note (sent)" else "Voice note",
-             color = if (m.outgoing) MaterialTheme.colorScheme.onPrimaryContainer
-                     else MaterialTheme.colorScheme.onSurface)
-        Spacer(Modifier.width(8.dp))
-        if (model.playingNote == m.voicePath) {
-            TextButton(onClick = { model.stopPlaying() }) { Text("Stop") }
+        if (playing) {
+            FilledTonalButton(onClick = { model.stopPlaying() }) { Text("Stop") }
         } else {
-            TextButton(onClick = { model.playVoiceNote(m.voicePath) }) { Text("Play") }
+            FilledTonalButton(onClick = { model.playVoiceNote(m.voicePath) }) { Text("Play") }
         }
+        Spacer(Modifier.width(10.dp))
+        androidx.compose.foundation.Canvas(Modifier.width(220.dp).height(32.dp)) {
+            val step = size.width / bars.size
+            val w = (step * 0.6f).coerceAtLeast(1f)
+            bars.forEachIndexed { i, level ->
+                val h = size.height * level.coerceIn(0.08f, 1f)
+                drawRoundRect(
+                    color = if (i < played) fg else fg.copy(alpha = 0.35f),
+                    topLeft = androidx.compose.ui.geometry.Offset(i * step + (step - w) / 2, (size.height - h) / 2),
+                    size = androidx.compose.ui.geometry.Size(w, h),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(w / 2, w / 2),
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(VoiceNotes.clock(if (playing) model.playPosition else seconds),
+             style = MaterialTheme.typography.labelSmall,
+             color = if (m.outgoing) MaterialTheme.colorScheme.onPrimaryContainer
+                     else MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
 
