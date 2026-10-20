@@ -252,9 +252,30 @@ joining stopped. Keep `gc = { mode = "generational" }` on the server.
 Joining costs more as groups grow (each Welcome carries the whole tree), so
 80 additions a minute saturated the core once groups passed ~13 members.
 
+### 1,800 users (2026-10-20, run b05ab3)
+
+Same settings, `--users 1800 --groups 90 --batch 1 --ramp 60 --observers 2
+--minutes 85`; Prosody not restarted since the 1,600 run (417 MB at start).
+
+| Phase | Prosody (one core) | Latency p50 / p95 | Memory |
+|---|---|---|---|
+| Joining, groups up to ~11 members (min 1-10) | 37-70% | 0.15-5 s / 0.2-15 s | 417 MB |
+| Joining, groups 12-20 members (min 11-66) | 85-100% | 13-147 s / 30-181 s | 393-764 MB |
+| **Steady, all 1,800 joined (min 67-84)** | **45-50%** (peaks ~60%) | **0.35 s / 0.58 s** | 741 MB |
+
+~895 lines a minute, 99-101% delivered, 0 room errors, 0 commit failures, 0
+refused joins, all 1,800 accounts deleted. Steady cost again **~0.053% of
+one core per line a minute**. Recovery after the last join took one minute.
+
+The joining phase is what grows faster than linearly: saturated for 22
+minutes at 1,600 and 52 minutes at 1,800, because every addition to a fuller
+group costs more and the backlog slows the additions down. Ninety groups of
+20 forming within an hour is far beyond what real users do; rejoining
+groups one already belongs to (after a restart) needs no MLS additions.
+
 **Planning figures for the T450 (one Prosody, generational GC):** steady
-chat for 1,600 at a line every two minutes uses ~40% of the core, so
-~2,000 would use ~50%. The limit is bursts (many groups growing at once, a
+chat at a line every two minutes uses ~40% of the core for 1,600 and ~47%
+for 1,800, so ~2,000 would use ~53%. The limit is bursts (many groups growing at once, a
 mass reconnect), which now saturate the core for their duration but
 recover. The I2P router remains unmeasured.
 
