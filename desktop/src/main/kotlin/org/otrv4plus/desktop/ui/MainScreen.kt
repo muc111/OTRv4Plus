@@ -20,10 +20,12 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationRail
@@ -65,6 +67,7 @@ fun MainScreen(model: AppModel, onWipe: () -> Unit) {
             LinkBanner(model)
             model.chat.notice?.let { Notice(it) { model.dismissNotice() } }
             OtherSessionsBanner(model)
+            IncomingCallBanner(model)
             model.chat.fingerprintAlert?.let { alert ->
                 Notice("The identity key of ${alert.peer} has CHANGED. Do not trust this " +
                        "conversation until you have verified them again.",
@@ -76,6 +79,33 @@ fun MainScreen(model: AppModel, onWipe: () -> Unit) {
                 AppModel.Tab.PEOPLE -> PeoplePane(model)
                 AppModel.Tab.ROOMS -> RoomsPane(model)
                 AppModel.Tab.SETTINGS -> SettingsPane(model, onWipe)
+            }
+        }
+    }
+}
+
+/**
+ * Someone is calling, whatever is on screen. Owner report (2026-10-20): a
+ * call from the phone "not going through" -- the desktop rang only inside
+ * the caller's own chat, so with any other chat (or the Welcome room) open
+ * there was nothing to answer, and the phone gave up. Only a verified
+ * contact's call can ring (the engine's gate).
+ */
+@Composable
+private fun IncomingCallBanner(model: AppModel) {
+    for (peer in model.chat.ringingPeers()) {
+        val name = model.conversation(peer).displayName.ifBlank { peer }
+        Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.Call, null, tint = MaterialTheme.colorScheme.onTertiaryContainer)
+                Spacer(Modifier.width(10.dp))
+                Text("Incoming call from $name", Modifier.weight(1f),
+                     color = MaterialTheme.colorScheme.onTertiaryContainer,
+                     fontWeight = FontWeight.Medium)
+                TextButton(onClick = { model.hangUp(peer) }) { Text("Decline") }
+                Spacer(Modifier.width(8.dp))
+                Button(onClick = { model.answerFromPrompt(peer) }) { Text("Answer") }
             }
         }
     }

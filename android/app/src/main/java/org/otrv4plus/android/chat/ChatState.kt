@@ -816,6 +816,11 @@ class ChatState(
     fun callState(jid: String): CallState =
         callStates[bare(jid)] ?: CallState.IDLE
 
+    /** Who is calling us right now (RINGING is only ever incoming), for a
+     *  prompt that shows whichever screen is open. */
+    fun ringingPeers(): List<String> =
+        callStates.filterValues { it == CallState.RINGING }.keys.sorted()
+
     /**
      * An inbound message, routed by the SENDER'S JID.
      *

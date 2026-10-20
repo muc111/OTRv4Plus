@@ -4,6 +4,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Desktop — 2026-10-20 — an incoming call can be answered from any screen
+
+- **Calls from the phone to the desktop could not be answered** unless the
+  caller's chat happened to be open: Answer and Decline lived only in that
+  chat's call bar, so with the Welcome room or any other chat open the
+  laptop showed nothing to press and the phone rang out. A bar now appears
+  across the top of the window -- "Incoming call from …", **Decline**,
+  **Answer** -- whichever screen is open. Answer opens the caller's chat and
+  answers.
+
 ## Android 0.7.0-experimental.rc.128 and Desktop — 2026-10-20 — closing sessions no longer stops part-way (core 0.13.1)
 
 - **Shutting down, signing out and Wipe & Exit close every OTR session.**

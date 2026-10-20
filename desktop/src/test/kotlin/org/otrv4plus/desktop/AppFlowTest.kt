@@ -86,6 +86,7 @@ class AppFlowTest {
             {"jid":"$me","fingerprint":"AA","me":true,"verified":true,"bound":true},
             {"jid":"$bob","fingerprint":"BB","me":false,"verified":true,"bound":true},
             {"jid":"carol@otrv4plus.i2p","fingerprint":"CC","me":false,"verified":false,"bound":true}]}""")
+        "answer_call" -> { answered += args["peer"]!!.jsonPrimitive.content; JsonPrimitive("started") }
         "voice_note_play_status" -> Json.parseToJsonElement("""{"playing":true,"position":0.8,"seconds":2.0}""")
         "voice_note_waveform" -> Json.parseToJsonElement(
             """{"bars":[${(0 until 48).joinToString(",") { "%.2f".format(java.util.Locale.ROOT, 0.2 + 0.8 * Math.abs(Math.sin(it / 4.0))) }}],"seconds":2.0}""")
@@ -98,6 +99,33 @@ class AppFlowTest {
 
     private val verifyPassphrases = mutableListOf<String>()
     private val played = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val answered = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    /** Owner, 2026-10-20: a call from the phone "not going through" -- the
+     *  desktop rang only inside the caller's own chat. It now shows on any
+     *  screen, and Answer opens that chat and answers. */
+    @Test
+    fun anIncomingCallCanBeAnsweredFromAnyScreen() {
+        val host = FakeHost(::answers)
+        val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui),
+                             Notifier({ "7" }, available = false, play = {}))
+        model.jid = me
+        host.ready()
+        model.start()
+        waitFor("connect screen") { model.screen == AppModel.Screen.CONNECT }
+        model.connect("pw")
+        waitFor("main screen") { model.screen == AppModel.Screen.MAIN }
+        model.open("carol@otrv4plus.i2p")              // another chat is open
+        host.event("""{"type":"CallStateChanged","peer":"$bob/phone","state":"RINGING","duration_seconds":0}""")
+        waitFor("ringing") { model.chat.ringingPeers() == listOf(bob) }
+        Thread.sleep(400)
+        render(model, "10-incoming-call")
+        model.answerFromPrompt(bob)
+        waitFor("answered") { answered.isNotEmpty() }
+        assertEquals(listOf(bob), answered)
+        assertEquals(bob, model.openConversation)
+    }
 
     /** Owner, 2026-10-20: a voice note is taken without asking and is a
      *  message that plays, not a file to accept. */

@@ -544,6 +544,13 @@ class AppModel(
 
     fun call(jid: String) = callAction { core.startCall(jid) }
     fun answer(jid: String) = callAction { core.answerCall(jid) }
+
+    /** Answer from the app-wide prompt: open the caller's chat (where the
+     *  call bar and the timer are), then answer. */
+    fun answerFromPrompt(jid: String) {
+        open(jid)
+        answer(jid)
+    }
     fun hangUp(jid: String) = callAction { core.endCall(jid) }
 
     private fun callAction(block: () -> String) {
