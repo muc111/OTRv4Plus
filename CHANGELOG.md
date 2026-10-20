@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.126 — 2026-10-20 — calls show up in the diagnostic report (core 0.13.1)
+
+- **A call's steps are now in the diagnostic report.** A laptop-to-phone
+  call rang, was answered and went silent; the laptop's terminal showed each
+  step, the phone's report showed none, because the call code only printed
+  to the phone's system log. Each step is now also recorded under `call`:
+  tunnels, ringing, keys confirmed, media, active, ended, and any failure
+  with its reason. Recorded as codes: no names, addresses or call content.
+- Desktop: the installer no longer tells a machine that hosts the server to
+  `systemctl enable --now i2pd` (that unit is masked there on purpose).
+
 ## Android 0.7.0-experimental.rc.125 and Desktop — 2026-10-20 — the end of a voice note is kept (core 0.13.1)
 
 - **The last word of a voice note is no longer cut off.** It was lost in

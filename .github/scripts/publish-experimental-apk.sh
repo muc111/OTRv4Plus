@@ -136,6 +136,7 @@ installed), and with the Termux client.
 | Moderation | Signed in as the server admin, Delete shows on every room (rc.88); an ordinary member sees Leave only (rc.83) |
 | Voice notes | Voice notes in **My voice** and **Synthetic** (rc.81: no whistle, a random voice per note; Disguised removed) |
 | Voice note ends | Record a note and press Stop straight after your last word: it takes about two seconds longer to prepare, and when played (sent and received bubbles, phone and desktop) the last word is there in full | rc.125 |
+| Calls in the report | Make or answer a call, then Diagnostics → report: the call's steps are listed (component `call`: ringing, keys_confirmed, active or the failure and its reason), with no names or addresses | rc.126 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

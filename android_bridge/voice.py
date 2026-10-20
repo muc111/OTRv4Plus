@@ -226,6 +226,10 @@ class CallBridge:
             # otrv4plus_xmpp just bound (android_audio.HOST_ENV).
             if not android_audio.is_desktop():
                 android_audio.bind(voice)
+            # The call's progress into the diagnostic trace, as codes.
+            current = voice._HOST.get("print", print)
+            if not getattr(current, "_otrv4plus_traced", False):
+                voice.bind_host(print=traced_call_print(current))
             loop = self._ensure_loop()
             try:
                 self._manager = voice.VoiceCallManager(_VoiceClient(self._app),
@@ -627,3 +631,97 @@ def is_call_signal(body: Any) -> bool:
 #: and asserted equal by `tests/test_android_calls.py`, so the two cannot
 #: drift into disagreeing about what a call signal looks like.
 CALL_PREFIX_FALLBACK = "?OTRv4-CALL:"
+
+
+# -- calls in the diagnostic trace ---------------------------------------------
+#
+# Owner report (2026-10-20): a laptop-to-phone call rang, was answered, and
+# went silent; the laptop's terminal showed every step and the phone's
+# diagnostic report showed none. `otrv4plus_voice` reports its progress only
+# by printing, and on the phone print goes to logcat, which no report
+# includes. Each line now also becomes a trace event: a stage CODE chosen
+# here, never the line itself (it names the peer), plus the reason after the
+# last ": " for a failure, which the trace renders like any other field
+# (identities become labels by shape).
+
+#: (text in the line, code, severity). First match wins; order matters.
+CALL_STAGES = (
+    ("building I2P tunnel", "tunnels_building", "info"),
+    ("waiting for an answer", "ringing_out", "info"),
+    ("Answer? [y/n]", "ringing_in", "info"),
+    ("Answer/Decline on the notification", "ringing_in", "info"),
+    ("keys confirmed, establishing media", "keys_confirmed", "info"),
+    ("call active with", "active", "info"),
+    ("microphone live", "microphone_live", "info"),
+    ("inbound audio recovered", "audio_recovered", "info"),
+    ("moved its media path", "peer_media_moved", "info"),
+    ("re-announcing the media path", "media_reannounced", "warning"),
+    ("rebuilding the media path", "media_rebuilding", "warning"),
+    ("media datagrams are arriving from", "media_from_unexpected", "warning"),
+    ("datagram transport unavailable", "datagram_unavailable", "error"),
+    ("could not create SAM session", "sam_session_failed", "error"),
+    ("media stream failed", "media_failed", "error"),
+    ("media stream error", "media_error", "error"),
+    ("media watchdog stopped", "media_watchdog_stopped", "warning"),
+    ("audio failed to start", "audio_failed", "error"),
+    ("could not reopen the microphone", "microphone_reopen_failed", "error"),
+    ("microphone RELEASED", "microphone_released", "warning"),
+    ("playout: the device buffer", "playout_underrun", "warning"),
+    ("failed authentication", "frames_rejected", "warning"),
+    ("could not disable VBR/DTX", "vbr_not_disabled", "warning"),
+    ("media keys did not agree", "key_mismatch", "error"),
+    ("caller's key confirmation did not", "key_mismatch", "error"),
+    ("key agreement failed", "key_agreement_failed", "error"),
+    ("key confirmation never completed", "key_confirm_timeout", "error"),
+    ("caller never confirmed the keys", "key_confirm_timeout", "error"),
+    ("could not start the key exchange", "key_exchange_failed", "error"),
+    ("call signal could not be sent", "signal_send_failed", "error"),
+    ("call signal dropped", "signal_dropped", "error"),
+    ("could not encrypt call signal", "signal_encrypt_failed", "error"),
+    ("no answer from", "no_answer", "warning"),
+    ("declined", "declined", "info"),
+    ("call rejected", "rejected", "info"),
+    ("rejected call from", "rejected_incoming", "warning"),
+    ("not SMP-verified", "unverified", "warning"),
+    ("no usable encrypted OTR session", "no_session", "warning"),
+    ("ended the call", "peer_ended", "info"),
+    ("call ended", "ended", "info"),
+    ("call with", "lost", "error"),            # "call with X lost: why"
+    ("call failed", "failed", "error"),
+    ("has been zeroized", "keys_zeroized", "info"),
+    ("already in a call", "busy", "info"),
+    ("slow down", "rate_limited", "warning"),
+    ("unavailable:", "unavailable", "error"),
+)
+
+
+def call_stage(line: str):
+    """(code, severity, reason) for one `[voice]` line, or None."""
+    text = str(line or "")
+    if "[voice]" not in text:
+        return None
+    for needle, code, severity in CALL_STAGES:
+        if needle in text:
+            reason = ""
+            if severity != "info" and ": " in text:
+                reason = text.rsplit(": ", 1)[1].strip()[:120]
+            return code, severity, reason
+    return "other", "info", ""
+
+
+def traced_call_print(original):
+    """[original], which also records each call line in the trace."""
+    def traced(*args, **kwargs):
+        try:
+            stage = call_stage(" ".join(str(a) for a in args))
+            if stage is not None:
+                from .trace import TRACE
+                code, severity, reason = stage
+                fields = {"reason": reason} if reason else {}
+                TRACE.record("call", code, severity, **fields)
+        except Exception:
+            pass
+        return original(*args, **kwargs)
+    traced._otrv4plus_traced = True
+    return traced
+
