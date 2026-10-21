@@ -37,6 +37,15 @@ WHAT IT DOES
   6. Once a minute: members, messages, deliveries, latency (send -> decrypt),
      refusals and disconnects, printed and appended to a CSV file.
 
+  7. With --welcome, every bot also joins the server's public Welcome room
+     (the one the apps join to see who is online), --welcome-rate a second,
+     during the measured run. Each minute's row adds how many are in it,
+     failed joins, and how long a join took (p50/p95: until the room's
+     whole occupant list had arrived). This measures PRESENCE fan-out:
+     each join is told to everyone already there, so the cost grows with
+     the square of the room. REAL USERS IN WELCOME SEE THE BOTS JOIN AND
+     LEAVE -- run it when nobody depends on the room.
+
 KNOWN LIMIT IT WILL FIND: a Welcome carries the whole ratchet tree, ~9.4 KB
 per member with this suite, and the core refuses MLS messages over 1 MiB --
 so joins stop at roughly 100 members. The run reports it as it happens.
@@ -645,6 +654,45 @@ async def _is_admin(c) -> bool:
     return any(str(node) == ADMIN_ADD for _j, node, _n in items["disco_items"].get_items())
 
 
+WELCOME_NAME = "OTRv4Plus Welcome"   # android_bridge.welcome.ROOM_NAME
+
+
+async def _welcome_room(c, muc: str) -> str:
+    """The Welcome room on [muc], found the way the apps find it: listed,
+    with exactly the app's name. Never created here."""
+    items = await c["xep_0030"].get_items(jid=muc, timeout=60)
+    found = sorted({str(jid).split("/")[0].lower()
+                    for jid, _node, name in items["disco_items"].get_items()
+                    if str(name or "").strip() == WELCOME_NAME})
+    if len(found) != 1:
+        raise RuntimeError("%s Welcome room on %s; open the app once (it creates it) "
+                           "or pass --welcome ROOM_JID"
+                           % ("no" if not found else "more than one", muc))
+    return found[0]
+
+
+class WelcomeLoad:
+    """Bots joining the Welcome room, and how long each join took."""
+
+    def __init__(self):
+        self.joined = 0
+        self.failed = 0
+        self._times: List[float] = []
+
+    def ok(self, seconds: float) -> None:
+        self.joined += 1
+        self._times.append(seconds)
+
+    def minute(self) -> Dict[str, object]:
+        t = sorted(self._times)
+        self._times = []
+
+        def pct(q):
+            return round(t[min(len(t) - 1, int(q * len(t)))], 2) if t else ""
+        return {"welcome_in": self.joined, "welcome_failed": self.failed,
+                "welcome_join_p50_s": pct(0.5), "welcome_join_p95_s": pct(0.95)}
+
+
 async def _muc_service(c) -> str:
     items = await c["xep_0030"].get_items(jid=c.boundjid.domain, timeout=60)
     for jid, _node, _name in items["disco_items"].get_items():
@@ -677,6 +725,12 @@ async def run(args) -> int:
         "server allows one session per account, and the run needs this one "
         "to delete its accounts at the end" % admin_jid)
     muc = args.muc or await _muc_service(admin)
+    welcome = None
+    if args.welcome:
+        welcome = (args.welcome if args.welcome != "auto"
+                   else await _welcome_room(admin, muc))
+        say("[stress] bots will also join the Welcome room %s, %.1f a second. "
+            "People in it will see them come and go." % (welcome, args.welcome_rate))
     _raise_open_files(args.users, say)
     if not args.keep:
         await _sweep_leftover_rooms(admin, muc, say)
@@ -827,6 +881,26 @@ async def run(args) -> int:
             say("[stress] Prosody's process is not visible from here: no server "
                 "CPU/memory in the numbers (run this on the server)")
         next_sample = start
+        wl = WelcomeLoad() if welcome else None
+        if wl is not None:
+            async def into_welcome():
+                gap = 1.0 / max(0.01, args.welcome_rate)
+                for b in bots:
+                    c = clients.get(b.jid)
+                    if c is None or not c.is_connected():
+                        wl.failed += 1
+                        continue
+
+                    async def one(c=c, b=b):
+                        t0 = time.time()
+                        try:
+                            await c["xep_0045"].join_muc_wait(welcome, Swarm.nick(b), timeout=180)
+                            wl.ok(time.time() - t0)
+                        except Exception:
+                            wl.failed += 1
+                    asyncio.ensure_future(one())
+                    await asyncio.sleep(gap)
+            asyncio.ensure_future(into_welcome())
         with open(csv_path, "w", newline="") as fh:
             writer = None
             while time.time() < end:
@@ -846,6 +920,8 @@ async def run(args) -> int:
                     online = sum(1 for c in clients.values() if c.is_connected())
                     row = combine_rows(swarms, now - start, online, lag[0])
                     row.update(server.minute())
+                    if wl is not None:
+                        row.update(wl.minute())
                     lag[0] = 0.0
                     if writer is None:
                         writer = csv.DictWriter(fh, fieldnames=list(row))
@@ -861,7 +937,11 @@ async def run(args) -> int:
                         "harness lag %(harness_lag_s).1fs" % row
                         + ("  prosody cpu %s%% (peak %s%%) mem %s MiB" % (
                             row["prosody_cpu_avg_pct"], row["prosody_cpu_peak_pct"],
-                            row["prosody_rss_mib"]) if server.pid else ""))
+                            row["prosody_rss_mib"]) if server.pid else "")
+                        + ("  welcome %s in (failed %s, join p50 %ss p95 %ss)" % (
+                            row["welcome_in"], row["welcome_failed"],
+                            row["welcome_join_p50_s"], row["welcome_join_p95_s"])
+                           if wl is not None else ""))
                     next_row += 60
                 before = time.time()
                 await asyncio.sleep(0.5)
@@ -995,6 +1075,12 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--host", default="127.0.0.1", help="Prosody c2s host (default 127.0.0.1)")
     ap.add_argument("--port", type=int, default=5222)
     ap.add_argument("--muc", help="MUC service (found by disco if omitted)")
+    ap.add_argument("--welcome", nargs="?", const="auto", default=None, metavar="ROOM",
+                    help="also join every bot to the public Welcome room (found by its "
+                         "name, or give its JID) to measure presence load. People in "
+                         "the room see the bots")
+    ap.add_argument("--welcome-rate", type=float, default=2.0,
+                    help="Welcome joins a second with --welcome (default 2)")
     ap.add_argument("--connect-concurrency", type=int, default=10)
     ap.add_argument("--csv", help="where to write the per-minute numbers")
     ap.add_argument("--keep", action="store_true",

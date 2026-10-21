@@ -355,3 +355,20 @@ delete; every one matches only names starting with `stress-`.
 
 The first and third lines only count. Run the counts again afterwards;
 both should be 0.
+
+## Welcome room presence load (`--welcome`, added 2026-10-21) -- not yet measured
+
+Every real app joins the public Welcome room, where everyone sees everyone
+(that is its purpose: who is online, who to add). The runs above never put
+the bots there, so the 1,600 cap reflects groups only. A join in a room of N
+people is told to all N and sends the newcomer all N, so filling it costs
+about N^2 presence stanzas (~2.5 million at 1,600), plain text or not; MLS
+group joins cost the phones' CPU and a few large stanzas instead.
+
+`--welcome` makes every bot also join Welcome, `--welcome-rate` a second
+(default 2), during the measured run. Each minute adds `welcome_in`,
+`welcome_failed` and `welcome_join_p50_s`/`p95_s` (until the whole occupant
+list arrived). Real people in Welcome see the bots: turn XMPP Guard's
+maintenance mode on and run it when nobody relies on the room. Suggested:
+400, then 800, then 1,600 users (`--groups` = users / 20), and compare the
+join times and Prosody's CPU with the group-only runs above.
