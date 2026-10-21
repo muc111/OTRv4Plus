@@ -1281,6 +1281,11 @@ class ChatViewModel : ViewModel() {
 
     /** Actions need a wire id: one-to-one conversations, plain rooms
      *  (standard XEPs) and secure groups (inside MLS). */
+    /** See [ChatState.memberOf]. */
+    fun memberOf(m: Message): String? = state?.memberOf(m)
+
+    fun isContact(jid: String): Boolean = state?.isContact(jid) ?: false
+
     fun canAct(m: Message): Boolean {
         this.state ?: return false
         return m.wireId.isNotEmpty() && !m.retracted && m.security != SecurityLabel.SYSTEM

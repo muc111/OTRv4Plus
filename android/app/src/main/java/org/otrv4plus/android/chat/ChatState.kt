@@ -399,6 +399,27 @@ class ChatState(
      * is the one place a JID enters this object from outside, so it is the
      * one place that has to fold.
      */
+    /**
+     * The person behind someone else's message in a SECURE GROUP, for "Add
+     * to contacts" and "Message privately" on that message (owner,
+     * 2026-10-20: "easy to 1:1 direct chat after group mls chats").
+     *
+     * Only [Message.author]: the bare JID MLS authenticated as the writer.
+     * Never the room nickname, which the room assigns and anyone can pick --
+     * adding a contact by nickname would add whoever the room says. So an
+     * ordinary room's messages, our own, and anything without an
+     * authenticated author offer nothing. Null in every such case.
+     */
+    fun memberOf(m: Message): String? {
+        if (m.outgoing || m.retracted || m.security == SecurityLabel.SYSTEM) return null
+        val who = bare(m.author)
+        if (who.isEmpty() || '@' !in who || who == bare(account.bareJid)) return null
+        return who
+    }
+
+    /** Whether [jid] is on our roster already. */
+    fun isContact(jid: String): Boolean = bare(jid) in contacts
+
     fun applyRoster(roster: List<Contact>) {
         for (contact in roster) {
             val jid = bare(contact.jid)

@@ -525,6 +525,17 @@ private fun BubbleActions(m: Message, model: AppModel) {
                 onClick = { open = false; model.startReply(m) })
             androidx.compose.material3.DropdownMenuItem(text = { Text("Copy") }, onClick = {
                 open = false; clipboard.setText(androidx.compose.ui.text.AnnotatedString(m.body)) })
+            // A secure-group member, by the address MLS proved (never the
+            // nickname): add them, or go straight to a 1:1 chat.
+            model.chat.memberOf(m)?.let { member ->
+                HorizontalDivider()
+                if (!model.chat.isContact(member)) {
+                    androidx.compose.material3.DropdownMenuItem(text = { Text("Add to contacts") },
+                        onClick = { open = false; model.addContact(member) })
+                }
+                androidx.compose.material3.DropdownMenuItem(text = { Text("Message privately") },
+                    onClick = { open = false; model.open(member) })
+            }
             if (m.outgoing) {
                 androidx.compose.material3.DropdownMenuItem(text = { Text("Correct") },
                     onClick = { open = false; model.startEdit(m) })

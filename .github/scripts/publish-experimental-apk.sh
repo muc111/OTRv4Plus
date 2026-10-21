@@ -139,6 +139,7 @@ installed), and with the Termux client.
 | Calls in the report | Make or answer a call, then Diagnostics → report: the call's steps are listed (component `call`: ringing, keys_confirmed, active or the failure and its reason), with no names or addresses | rc.126 |
 | Voice note waveform | A voice-note bubble (sent and received, phone and desktop) shows the note's waveform between Play and the length; pressing Play fills the bars in from the left as it plays, the time counts up, and the bubble goes back to Play at the end | rc.127 |
 | Clean teardown | Sign in, chat with a contact so the conversation is encrypted, then Profile → Wipe & Exit (or sign out): it completes, and opening the app again shows no old session with that contact | rc.128 |
+| Group member to 1:1 | In a secure group, open ⋯ on someone else's message: **Add to contacts** (when they are not one yet) sends them a contact request; **Message privately** opens a 1:1 chat with them. Neither appears on your own messages or in an ordinary room | rc.129 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

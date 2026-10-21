@@ -73,6 +73,8 @@ fun ConversationScreen(
     jid: String,
     onBack: () -> Unit,
     onOpenProfile: ((String) -> Unit)? = null,
+    /** Open another conversation (a group member's 1:1 chat). */
+    onOpenChat: ((String) -> Unit)? = null,
 ) {
     val conversation = model.conversation(jid)
     val messages = model.messages(jid)
@@ -1300,7 +1302,7 @@ private fun Bubble(message: Message, model: ChatViewModel) {
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (model.canAct(message)) MessageActions(message, model)
+                if (model.canAct(message)) MessageActions(message, model, onOpenChat)
             }
         }
     }
@@ -1316,7 +1318,8 @@ private val QUICK_REACTIONS = listOf("\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE
  * payload; the server learns nothing about which message was acted on.
  */
 @Composable
-private fun MessageActions(message: Message, model: ChatViewModel) {
+private fun MessageActions(message: Message, model: ChatViewModel,
+                           onOpenChat: ((String) -> Unit)? = null) {
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     Box {
         Text("\u22EF", style = MaterialTheme.typography.labelLarge,
@@ -1339,6 +1342,23 @@ private fun MessageActions(message: Message, model: ChatViewModel) {
                 clipboard.setText(androidx.compose.ui.text.AnnotatedString(message.body))
                 model.actionsFor = null
             })
+            // A secure-group member, by the address MLS proved (never the
+            // nickname): add them, or go straight to a 1:1 chat.
+            model.memberOf(message)?.let { member ->
+                HorizontalDivider()
+                if (!model.isContact(member)) {
+                    DropdownMenuItem(text = { Text("Add to contacts") }, onClick = {
+                        model.actionsFor = null
+                        model.addContact(member)
+                    })
+                }
+                if (onOpenChat != null) {
+                    DropdownMenuItem(text = { Text("Message privately") }, onClick = {
+                        model.actionsFor = null
+                        onOpenChat(member)
+                    })
+                }
+            }
             if (message.outgoing) {
                 DropdownMenuItem(text = { Text("Correct") }, onClick = { model.startEdit(message) })
                 DropdownMenuItem(

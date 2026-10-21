@@ -354,6 +354,10 @@ class MainActivity : ComponentActivity() {
                                         profileBack = Screen.CONVERSATION
                                         screen = Screen.PROFILE
                                     },
+                                    onOpenChat = { who ->
+                                        chat.closeConversation()
+                                        openChat(who)
+                                    },
                                 )
                             }
                         }

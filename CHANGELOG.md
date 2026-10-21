@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.129 and Desktop — 2026-10-21 — from a group message to a 1:1 chat (core 0.13.1)
+
+- **⋯ on someone else's message in a secure group** now also offers
+  **Add to contacts** (sends them a contact request; shown only when they
+  are not a contact yet) and **Message privately** (opens a 1:1 chat with
+  them), on the phone and the desktop.
+- It uses the address the group's encryption (MLS) proved wrote that
+  message, never the nickname shown in the room, which the room assigns and
+  anyone can choose. So it is offered only in secure groups, not on your own
+  messages and not in ordinary rooms such as Welcome.
+
 ## Desktop — 2026-10-20 — an incoming call can be answered from any screen
 
 - **Calls from the phone to the desktop could not be answered** unless the
