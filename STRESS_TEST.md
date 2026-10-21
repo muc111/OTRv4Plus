@@ -372,3 +372,40 @@ list arrived). Real people in Welcome see the bots: turn XMPP Guard's
 maintenance mode on and run it when nobody relies on the room. Suggested:
 400, then 800, then 1,600 users (`--groups` = users / 20), and compare the
 join times and Prosody's CPU with the group-only runs above.
+
+## Running the bots on another device (a phone in Termux), 2026-10-21
+
+Bots on the server compete with Prosody for the same CPU. To keep the server
+clean, run them elsewhere -- a Pixel 7 in Termux works -- and reach Prosody
+through a **reverse** SSH tunnel: the server connects out to the phone and
+carries its own `127.0.0.1:5222` across, so nothing new listens on the server
+and Prosody stays loopback-only.
+
+On the phone (Termux from F-Droid), once:
+
+```bash
+pkg install python rust openssl clang git openssh
+git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
+cd OTRv4Plus/Rust && bash build.sh && cd ..
+passwd                      # a password for Termux's SSH server
+```
+
+Each run, three terminals:
+
+1. phone: `termux-wake-lock; sshd` (Termux's SSH server, port 8022)
+2. server: `ssh -p 8022 -N -R 5222:127.0.0.1:5222 <phone-wifi-ip>` (the tunnel;
+   `ip addr` in Termux shows the phone's address)
+3. server: `python3 tools/prosody_load_log.py --csv server-400.csv`
+   (Prosody's CPU and memory each minute: the stress test cannot see the
+   server's process from the phone)
+
+then on the phone:
+
+```bash
+cd ~/OTRv4Plus && python otrv4plus_xmpp.py --stresstest --admin alice@otrv4plus.i2p \
+    --users 400 --groups 20 --minutes 40 --welcome --csv welcome-400.csv
+```
+
+Close the OTRv4+ app on the phone first (the run signs in as the admin, and
+the server allows one session per account), keep the phone on its charger,
+and stop `sshd` (`pkill sshd`) and the tunnel (Ctrl-C) afterwards.
