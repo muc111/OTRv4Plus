@@ -2661,6 +2661,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                 "nick": self._clean(nick, self.MAX_NICK),
                 "role": prop("role") or _muc.NO_ROLE,
                 "affiliation": prop("affiliation") or _muc.NONE,
+                # The real address, ONLY when the room service revealed it
+                # in their presence (a non-anonymous room such as Welcome,
+                # or to a moderator). Never derived from the nickname, which
+                # anyone can choose. "" otherwise, and the apps then offer
+                # no Add or Message for that person.
+                "jid": _occupant_jid(prop("jid")),
             })
         people.sort(key=lambda p: (order.get(p["role"], 3), p["nick"].casefold()))
         return people
@@ -4960,3 +4966,14 @@ def _default_forwarder():
     import otrv4plus_xmpp
 
     return otrv4plus_xmpp.start_i2p_sam_forwarder
+
+
+def _occupant_jid(real: str) -> str:
+    """A room occupant's real JID, bare and folded, or "" when the room did
+    not reveal one or it is not a plausible address."""
+    bare = str(real or "").split("/", 1)[0].strip().lower()
+    if not bare or len(bare) > 320 or bare.count("@") != 1 or any(c.isspace() for c in bare):
+        return ""
+    local, _, domain = bare.partition("@")
+    return bare if local and domain and "." in domain else ""
+

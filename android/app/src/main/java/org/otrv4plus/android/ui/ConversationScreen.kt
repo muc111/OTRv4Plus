@@ -254,7 +254,7 @@ fun ConversationScreen(
                 }
             }
             if (room) {
-                RoomHeader(model, jid)
+                RoomHeader(model, jid, onOpenChat)
             } else {
             SecurityLine(conversation.security, conversation.otrCapability)
             // The handshake, while it runs: step, parts received, elapsed.
@@ -361,7 +361,7 @@ fun ConversationScreen(
  * "nobody here".
  */
 @Composable
-private fun RoomHeader(model: ChatViewModel, jid: String) {
+private fun RoomHeader(model: ChatViewModel, jid: String, onOpenChat: ((String) -> Unit)? = null) {
     val secure = model.isSecureRoom(jid)
     // Accepted, keys not here yet: a secure group being set up -- never shown
     // as an ordinary, unencrypted room (device report, 2026-10-16).
@@ -418,23 +418,72 @@ private fun RoomHeader(model: ChatViewModel, jid: String) {
             modifier = Modifier.weight(1f),
         )
         if (people.isNotEmpty()) {
-            TextButton(onClick = { model.toggleOccupants(jid) }) {
-                Text(if (expanded) "Hide" else "Show")
-            }
+            TextButton(onClick = { model.toggleOccupants(jid) }) { Text("People") }
         }
         TextButton(onClick = { model.refreshOccupants(jid) }) { Text("Refresh") }
     }
-    if (expanded) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-            for (person in people) {
-                Text(
-                    // The role is the room's word for what they may do; a
-                    // nickname is the room's label, not an identity.
-                    "${person.nick} · ${person.role}",
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+    // A sheet rather than a list in the header: a busy room is a hundred
+    // rows, and inline they pushed the conversation off the screen (owner,
+    // 2026-10-21: "we need a better way to view and add users").
+    if (expanded && people.isNotEmpty()) {
+        RoomPeopleSheet(model, jid, people, onOpenChat, onDismiss = { model.toggleOccupants(jid) })
+    }
+}
+
+/**
+ * Who is in a room: search, sections by role with counts, and on each row
+ * Add (a contact request) and Message -- only for someone whose address the
+ * room revealed (RoomPeople). A nickname alone offers nothing.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RoomPeopleSheet(model: ChatViewModel, room: String,
+                            people: List<org.otrv4plus.android.bridge.RoomOccupant>,
+                            onOpenChat: ((String) -> Unit)?, onDismiss: () -> Unit) {
+    var query by rememberSaveable(room) { mutableStateOf("") }
+    val me = model.ownJid()
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Text(org.otrv4plus.android.chat.RoomPeople.summary(people),
+                 style = MaterialTheme.typography.titleMedium)
+            if (people.size >= org.otrv4plus.android.chat.RoomPeople.SEARCH_FROM) {
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                  singleLine = true, placeholder = { Text("Search people") })
+            }
+            LazyColumn(Modifier.fillMaxWidth()) {
+                for (section in org.otrv4plus.android.chat.RoomPeople.sections(people, query)) {
+                    item(key = "h:" + section.title) {
+                        Text(section.title, Modifier.padding(top = 12.dp, bottom = 4.dp),
+                             style = MaterialTheme.typography.labelLarge,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    items(section.people, key = { "p:" + it.nick }) { p ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(p.nick, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(p.jid.ifBlank { org.otrv4plus.android.chat.RoomPeople.NO_ADDRESS_HINT },
+                                     style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                                     overflow = TextOverflow.Ellipsis,
+                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            when (org.otrv4plus.android.chat.RoomPeople.action(p, me) { model.isContact(it) }) {
+                                org.otrv4plus.android.chat.RoomPeople.Action.ADD -> {
+                                    TextButton(onClick = { model.addContact(p.jid) }) { Text("Add") }
+                                    if (onOpenChat != null) TextButton(onClick = {
+                                        onDismiss(); onOpenChat(p.jid) }) { Text("Message") }
+                                }
+                                org.otrv4plus.android.chat.RoomPeople.Action.MESSAGE ->
+                                    if (onOpenChat != null) TextButton(onClick = {
+                                        onDismiss(); onOpenChat(p.jid) }) { Text("Message") }
+                                org.otrv4plus.android.chat.RoomPeople.Action.SELF ->
+                                    Text("you", style = MaterialTheme.typography.labelSmall)
+                                org.otrv4plus.android.chat.RoomPeople.Action.NO_ADDRESS -> {}
+                            }
+                        }
+                    }
+                }
+                item { Spacer(Modifier.padding(12.dp)) }
             }
         }
     }

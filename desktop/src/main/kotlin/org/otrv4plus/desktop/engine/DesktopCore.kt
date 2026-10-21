@@ -321,6 +321,17 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun joinRoom(room: String, nick: String, password: String = "") =
         controller("join_room", "room" to room, "nick" to nick, "password" to password)
     fun leaveRoom(room: String, nick: String) = controller("leave_room", "room" to room, "nick" to nick)
+    /** Who is in an ordinary room: (asked ok, people). */
+    fun roomOccupants(room: String): Pair<Boolean, List<org.otrv4plus.android.bridge.RoomOccupant>> {
+        val o = controller("room_occupants", "room" to room)
+        val people = (o.value as? kotlinx.serialization.json.JsonArray)?.mapNotNull { e ->
+            (e as? JsonObject)?.let {
+                org.otrv4plus.android.bridge.RoomOccupant(it.str("nick"), it.str("role"),
+                                                          it.str("affiliation"), it.str("jid"))
+            }
+        } ?: emptyList()
+        return o.ok to people
+    }
     fun blockContact(jid: String, report: String) = controller("block_contact", "jid" to jid, "report" to report)
     fun unblockContact(jid: String) = controller("unblock_contact", "jid" to jid)
     /** The server's block list, and whether it can block at all. */

@@ -86,6 +86,12 @@ class AppFlowTest {
             {"jid":"$me","fingerprint":"AA","me":true,"verified":true,"bound":true},
             {"jid":"$bob","fingerprint":"BB","me":false,"verified":true,"bound":true},
             {"jid":"carol@otrv4plus.i2p","fingerprint":"CC","me":false,"verified":false,"bound":true}]}""")
+        "room_occupants" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","detail":"","value":[
+            {"nick":"Alice","role":"moderator","affiliation":"owner","jid":"alice@otrv4plus.i2p"},
+            {"nick":"bob","role":"participant","affiliation":"none","jid":"$bob"},
+            {"nick":"quiet","role":"participant","affiliation":"none","jid":""}]}""")
+        "add_contact" -> { addedContacts += args["jid"]!!.jsonPrimitive.content
+            Json.parseToJsonElement("""{"ok":true,"code":"ok","detail":""}""") }
         "answer_call" -> { answered += args["peer"]!!.jsonPrimitive.content; JsonPrimitive("started") }
         "voice_note_play_status" -> Json.parseToJsonElement("""{"playing":true,"position":0.8,"seconds":2.0}""")
         "voice_note_waveform" -> Json.parseToJsonElement(
@@ -100,6 +106,35 @@ class AppFlowTest {
     private val verifyPassphrases = mutableListOf<String>()
     private val played = java.util.concurrent.CopyOnWriteArrayList<String>()
     private val answered = java.util.concurrent.CopyOnWriteArrayList<String>()
+    private val addedContacts = java.util.concurrent.CopyOnWriteArrayList<String>()
+
+    /** Owner, 2026-10-21: an ordinary room's people, and adding one of them. */
+    @Test
+    fun aRoomsPeopleCanBeListedAndAdded() {
+        val host = FakeHost(::answers)
+        val ui = Executors.newSingleThreadExecutor().asCoroutineDispatcher()
+        val model = AppModel(host.core, CoroutineScope(SupervisorJob() + ui),
+                             Notifier({ "7" }, available = false, play = {}))
+        model.jid = me
+        host.ready()
+        model.start()
+        waitFor("connect screen") { model.screen == AppModel.Screen.CONNECT }
+        model.connect("pw")
+        waitFor("main screen") { model.screen == AppModel.Screen.MAIN }
+        val room = "welcome@conference.otrv4plus.i2p"
+        model.chat.noteRoom(room)
+        model.open(room)
+        model.refreshRoomPeople(room)        // the panel asks when it is shown
+        waitFor("people") { model.roomPeople[room]?.size == 3 }
+        val alice = model.roomPeople[room]!!.first { it.nick == "Alice" }
+        assertEquals(org.otrv4plus.android.chat.RoomPeople.Action.ADD,
+                     org.otrv4plus.android.chat.RoomPeople.action(alice, me) { model.chat.isContact(it) })
+        Thread.sleep(400)
+        render(model, "11-room-people")
+        model.addContact(alice.jid)
+        waitFor("added") { addedContacts.isNotEmpty() }
+        assertEquals(listOf("alice@otrv4plus.i2p"), addedContacts)
+    }
 
     /** Owner, 2026-10-20: a call from the phone "not going through" -- the
      *  desktop rang only inside the caller's own chat. It now shows on any

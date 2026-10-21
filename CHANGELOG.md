@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.130 and Desktop — 2026-10-21 — a room's people: find, add, message (core 0.13.1)
+
+- **People in an ordinary room (such as Welcome) can be added or messaged
+  from the people list.** Each row shows the nickname and the address, with
+  **Add** (a contact request) and **Message** (a 1:1 chat); a contact
+  already shows Message only.
+- **Built for a busy room**: the phone's **People** button opens a sheet
+  rather than growing a list in the header, the desktop has a People panel
+  beside the room (toggle in the header), and both list everyone under
+  **Moderators / Participants / Visitors** with counts, with a search box
+  (by nickname or address) from 8 people up.
+- Only someone whose address **the room revealed** can be added -- a
+  non-anonymous room such as Welcome shows it. The nickname is never turned
+  into an address: anyone can choose any nickname. A person whose address
+  is hidden says so and offers nothing.
+
 ## Android 0.7.0-experimental.rc.129 and Desktop — 2026-10-21 — from a group message to a 1:1 chat (core 0.13.1)
 
 - **⋯ on someone else's message in a secure group** now also offers

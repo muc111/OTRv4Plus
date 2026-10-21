@@ -258,6 +258,17 @@ class TestTheTransportRoomPath:
         assert [p["nick"] for p in people] == ["zed", "bob", "amy"]
         assert people[0]["role"] == "moderator"
 
+    def test_an_occupant_carries_a_real_address_only_when_the_room_revealed_one(self):
+        """For Add / Message on the people list: the address the room
+        service put in their presence, never one made from the nickname."""
+        import asyncio
+        muc = _Muc(roster=["alice", "bob@evil.i2p", "carol"],
+                   props={("alice", "jid"): "Alice@otrv4plus.i2p/phone",
+                          ("carol", "jid"): "not an address"})
+        t, _ = _transport(muc)
+        people = {p["nick"]: p["jid"] for p in asyncio.run(t._room_occupants(ROOM))}
+        assert people == {"alice": "alice@otrv4plus.i2p", "bob@evil.i2p": "", "carol": ""}
+
 
 # -- the controller ------------------------------------------------------------
 

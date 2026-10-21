@@ -802,7 +802,11 @@ data class RoomStanding(
  * the service and the nickname, and this string is rendered on screen.
  */
 /** One person in a room, as the room reports them. */
-data class RoomOccupant(val nick: String, val role: String, val affiliation: String)
+/** One person in a room. [jid] is their real address ONLY when the room
+ *  service revealed it (a non-anonymous room, or to a moderator); "" when it
+ *  did not. Never made from [nick], which anyone can choose. */
+data class RoomOccupant(val nick: String, val role: String, val affiliation: String,
+                        val jid: String = "")
 
 /**
  * The OTRv4Plus Welcome room, as the bridge sees it (`android_bridge.welcome`).

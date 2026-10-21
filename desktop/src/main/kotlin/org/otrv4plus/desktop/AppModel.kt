@@ -787,6 +787,20 @@ class AppModel(
     }
 
     fun addContact(jid: String) = outcome { core.addContact(jid.trim()) }
+
+    /** An ordinary room's people, as last asked (RoomPeople). */
+    val roomPeople = androidx.compose.runtime.mutableStateMapOf<String, List<org.otrv4plus.android.bridge.RoomOccupant>>()
+    val roomPeopleFailed = androidx.compose.runtime.mutableStateListOf<String>()
+
+    /** Ask [room] who is in it. Over I2P this can take tens of seconds. */
+    fun refreshRoomPeople(room: String) {
+        ui.launch {
+            val (ok, people) = withContext(Dispatchers.IO) { core.roomOccupants(room) }
+            if (ok) { roomPeople[room] = people; roomPeopleFailed.remove(room) }
+            else if (room !in roomPeopleFailed) roomPeopleFailed.add(room)
+            changed()
+        }
+    }
     fun answerSubscription(jid: String, approve: Boolean) {
         chat.clearSubscription(jid)
         outcome { core.answerSubscription(jid, approve) }

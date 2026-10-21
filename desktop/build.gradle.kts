@@ -66,6 +66,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/chat/RoomAddress.kt",
     "org/otrv4plus/android/chat/RoomDeletion.kt",
     "org/otrv4plus/android/chat/RoomPassword.kt",
+    "org/otrv4plus/android/chat/RoomPeople.kt",
     "org/otrv4plus/android/chat/RowSecurity.kt",
     "org/otrv4plus/android/chat/SavedContacts.kt",
     "org/otrv4plus/android/chat/SoundPolicy.kt",

@@ -71,6 +71,7 @@ import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.bridge.CallState
@@ -79,6 +80,7 @@ import org.otrv4plus.android.chat.Location
 import org.otrv4plus.android.chat.Message
 import org.otrv4plus.android.chat.SecurityLabel
 import org.otrv4plus.android.chat.SendState
+import org.otrv4plus.android.chat.RoomPeople
 import org.otrv4plus.android.chat.VoiceNotes
 import org.otrv4plus.android.chat.VoiceSheet
 import org.otrv4plus.android.crypto.CallUi
@@ -114,7 +116,7 @@ fun ConversationPane(model: AppModel, jid: String) {
 
     Row(Modifier.fillMaxSize()) {
         Column(Modifier.weight(1f).fillMaxHeight()) {
-            Header(model, jid, isRoom, onMembers = if (secure) ({ showMembers = !showMembers }) else null) {
+            Header(model, jid, isRoom, onMembers = if (isRoom && !joining) ({ showMembers = !showMembers }) else null) {
                 path -> pendingFile = path
             }
             HorizontalDivider()
@@ -139,6 +141,9 @@ fun ConversationPane(model: AppModel, jid: String) {
         if (secure && showMembers) {
             VerticalDivider()
             GroupMembersPanel(model, jid, Modifier.width(300.dp))
+        } else if (isRoom && !secure && !joining && showMembers) {
+            VerticalDivider()
+            RoomPeoplePanel(model, jid, Modifier.width(300.dp))
         }
     }
 
@@ -266,7 +271,7 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
         if (onMembers != null) {
             TextButton(onClick = onMembers) {
                 Icon(Icons.Filled.Groups, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
-                Text("Members")
+                Text(if (isRoom && !model.chat.isSecureRoom(jid)) "People" else "Members")
             }
         }
         val offer = if (isRoom) null else TransferUi.offer(c.security)
@@ -359,6 +364,68 @@ private fun FileOffers(model: AppModel, jid: String) {
                 LinearProgressIndicator(progress = { row.progress }, modifier = Modifier.fillMaxWidth())
                 Text(row.detail, style = MaterialTheme.typography.labelSmall,
                      color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+}
+
+/**
+ * An ordinary room's people (owner, 2026-10-21: "click on the user to add to
+ * roster ... if we have 100 people in this room we need a better way").
+ * Search, sections by role with counts, and on each row Add / Message --
+ * only for someone whose address the room revealed (RoomPeople).
+ */
+@Composable
+private fun RoomPeoplePanel(model: AppModel, room: String, modifier: Modifier = Modifier) {
+    LaunchedEffect(room) { if (model.roomPeople[room] == null) model.refreshRoomPeople(room) }
+    var query by remember(room) { mutableStateOf("") }
+    val people = model.roomPeople[room].orEmpty()
+    Column(modifier.fillMaxHeight().padding(start = 12.dp, top = 12.dp, end = 4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(when {
+                    room in model.roomPeopleFailed && people.isEmpty() -> "Could not ask the room who is here."
+                    model.roomPeople[room] == null -> "Asking the room who is here…"
+                    else -> RoomPeople.summary(people)
+                 }, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall,
+                 color = MaterialTheme.colorScheme.primary)
+            TextButton(onClick = { model.refreshRoomPeople(room) }) { Text("Refresh") }
+        }
+        if (people.size >= RoomPeople.SEARCH_FROM) {
+            OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(end = 8.dp),
+                              singleLine = true, placeholder = { Text("Search people") })
+        }
+        val me = model.chat.account.bareJid
+        ScrollLazyColumn(Modifier.weight(1f)) {
+            for (section in RoomPeople.sections(people, query)) {
+                item(key = "h:" + section.title) {
+                    Text(section.title, Modifier.padding(top = 10.dp, bottom = 2.dp),
+                         style = MaterialTheme.typography.labelLarge,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                items(section.people, key = { "p:" + it.nick }) { p ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(p.nick, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(p.jid.ifBlank { RoomPeople.NO_ADDRESS_HINT },
+                                 style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                                 overflow = TextOverflow.Ellipsis,
+                                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        when (RoomPeople.action(p, me) { model.chat.isContact(it) }) {
+                            RoomPeople.Action.ADD -> {
+                                TextButton(onClick = { model.addContact(p.jid) }) { Text("Add") }
+                                TextButton(onClick = { model.open(p.jid) }) { Text("Message") }
+                            }
+                            RoomPeople.Action.MESSAGE ->
+                                TextButton(onClick = { model.open(p.jid) }) { Text("Message") }
+                            RoomPeople.Action.SELF ->
+                                Text("you", style = MaterialTheme.typography.labelSmall,
+                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            RoomPeople.Action.NO_ADDRESS -> {}
+                        }
+                    }
+                }
             }
         }
     }

@@ -872,7 +872,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     fun roomOccupants(room: String): Pair<RoomOutcome, List<RoomOccupant>> {
         val result = call("room_occupants", room) ?: return notPrepared() to emptyList()
         val people = listValue(result)?.asList()?.map {
-            RoomOccupant(entry(it, "nick"), entry(it, "role"), entry(it, "affiliation"))
+            RoomOccupant(entry(it, "nick"), entry(it, "role"), entry(it, "affiliation"),
+                         entry(it, "jid"))
         } ?: emptyList()
         return outcomeOf(result) to people
     }

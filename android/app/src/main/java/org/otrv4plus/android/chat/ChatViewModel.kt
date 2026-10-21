@@ -1286,6 +1286,9 @@ class ChatViewModel : ViewModel() {
 
     fun isContact(jid: String): Boolean = state?.isContact(jid) ?: false
 
+    /** This account's bare JID, or "" before sign-in. */
+    fun ownJid(): String = state?.account?.bareJid.orEmpty()
+
     fun canAct(m: Message): Boolean {
         this.state ?: return false
         return m.wireId.isNotEmpty() && !m.retracted && m.security != SecurityLabel.SYSTEM
