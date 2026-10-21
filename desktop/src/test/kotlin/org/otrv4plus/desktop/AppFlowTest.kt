@@ -87,7 +87,8 @@ class AppFlowTest {
             {"jid":"$bob","fingerprint":"BB","me":false,"verified":true,"bound":true},
             {"jid":"carol@otrv4plus.i2p","fingerprint":"CC","me":false,"verified":false,"bound":true}]}""")
         "room_occupants" -> Json.parseToJsonElement("""{"ok":true,"code":"ok","detail":"","value":[
-            {"nick":"Alice","role":"moderator","affiliation":"owner","jid":"alice@otrv4plus.i2p"},
+            {"nick":"Alice","role":"moderator","affiliation":"owner","jid":"$me"},
+            {"nick":"Dana","role":"participant","affiliation":"none","jid":"dana@otrv4plus.i2p"},
             {"nick":"bob","role":"participant","affiliation":"none","jid":"$bob"},
             {"nick":"quiet","role":"participant","affiliation":"none","jid":""}]}""")
         "add_contact" -> { addedContacts += args["jid"]!!.jsonPrimitive.content
@@ -125,15 +126,21 @@ class AppFlowTest {
         model.chat.noteRoom(room)
         model.open(room)
         model.refreshRoomPeople(room)        // the panel asks when it is shown
-        waitFor("people") { model.roomPeople[room]?.size == 3 }
-        val alice = model.roomPeople[room]!!.first { it.nick == "Alice" }
-        assertEquals(org.otrv4plus.android.chat.RoomPeople.Action.ADD,
-                     org.otrv4plus.android.chat.RoomPeople.action(alice, me) { model.chat.isContact(it) })
+        waitFor("people") { model.roomPeople[room]?.size == 4 }
+        val people = model.roomPeople[room]!!.associateBy { it.nick }
+        val act = { nick: String ->
+            org.otrv4plus.android.chat.RoomPeople.action(people.getValue(nick), me) { model.chat.isContact(it) } }
+        // We are signed in as Alice; Bob is on the roster; quiet's address is hidden.
+        assertEquals(org.otrv4plus.android.chat.RoomPeople.Action.SELF, act("Alice"))
+        assertEquals(org.otrv4plus.android.chat.RoomPeople.Action.ADD, act("Dana"))
+        waitFor("roster") { model.chat.isContact(bob) }
+        assertEquals(org.otrv4plus.android.chat.RoomPeople.Action.MESSAGE, act("bob"))
+        assertEquals(org.otrv4plus.android.chat.RoomPeople.Action.NO_ADDRESS, act("quiet"))
         Thread.sleep(400)
         render(model, "11-room-people")
-        model.addContact(alice.jid)
+        model.addContact(people.getValue("Dana").jid)
         waitFor("added") { addedContacts.isNotEmpty() }
-        assertEquals(listOf("alice@otrv4plus.i2p"), addedContacts)
+        assertEquals(listOf("dana@otrv4plus.i2p"), addedContacts)
     }
 
     /** Owner, 2026-10-20: a call from the phone "not going through" -- the

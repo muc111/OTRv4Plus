@@ -340,7 +340,7 @@ fun ConversationScreen(
                     contentPadding = PaddingValues(12.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    items(messages, key = { it.id }) { Bubble(it, model) }
+                    items(messages, key = { it.id }) { Bubble(it, model, onOpenChat) }
                 }
             }
         }
@@ -1257,7 +1257,7 @@ private fun VoiceWaveformBars(bars: List<Float>, played: Int, outgoing: Boolean,
  * screen; the width cap is a fraction of the parent so it holds on any device.
  */
 @Composable
-private fun Bubble(message: Message, model: ChatViewModel) {
+private fun Bubble(message: Message, model: ChatViewModel, onOpenChat: ((String) -> Unit)? = null) {
     val outgoing = message.outgoing
     Row(
         Modifier.fillMaxWidth(),
