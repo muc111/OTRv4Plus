@@ -25,8 +25,8 @@ ignore = [
   # cryptographic implementation (candidate: libcrux or RustCrypto ml-kem /
   # ml-dsa), to be done as its own reviewed change with known-answer and
   # cross-implementation tests (tests/test_mlkem_cross_implementation.py), not
-  # as a dependency bump. Recorded in LICENSING_AUDIT.md and
-  # CRYPTO_SOURCE_OF_TRUTH.md. Revisit on any new advisory against them.
+  # as a dependency bump. Recorded in docs/LICENSING_AUDIT.md and
+  # docs/CRYPTO_SOURCE_OF_TRUTH.md. Revisit on any new advisory against them.
   "RUSTSEC-2026-0161",  # pqcrypto-mlkem 0.1.1
   "RUSTSEC-2026-0162",  # pqcrypto-traits 0.3.5
   "RUSTSEC-2026-0163",  # pqcrypto-internals 0.2.11

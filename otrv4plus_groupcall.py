@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
 """Group voice calls for the terminal client: the media side of
-`android_bridge.group_call.GroupCalls` (MLS_SECURITY_HARDENING.md §5, M5).
+`android_bridge.group_call.GroupCalls` (docs/MLS_SECURITY_HARDENING.md §5, M5).
 
   * One SAM STYLE=DATAGRAM session per call, with a TRANSIENT destination
     and the same tunnel options as 1:1 voice (`otrv4plus_mediapath`). Its

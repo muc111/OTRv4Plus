@@ -14,7 +14,7 @@
 -- from i2pd's local end, 127.0.0.1: Prosody never sees who is connecting, so
 -- a per-IP limit is one shared limit by accident. These are shared on
 -- purpose, and say so. (Per-destination limits belong to i2pd: see
--- SERVER_HARDENING.md.)
+-- docs/SERVER_HARDENING.md.)
 --
 -- Someone already signed in who signs in again (a reconnect, or replacing a
 -- session, mod_otrv4plus_one_session) is never refused for being one too

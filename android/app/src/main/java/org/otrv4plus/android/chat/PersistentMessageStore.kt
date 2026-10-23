@@ -27,7 +27,7 @@ import org.otrv4plus.android.security.Vault
  *
  * A passphrase-derived key would cover the second case too, and when the
  * unlock lands this class does not change -- only the [Vault] behind it does.
- * `ANDROID_STORAGE_AUDIT.md` records the distinction rather than letting the
+ * `docs/ANDROID_STORAGE_AUDIT.md` records the distinction rather than letting the
  * word "encrypted" imply more than it buys.
  *
  * WHAT IS PERSISTED

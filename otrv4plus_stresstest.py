@@ -575,7 +575,7 @@ LIST_ROOMS = "https://otrv4plus.i2p/protocol/admin#list-rooms"
 def _stale_stress_rooms(rooms: List[Dict[str, object]], muc: str) -> List[str]:
     """Rooms an earlier run left behind: named like ours, on this service,
     and EMPTY. A room with anyone in it may belong to a run still going
-    (STRESS_TEST.md suggests two processes for big runs), so it is kept."""
+    (docs/STRESS_TEST.md suggests two processes for big runs), so it is kept."""
     import re
     # stress-<run>-gNN, and stress-<run> from runs before --groups.
     pattern = re.compile(r"^stress-[0-9a-f]{6}(-g\d+)?@" + re.escape(muc) + r"$")

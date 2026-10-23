@@ -1581,10 +1581,10 @@ class TestTheWorstCaseIsBounded:
             assert grew == V.VOICE_RX_SESSION_HOLD_S * points
 
     def test_the_documented_bound_matches_the_constants(self):
-        # VOICE_MEDIA_PATH.md states these numbers; if a constant moves and
+        # docs/VOICE_MEDIA_PATH.md states these numbers; if a constant moves and
         # the document does not, this fails rather than the document quietly
         # becoming wrong.
-        text = open("VOICE_MEDIA_PATH.md", encoding="utf-8").read()
+        text = open("docs/VOICE_MEDIA_PATH.md", encoding="utf-8").read()
         for cold in (False, True):
             for held in (False, True):
                 secs = self.worst_case_seconds(cold=cold, held=held)

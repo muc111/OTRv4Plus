@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""CRYPTO_SOURCE_OF_TRUTH.md must describe the code that exists.
+"""docs/CRYPTO_SOURCE_OF_TRUTH.md must describe the code that exists.
 
 A document that names the one place each primitive lives is only useful
 while it is true. These checks tie its names to Cargo.toml, to the built
@@ -14,7 +14,7 @@ import re
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DOC = os.path.join(ROOT, "CRYPTO_SOURCE_OF_TRUTH.md")
+DOC = os.path.join(ROOT, "docs/CRYPTO_SOURCE_OF_TRUTH.md")
 KOTLIN = os.path.join(ROOT, "android", "app", "src", "main", "java")
 
 

@@ -35,7 +35,7 @@ object ConnectProblem {
     data class Line(val text: String, val tone: Tone)
 
     /** The server allows one session per account and another holds it
-     *  (Prosody mod_c2s_limit_sessions; SECURITY_SESSIONS.md). */
+     *  (Prosody mod_c2s_limit_sessions; docs/SECURITY_SESSIONS.md). */
     const val SESSION_LIMIT = "session_limit"
 
     const val SESSION_LIMIT_TEXT =

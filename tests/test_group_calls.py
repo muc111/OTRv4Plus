@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""Group voice calls in a secure group (MLS_SECURITY_HARDENING.md §5, M5).
+"""Group voice calls in a secure group (docs/MLS_SECURITY_HARDENING.md §5, M5).
 
 Members are in-process; the room and the I2P datagram network are
 simulated. What is checked: keys come from the group's epoch and follow

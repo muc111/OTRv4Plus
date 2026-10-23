@@ -8,7 +8,7 @@
 #
 #   cd ~/OTRv4Plus && git pull && sudo bash prosody/install-server-limits.sh
 #
-# What it does (SECURITY_SESSIONS.md, SERVER_HARDENING.md):
+# What it does (docs/SECURITY_SESSIONS.md, docs/SERVER_HARDENING.md):
 #   1. backs up prosody.cfg.lua next to itself (prosody.cfg.lua.bak-<time>);
 #   2. installs mod_otrv4plus_one_session (newest sign-in wins) and
 #      mod_otrv4plus_capacity (online cap, sign-in pacing, sign-up limits)
@@ -33,7 +33,7 @@ PROSODYCTL="${PROSODYCTL:-prosodyctl}"
 RESTART="${RESTART:-1}"
 
 MAX_RESOURCES="${MAX_RESOURCES:-1}"
-# 1,600: what the T450 carried in STRESS_TEST.md (2026-10-20), ~40% of
+# 1,600: what the T450 carried in docs/STRESS_TEST.md (2026-10-20), ~40% of
 # Prosody's core in steady chat, recovering from join bursts. Raise it only
 # as far as a run on this machine shows.
 MAX_ONLINE_USERS="${MAX_ONLINE_USERS:-1600}"

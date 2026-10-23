@@ -39,7 +39,7 @@ media actually resumed.
 WHAT MUST NOT APPEAR HERE
 -------------------------
 No destinations, no JIDs, no addresses. Everything is counters, durations and
-opaque call-local labels -- see `ANDROID_ENCRYPTION_ARCHITECTURE.md` §7 and
+opaque call-local labels -- see `docs/ANDROID_ENCRYPTION_ARCHITECTURE.md` §7 and
 `otrv4plus_alias` for why hashing an identity does not make it safe.
 """
 

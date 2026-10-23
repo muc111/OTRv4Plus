@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
-//! Signing keys (MLS_SECURITY_HARDENING.md §1, commit M2): one per group,
+//! Signing keys (docs/MLS_SECURITY_HARDENING.md §1, commit M2): one per group,
 //! replaced by every self-update, reported to the other members as a
 //! rotation they can carry a binding across, and gone with the group.
 

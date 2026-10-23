@@ -4,7 +4,7 @@ OpenMLS lists its ciphersuites, HPKE KEMs and signature schemes as closed
 enums, so a suite that is not in them cannot be used at all. The owner chose
 to patch rather than to put the hybrid inside an existing code point, which
 would have made the wire claim an algorithm it does not use (decision C1,
-`MLS_SECURITY_HARDENING.md` §2 and §7).
+`docs/MLS_SECURITY_HARDENING.md` §2 and §7).
 
 | crate | version | licence | why | used in |
 |---|---|---|---|---|

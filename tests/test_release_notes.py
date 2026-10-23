@@ -24,7 +24,7 @@ WHAT THESE CANNOT DO
 
 They cannot check that a sentence is true. They check that the notes stay tied
 to things that ARE checkable: the version comes from the build file, the open
-gates in `ANDROID_XMPP_MILESTONE.md` §7 are still named as open, and no claim
+gates in `docs/ANDROID_XMPP_MILESTONE.md` §7 are still named as open, and no claim
 of device verification is made for one of them.
 """
 
@@ -37,7 +37,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPT = os.path.join(ROOT, ".github", "scripts", "publish-experimental-apk.sh")
 GRADLE = os.path.join(ROOT, "android", "app", "build.gradle.kts")
-MILESTONE = os.path.join(ROOT, "ANDROID_XMPP_MILESTONE.md")
+MILESTONE = os.path.join(ROOT, "docs/ANDROID_XMPP_MILESTONE.md")
 
 
 def _read(path):
@@ -87,7 +87,7 @@ class TestTheVersionIsReadRatherThanRestated:
         name = re.search(r'versionName\s*=\s*"([^"]+)"', gradle).group(1)
         assert "-experimental" in name, (
             "versionName is %s: the suffix comes off when the open gates in "
-            "ANDROID_XMPP_MILESTONE.md section 7 do, and this test with it"
+            "docs/ANDROID_XMPP_MILESTONE.md section 7 do, and this test with it"
             % name)
         assert "--prerelease" in _read(SCRIPT)
 
@@ -109,7 +109,7 @@ class TestTheOpenGatesAreStillDeclaredOpen:
     def test_otr_smp_and_files_are_claimed_only_as_device_reports(
             self, notes, unverified):
         """Closed by the owner's rc.1 handset run with a Termux peer
-        (ANDROID_CALL_AND_FILE_DEVICE_TEST.md, "What the rc.1 handset run
+        (docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md, "What the rc.1 handset run
         established"; milestone 7.0a). They move to the device section, which
         is attributed to that report -- and nowhere else claims them."""
         start = notes.index("## Verified on a real device")
@@ -118,19 +118,19 @@ class TestTheOpenGatesAreStillDeclaredOpen:
             assert claim in device, claim
         assert "OTR end to end" not in unverified, (
             "OTR is both claimed verified and listed as unverified")
-        record = _read(os.path.join(ROOT, "ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
+        record = _read(os.path.join(ROOT, "docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
         assert "What the rc.1 handset run established" in record, (
             "the device claim has lost the record it rests on")
 
     def test_calls_are_claimed_only_as_the_owner_reported_them(self, notes):
         """App-to-app calls were reported working by the owner (milestone
-        7.0b, and the rc.4 record in ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
+        7.0b, and the rc.4 record in docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
         The device section may say so only while that record exists, and
         only for app-to-app: a call with Termux on the other end has not
         been run."""
         start = notes.index("## Verified on a real device")
         device = notes[start:notes.index("\n## ", start + 4)]
-        record = _read(os.path.join(ROOT, "ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
+        record = _read(os.path.join(ROOT, "docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
         milestone = _read(MILESTONE)
         if "voice" in device.lower() or "call" in device.lower():
             assert "What the rc.4 handset runs established" in record, (
@@ -146,7 +146,7 @@ class TestTheOpenGatesAreStillDeclaredOpen:
         """Voice was the last headline gate. The owner reported two-way
         calls app to app and app to Termux; it may leave this list only while
         the device record says so."""
-        record = _read(os.path.join(ROOT, "ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
+        record = _read(os.path.join(ROOT, "docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md"))
         if "Voice" not in unverified:
             assert "A call between the app\nand a Termux client" in record or \
                 "call between the app and a Termux client" in \
@@ -154,7 +154,7 @@ class TestTheOpenGatesAreStillDeclaredOpen:
                 "voice left the open list without its device record")
 
     def test_the_gate_document_is_pointed_at(self, notes):
-        assert "ANDROID_XMPP_MILESTONE.md" in notes
+        assert "docs/ANDROID_XMPP_MILESTONE.md" in notes
 
     def test_the_milestone_still_has_those_gates_open(self):
         """If section 7 is signed off, this file is what should be revisited

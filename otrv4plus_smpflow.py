@@ -17,7 +17,7 @@ only door, and it is called from a keypress the user made.
 This was not a hypothetical.  `_apply_tofu` used to end by setting
 `_pending[peer] = "smp_secret"` and the inbound handler could reach it, so a
 peer who completed a DAKE decided that the user's next sentence was a shared
-secret.  See SECURITY_INVARIANTS.md INV-06.  The state machine makes the same
+secret.  See docs/SECURITY_INVARIANTS.md INV-06.  The state machine makes the same
 mistake structurally impossible rather than merely absent: there is no edge to
 take.
 

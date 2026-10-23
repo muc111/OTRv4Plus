@@ -273,7 +273,7 @@ class TestTheNoticeCoversWhatShips:
     def test_the_crate_count_it_states_is_the_count_it_attributes(self, notice):
         """NOTICE's §1 heading carries a number, and four different numbers
         for "how many dependencies" were in circulation across this file, the
-        README and LICENSING_AUDIT.md -- 104, 109, 134 and 137. They count
+        README and docs/LICENSING_AUDIT.md -- 104, 109, 134 and 137. They count
         different things (shipped versus fully resolved, with and without the
         crate itself), and nothing said so.
 
@@ -455,7 +455,7 @@ class TestTheNoticeActuallyReachesTheArtifact:
     the repository.
 
     NOTICE existed from v10.17.2 and satisfied nobody: an APK carried none of
-    it. LICENSING_AUDIT.md listed "the APK must render it on a licences
+    it. docs/LICENSING_AUDIT.md listed "the APK must render it on a licences
     screen" as the one remaining delivery requirement for two releases. These
     are that requirement, written down so it cannot quietly regress -- someone
     deleting the asset copy or the screen has to delete a test too.
@@ -558,11 +558,11 @@ class TestTheDocumentationDoesNotContradictItself:
     that states it badly: a reader cannot tell which is current."""
 
     def test_the_superseded_audit_section_says_so(self):
-        """LICENSING_AUDIT.md §1 concluded, in the present tense, that the
+        """docs/LICENSING_AUDIT.md §1 concluded, in the present tense, that the
         project is GPL-3.0. It is the working that led to the AGPL decision
         and is worth keeping -- but a reader landing mid-file saw the
         repository contradicting its own LICENSE."""
-        audit = _read("LICENSING_AUDIT.md")
+        audit = _read("docs/LICENSING_AUDIT.md")
         heading = "## 1. The finding that governed the decision"
         assert heading in audit, "the §1 heading no longer marks itself historical"
         assert "historical" in audit.split(heading)[1][:400].lower()
@@ -572,14 +572,14 @@ class TestTheDocumentationDoesNotContradictItself:
         """Marked historical, NOT deleted. The copyleft finding in §2-§5 is
         what made the commercial half possible, and a decision with its
         reasoning removed is indistinguishable from one taken at random."""
-        audit = _read("LICENSING_AUDIT.md")
+        audit = _read("docs/LICENSING_AUDIT.md")
         assert "1. **Ship under GPL-3.0.**" in audit
         assert "3. **Dual-license.**" in audit
 
     def test_the_dependency_counts_are_reconciled(self):
         """Four numbers were in circulation with nothing saying they counted
         different things."""
-        audit = _read("LICENSING_AUDIT.md")
+        audit = _read("docs/LICENSING_AUDIT.md")
         assert "### Counting the dependencies" in audit
         for figure in ("104", "133", "134", "137"):
             assert figure in audit, "%s is unexplained" % figure

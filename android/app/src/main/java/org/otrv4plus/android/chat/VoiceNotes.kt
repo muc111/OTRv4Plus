@@ -20,7 +20,7 @@ object VoiceNotes {
 
     /** Synthetic, the default, and My voice. "Disguised" was removed on
      *  2026-10-16 (owner: hard to understand; synthetic only) -- it was also
-     *  the weaker of the two masks (VOICE_NOTES.md). */
+     *  the weaker of the two masks (docs/VOICE_NOTES.md). */
     val MODES = listOf(SYNTHETIC, NATURAL)
     const val DEFAULT = SYNTHETIC
 

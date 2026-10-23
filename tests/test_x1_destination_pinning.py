@@ -20,7 +20,7 @@ A. Destination pinning (android_bridge/server_pins.py). The destination a
 B. SCRAM only wherever certificate checks are off (transport._restrict_to_scram).
    Even on first contact a substituted server never receives the password,
    only a SCRAM proof. Residual: that proof allows an offline guess at a weak
-   password -- documented in SECURITY_ISSUES.md, not claimed away.
+   password -- documented in docs/SECURITY_ISSUES.md, not claimed away.
 
 Everything here runs the REAL forwarder and the REAL I2PSAMConnection against
 a scripted SAM bridge on loopback, and the REAL slixmpp SASL plugin.

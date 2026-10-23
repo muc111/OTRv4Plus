@@ -39,7 +39,7 @@ import org.otrv4plus.android.connection.SignIn
  * them together means a user whose router is not running watches a spinner for
  * four minutes and learns nothing. Pressed first, it answers "is there a router
  * at all" immediately -- and on this build it also answers an open question
- * from ANDROID_I2P_FEASIBILITY.md §2, which claims an app cannot reach another
+ * from docs/ANDROID_I2P_FEASIBILITY.md §2, which claims an app cannot reach another
  * app's SAM bridge on loopback. If this button says `ok` against i2pd running
  * in Termux, that claim is wrong and bundling a router is a convenience rather
  * than a precondition.

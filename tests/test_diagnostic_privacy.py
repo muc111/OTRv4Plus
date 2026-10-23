@@ -158,7 +158,7 @@ class TestTheSweepFindsIdentitiesInASentence:
         assert dest not in book.scrub("SESSION STATUS DESTINATION=" + dest)
 
     def test_an_onion_address_is_replaced(self, book):
-        """TRANSPORT_POLICY.md allows Tor for messaging, so a report from a
+        """docs/TRANSPORT_POLICY.md allows Tor for messaging, so a report from a
         Tor session must not name the far end either."""
         assert ONION not in book.scrub("circuit to " + ONION)
 

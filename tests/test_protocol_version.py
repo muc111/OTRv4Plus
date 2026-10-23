@@ -253,7 +253,7 @@ class TestVoiceFrameVersion:
 
 
 class TestSmpWireByte:
-    """VERSIONING.md lists the SMP wire byte as pinned by this file.
+    """docs/VERSIONING.md lists the SMP wire byte as pinned by this file.
 
     It was not, until v10.13.0 added `0x03`. A wire byte nobody pins is a wire
     byte that can be changed by an edit that looks like a refactor.
@@ -268,7 +268,7 @@ class TestSmpWireByte:
         smp.set_secret(b"pin", b"sid-version-pin", b"fp-a" * 8, b"fp-b" * 8)
         assert smp.generate_smp1(None)[0] == 0x03, (
             "the default SMP wire version changed; both peers must be updated "
-            "together and VERSIONING.md must record it")
+            "together and docs/VERSIONING.md must record it")
 
     def test_the_argon2_byte_is_distinct_from_the_shake_byte(self):
         """0x02 and 0x03 derive different scalars from the same passphrase.
@@ -283,8 +283,8 @@ class TestSmpWireByte:
         assert "const SMP_VERSION_PQ_ARGON2: u8 = 0x03;" in smp_rs
 
     def test_versioning_doc_lists_every_smp_byte_the_code_defines(self):
-        doc = open(os.path.join(ROOT, "VERSIONING.md"), encoding="utf-8").read()
+        doc = open(os.path.join(ROOT, "docs/VERSIONING.md"), encoding="utf-8").read()
         row = [l for l in doc.split("\n") if l.startswith("| SMP wire byte |")]
-        assert row, "the SMP wire byte row vanished from VERSIONING.md"
+        assert row, "the SMP wire byte row vanished from docs/VERSIONING.md"
         for byte in ("0x01", "0x02", "0x03"):
-            assert byte in row[0], "%s is not listed in VERSIONING.md" % byte
+            assert byte in row[0], "%s is not listed in docs/VERSIONING.md" % byte

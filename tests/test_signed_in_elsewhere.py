@@ -129,7 +129,7 @@ class TestTheTerminalClientStopsToo:
 
 class TestTheServerModule:
     """The Lua is checked against a simulated Prosody in development; here,
-    that it says what SECURITY_SESSIONS.md promises."""
+    that it says what docs/SECURITY_SESSIONS.md promises."""
 
     SRC = open(os.path.join(ROOT, "prosody", "mod_otrv4plus_one_session.lua")).read()
 

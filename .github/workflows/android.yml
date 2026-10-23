@@ -7,7 +7,7 @@
 # development environment this project is written in returns 403 at the CONNECT
 # tunnel for that host — an egress policy, not a credential or a TLS problem —
 # so six of Phase 2's exit gates have never been testable.  See
-# ANDROID_PHASE2_REPORT.md §2.
+# docs/ANDROID_PHASE2_REPORT.md §2.
 #
 # GitHub-hosted runners ship the SDK and NDK preinstalled and have no such
 # restriction.  So the build moves here.  Nothing about the project changes to
@@ -170,7 +170,7 @@ jobs:
         #
         # One copyleft dependency does not merely add an obligation: it makes
         # the commercial half of the dual licence unsellable. See
-        # LICENSING_AUDIT.md §0.
+        # docs/LICENSING_AUDIT.md §0.
         run: ../.github/scripts/gradle.sh ./gradlew :app:checkRuntimeDependencyLicences --no-daemon --console=plain
 
       - name: Keep the licence report

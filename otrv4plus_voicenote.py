@@ -46,7 +46,7 @@ __all__ = ["MODES", "DEFAULT_MODE", "RATE", "MAX_SECONDS", "MIN_SECONDS",
            "WAVEFORM_BARS"]
 
 # Synthetic first and by default: measured, it is the one a speaker
-# recogniser matches least (VOICE_NOTES.md); owner chose it 2026-10-15.
+# recogniser matches least (docs/VOICE_NOTES.md); owner chose it 2026-10-15.
 # "disguise" was removed 2026-10-16 (owner: "hard to understand, we can use
 # synthetic only"); the Rust core no longer accepts it either.
 MODES = ("synthetic", "natural")

@@ -36,7 +36,7 @@ interface SecureStore {
  *
  * The specification requires every category to have one. Naming them in code
  * rather than in a document alone means a new category cannot be added without
- * choosing a policy for it. See ANDROID_STORAGE_AUDIT.md for the current
+ * choosing a policy for it. See docs/ANDROID_STORAGE_AUDIT.md for the current
  * mechanism and the Android replacement for each.
  */
 enum class RecordType(val id: String) {

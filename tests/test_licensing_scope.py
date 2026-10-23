@@ -77,10 +77,10 @@ def test_the_icon_carries_no_licence():
 
 def test_the_licence_text_and_the_specs_agree():
     assert os.path.exists(os.path.join(ROOT, "LICENSES", "CC-BY-SA-4.0.txt"))
-    for spec in ("SPEC.md", "SPEC_GROUP.md"):
+    for spec in ("docs/SPEC.md", "docs/SPEC_GROUP.md"):
         head = open(os.path.join(ROOT, spec), encoding="utf-8").read(1500)
         assert "CC BY-SA 4.0" in head, spec
         assert "open decision" not in head, spec
     licensing = open(os.path.join(ROOT, "LICENSING.md"), encoding="utf-8").read()
-    for needle in ("CC-BY-SA-4.0", SOFTWARE, "ASSETS.md", "CLA.md"):
+    for needle in ("CC-BY-SA-4.0", SOFTWARE, "docs/ASSETS.md", "CLA.md"):
         assert needle in licensing, needle

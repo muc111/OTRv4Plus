@@ -1,8 +1,8 @@
-"""SPEC.md is a normative document; it must agree with the implementation.
+"""docs/SPEC.md is a normative document; it must agree with the implementation.
 
 WHY THIS EXISTS
 ---------------
-SPEC.md opens by claiming it is "precise enough that an independent
+docs/SPEC.md opens by claiming it is "precise enough that an independent
 implementation can be written from this document alone, without reference to
 the source code." That is a strong claim and it is the one a peer reviewer
 will test. It had drifted:
@@ -30,7 +30,7 @@ import re
 
 import pytest
 
-SPEC = "SPEC.md"
+SPEC = "docs/SPEC.md"
 
 
 def spec_text():
@@ -58,9 +58,9 @@ class TestTheVersionStamp:
                            open("otrv4+.py").read(), re.M)
         assert engine, "VERSION is no longer a module-level literal in otrv4+.py"
         stamped = re.search(r'^\*\*Version:\*\* ([\d.]+)', spec_text(), re.M)
-        assert stamped, "SPEC.md has no version header"
+        assert stamped, "docs/SPEC.md has no version header"
         assert stamped.group(1) == engine.group(1), (
-            "SPEC.md is stamped %s but the engine is %s"
+            "docs/SPEC.md is stamped %s but the engine is %s"
             % (stamped.group(1), engine.group(1)))
 
 
@@ -200,7 +200,7 @@ class TestTheApplicationLayerExtensions:
                            open("otrv4plus_trade.py").read()).group(1)
         assert prefix in spec_text(), (
             "%r appears on the wire inside encrypted bodies and is documented "
-            "nowhere in SPEC.md" % prefix)
+            "nowhere in docs/SPEC.md" % prefix)
 
 
 # ---------------------------------------------------------------------------

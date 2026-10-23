@@ -9,7 +9,7 @@ The AAudio backend in otrv4plus_audio.py binds libaaudio.so through ctypes. It
 cannot be exercised here -- there is no libaaudio.so and no audio device -- so
 these tests verify the properties that determine whether it will work inside an
 APK, and that its failure behaviour is safe. The device half is recorded as
-blocked in ANDROID_PHASE2_REPORT.md rather than claimed.
+blocked in docs/ANDROID_PHASE2_REPORT.md rather than claimed.
 """
 
 import os

@@ -606,7 +606,7 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 #: The server limits sessions per account (Prosody mod_c2s_limit_sessions,
-#: see SECURITY_SESSIONS.md) and this account already has its quota.
+#: see docs/SECURITY_SESSIONS.md) and this account already has its quota.
 SESSION_LIMIT_TEXT = (
     "this account is already signed in on another device, and the server "
     "allows only one session at a time.\n"

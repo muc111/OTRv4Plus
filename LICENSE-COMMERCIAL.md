@@ -50,7 +50,7 @@ Terms are agreed per deal, but the standard grant is:
 Third-party components keep their own licences under either route — every
 dependency is permissive (BSD-3-Clause, MIT, Apache-2.0, PSF), and their
 attribution notices must be reproduced in your product regardless of which
-OTRv4+ licence you hold. See [LICENSING_AUDIT.md](LICENSING_AUDIT.md).
+OTRv4+ licence you hold. See [docs/LICENSING_AUDIT.md](docs/LICENSING_AUDIT.md).
 
 ## What it does not grant
 

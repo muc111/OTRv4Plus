@@ -29,7 +29,7 @@ the next typed line BECOME one, and in SmpFlow that is structural — there is
 no edge from a remote transition into AWAITING_SECRET. A reimplementation
 would be a second chance to get it wrong.
 
-`SMP_UX_AUDIT.md` §7 item 4 asked for exactly this and for INV-06's test to
+`docs/SMP_UX_AUDIT.md` §7 item 4 asked for exactly this and for INV-06's test to
 be extended to `otrv4+.py`. The first half shipped (the `smp_secret` pending
 was removed); the coverage never did. It is here.
 
@@ -358,7 +358,7 @@ class TestTheResponder:
 
 
 class TestInv06CoversTheIrcClientNow:
-    """`SMP_UX_AUDIT.md` §7 item 4: *"IRC. Remove the remotely-armed generic
+    """`docs/SMP_UX_AUDIT.md` §7 item 4: *"IRC. Remove the remotely-armed generic
     capture and extend INV-06's test to cover otrv4+.py."*
 
     The removal shipped. The coverage did not, and `otrv4+.py` was never

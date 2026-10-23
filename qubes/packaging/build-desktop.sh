@@ -43,7 +43,7 @@ die() { echo "build-desktop: $*" >&2; exit 1; }
 command -v gradle >/dev/null || die "gradle not found (the bundle's gradle-*-bin.zip, unpacked)"
 command -v java >/dev/null || die "a JDK 21 is required"
 [ -z "$CACHE" ] || [ -d "$CACHE" ] || die "--gradle-cache: no such directory"
-# The desktop app's own version (VERSIONING.md), not the Rust core's.
+# The desktop app's own version (docs/VERSIONING.md), not the Rust core's.
 [ -n "$VERSION" ] || VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' "$REPO/desktop/build.gradle.kts" | head -1)"
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$REPO" log -1 --format=%ct 2>/dev/null || echo 1791763200)}"
 umask 022

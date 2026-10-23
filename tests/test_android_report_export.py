@@ -8,7 +8,7 @@ no way to get the good news off the device at all.
 
 A working run is evidence too. The Python version, the ABI, the Rust core's
 symbol count and the self-test results are what close the device gates in
-ANDROID_PHASE2_REPORT.md §14, and they are only worth collecting if they can
+docs/ANDROID_PHASE2_REPORT.md §14, and they are only worth collecting if they can
 be sent.
 
 This is a source check rather than a behavioural one, which is a compromise:

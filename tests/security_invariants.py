@@ -5,7 +5,7 @@ Why this file exists
 --------------------
 Security properties in this project have twice been true in the code and
 wrong in the documentation, and once been documented as enforced by a test
-that did not exist (the SMP wire byte, VERSIONING.md).  Prose cannot be
+that did not exist (the SMP wire byte, docs/VERSIONING.md).  Prose cannot be
 executed, so it drifts.
 
 This registry is the single machine-readable list.  Every invariant names
@@ -109,7 +109,7 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "IRC client now uses the same SmpFlow rather than a second "
                   "implementation, and test_irc_guided_smp.py walks "
                   "otrv4+.py's inbound call graph for any path reaching "
-                  "_arm_secret_prompt -- the coverage SMP_UX_AUDIT.md asked "
+                  "_arm_secret_prompt -- the coverage docs/SMP_UX_AUDIT.md asked "
                   "for and which was missing while otrv4plus_xmpp.py alone "
                   "was walked.  Since v10.23.2 the coverage also enters "
                   "through handle_command on the class the program actually "
@@ -272,7 +272,7 @@ INVARIANTS: Tuple[Invariant, ...] = (
                "class, so no cross-class transition is reachable.  The "
                "structural guarantee -- binding TransportClass into the "
                "voice transcript so a mismatched pair never keys -- is "
-               "specified in TRANSPORT_POLICY.md section 5 and deferred "
+               "specified in docs/TRANSPORT_POLICY.md section 5 and deferred "
                "until the I2P voice and rekey work completes live-device "
                "validation.",
     ),

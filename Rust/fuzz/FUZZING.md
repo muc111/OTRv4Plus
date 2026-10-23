@@ -1,7 +1,7 @@
 # Fuzzing the OTRv4Plus Rust core
 
 cargo-fuzz (libFuzzer) harnesses for every place the core parses input it did
-not produce. Added by the 2026-09 cryptographic audit (CRYPTO_AUDIT_2026-09.md).
+not produce. Added by the 2026-09 cryptographic audit (docs/CRYPTO_AUDIT_2026-09.md).
 
 ```sh
 rustup toolchain install nightly

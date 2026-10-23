@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
 //! Group voice media keys: AES-256-GCM frames under keys from the MLS
-//! exporter (MLS_SECURITY_HARDENING.md §5, commit M5).
+//! exporter (docs/MLS_SECURITY_HARDENING.md §5, commit M5).
 //!
 //! THE KEY SCHEDULE
 //! ================

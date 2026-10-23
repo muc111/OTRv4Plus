@@ -655,7 +655,7 @@ private fun VerificationOffer(
  *
  * WHY AN AUTOMATIC DIALOG IS SAFE HERE, AND WOULD NOT BE ON A TERMINAL
  * --------------------------------------------------------------------
- * SECURITY_INVARIANTS.md INV-06: a remote peer may cause the client to ASK
+ * docs/SECURITY_INVARIANTS.md INV-06: a remote peer may cause the client to ASK
  * for the passphrase, but may never cause the next thing the user types to
  * BECOME the passphrase. On a terminal those are one step apart, because
  * there is ONE input channel -- which is why `otrv4plus_smpflow.SmpFlow` puts

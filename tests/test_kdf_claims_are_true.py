@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Where each KDF actually lives, pinned against the documentation.
 
-FEATURES.md and README.md both claimed an "Argon2id KDF protecting the SMP
+docs/FEATURES.md and README.md both claimed an "Argon2id KDF protecting the SMP
 vault" inside the Rust core. All three parts were wrong: `argon2` is not a
 dependency of the crate, no Rust source mentions it, and `smp_vault.rs` is an
 in-memory zeroizing secret store with no key derivation in it whatsoever. The
@@ -97,17 +97,17 @@ class TestTheDocumentationSaysSo:
         return open(os.path.join(ROOT, name), encoding="utf-8").read()
 
     def test_features_no_longer_puts_argon2_in_the_vault(self):
-        rows = [l for l in self._doc("FEATURES.md").split("\n")
+        rows = [l for l in self._doc("docs/FEATURES.md").split("\n")
                 if l.startswith("| Argon2id")]
         assert rows, "the Argon2 rows vanished; they should say where it IS used"
         for row in rows:
             assert "smp_vault.rs`. |" not in row, (
-                "FEATURES.md still credits src/smp_vault.rs with an Argon2 KDF")
+                "docs/FEATURES.md still credits src/smp_vault.rs with an Argon2 KDF")
 
     def test_features_separates_the_smp_and_at_rest_uses(self):
         """Two different KDFs doing two different jobs; conflating them is how
         the false claim got written in the first place."""
-        rows = [l for l in self._doc("FEATURES.md").split("\n")
+        rows = [l for l in self._doc("docs/FEATURES.md").split("\n")
                 if l.startswith("| Argon2id")]
         joined = "\n".join(rows)
         assert "Argon2id (SMP)" in joined and "0x03" in joined
@@ -115,13 +115,13 @@ class TestTheDocumentationSaysSo:
 
     def test_readme_no_longer_claims_it_runs_in_the_rust_core(self):
         # The paragraph moved with the full reference out of the README.
-        doc = self._doc("TECHNICAL.md")
+        doc = self._doc("docs/TECHNICAL.md")
         i = doc.index("One cryptographic surface for chat.")
         para = doc[i:i + 1400]
         assert "Argon2id-class KDF protecting the SMP vault — runs inside" not in para
 
     def test_the_scrypt_fallback_is_recorded_as_removed(self):
-        row = [l for l in self._doc("FEATURES.md").split("\n")
+        row = [l for l in self._doc("docs/FEATURES.md").split("\n")
                if l.startswith("| Argon2id (at rest)")][0]
         assert "scrypt" in row and "removed" in row, (
             "the at-rest row must say the Python scrypt fallback is gone")
@@ -166,7 +166,7 @@ class TestWhereTheKdfsReallyAre:
         assert "Algorithm::Argon2id, Version::V0x13" in at_rest
 
     def test_the_spec_documents_the_derivation_that_is_implemented(self):
-        spec = open(os.path.join(ROOT, "SPEC.md"), encoding="utf-8").read()
+        spec = open(os.path.join(ROOT, "docs/SPEC.md"), encoding="utf-8").read()
         i = spec.index("### 6.4 Secret Derivation")
         section = spec[i:i + 4000]
         assert "Argon2id" in section

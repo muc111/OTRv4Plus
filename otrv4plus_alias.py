@@ -135,7 +135,7 @@ _JID = re.compile(
 #: A 52-character base32 I2P destination hash, and any other `.i2p` name.
 _I2P = re.compile(r"(?i)\b[A-Za-z0-9.-]+\.i2p\b")
 
-#: Tor. Listed because TRANSPORT_POLICY.md allows it for messaging, so a
+#: Tor. Listed because docs/TRANSPORT_POLICY.md allows it for messaging, so a
 #: report from a Tor session must not name the circuit's far end either.
 _ONION = re.compile(r"(?i)\b[A-Za-z0-9.-]+\.onion\b")
 

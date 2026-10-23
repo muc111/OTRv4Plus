@@ -8,7 +8,7 @@
 #
 #   qubes/packaging/build-core.sh --bundle ~/QubesIncoming/<dvm>/bundle
 #
-# Reproducible -- measured, not assumed (FEASIBILITY_REPORT.md, Appendix B):
+# Reproducible -- measured, not assumed (docs/FEASIBILITY_REPORT.md, Appendix B):
 #   * --remap-path-prefix removes every build-machine path (without it the
 #     library carried 117 of them, in panic locations);
 #   * symbols stripped, no debug info;

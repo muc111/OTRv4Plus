@@ -27,7 +27,7 @@ import org.otrv4plus.android.BuildConfig
  * permissive — MIT, Apache-2.0, BSD-3-Clause, PSF — and every one of those
  * licences requires its notice to travel with the binary. NOTICE is that file;
  * shipping an APK without rendering it anywhere leaves the obligation
- * undischarged. `LICENSING_AUDIT.md` lists this as the last open delivery
+ * undischarged. `docs/LICENSING_AUDIT.md` lists this as the last open delivery
  * requirement, and this screen is it.
  *
  * It also carries what AGPL §5(d) calls Appropriate Legal Notices: the

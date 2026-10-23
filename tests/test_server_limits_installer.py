@@ -3,7 +3,7 @@
 """prosody/install-server-limits.sh on a throwaway config. Owner
 (2026-10-20), after the stress runs: "remove the account cap and add 1600
 users online at once", then a 5,000-account backstop; the generational collector is what let the 1,600
-run recover from a join burst (STRESS_TEST.md)."""
+run recover from a join burst (docs/STRESS_TEST.md)."""
 import os
 import shutil
 import pathlib

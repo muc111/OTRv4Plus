@@ -34,7 +34,7 @@ __all__ = [
 
 #: A `.b32.i2p` label is the destination hash itself, base32-encoded: 52
 #: characters over the lowercase base32 alphabet. Not a name that resolves to
-#: one -- `TRANSPORT_POLICY.md` is explicit that nothing resolves it, the label
+#: one -- `docs/TRANSPORT_POLICY.md` is explicit that nothing resolves it, the label
 #: *is* the address.
 #:
 #: Which is why this check is worth having. Every other kind of wrong address
@@ -88,7 +88,7 @@ _B32_ALPHABET = frozenset("abcdefghijklmnopqrstuvwxyz234567")
 _B32_LABEL = re.compile(r"[a-z2-7]{%d}" % B32_LABEL_LENGTH, re.IGNORECASE)
 
 #: SAM's registered port. The bundled router will not necessarily use it -- see
-#: ANDROID_I2P_ARCHITECTURE.md §5, which argues for an abstract unix socket
+#: docs/ANDROID_I2P_ARCHITECTURE.md §5, which argues for an abstract unix socket
 #: because a loopback TCP port is visible to every app on the device -- but it
 #: is the right default for an external router, which is what the app talks to
 #: until the router is bundled.

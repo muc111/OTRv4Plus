@@ -7,7 +7,7 @@ speaks the same protocol as the Android app and as Termux or Ubuntu, so it
 works with both for chat, files, groups and voice calls.
 
 The reasoning and the measurements are in
-[`../FEASIBILITY_REPORT.md`](../FEASIBILITY_REPORT.md). This README is the
+[`../docs/FEASIBILITY_REPORT.md`](../docs/FEASIBILITY_REPORT.md). This README is the
 operator's guide.
 
 ```
@@ -129,7 +129,7 @@ qvm-device mic detach otr-chat dom0:mic
 ## Checks on a real Qubes machine
 
 These checks are listed with their expected results in
-[`../FEASIBILITY_REPORT.md`](../FEASIBILITY_REPORT.md) §7. They could not be
+[`../docs/FEASIBILITY_REPORT.md`](../docs/FEASIBILITY_REPORT.md) §7. They could not be
 run where this was written, because that machine is not running Qubes.
 
 ```sh

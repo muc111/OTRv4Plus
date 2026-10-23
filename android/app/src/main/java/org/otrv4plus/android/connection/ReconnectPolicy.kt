@@ -29,7 +29,7 @@ package org.otrv4plus.android.connection
  *
  * THE NUMBERS
  * -----------
- * A cold I2P tunnel is 30-90 seconds (ANDROID_DEVICE_TEST.md §3 step 7), so
+ * A cold I2P tunnel is 30-90 seconds (docs/ANDROID_DEVICE_TEST.md §3 step 7), so
  * retrying after two seconds would simply queue another doomed attempt behind
  * the one still building. The first delay is therefore in the same order as a
  * tunnel build rather than the sub-second figure a clearnet client would use.

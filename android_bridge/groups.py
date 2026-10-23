@@ -458,13 +458,13 @@ class SecureGroups:
     #: this many messages we sent, or this long since our own last commit,
     #: whichever comes first. Checked after a send, never while a commit of
     #: ours is pending or still going out. Defaults per the owner's hardening
-    #: specification (MLS_SECURITY_HARDENING.md §4): 50 messages / 30 min.
+    #: specification (docs/MLS_SECURITY_HARDENING.md §4): 50 messages / 30 min.
     #: A self-update in a 4-member group is ~22 KB (8 room fragments).
     AUTO_REKEY_MESSAGES = _env_int("OTRV4PLUS_MLS_REKEY_MESSAGES", 50, 1, 100000)
     AUTO_REKEY_SECONDS = _env_int("OTRV4PLUS_MLS_REKEY_SECONDS", 30 * 60, 60, 30 * 86400)
     #: A member whose leaf has not been refreshed by a commit of theirs for
     #: this long is removed by the next member that notices (owner decision
-    #: U1: 72 h, MLS_SECURITY_HARDENING.md §4). Online members refresh at
+    #: U1: 72 h, docs/MLS_SECURITY_HARDENING.md §4). Online members refresh at
     #: least every AUTO_REKEY_SECONDS through `maintain`, so only a member
     #: that has been away this long is affected; they are re-invited over
     #: OTRv4+ to come back. 0 turns it off.
@@ -1058,7 +1058,7 @@ class SecureGroups:
             return [bytes(m).decode(errors="replace")
                     for m in self._need().members(room.encode())]
 
-    #: MLS ciphersuite code points (MLS_SECURITY_HARDENING.md §2).
+    #: MLS ciphersuite code points (docs/MLS_SECURITY_HARDENING.md §2).
     SUITE_HYBRID = 0xF0A1
     SUITE_PQ_ONLY = 0x0907
 

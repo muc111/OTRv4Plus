@@ -245,7 +245,7 @@ SMPEngine = None
 # Which one a test imports depends on collection order, because tests/test_attacks.py
 # front-loads tests/ onto sys.path at import time.  The helper block below is kept
 # byte-identical in both copies so the suite is deterministic either way.  Unifying
-# the two copies is tracked separately -- see ANDROID_PHASE2_REPORT.md.
+# the two copies is tracked separately -- see docs/ANDROID_PHASE2_REPORT.md.
 
 # ── v10.7 migration helpers ───────────────────────────────────────────────────
 # The `cryptography` library was removed from the OTRv4+ runtime at v10.7; every

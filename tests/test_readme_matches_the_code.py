@@ -33,11 +33,11 @@ def readme():
     """The README and the full reference it points to.
 
     The README was cut to an introduction; the detailed claims (SMP wire
-    version, the voice caveat) moved to TECHNICAL.md unchanged. Checking
+    version, the voice caveat) moved to docs/TECHNICAL.md unchanged. Checking
     both keeps every claim pinned wherever it now lives -- and the
     must-not-say checks apply to both files. The badge tests below still
     read README.md alone."""
-    return _read("README.md") + "\n" + _read("TECHNICAL.md")
+    return _read("README.md") + "\n" + _read("docs/TECHNICAL.md")
 
 
 class TestTheVersionBadge:
@@ -83,7 +83,7 @@ class TestTheVersionBadge:
         assert "desktop/build.gradle.kts" in script
 
     def test_the_technical_reference_has_the_same_badge(self):
-        assert _badge(_read("TECHNICAL.md")) == _badge(_read("README.md"))
+        assert _badge(_read("docs/TECHNICAL.md")) == _badge(_read("README.md"))
 
     def test_it_names_what_encrypts_a_message(self):
         """It listed the AEAD for voice and not for chat, which reads as
@@ -280,5 +280,5 @@ class TestTheApkIsEasyToFind:
         assert "gh release delete" in script
 
     def test_the_readme_stays_short(self):
-        """It was 1,745 lines; the full reference is TECHNICAL.md."""
+        """It was 1,745 lines; the full reference is docs/TECHNICAL.md."""
         assert len(_read("README.md").splitlines()) < 250

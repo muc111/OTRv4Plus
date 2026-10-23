@@ -144,7 +144,7 @@ object WipeAndExit {
     )
 
     /**
-     * Every place this app keeps state, audited. See ANDROID_WIPE_AND_EXIT.md.
+     * Every place this app keeps state, audited. See docs/ANDROID_WIPE_AND_EXIT.md.
      *
      * A new store must be added here with a policy, or it is a store the wipe
      * does not know about.

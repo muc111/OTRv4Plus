@@ -85,7 +85,7 @@ import org.otrv4plus.android.security.WipeAndExit
  * 2026-09-14: Play's Deceptive Behavior policy forbids an app that
  * misrepresents its identity. The protection it was reaching for is unchanged
  * and lives where it belongs -- at rest, under AES-256-GCM, behind a password
- * or keyfile. See ANDROID_PHASE2_REPORT.md §15.7.
+ * or keyfile. See docs/ANDROID_PHASE2_REPORT.md §15.7.
  */
 class MainActivity : ComponentActivity() {
 

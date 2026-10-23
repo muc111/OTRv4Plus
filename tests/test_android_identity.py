@@ -105,7 +105,7 @@ class _PythonSeedIdentityKeyStore(IdentityKeyStore):
     described in android_bridge/identity.py -- the seed exists as a Python object
     at create and at every restore.  It is used here so the identity lifecycle
     can be tested end to end; adopting it in production requires the explicit
-    decision recorded in ANDROID_PHASE2_REPORT.md.
+    decision recorded in docs/ANDROID_PHASE2_REPORT.md.
     """
 
     def create(self):

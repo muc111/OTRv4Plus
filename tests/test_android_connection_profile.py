@@ -129,7 +129,7 @@ class TestTheB32ShapeIsChecked:
     Every other kind of wrong address fails fast and says something: a bad
     hostname gets a NAMING LOOKUP failure, a bad JID is rejected by the server.
     A `.b32.i2p` label IS the destination hash -- nothing resolves it
-    (TRANSPORT_POLICY.md) -- so one changed character is a well-formed address
+    (docs/TRANSPORT_POLICY.md) -- so one changed character is a well-formed address
     for a destination that does not exist, and the only symptom is
     SAM_CONNECT_TIMEOUT: 240 seconds of spinner before anything is said.
     """

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""Generate the OTRv4+ group protocol test vectors from SPEC_GROUP.md.
+"""Generate the OTRv4+ group protocol test vectors from docs/SPEC_GROUP.md.
 
 READ THIS BEFORE CHANGING ANYTHING HERE
 =======================================
 This program is an **independent encoder**.  It was written from
-SPEC_GROUP.md and it imports nothing from the client, from `otrv4_core`, or
+docs/SPEC_GROUP.md and it imports nothing from the client, from `otrv4_core`, or
 from any future group implementation.  Its signatures come from
 `ed448_rfc8032.py`, a transcription of the RFC 8032 reference algorithm that
 shares no code with `ed448-goldilocks-plus`.
 
-That independence is the entire value of the output.  SPEC_GROUP.md §15.2:
+That independence is the entire value of the output.  docs/SPEC_GROUP.md §15.2:
 
     A vector produced by the code it is meant to check proves only that the
     code agrees with itself.
@@ -44,7 +44,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ed448_rfc8032 as ed448     # noqa: E402  (path set above)
 
 VECTOR_SET_VERSION = 1
-SPEC = "SPEC_GROUP.md version 1 (draft)"
+SPEC = "docs/SPEC_GROUP.md version 1 (draft)"
 OUTPUT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "group_vectors_v1.json")
 
@@ -953,7 +953,7 @@ def build():
                          "from ed448_rfc8032.py (RFC 8032 reference "
                          "algorithm, verified against RFC 8032 §7.4). "
                          "Nothing here calls the implementation these "
-                         "vectors test -- see SPEC_GROUP.md §15.2."),
+                         "vectors test -- see docs/SPEC_GROUP.md §15.2."),
         "warning": ("The seeds below are PUBLISHED PRIVATE KEYS for test use "
                     "only. They must never appear in anything but a test."),
         "constants": {

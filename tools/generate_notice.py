@@ -335,7 +335,7 @@ def main():
     w("ships with its native libraries. Licence texts are reproduced from")
     w("each package's own distribution (third_party/python/). Nothing else")
     w("Python is bundled: aiodns, cryptography and argon2-cffi are not in the")
-    w("APK. See LICENSING_AUDIT.md §3.")
+    w("APK. See docs/LICENSING_AUDIT.md §3.")
     w("")
     for name, ver, lic, holder in (
         ("CPython (via Chaquopy, target 3.12.12-0)", "3.12", "PSF-2.0",
@@ -375,7 +375,7 @@ def main():
     w("")
     w("Shipped inside the APK. Test-only dependencies (JUnit, Espresso,")
     w("Hamcrest) are NOT in the artifact and are not attributed. See")
-    w("LICENSING_AUDIT.md §4.")
+    w("docs/LICENSING_AUDIT.md §4.")
     w("")
     for name, lic, holder in (
         ("Chaquopy (Gradle plugin and runtime)", "MIT",

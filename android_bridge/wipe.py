@@ -22,7 +22,7 @@ Chaquopy's own runtime also lives under the app's files directory. This
 module does not touch it: it walks only the two roots above (overwriting what
 Python wrote, best effort), and refuses any path that resolves outside them.
 The Kotlin storage stage (`AppDataWipe`) then removes EVERY entry in app
-storage, the runtime included -- see ANDROID_WIPE_AND_EXIT.md.
+storage, the runtime included -- see docs/ANDROID_WIPE_AND_EXIT.md.
 
 WHAT "DESTROYED" MEANS, AND WHAT IT DOES NOT
 --------------------------------------------
@@ -36,7 +36,7 @@ Android is that these files live in app-private storage under file-based
 encryption. This module does not, and must not be read to, promise physical
 erasure of NAND. The Kotlin vault is different -- its records are sealed under
 an AndroidKeyStore key that Wipe & Exit deletes, which IS cryptographic
-erasure -- and ANDROID_WIPE_AND_EXIT.md records the distinction.
+erasure -- and docs/ANDROID_WIPE_AND_EXIT.md records the distinction.
 """
 
 import os

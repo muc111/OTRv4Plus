@@ -4,7 +4,7 @@
 //! KDF HKDF-SHA384 (0x0002), AEAD AES-256-GCM (0x0002) or export-only
 //! (0xFFFF), and KEM either
 //!   * X448 + ML-KEM-1024 with a binding combiner (0xF0A1, private; the
-//!     hybrid suite, MLS_SECURITY_HARDENING.md §2), or
+//!     hybrid suite, docs/MLS_SECURITY_HARDENING.md §2), or
 //!   * ML-KEM-1024 alone (0x0042; the earlier PQ-only suite, kept so
 //!     groups made with it keep working).
 //!

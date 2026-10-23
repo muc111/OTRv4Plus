@@ -39,7 +39,7 @@ import javax.crypto.spec.GCMParameterSpec
  * close the second gap and break the first requirement; when the app unlock
  * lands it can supply a second layer, and nothing above this class changes.
  *
- * `ANDROID_STORAGE_AUDIT.md` records this distinction so "encrypted at rest"
+ * `docs/ANDROID_STORAGE_AUDIT.md` records this distinction so "encrypted at rest"
  * is not read as more than it buys.
  *
  * THE RECORD

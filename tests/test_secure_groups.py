@@ -680,7 +680,7 @@ class TestAdaptivePacingEndToEnd:
 
 
 class TestRekeyKnobs:
-    """MLS_SECURITY_HARDENING.md §4: defaults 50 messages / 30 min, set by
+    """docs/MLS_SECURITY_HARDENING.md §4: defaults 50 messages / 30 min, set by
     environment, clamped, never an import error."""
 
     def test_defaults_and_clamping(self, monkeypatch):
@@ -702,7 +702,7 @@ def _verified(member, jid):
 
 
 class TestSigningKeysRotate:
-    """MLS_SECURITY_HARDENING.md §1 / M2: one signing key per group, a new
+    """docs/MLS_SECURITY_HARDENING.md §1 / M2: one signing key per group, a new
     one at every rekey, and an SMP verification that follows the person
     across the rotation -- but never across a new leaf under an old name."""
 
@@ -881,7 +881,7 @@ class TestMaintenance:
 # ── M4: the hybrid ciphersuite ───────────────────────────────────────────────
 
 class TestHybridSuite:
-    """MLS_SECURITY_HARDENING.md §2 / M4: every new group is
+    """docs/MLS_SECURITY_HARDENING.md §2 / M4: every new group is
     X448+ML-KEM-1024 / Ed448+ML-DSA-87 (0xF0A1); a group of the earlier
     PQ-only suite keeps working but takes no new members."""
 

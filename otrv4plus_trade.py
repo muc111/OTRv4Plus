@@ -21,12 +21,12 @@ It is not a wallet, and it must never become one.
   you that a multisig address was formed from the right keys, that a payment
   landed, or that a partial signature is well formed. Your wallet tells you
   that. This is a genuine limitation and it is the price of the client not
-  becoming a wallet -- see MONERO_ESCROW_AUDIT.md §2.2, which states the
+  becoming a wallet -- see docs/MONERO_ESCROW_AUDIT.md §2.2, which states the
   counter-argument as well.
 
 WHY IT IS BUILT THIS WAY
 ------------------------
-`MONERO_ESCROW_AUDIT.md` looked at putting Monero's cryptography in the Rust
+`docs/MONERO_ESCROW_AUDIT.md` looked at putting Monero's cryptography in the Rust
 core and found four problems: `monero-serai` is yanked, `monero-oxide`'s
 multisig is FROST and so cannot interoperate with `monero-wallet-cli`, native
 multisig is experimental and off by default, and FCMP++ removes CLSAG. The

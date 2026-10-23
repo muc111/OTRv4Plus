@@ -8,7 +8,7 @@ reconnect, not because one condition drifted.
 These are code-path tests. They do not prove live I2P, Tor or TLS operation;
 that needs real devices on real networks.
 
-The policy these enforce is written out in TRANSPORT_POLICY.md; the rest of
+The policy these enforce is written out in docs/TRANSPORT_POLICY.md; the rest of
 it -- the transition matrix and the wording rules -- is in
 tests/test_transport_policy.py.
 """
@@ -128,13 +128,13 @@ class TestTransportSelectionIsExplicit:
         # socket, so a Tor XMPP session would silently drag the media path
         # through Tor as well. The implementation is a hand-rolled SOCKS5
         # CONNECT to a loopback forwarder instead: applied to one connection
-        # or not at all. TRANSPORT_POLICY.md section 6 states the rule.
+        # or not at all. docs/TRANSPORT_POLICY.md section 6 states the rule.
         source = open(xmpp.__file__, encoding="utf-8").read()
         assert "PROXY_TYPE_SOCKS5" not in source
         assert "set_proxy" not in source
         assert "socks5_connect" in source, (
             "the Tor path is gone; if it was removed, say so in "
-            "TRANSPORT_POLICY.md section 8 rather than leaving this test "
+            "docs/TRANSPORT_POLICY.md section 8 rather than leaving this test "
             "asserting the absence of something for the wrong reason")
 
     def test_the_clearnet_insecure_flag_is_opt_in(self):

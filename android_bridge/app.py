@@ -2351,7 +2351,7 @@ class OtrApp:
         """Answer a peer's verification challenge: set the secret, resume the
         SMP1 the core is holding (`resume_held_smp1`) and send the resulting SMP2.
 
-        Safe under INV-06 (SECURITY_INVARIANTS.md: a peer may cause the client to
+        Safe under INV-06 (docs/SECURITY_INVARIANTS.md: a peer may cause the client to
         ASK for the secret, never cause the next thing typed to BECOME it). Here
         that separation is structural: this is reached only from a dialog with its
         own secret field, while chat text goes to `send_user_text`.

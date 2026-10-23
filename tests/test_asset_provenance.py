@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""Every image the repository carries has a recorded origin (ASSETS.md).
+"""Every image the repository carries has a recorded origin (docs/ASSETS.md).
 
 The icon's origin went unrecorded for a month and was a release blocker until
 the author supplied it. This makes the record a precondition: an image added
@@ -29,14 +29,14 @@ def _tracked_images():
 
 
 def _record():
-    return open(os.path.join(ROOT, "ASSETS.md"), encoding="utf-8").read()
+    return open(os.path.join(ROOT, "docs/ASSETS.md"), encoding="utf-8").read()
 
 
 def test_every_image_is_recorded():
     record = _record()
     missing = [p for p in _tracked_images()
                if p not in record and p.split("android/app/src/main/res/")[-1] not in record]
-    assert missing == [], "images with no provenance entry in ASSETS.md: %s" % missing
+    assert missing == [], "images with no provenance entry in docs/ASSETS.md: %s" % missing
 
 
 def test_recorded_hashes_match_the_files():
@@ -50,7 +50,7 @@ def test_recorded_hashes_match_the_files():
         digest = hashlib.sha256(open(os.path.join(ROOT, p), "rb").read()).hexdigest()
         if digest != m.group(1):
             stale.append(p)
-    assert stale == [], "changed without updating ASSETS.md: %s" % stale
+    assert stale == [], "changed without updating docs/ASSETS.md: %s" % stale
 
 
 def test_the_icon_says_what_it_is():

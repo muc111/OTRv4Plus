@@ -268,7 +268,7 @@ class OTRConstants:
     # no call sites, and it disagreed -- it allocated 0x08 for a client-profile
     # TLV that OTRv4+ does not use, because the client profile travels in the
     # DAKE. Two tables where one is dead and wrong is a trap for anyone reading
-    # the engine alongside SPEC.md §5.6.
+    # the engine alongside docs/SPEC.md §5.6.
 
     RATCHET_SENDING = 0
     RATCHET_RECEIVING = 1
@@ -7159,7 +7159,7 @@ class EnhancedOTRSession:
                     # it does not decide what the user's next keystroke means.
                     # The front end asks for consent first and only a local
                     # answer opens the passphrase prompt -- see
-                    # otrv4plus_smpflow.py and SECURITY_INVARIANTS.md INV-06.
+                    # otrv4plus_smpflow.py and docs/SECURITY_INVARIANTS.md INV-06.
                     held = False
                     try:
                         if self.smp_guided_prompt:

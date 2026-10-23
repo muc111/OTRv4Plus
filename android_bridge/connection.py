@@ -20,7 +20,7 @@ seconds then fails" into "your router is not running", immediately.
 
 The loopback question
 ---------------------
-`ANDROID_I2P_FEASIBILITY.md` §2 calls it "the single most important technical
+`docs/ANDROID_I2P_FEASIBILITY.md` §2 calls it "the single most important technical
 finding in this report": that a SAM bridge belonging to another app is not
 reachable at 127.0.0.1:7656 because "every app has its own UID and its own
 loopback view".

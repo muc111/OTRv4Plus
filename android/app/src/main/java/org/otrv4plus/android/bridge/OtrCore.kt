@@ -27,7 +27,7 @@ interface OtrCore {
      * Wipe & Exit, engine side: destroy every session secret in Rust (on the
      * transport's loop thread), close the transport, and destroy what the
      * Python side wrote to disk. The core is spent afterwards. Idempotent;
-     * never throws. See `OtrApp.wipe` and `ANDROID_WIPE_AND_EXIT.md`.
+     * never throws. See `OtrApp.wipe` and `docs/ANDROID_WIPE_AND_EXIT.md`.
      */
     fun wipe(): WipeReport
 

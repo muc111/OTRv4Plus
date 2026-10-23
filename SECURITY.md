@@ -26,9 +26,9 @@ validation, each of which runs on every change:
 | Python integration and protocol suites | Handshake, ratchet, SMP, file transfer, transports, the Android bridge, wipe | `tests/` (6,300+ tests) |
 | Android/Kotlin tests | Security state, gating of calls and files on SMP, reconnect and wipe policy | `android/app/src/test` (800+ tests) |
 | Dependency and lint checks | `cargo audit --deny warnings` in CI; Clippy; dependency-licence checks on the APK | `.github/workflows` |
-| Security-focused review | Threat model, a Rust-authority audit (secrets never leave the Rust core), a cryptographic audit with its findings tracked to closure, a transport audit | [SECURITY.md](SECURITY.md), [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md), [SECURITY_AUDIT_2026-10-11.md](SECURITY_AUDIT_2026-10-11.md) (dependencies and recent code), [RUST_AUTHORITY_AUDIT.md](RUST_AUTHORITY_AUDIT.md), [SECURITY_ISSUES.md](SECURITY_ISSUES.md) |
+| Security-focused review | Threat model, a Rust-authority audit (secrets never leave the Rust core), a cryptographic audit with its findings tracked to closure, a transport audit | [SECURITY.md](SECURITY.md), [docs/CRYPTO_AUDIT_2026-09.md](docs/CRYPTO_AUDIT_2026-09.md), [docs/SECURITY_AUDIT_2026-10-11.md](docs/SECURITY_AUDIT_2026-10-11.md) (dependencies and recent code), [docs/RUST_AUTHORITY_AUDIT.md](docs/RUST_AUTHORITY_AUDIT.md), [docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) |
 | AI-assisted review | Used throughout to look for implementation weaknesses and to write adversarial tests; every finding it produced is a test or a tracked issue, not a claim | -- |
-| Physical testing | OTRv4+ handshake, SMP, encrypted files and voice between handsets and Termux; clearnet and I2P sign-in; Wipe & Exit | [PHYSICAL_TEST_PLAN.md](PHYSICAL_TEST_PLAN.md) |
+| Physical testing | OTRv4+ handshake, SMP, encrypted files and voice between handsets and Termux; clearnet and I2P sign-in; Wipe & Exit | [docs/PHYSICAL_TEST_PLAN.md](docs/PHYSICAL_TEST_PLAN.md) |
 
 Counts are as of 2026-09-28.
 
@@ -53,7 +53,7 @@ accordingly, particularly for high-value, safety-critical or otherwise
 sensitive communications.
 
 The project keeps a record of its known limitations and design constraints
-([SECURITY_ISSUES.md](SECURITY_ISSUES.md)) rather than treating passing tests
+([docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md)) rather than treating passing tests
 as proof of security.
 
 ### Protocol security
@@ -63,7 +63,7 @@ post-quantum design. Some documented limitations need a future protocol
 version rather than an in-place, compatibility-breaking change: A1 (the
 ratchet brace key is not yet folded into the root key) and A2 (the DAKE's
 post-quantum authentication is initiator-only). See
-[SECURITY_ISSUES.md](SECURITY_ISSUES.md) and [SPEC.md](SPEC.md).
+[docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) and [docs/SPEC.md](docs/SPEC.md).
 
 **Security status: extensively tested and hardened through developer-led and
 AI-assisted analysis, but not independently audited.**
@@ -292,7 +292,7 @@ was formed from the right keys, that a payment landed, or that a partial
 signature is well formed. Your wallet tells you that, and comparing the
 multisig address with your counterparty out of band is the one check nothing
 here can do for you. This is a real limitation and the price of the client not
-becoming a wallet — [MONERO_ESCROW_AUDIT.md](MONERO_ESCROW_AUDIT.md) §2.2
+becoming a wallet — [docs/MONERO_ESCROW_AUDIT.md](docs/MONERO_ESCROW_AUDIT.md) §2.2
 states the counter-argument in full.
 
 **No arbitration.** The project does not act as an arbitrator and ships no
@@ -418,7 +418,7 @@ typed line BECOME one. In `SmpFlow` that is structural: there is no edge from a
 remote transition into `AWAITING_SECRET`. A second implementation in the IRC
 client would have been a second chance to get it wrong.
 
-**INV-06 now covers both clients.** `SMP_UX_AUDIT.md` §7 item 4 asked for the
+**INV-06 now covers both clients.** `docs/SMP_UX_AUDIT.md` §7 item 4 asked for the
 remotely-armed capture to be removed from `otrv4+.py` *and* for INV-06's test
 to be extended to cover it. The removal shipped in v10.15; the coverage did
 not, and `otrv4plus_xmpp.py` alone was being walked — which is how the IRC
@@ -505,7 +505,7 @@ be is a way for one side to store something the other refuses.
 
    **At-rest protection is filesystem permissions, not cryptography.**  The sealed record is AES-256-GCM twice over — inside Rust (`Rust/src/identity.rs`, so the Ed448 seed never becomes a Python object) and again bound to its record slot — but the key protecting it is a 32-byte file at `~/.otrv4plus/xmpp/.identity_dek`, mode 0600, with no passphrase.  Termux has no OS keyring.  **An attacker who can read your home directory can read the identity.**  This is the same posture `SMPAutoRespondStorage` has always had for SMP secrets (`.smp_seed`), so it adds no new class of exposure, but it must not be described as hardware-backed, passphrase-protected, or simply "encrypted at rest".  What it does defend against is a process that obtains the sealed blob without also holding the key file, and backup or sync tools that capture one and not the other.
 
-   **The pins themselves are plaintext.**  `~/.otrv4plus/xmpp/trust.json` is an unencrypted JSON file listing the JIDs you have talked to and their fingerprints.  It is a contact list, and anyone who can read it learns who you correspond with.  Encrypting it is tracked in `ANDROID_STORAGE_AUDIT.md` row 4 and is not done here.  Note the asymmetry with the identity: an attacker who can *write* to this file can replace a pin, which would make a substituted identity look expected — so the integrity of this file matters as much as its confidentiality, and neither is cryptographically protected today.
+   **The pins themselves are plaintext.**  `~/.otrv4plus/xmpp/trust.json` is an unencrypted JSON file listing the JIDs you have talked to and their fingerprints.  It is a contact list, and anyone who can read it learns who you correspond with.  Encrypting it is tracked in `docs/ANDROID_STORAGE_AUDIT.md` row 4 and is not done here.  Note the asymmetry with the identity: an attacker who can *write* to this file can replace a pin, which would make a substituted identity look expected — so the integrity of this file matters as much as its confidentiality, and neither is cryptographically protected today.
 
    **Failure is closed.**  A record that exists and will not open is never silently replaced: regenerating would change the local fingerprint with no signal, and every peer holding a pin would see the identity change TOFU exists to report — caused by us and indistinguishable from an attack.  The client refuses to start instead.
 
@@ -577,7 +577,7 @@ There is no bug bounty. The project is solo and unfunded.
 
 14. **The SMP passphrase is stretched with Argon2id as of v10.13.0, and an offline dictionary attack on it is still possible (v10.13.0).**  SMP proves two people know the same passphrase without revealing it, but the transcript is enough for a party who *completes* SMP with you — including an attacker who is talking to you — to test candidate passphrases offline.  That is a property of SMP, not of this implementation, and it does not go away.  What changed is the cost per guess.  Until v10.13.0 the passphrase was stretched by 50,000 rounds of SHAKE-256 over the passphrase **alone**; the session ID and fingerprints were mixed in afterwards by a single HMAC.  Two consequences followed: the work was CPU-only, so a GPU ran thousands of candidates in parallel, and — worse — nothing user-specific entered the expensive part, so `stretch(candidate)` was computable once and reusable against every OTRv4Plus user and every session that ever ran.  The 50,000 rounds bought far less than the number suggested.  Wire version `0x03` derives the scalar with Argon2id (m=64 MiB, t=3, p=4), salted with the session ID and both fingerprints, so each guess costs 64 MiB of memory and no precomputation carries from one session to the next.  **This raises the cost of a dictionary attack; it does not make a weak passphrase safe.**  A short or guessable SMP passphrase is still a short or guessable SMP passphrase.  The `0x02` derivation is retained, unchanged, only so that a peer who has not updated fails at the version check with a message saying so rather than reporting a passphrase mismatch — there is no negotiation and no downgrade.
 
-15. **A documentation claim of Argon2id in the Rust core predated the implementation by several releases (v10.13.0).**  `FEATURES.md` and `README.md` stated that an "Argon2id KDF protecting the SMP vault" ran inside `otrv4_core`, and audit finding 6 below is recorded as closed on the same premise.  No such code existed: `argon2` was not a dependency of the crate, no Rust source referenced it, and `src/smp_vault.rs` is an in-memory zeroizing store with no key derivation in it at all.  The Argon2id that did exist was Python-side and at-rest only.  The claim survived a documentation-synchronisation pass because the table was read and not checked against the source.  It was retracted, and then made true in the place that mattered, at v10.13.0.  Recorded here because a security document that has overstated a property once should say so plainly: the correction is now pinned by `tests/test_kdf_claims_are_true.py`, which reads `Cargo.toml` and the Rust sources rather than the prose.
+15. **A documentation claim of Argon2id in the Rust core predated the implementation by several releases (v10.13.0).**  `docs/FEATURES.md` and `README.md` stated that an "Argon2id KDF protecting the SMP vault" ran inside `otrv4_core`, and audit finding 6 below is recorded as closed on the same premise.  No such code existed: `argon2` was not a dependency of the crate, no Rust source referenced it, and `src/smp_vault.rs` is an in-memory zeroizing store with no key derivation in it at all.  The Argon2id that did exist was Python-side and at-rest only.  The claim survived a documentation-synchronisation pass because the table was read and not checked against the source.  It was retracted, and then made true in the place that mattered, at v10.13.0.  Recorded here because a security document that has overstated a property once should say so plainly: the correction is now pinned by `tests/test_kdf_claims_are_true.py`, which reads `Cargo.toml` and the Rust sources rather than the prose.
 
 
 16. **A remote peer could decide what your next keystroke meant, until v10.13.1.**  Completing a DAKE caused the client to arm a pending-input state (`_pending[peer] = "smp_secret"`), and the line dispatcher consumed that state ahead of all command parsing with only `/quit` exempt.  Because the arming path ran from the inbound message handler, a peer who started an OTR session could make the next line the user typed -- a message, a command, anything -- be swallowed and stored as an SMP passphrase.  The line was masked and never transmitted, so this was not exfiltration; it was a remote party choosing the meaning of local input, which is the property being defended.  Supplying the secret now requires the user to type `/smp-secret` themselves, and the request is single-use: it is taken unconditionally on the next dispatched line and cannot survive into a later one.  `tests/test_no_remote_input_capture.py` walks the inbound call graph transitively and fails if any remote-driven path can reach the armer again.

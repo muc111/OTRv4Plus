@@ -239,7 +239,7 @@ hex      = "0.4"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
-# OTRv4Plus PATCH (MLS_SECURITY_HARDENING.md §2, decision C1): OpenMLS's
+# OTRv4Plus PATCH (docs/MLS_SECURITY_HARDENING.md §2, decision C1): OpenMLS's
 # ciphersuite, KEM and signature-scheme lists are closed enums. The vendored
 # openmls_traits adds private-use code points for the hybrid suite
 # MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 (0xF0A1), its KEM

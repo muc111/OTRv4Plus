@@ -112,7 +112,7 @@ def test_the_group_creation_screen_says_what_it_is():
 
 def test_mls_plus_is_defined_in_the_readme_and_technical():
     readme = _read(os.path.join(ROOT, "README.md"))
-    technical = _read(os.path.join(ROOT, "TECHNICAL.md"))
+    technical = _read(os.path.join(ROOT, "docs/TECHNICAL.md"))
     assert DEFINITION in readme and DEFINITION in technical
     assert INTEROP in readme
     assert readme.index(INTEROP) > readme.index("**Known limits**")
@@ -124,4 +124,4 @@ def test_the_wire_format_is_untouched():
     """Labels only: the envelope and the suite stay byte-identical."""
     groups = _read(os.path.join(ROOT, "android_bridge", "groups.py"))
     assert 'ROOM_PREFIX = "?OTRv4MLS1:"' in groups
-    assert "0xF0A1" in _read(os.path.join(ROOT, "TECHNICAL.md"))
+    assert "0xF0A1" in _read(os.path.join(ROOT, "docs/TECHNICAL.md"))

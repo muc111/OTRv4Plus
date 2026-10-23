@@ -36,7 +36,7 @@ message it is published for, so a third party holding a transcript plus the
 published keys can forge entries in it. That is the operative sub-property of
 OTR deniability. It is NOT a proof of the full formal deniability property,
 which is a statement about what a judge or simulator can distinguish and needs
-review this test cannot provide. L1's status is discussed in MAC_FIX_REVIEW.md.
+review this test cannot provide. L1's status is discussed in docs/MAC_FIX_REVIEW.md.
 """
 
 import os

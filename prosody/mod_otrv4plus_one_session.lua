@@ -13,7 +13,7 @@
 -- in, and the session pushed out is told why (stream error `conflict`).
 -- OTRv4+ clients do not reconnect after that, so two devices cannot take
 -- turns throwing each other out; they tell the user, who can change the
--- password. See SECURITY_SESSIONS.md.
+-- password. See docs/SECURITY_SESSIONS.md.
 
 local max_resources = module:get_option_number("max_resources", 1);
 if max_resources < 1 then max_resources = 1; end

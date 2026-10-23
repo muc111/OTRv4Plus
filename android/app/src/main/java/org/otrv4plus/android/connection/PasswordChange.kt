@@ -11,7 +11,7 @@ package org.otrv4plus.android.connection
  * ENGINE compares it, in constant time, with the one the stream signed in
  * with (transport.change_password), and never sends it to the server:
  * XEP-0077 §3.3 trusts the signed-in stream. Not here: the vault is
- * Kotlin's only cryptography (CRYPTO_SOURCE_OF_TRUTH.md).
+ * Kotlin's only cryptography (docs/CRYPTO_SOURCE_OF_TRUTH.md).
  *
  * Plain Kotlin, so a JVM test drives it (PasswordChangeTest).
  */

@@ -131,7 +131,7 @@ class TestTheBoundaryIsExact:
 class TestDakeSizedPayloads:
     """The sizes that made this a blocker rather than an optimisation.
 
-    From SPEC.md: ML-KEM-1024 ciphertext 1568, ML-DSA-87 public key 2592,
+    From docs/SPEC.md: ML-KEM-1024 ciphertext 1568, ML-DSA-87 public key 2592,
     ML-DSA-87 signature 4627. DAKE1 is at most 4455 bytes and DAKE3 4857, both
     under the threshold; a DAKE2 carries all three pieces and is about 11.7 KB
     once base64-armoured, which is what forces fragmentation.

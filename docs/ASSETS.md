@@ -81,9 +81,9 @@ and system chrome visible in them belong to their respective owners.
 
 | File | Origin | SHA-256 |
 |---|---|---|
-| `example.png` | IRC client session; added and replaced by the author (`5a31aaf`, 2026-09-05). JPEG data; its EXIF holds only two capture timestamps — no location, no device model. | `0ad5c8c1bb641bf425338c6e27c305fd36fb7b94b6df231ab077577ee26aed1c` |
-| `xmpp-verify.png` | XMPP client session through `/otr` and `/smp` (`b3341c9`, 2026-09-05) | `172a4d5f65fd3e60a85500f82c60c0e6378a4dacb0117e8ff8ff410590401bc4` |
-| `xmpp-call-sendfile.png` | The same session through `/call` and `/sendfile` (`b3341c9`) | `84fdff3bfb4b9e28d7916ca5dc0734662cd85be820b4556c4bd0dac6074c36a0` |
+| `docs/images/example.png` | IRC client session; added and replaced by the author (`5a31aaf`, 2026-09-05). JPEG data; its EXIF holds only two capture timestamps — no location, no device model. | `0ad5c8c1bb641bf425338c6e27c305fd36fb7b94b6df231ab077577ee26aed1c` |
+| `docs/images/xmpp-verify.png` | XMPP client session through `/otr` and `/smp` (`b3341c9`, 2026-09-05) | `172a4d5f65fd3e60a85500f82c60c0e6378a4dacb0117e8ff8ff410590401bc4` |
+| `docs/images/xmpp-call-sendfile.png` | The same session through `/call` and `/sendfile` (`b3341c9`) | `84fdff3bfb4b9e28d7916ca5dc0734662cd85be820b4556c4bd0dac6074c36a0` |
 
 ## Desktop screenshots
 

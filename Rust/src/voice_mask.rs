@@ -94,7 +94,7 @@ pub enum Mode {
     /// harmonics, pitch-shifted, under the warped envelope). Owner,
     /// 2026-10-16: "Disguised is hard to understand, remove it, we can use
     /// synthetic only". It was also the weaker of the two against a speaker
-    /// recogniser (VOICE_NOTES.md). It is gone from every client and from
+    /// recogniser (docs/VOICE_NOTES.md). It is gone from every client and from
     /// here, so nothing can ask for it.
     Synthetic,
 }
@@ -872,7 +872,7 @@ fn spectral_mask(x: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64> {
             let warp = params.warp + 0.025 * along(&path_w, fi);
             // Two warps on the smooth envelope: McAdams (non-linear, the
             // VoicePrivacy B2 transform) then a bilinear length warp.
-            // Measured with a speaker-recognition network (VOICE_NOTES.md):
+            // Measured with a speaker-recognition network (docs/VOICE_NOTES.md):
             // either alone left the speaker more recognisable.
             let env = log_envelope(xr, xi);
             let target = warp_log_envelope(&mcadams_log_envelope(&env, alpha, params.scale), warp);

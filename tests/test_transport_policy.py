@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """INV-17, INV-18, INV-19: the transport policy, checked rather than promised.
 
-The policy is written out in `TRANSPORT_POLICY.md`.  Three of its rules are
+The policy is written out in `docs/TRANSPORT_POLICY.md`.  Three of its rules are
 the ones that get broken by well-intentioned changes, so they are pinned here:
 
   INV-17  no fallback ladder.  A transport that fails or degrades must not
@@ -35,7 +35,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-POLICY = os.path.join(ROOT, "TRANSPORT_POLICY.md")
+POLICY = os.path.join(ROOT, "docs/TRANSPORT_POLICY.md")
 
 
 def _read(path):
@@ -152,7 +152,7 @@ class TestTheClassIsFixedForTheCall:
 
     def test_there_is_still_exactly_one_media_transport_class(self):
         """The limit recorded against INV-18.  When a second media class
-        appears this fails, and the transcript binding in TRANSPORT_POLICY.md
+        appears this fails, and the transcript binding in docs/TRANSPORT_POLICY.md
         section 5 is what has to land with it -- not a deletion of this test.
         """
         voice = pytest.importorskip("otrv4plus_voice")
@@ -336,9 +336,9 @@ class TestTheStatusTableIsHonest:
         assert ("**not implemented**" in modes) == ("not implemented" in status)
 
     def test_the_audit_and_the_policy_do_not_contradict(self):
-        """TRANSPORT_AUDIT.md records what the code does; this records what
+        """docs/TRANSPORT_AUDIT.md records what the code does; this records what
         it is allowed to do.  Both must agree that voice is I2P-only."""
-        audit = _read(os.path.join(ROOT, "TRANSPORT_AUDIT.md"))
+        audit = _read(os.path.join(ROOT, "docs/TRANSPORT_AUDIT.md"))
         assert "Voice media is I2P-only" in audit
         assert re.search(r"Tor voice media \|\s+\*\*not implemented\*\*",
                          _read(POLICY))

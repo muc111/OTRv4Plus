@@ -1742,7 +1742,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                 if _is_session_limit(cond, said):
                     # Signed in, refused at resource bind: the server allows
                     # one session per account and another holds it
-                    # (SECURITY_SESSIONS.md). Retried: a session that just
+                    # (docs/SECURITY_SESSIONS.md). Retried: a session that just
                     # lost its network is timed out by the server.
                     started.set_exception(TransportError(
                         "session_limit", SESSION_LIMIT_TEXT))
@@ -1814,7 +1814,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
 
         # host= and port= point slixmpp at the local end of the SAM tunnel
         # rather than at a DNS lookup of the JID's domain. getaddrinfo is never
-        # called on a .i2p name -- TRANSPORT_POLICY.md is emphatic about that,
+        # called on a .i2p name -- docs/TRANSPORT_POLICY.md is emphatic about that,
         # and this is the line that keeps it true. slixmpp only skips its SRV
         # lookup when BOTH are given, so they must stay together.
         #
@@ -3902,7 +3902,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     # others' presence (RFC 6121 4.2.2 / 4.4.2), so another session of OUR
     # account is visible here without asking anyone. What a client can do is
     # say so, and -- for a server admin -- end it (XEP-0133). Stopping it for
-    # good is the server's job: see SECURITY_SESSIONS.md.
+    # good is the server's job: see docs/SECURITY_SESSIONS.md.
 
     END_SESSION_NODE = ADMIN_COMMAND_PREFIX + "end-user-session"
 

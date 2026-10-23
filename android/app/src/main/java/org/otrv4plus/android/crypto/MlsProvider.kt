@@ -52,7 +52,7 @@ package org.otrv4plus.android.crypto
  * rather than a different adapter.
  *
  * Its key material is its own. No OTRv4+ key, no OMEMO identity, no shared
- * ratchet — see the separation rule in `ANDROID_ENCRYPTION_ARCHITECTURE.md`.
+ * ratchet — see the separation rule in `docs/ANDROID_ENCRYPTION_ARCHITECTURE.md`.
  */
 class MlsProvider(
     /**

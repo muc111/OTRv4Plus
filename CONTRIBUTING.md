@@ -29,7 +29,7 @@ licensed; see [CONTRACTOR-IP.md](CONTRACTOR-IP.md) before commissioning any.
 
 **Adding a dependency?** Say so in the pull request and name its licence. Every
 dependency in the tree today is permissive (MIT, Apache-2.0, BSD-3-Clause,
-PSF) — see [LICENSING_AUDIT.md](LICENSING_AUDIT.md). One copyleft library added
+PSF) — see [docs/LICENSING_AUDIT.md](docs/LICENSING_AUDIT.md). One copyleft library added
 for convenience would make the commercial half unsellable, and it would not be
 obvious from the diff.
 
@@ -147,7 +147,7 @@ that touches the wire.
 
 ## Versioning
 
-See [VERSIONING.md](VERSIONING.md). In particular: the wire-format version
+See [docs/VERSIONING.md](docs/VERSIONING.md). In particular: the wire-format version
 constants are compatibility predicates, not release numbers, and must not be
 bumped to mark a release.
 

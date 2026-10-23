@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""Group voice calls in a secure (MLS) group: MLS_SECURITY_HARDENING.md §5, M5.
+"""Group voice calls in a secure (MLS) group: docs/MLS_SECURITY_HARDENING.md §5, M5.
 
 What this module decides, and where each guarantee comes from:
 

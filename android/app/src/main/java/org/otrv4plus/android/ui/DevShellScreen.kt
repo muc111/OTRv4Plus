@@ -189,7 +189,7 @@ fun DevShellScreen(
         //
         // A working run is evidence too -- the Python version, the ABI, the
         // Rust core's symbol count and the self-test results are exactly what
-        // closes the device gates in ANDROID_PHASE2_REPORT.md §14, and they
+        // closes the device gates in docs/ANDROID_PHASE2_REPORT.md §14, and they
         // are only worth collecting if they can be sent.
         val clipboard = LocalClipboardManager.current
         var copied by remember { mutableStateOf(false) }
@@ -249,7 +249,7 @@ fun DevShellScreen(
         Spacer(Modifier.height(16.dp))
 
         // The start-up snapshot, kept: it is what closes the environment
-        // gates in ANDROID_PHASE2_REPORT.md §14, and a working run is
+        // gates in docs/ANDROID_PHASE2_REPORT.md §14, and a working run is
         // evidence too. FLAG_SECURE blocks a screenshot, so if it cannot be
         // exported it cannot leave the device at all.
         Text("Start-up report", style = MaterialTheme.typography.titleSmall)

@@ -95,7 +95,7 @@ interface EncryptionProvider {
      *
      * Called at the account boundary. Each provider clears its OWN state and
      * never another's -- see the cryptographic separation rule in
-     * `ANDROID_ENCRYPTION_ARCHITECTURE.md`.
+     * `docs/ANDROID_ENCRYPTION_ARCHITECTURE.md`.
      */
     fun forgetAccount()
 }

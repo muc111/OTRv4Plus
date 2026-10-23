@@ -7,7 +7,7 @@
 # Runs in the build qube (netvm=none). Every input is a local file whose
 # SHA-256 is checked against a lock committed to the repository; nothing is
 # fetched. Inputs come from fetch-sources.sh, run in a disposable networked
-# qube and handed over with qvm-copy (see FEASIBILITY_REPORT.md §5).
+# qube and handed over with qvm-copy (see docs/FEASIBILITY_REPORT.md §5).
 #
 #   qubes/packaging/build-deb.sh --wheels DIR --core-wheel FILE \
 #       [--pyver 3.13] [--out DIR] [--version X.Y.Z]

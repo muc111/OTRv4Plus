@@ -35,7 +35,7 @@ package org.otrv4plus.android.crypto
  * -- CI has the NDK toolchain -- and it is a packaging problem rather than a
  * protocol one, which is the state this class is written to leave it in.
  *
- * `ANDROID_ENCRYPTION_ARCHITECTURE.md` records it with the evidence.
+ * `docs/ANDROID_ENCRYPTION_ARCHITECTURE.md` records it with the evidence.
  *
  * NO SILENT DOWNGRADE
  * -------------------

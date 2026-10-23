@@ -329,7 +329,7 @@ class TestOTRv4PlusMLKEM(unittest.TestCase):
         
         self.__class__.passed += 1
     
-    @unittest.expectedFailure  # tracked gap -- see ANDROID_PHASE2_REPORT.md
+    @unittest.expectedFailure  # tracked gap -- see docs/ANDROID_PHASE2_REPORT.md
     def test_08_dake_timeout(self):
         """Test DAKE timeout mechanism.
 

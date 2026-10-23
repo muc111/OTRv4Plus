@@ -23,7 +23,7 @@ development machine, not a runtime dependency.  The skip is loud enough to
 notice in the summary and the audit records when it was last actually run.
 
 Recorded result, 2026-09-01, Go 1.25.1 vs pqcrypto-mlkem 0.1.1:
-10 agreements, 0 mismatches, both directions.  See GROUP_CRYPTO_AUDIT.md.
+10 agreements, 0 mismatches, both directions.  See docs/GROUP_CRYPTO_AUDIT.md.
 """
 
 import os

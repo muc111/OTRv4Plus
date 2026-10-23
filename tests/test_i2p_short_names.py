@@ -155,7 +155,7 @@ class TestTheErrorSaysWhatToDo:
 
 class TestTheTransportChoiceIsUnchanged:
     """A short name must still select I2P, and must not weaken the checks in
-    TRANSPORT_POLICY.md."""
+    docs/TRANSPORT_POLICY.md."""
 
     def test_a_short_name_still_reads_as_i2p(self):
         for name in ("otrv4plus.i2p", B32):

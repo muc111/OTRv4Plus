@@ -2,7 +2,7 @@
 """The registry in `security_invariants.py` must describe reality.
 
 An invariant with no enforcing test is a comment.  A named test module that
-does not exist is worse -- VERSIONING.md claimed the SMP wire byte was pinned
+does not exist is worse -- docs/VERSIONING.md claimed the SMP wire byte was pinned
 by `test_protocol_version.py` for a whole release before it actually was, and
 nothing noticed because prose cannot be executed.
 
@@ -106,14 +106,14 @@ class TestLookup:
 
 
 class TestTheDocumentAgrees:
-    """SECURITY_INVARIANTS.md is generated from this registry by hand.
+    """docs/SECURITY_INVARIANTS.md is generated from this registry by hand.
     If they disagree, the prose is the one that is wrong -- but a reader will
     believe the prose, so they must not disagree."""
 
     def _doc(self):
-        path = os.path.join(ROOT, "SECURITY_INVARIANTS.md")
+        path = os.path.join(ROOT, "docs/SECURITY_INVARIANTS.md")
         if not os.path.exists(path):
-            pytest.skip("SECURITY_INVARIANTS.md not written yet")
+            pytest.skip("docs/SECURITY_INVARIANTS.md not written yet")
         return open(path, encoding="utf-8").read()
 
     def test_every_invariant_appears(self):

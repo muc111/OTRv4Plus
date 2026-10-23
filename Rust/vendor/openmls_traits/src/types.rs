@@ -216,7 +216,7 @@ pub enum HpkeKemType {
     XWingKemDraft6 = 0x004D,
 
     /// OTRv4Plus PATCH: X448 + ML-KEM-1024 with a binding combiner
-    /// (MLS_SECURITY_HARDENING.md §2). Private code point, not registered.
+    /// (docs/MLS_SECURITY_HARDENING.md §2). Private code point, not registered.
     #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
     X448MlKem1024 = 0xF0A1,
 }
@@ -539,7 +539,7 @@ pub enum Ciphersuite {
 
     /// OTRv4Plus PATCH: X448+ML-KEM-1024 (binding combiner) | AES-GCM256 |
     /// SHA2-384 | Ed448+ML-DSA-87 (composite). MLS private-use code point
-    /// (RFC 9420 §17.1: 0xF000-0xFFFF); see MLS_SECURITY_HARDENING.md §2.
+    /// (RFC 9420 §17.1: 0xF000-0xFFFF); see docs/MLS_SECURITY_HARDENING.md §2.
     #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
     MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 = 0xF0A1,
 }

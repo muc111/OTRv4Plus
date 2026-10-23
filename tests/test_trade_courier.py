@@ -1,6 +1,6 @@
 """The trade courier carries blobs and nothing else.
 
-`MONERO_ESCROW_AUDIT.md` rejected putting Monero's cryptography in the Rust
+`docs/MONERO_ESCROW_AUDIT.md` rejected putting Monero's cryptography in the Rust
 core: `monero-serai` is yanked, `monero-oxide`'s multisig is FROST and cannot
 interoperate with `monero-wallet-cli`, native multisig is experimental and off
 by default, and FCMP++ removes CLSAG. What shipped instead is a courier — the

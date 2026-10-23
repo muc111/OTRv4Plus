@@ -5,7 +5,7 @@
 //! SIGNING KEYS: ONE PER GROUP, ROTATED
 //! ====================================
 //! MLS signs every message with the sender leaf's signature key, and a
-//! signature is evidence anyone can check (MLS_SECURITY_HARDENING.md §1). To
+//! signature is evidence anyone can check (docs/MLS_SECURITY_HARDENING.md §1). To
 //! keep that evidence as narrow as RFC 9420 allows:
 //!   * every group gets its own ML-DSA-87 key -- made for the KeyPackage that
 //!     brought us in, or when we created the group -- so a member cannot be

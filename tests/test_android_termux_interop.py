@@ -22,7 +22,7 @@ they do on a network.
 
 WHAT THIS IS NOT: two devices, an XMPP server, or I2P. It proves the two
 configurations interoperate at the protocol layer; the handset run in
-`ANDROID_CALL_AND_FILE_DEVICE_TEST.md` is still what proves the network does.
+`docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md` is still what proves the network does.
 """
 
 import os
