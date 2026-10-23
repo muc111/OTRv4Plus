@@ -1630,7 +1630,7 @@ def _sam_open(host: str, port: int, timeout: float):
 # authenticated media headers).  It is a separate module so that the key
 # agreement, the rekey state machine and the replay window can be tested
 # without importing slixmpp, opuslib or PulseAudio — see
-# test_voice_security.py.  Read the module docstring there for the wire
+# tests/test_voice_security.py.  Read the module docstring there for the wire
 # format and the exact security claims.
 #
 # Everything below re-exports the voice names under their historical

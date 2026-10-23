@@ -7,7 +7,7 @@ that pulls in slixmpp, opuslib and PulseAudio at import time, so the key
 agreement, the rekey state machine and the replay window had no test
 coverage at all.  Everything security-relevant in here imports nothing
 beyond the standard library and the Rust core, and is exercised by
-``test_voice_security.py``.
+``tests/test_voice_security.py``.
 
 The audio/SAM host helpers are injected by ``bind_host()`` rather than
 duplicated.

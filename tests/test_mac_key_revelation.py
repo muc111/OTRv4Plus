@@ -78,7 +78,7 @@ def _load_engine():
     The filename varies by checkout (`otrv4+.py` is not a legal identifier),
     so it is loaded by spec rather than by name.
     """
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for name in ("otrv4_.py", "otrv4+.py", "otrv4plus.py"):
         path = os.path.join(here, name)
         if not os.path.exists(path):

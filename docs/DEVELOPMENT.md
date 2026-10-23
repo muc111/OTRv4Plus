@@ -175,10 +175,9 @@ OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 python3.12 -m pytest -q
 ```
 
 The skips are environment-gated (no audio device, no Termux:API, no live SAM
-bridge), not failures. The root-level suites — `test_voice_security.py`,
-`test_audio_backend.py`, `test_voice_audio_integration.py`,
-`test_mac_key_revelation.py` — contribute 239 of those tests and are *not*
-under `tests/`.
+bridge), not failures. Every suite lives under `tests/`; the four voice and
+MAC suites that used to sit at the top level (and that CI therefore never
+ran) moved there in October 2026.
 
 ### A module must not end the process when imported
 

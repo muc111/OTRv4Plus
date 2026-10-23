@@ -11,6 +11,7 @@ parts that can only be verified on hardware are listed at the bottom of the
 audit report rather than faked into a green tick here.
 """
 
+import os
 import struct
 import time
 import unittest
@@ -158,7 +159,7 @@ class TestInitialisation(BackendBase):
         cap = A.AAudioCapture()
         self.assertEqual(lib.started, 1)
         self.assertEqual(lib.direction, A.AAUDIO_DIRECTION_INPUT)
-        self.assertEqual(lib.req_rate, 16000)
+        self.assertEqual(lib.req_rate, A.SAMPLE_RATE)
         self.assertEqual(lib.req_ch, 1)
         self.assertEqual(lib.req_fmt, A.AAUDIO_FORMAT_PCM_I16)
         self.assertEqual(lib.builders_deleted, 1, "builder must not leak")
@@ -302,7 +303,9 @@ class TestLifecycle(BackendBase):
         lib = install(FakeAAudioLib())
         cap = A.AAudioCapture()
         cap.stop()
-        self.assertEqual(lib.stopped, 1)
+        # requestStop runs before waiting out a read in flight and again in
+        # the close (tests/test_aaudio_close_race.py); it is idempotent.
+        self.assertGreaterEqual(lib.stopped, 1)
         self.assertEqual(lib.closed, 1)
 
     def test_stop_is_idempotent(self):
@@ -537,7 +540,9 @@ class TestBurstAlignment(BackendBase):
         self.assertEqual(diag["encoding"], "PCM_16BIT")
         self.assertEqual(diag["buffer_capacity_frames"], 2560)
         self.assertEqual(diag["frames_per_burst"], 480)
-        self.assertFalse(diag["resampling"])
+        # The device was measured at 16 kHz; calls request A.SAMPLE_RATE
+        # (24 kHz since rc.61), so the backend resamples unless set back.
+        self.assertEqual(diag["resampling"], A.SAMPLE_RATE != 16000)
         self.assertFalse(diag["disconnected"])
         frame = cap.read_frame()
         self.assertEqual(len(frame), A.FRAME_BYTES)
@@ -771,11 +776,9 @@ class TestHostApiCompatibility(unittest.TestCase):
     def test_every_attribute_the_host_dereferences_exists(self):
         import re
         import otrv4plus_voice as V
-        try:
-            with open("otrv4plus_xmpp.py") as fh:
-                src = fh.read()
-        except OSError:
-            self.skipTest("otrv4plus_xmpp.py not beside the tests")
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "otrv4plus_xmpp.py")) as fh:
+            src = fh.read()
         missing = []
         for cls, attr in re.findall(
                 r"\b(VoiceCallManager|VoiceCallSession|CallState)\.([A-Za-z_]+)",
