@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.132 — 2026-10-23 — ctutils security update (core 0.13.1)
+
+- **ctutils 0.4.3 → 0.4.4** in all three Rust lockfiles, for RUSTSEC-2026-0385
+  (published today): mask generation and `u128` comparisons in 0.4.3 were
+  not constant-time. ctutils is a dependency of the RustCrypto crates the core
+  uses; no code changed. The Rust core and MLS tests pass on 0.4.4.
+- The README's clone commands no longer need `-b`: `main` now matches the
+  APK on the Releases page.
+
 ## Android 0.7.0-experimental.rc.131 and Desktop — 2026-10-23 — the kind of each chat at a glance (core 0.13.1)
 
 - **The chat list tints each row by kind**, at 50%, with a solid stripe on
