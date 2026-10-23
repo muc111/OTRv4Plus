@@ -102,6 +102,26 @@ These are not style preferences. They are the reasons the project exists.
 - **An unencrypted benchmark path** that could later be mistaken for production
   code.
 
+## Comments
+
+Comments say what the code is for and what must stay true. History goes
+in the commit message and `CHANGELOG.md`.
+
+- **Explain intent and invariants:** why a step happens in that order, what
+  must never happen ("never plaintext once OTR was asked for"), which input
+  is untrusted, why a bound exists.
+- **No incident stories in code.** "Device report (date): …", "this used
+  to …", "THE DEFECT THIS FIXES", quotes from a conversation, rc numbers and
+  line references all go stale. Put the story in the commit; leave the rule
+  in the code.
+- **Keep it proportional.** A two-line method gets a one-line docstring. A
+  long docstring is for real design (a wipe's ordering, a protocol step), not
+  for narrating how it was found.
+- **Name the test that holds a rule** when there is one
+  (`tests/test_x.py`); that is more useful to a reader than prose.
+- **Security notes stay.** What crosses a trust boundary, what is never
+  logged, why a check is fail-closed: keep these, briefly.
+
 ## Testing
 
 Run the suite from the repository root, not from `tests/` — the root-level

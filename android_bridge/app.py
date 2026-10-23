@@ -11,8 +11,7 @@ Design constraints this file exists to satisfy:
     ratchet state.  Secrets that must be passed IN (the SMP secret) go straight
     to the engine and are not retained, logged, or echoed back.
   * Transport-agnostic.  The XMPP client is injected as `Transport`, so the
-    facade is importable and testable without slixmpp, and so the I2P decision
-    (blocker B3) can be settled without touching this layer.
+    facade is importable and testable without slixmpp.
 
 Threading: `EnhancedSessionManager` takes an RLock internally and the XMPP
 client runs SMP on its own executor, because SMP performs multi-minute 3072-bit
@@ -32,11 +31,9 @@ from dataclasses import dataclass
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-# The shared wire format. A dependency-free leaf, which is why importing it at
-# module scope does not breach the transport boundary from 22fc255 -- see
-# tests/test_android_transport.py::test_any_shared_module_it_imports_is_a_leaf.
-# Both clients classify and fragment
-# with this module and nothing has a second copy.
+# The shared wire format, used by both clients. A dependency-free leaf, so a
+# module-level import keeps the transport boundary intact
+# (test_android_transport.py::test_any_shared_module_it_imports_is_a_leaf).
 import otrv4plus_fragment as _fragment
 import otrv4plus_actions as _actions
 
@@ -62,12 +59,8 @@ __all__ = ["OtrApp", "Transport", "ContactView", "SecurityDetails",
 
 
 
-#: The trade control prefix, read from `otrv4plus_trade` when it is loaded.
-#:
-#: Kept as a constant rather than importing the module: trade is not wired up
-#: on Android, and importing a twelve-thousand-line dependency to recognise a
-#: twelve-character prefix would be paying for a feature this build does not
-#: have. Asserted equal to the real one by `tests/test_android_files.py`.
+#: The trade control prefix. A constant, not an import: trade is not wired up
+#: on Android and the module is large. test_android_files.py checks it matches.
 TRADE_PREFIX_FALLBACK = "?OTRv4-TRADE:"
 
 
@@ -166,11 +159,7 @@ class ContactView:
     jid: str
     display_name: str
     #: One of otrv4plus_presence.STATES: "unknown", "online", "offline".
-    #:
-    #: The field that replaced a bare `online: bool`. That bool could not say
-    #: "we have not heard", so a freshly added contact was reported offline and
-    #: the UI -- correctly refusing to claim knowledge it did not have --
-    #: rendered "presence unknown" forever.
+    #: "unknown" (never heard) is distinct from "offline".
     presence: str
     security: SecurityState
     smp: SmpState
@@ -179,13 +168,8 @@ class ContactView:
     #: RFC 6121 show: "", "away", "chat", "dnd", "xa". Empty unless online.
     presence_show: str = ""
     #: The XMPP roster subscription, verbatim: "none", "to", "from", "both",
-    #: or "" when the roster did not say.
-    #:
-    #: Carried because a contact you have added but who has not yet approved
-    #: you is a REAL and common state, and one the user has to be able to see:
-    #: their presence will read as unknown for hours or days, and "the app is
-    #: broken" is the wrong conclusion to leave available. It was being read
-    #: from the roster and then dropped here.
+    #: or "" when the roster did not say. Shown so a contact who has not yet
+    #: approved us explains why their presence stays unknown.
     subscription: str = ""
     #: Whether we have asked and not yet been answered. slixmpp exposes this
     #: separately from `subscription`, because a pending request does not
@@ -194,13 +178,9 @@ class ContactView:
 
     @property
     def online(self) -> bool:
-        """Kept for callers that genuinely want a boolean.
-
-        DERIVED, never stored: a second field would be a second thing to keep
-        in step, and disagreeing with `presence` is exactly the failure this
-        replaced. False covers both OFFLINE and UNKNOWN, so anything that has
-        to tell those apart must read `presence`.
-        """
+        """True only when online. Derived from `presence`, never stored;
+        False covers both offline and unknown -- read `presence` to tell them
+        apart."""
         return self.presence == _presence.ONLINE
 
 
@@ -223,11 +203,8 @@ class SecurityDetails:
 
 
 class Transport:
-    """What OtrApp needs from a transport.  Implemented by the XMPP client.
-
-    Kept to four methods so the I2P/SAM question (blocker B3) and the choice of
-    transport stay entirely outside this facade.
-    """
+    """What OtrApp needs from a transport (the XMPP client implements it).
+    Four methods, so the transport and I2P details stay outside the facade."""
 
     def send(self, peer: str, payload: str) -> None:            # pragma: no cover
         raise NotImplementedError
@@ -265,10 +242,8 @@ class OtrApp:
         self._group_calls = None
         self._group_files = None
         self._connection = ConnectionState.DISCONNECTED
-        #: What we know about each peer's availability, and when we know
-        #: nothing. A PresenceBook rather than a dict of bools because
-        #: `.get(jid, False)` cannot tell "offline" from "never heard" -- see
-        #: otrv4plus_presence for the bug that produced.
+        #: Each peer's availability, including "never heard" (see
+        #: otrv4plus_presence).
         self._presence = _presence.PresenceBook()
         #: When we last saw traffic with each peer, for the contact row's
         #: "last seen". Ordered and bounded -- see `_touch`.
@@ -294,12 +269,10 @@ class OtrApp:
         self._entry_seen: Dict[Tuple[str, str], float] = {}
         #: peer -> monotonic time a handshake was first seen, for "elapsed".
         self._handshake_seen: dict = {}
-        #: THE OUTBOX. peer -> lines typed before the conversation was ready
-        #: (no session yet, or the contact's capability not known yet).
-        #: Sent by `_flush_outbox` when it is: encrypted, or in the clear only
-        #: once the contact is confirmed not to speak OTRv4+. This used to be
-        #: the engine's own queue, which dropped its contents when the
-        #: handshake completed: a line typed during a DAKE never arrived.
+        #: The outbox: peer -> lines typed before the conversation was ready
+        #: (no session yet, or capability not known). `_flush_outbox` sends
+        #: them encrypted, or in the clear only once the contact is confirmed
+        #: not to speak OTRv4+.
         self._outbox: Dict[str, List[str]] = {}
         #: Rooms carrying MLS frames that this device holds no group for.
         self._keyless_groups: set = set()
@@ -324,80 +297,29 @@ class OtrApp:
         self._register_meta_handler()
         self._enable_guided_smp()
 
-    #: How many peers' last-seen times to keep.
-    #:
-    #: BOUNDED BECAUSE THE KEY IS CHOSEN BY SOMEBODY ELSE. `receive_message`
-    #: records one for every inbound frame, under the sender's JID, so an
-    #: unbounded map is a memory-growth path a remote party drives. Measured
-    #: before the bound: twenty thousand distinct senders, twenty thousand
-    #: entries, nothing reclaimed. `otrv4+.py`'s `DAKE1RateLimiter` bounds
-    #: itself for the same reason and this matches it rather than inventing a
-    #: second answer.
-    #:
-    #: Far above any real contact list, so only a flood reaches it, and what
-    #: is lost when it does is a "last seen" caption -- never a security
-    #: state, a session or a trust decision, none of which are kept here.
+    #: How many peers' last-seen times to keep. Bounded because the key is the
+    #: sender's JID, which a remote party chooses; far above any real contact
+    #: list, and eviction only loses a "last seen" caption.
     MAX_TRACKED_ACTIVITY = 2048
 
     def _touch(self, peer: str) -> None:
-        """Record that we just exchanged something with *peer*.
-
-        The single write point for `_last_activity`, so the bound cannot be
-        bypassed by a future call site that assigns to the map directly.
-        Eviction is least-recently-active, which is what the value already
-        means.
-        """
+        """Record activity with *peer*: the only writer of `_last_activity`,
+        so the bound always applies. Evicts the least recently active."""
         self._last_activity[peer] = self._clock()
         self._last_activity.move_to_end(peer)
         while len(self._last_activity) > self.MAX_TRACKED_ACTIVITY:
             self._last_activity.popitem(last=False)
 
     def _enable_guided_smp(self) -> None:
-        """Declare that this front end CAN ask the user for a passphrase.
+        """Tell the engine this front end can ask the user for an SMP secret.
 
-        THE DEFECT THIS FIXES, AND IT MADE THE WHOLE RESPONDER PATH DEAD
-        ----------------------------------------------------------------
-        `EnhancedSessionManager.smp_guided_prompt` defaults to False, and its
-        own comment says what that means:
-
-            "False means the old behaviour: an SMP1 with no secret is aborted
-             with a reason, because a front end that cannot ask must not leave
-             the peer waiting for an answer that will never come."
-
-        Both terminal clients set it to True -- `otrv4plus_xmpp.py:1727` and
-        `otrv4_.py:14684`. NOTHING IN android_bridge EVER DID. So on Android
-        an arriving SMP1 with no stored passphrase took the abort branch, and
-        every piece of the responder flow downstream was unreachable:
-
-          * the core never called `hold_smp1`, so nothing was parked;
-          * `get_phase()` never returned SECRET_REQUIRED;
-          * `smp_secret_required()` was permanently False;
-          * `_announce_smp_change` therefore never fired for an incoming
-            request, so no prompt could open;
-          * `smp_respond` would refuse with `smp_not_requested`.
-
-        Measured, not deduced. Two real `EnhancedSessionManager`s with a real
-        DAKE, one SMP1 delivered:
-
-            guided=False -> replied=True   secret_required=False  phase=IDLE
-            guided=True  -> replied=False  secret_required=True   phase=SECRET_REQUIRED
-
-        A LATENT DEFECT THE UNIT TESTS COULD NOT SEE. The fake engine answered
-        `smp_secret_required` from a flag the test set, so it agreed with
-        whatever the test wanted. That is the fourth time in this project a
-        fake has encoded the same assumption as the code it stood in for --
-        after `connect(address=...)`, the SSL context, and `RosterItem.get`.
-        `tests/test_smp_android_interop.py` drives the real engine instead.
-
-        WHY HERE AND NOT IN `ChaquopyOtrCore.initialize`. Setting it in Kotlin
-        would work and would be invisible to every Python test. The flag is a
-        claim about the FRONT END -- "this one can ask" -- and `OtrApp` is the
-        front end's entire contract with the engine. Anything holding an
-        OtrApp has the dialog, so anything holding an OtrApp can ask.
-
-        Tolerant of an engine that has no such attribute: `smp_engine_compat`
-        exists because this project supports builds that predate a call, and
-        an engine without the flag is one that cannot park an SMP1 anyway.
+        With the flag off (the engine's default) an incoming SMP1 that has no
+        stored secret is aborted, so the responder flow -- hold the request,
+        report SECRET_REQUIRED, prompt, `smp_respond` -- never runs. Set here
+        because `OtrApp` is the whole front-end contract: anything holding one
+        can show the prompt. An engine without the attribute cannot hold an
+        SMP1 at all, so its absence is ignored.
+        Covered by tests/test_smp_android_interop.py against the real engine.
         """
         try:
             self._engine.smp_guided_prompt = True
@@ -453,11 +375,9 @@ class OtrApp:
     def shutdown(self) -> None:
         """Tear down every session.  Safe to call more than once.
 
-        THE CALLS GO FIRST, and the order is not cosmetic. A live call holds
-        a SAM session, an I2P lease and an open microphone, and its signalling
-        rides the OTR session this is about to destroy -- so ending the calls
-        after the sessions would mean the END the peer is owed can no longer
-        be encrypted, and they would sit on a call nobody is on.
+        Calls go first: their hang-up signal travels over the OTR session
+        that is destroyed below, so ending them later would leave the peer on
+        a call nobody is on.
         """
         if self._group_calls is not None:
             try:
@@ -488,10 +408,8 @@ class OtrApp:
         # A note being recorded is dropped, never kept for later.
         self.voice_note_cancel()
         self.voice_note_play_stop()
-        # The secure groups: sealed to disk and let go, lock included, so the
-        # next sign-in on this phone can open them again. Sign-out used to
-        # leave them open, and the account's next sign-in found its group
-        # state "in use" by the app that had just signed out.
+        # The secure groups: sealed to disk and released, lock included, so
+        # the next sign-in on this device can open them.
         if self._groups is not None:
             try:
                 self._groups.close()
@@ -887,12 +805,11 @@ class OtrApp:
              then it drains, stops and CLOSES its event loop.
           3. Transfers. Each FileKey holder is told to zeroize and each
              partial file is closed and unlinked, before the session is gone.
-          4. The engine, ON THE TRANSPORT'S LOOP THREAD. `DakeOutput` is
-             unsendable and is created while an inbound frame is processed,
-             which happens there; dropped from any other thread it would leak
-             un-zeroized. `EnhancedSessionManager.wipe` zeroizes every
-             ratchet, SMP state, vault, handshake and the identity handles in
-             Rust, then refuses all further use.
+          4. The engine, on the transport's loop thread, where inbound frames
+             are processed, so the wipe cannot interleave with one.
+             `EnhancedSessionManager.wipe` zeroizes every ratchet, SMP state,
+             vault, handshake and the identity handles in Rust, then refuses
+             all further use.
           5. The transport. `close`, not `disconnect`: the XMPP stream, the
              I2P tunnel and the loop thread all go, and the object is spent.
           6. What this facade remembered: presence, last activity, the OTR
@@ -992,8 +909,8 @@ class OtrApp:
           * each transfer's FileKey, zeroized, and partial files unlinked;
           * the engine (`EnhancedSessionManager.wipe`): every ratchet, DAKE,
             SMP state and vault, and the identity and prekey handles -- on
-            the transport's loop thread, because a `DakeOutput` is unsendable
-            and would leak un-zeroized if dropped elsewhere.
+            the transport's loop thread, so it cannot interleave with an
+            inbound frame.
 
         Sets `_wiped` first, so nothing can recreate state meanwhile.
         Idempotent; never raises. `wipe()` calls it before its own teardown.
@@ -1081,43 +998,16 @@ class OtrApp:
     def canonical_peer(peer: str) -> str:
         """One contact, one key, however their address is spelled.
 
-        WHY THIS EXISTS, AND IT IS NOT TIDINESS
-        ---------------------------------------
-        Every per-peer thing this facade owns is keyed by the string it was
-        handed: `OtrMode` (whether a conversation may send in the clear), the
-        presence book, last-activity, call state, and -- through the engine --
-        the session table itself. Two spellings of one contact are two
-        entries.
+        Every per-peer record here -- the OTR mode, presence, last activity, call
+        state and, through the engine, the session table -- is keyed by this value.
+        Two spellings of one contact would be two entries, and the OTR mode could
+        then miss for one of them and let a message out in the clear. So the JID is
+        bared and case-folded at this boundary, matching `ChatState.bare`,
+        `AccountScope.normalise` and `DAKE1RateLimiter._canonical`. Folding only
+        ever merges keys, never splits them.
 
-        That is a downgrade, not an inconvenience. Measured before this
-        existed, after OTR had been requested for `bob@x.test`:
-
-            may_send_plaintext(bob@x.test       ) = False
-            may_send_plaintext(Bob@X.test       ) = True   <-- LEAK
-            may_send_plaintext(bob@x.test/phone ) = True   <-- LEAK
-
-        And it is reachable. slixmpp normalises an inbound stanza's `from`,
-        so a PEER starting OTR marks the mode under `bob@x.test`; the Android
-        UI's conversation key is whatever was typed into Add Contact, which
-        `ChatState.bare` stripped of its resource but did not case-fold. Send
-        into that conversation and the mode lookup misses -- so a message
-        goes out in the clear on a conversation the other side has encrypted.
-
-        DONE HERE, at the boundary, for the same reason `DAKE1RateLimiter`
-        does it in the limiter rather than at its call sites: a future caller
-        that forgets cannot split state, and one place cannot drift from
-        eighteen. Folding is always the safe direction -- it can only merge
-        two keys into one, never turn one into two.
-
-        Matches how the rest of the project identifies a peer:
-        `msg["from"].bare` in the XMPP client, `split("/", 1)[0]` in the
-        Android transport, `AccountScope.normalise` and `ChatState.bare` in
-        Kotlin, and `DAKE1RateLimiter._canonical` in the engine.
-
-        A value that is not a JID is returned trimmed and folded rather than
-        rejected: this is a key normaliser, not a validator, and refusing
-        here would turn a malformed peer into an exception on a path that
-        already has honest answers for one.
+        A value that is not a JID is trimmed and folded, not rejected: this is a
+        key normaliser, not a validator.
         """
         return str(peer or "").strip().split("/", 1)[0].casefold()
 
@@ -1147,39 +1037,12 @@ class OtrApp:
         self._presence.forget_all()
 
     def forget_peer_state(self, peer: str) -> None:
-        """Drop what a subscription entitled us to know about one peer.
+        """Drop what a roster subscription told us about one peer: presence and
+        last seen. Called when the roster entry is removed.
 
-        Called when the ROSTER ENTRY GOES, not when the stream does.
-        `PresenceBook.forget` has documented this since it was written --
-        "what we learned under a subscription we no longer hold is not
-        something we are entitled to keep showing" -- and until now it had no
-        caller at all. Measured before it did:
-
-            before remove: presence=online last_activity=True
-            remove_contact: {'ok': True, ...}
-            after remove : presence=online last_activity=True
-
-        So a contact the user had just removed went on reading as online,
-        indefinitely, from a subscription that no longer existed.
-
-        WHAT IS DELIBERATELY LEFT ALONE
-        -------------------------------
-        The OTR session, the trust database and the message history. None of
-        those came from the subscription:
-
-          * a pinned fingerprint is long-term identity about a PEER, and
-            dropping it would turn the next conversation into a fresh
-            trust-on-first-use decision -- the moment this project most wants
-            to be visible;
-          * history outlives the roster entry, because deleting what was said
-            because somebody was unsubscribed destroys data the user did not
-            ask to lose;
-          * a live encrypted session is not made less safe by the roster
-            changing, and tearing it down mid-conversation would be a
-            surprise, not a protection.
-
-        This drops availability and last-seen: the two things the server was
-        telling us only because we were subscribed.
+        The OTR session, pinned fingerprint and message history are kept: they
+        did not come from the subscription, and dropping the fingerprint would
+        turn the next conversation into a fresh trust-on-first-use decision.
         """
         peer = self.canonical_peer(peer)
         if not peer:
@@ -1205,19 +1068,9 @@ class OtrApp:
     def security_state(self, peer: str) -> SecurityState:
         """The engine's view of this peer, or PLAINTEXT if it cannot answer.
 
-        GUARDED, and this is not defensive decoration. It is called from
-        `contacts()` for every roster entry on every UI poll -- twice a second
-        -- and from `receive_message` for every inbound frame. Unguarded, a
-        single raise from the engine propagated all the way out of
-        `contacts()`, which on the Android side discarded the entire poll and
-        left the screen asserting "Not connected" about a live stream. Every
-        neighbour here (`smp_state`, `smp_progress`, `security_details`) was
-        already guarded; this one was not, and the omission looks accidental.
-
-        PLAINTEXT is the fail-safe direction and the only defensible one: a
-        state we could not read must never be rendered as more secure than it
-        is. `security_state_from_level` already takes that position for an
-        unrecognised level; this extends it to an engine that raised.
+        Guarded because it runs for every roster entry on every UI poll and for
+        every inbound frame; one engine error must not fail the whole poll. An
+        unreadable state is reported as PLAINTEXT, never as anything stronger.
         """
         peer = self.canonical_peer(peer)
         try:
@@ -1239,18 +1092,11 @@ class OtrApp:
             return SmpState.NOT_VERIFIED
 
     def smp_secret_required(self, peer: str) -> bool:
-        """Whether a peer's SMP1 is held by the core, waiting for our answer.
+        """Whether the core is holding this peer's SMP1, waiting for our secret.
 
-        The SAME predicate both terminal clients use -- `otrv4+.py:9669` on
-        EnhancedSessionManager, which reads `RustSMP.get_phase() ==
-        "SECRET_REQUIRED"`. Not a second notion of "a request is pending":
-        there is one, it lives in Rust, and this asks it.
-
-        A manager without the method answers False rather than raising. That
-        is not defensive padding -- `smp_engine_compat` exists because this
-        project supports engine builds that predate a call, and reporting
-        "nobody is waiting on you" is the correct answer from an engine that
-        cannot hold an SMP1 in the first place.
+        The predicate the terminal clients use: Rust's
+        `RustSMP.get_phase() == "SECRET_REQUIRED"`. An engine without the method
+        cannot hold an SMP1, so it answers False.
         """
         peer = self.canonical_peer(peer)
         ask = getattr(self._engine, "smp_secret_required", None)
@@ -1321,29 +1167,9 @@ class OtrApp:
     def _contact_view(self, entry) -> Optional[ContactView]:
         """One roster entry as the UI sees it, keyed canonically.
 
-        THE JID IS CANONICALISED HERE, and the raw spelling is not kept. This
-        method reads two maps DIRECTLY -- `self._presence` and
-        `self._last_activity` -- rather than through the public accessors that
-        canonicalise for it, and both of those maps are WRITTEN under
-        `canonical_peer` keys by `note_presence`, `receive_message` and
-        `send_message`. A roster entry spelled any other way therefore missed
-        its own state. Measured, with a session live and a message just in:
-
-            roster entry jid emitted : 'Bob@Example.TEST'
-            presence for that row    : unknown            <-- it is known
-            last_activity for the row: None               <-- one just arrived
-            internal presence keys   : ['bob@example.test']
-
-        Worse than the blank fields: `jid` is the key the whole UI then uses,
-        so the Kotlin side got a contact row under one spelling while its
-        message history sat under another, and `conversations()` -- which
-        unions the roster with the message store -- showed the person twice.
-
-        slixmpp normalises the roster it hands us, so this is not reachable
-        through the live XMPP path today; it is reachable through any other
-        `Transport`, and the split it produces is the same one
-        `canonical_peer` exists to prevent. One contact, one key, at the only
-        place a JID enters this class from outside.
+        The JID goes through `canonical_peer`, because the presence and
+        last-activity maps read here are written under canonical keys; any other
+        spelling would show the contact twice and with blank state.
         """
         jid = entry.get("jid") if isinstance(entry, dict) else str(entry)
         if not jid:
@@ -1491,8 +1317,7 @@ class OtrApp:
         elif (self._capability_enforced()
               and self.otr_capability(peer) == "unavailable"
               and not self._mode.is_otr(peer)):
-            # Online, and confirmed not to speak OTRv4+: the user's choice
-            # (2026-10-04) is that such a contact is written to in the
+            # Online and confirmed not to speak OTRv4+: written to in the
             # clear, labelled as such. Never a contact that ever asked for
             # OTR (`is_otr`).
             sent = 0
@@ -1730,47 +1555,15 @@ class OtrApp:
         return out
 
     def start_session(self, peer: str) -> None:
-        """Begin the DAKE.  Completes in roughly 20s over XMPP/I2P.
+        """Begin the DAKE (about 20 s over I2P) and send its first message.
 
-        This is the EXPLICIT request, and from here on nothing in this
-        conversation goes out in the clear -- including if the handshake
-        fails, because a failed handshake is not consent to continue without
-        one.
-
-        THE DEFECT THIS FIXES
-        ---------------------
-        It used to read
-
-            payload = self._safe(
-                lambda: self._engine.handle_outgoing_message(peer, ""))
-
-        and then never mention `payload` again. The engine produced DAKE1 --
-        correctly, every time -- and this method dropped it on the floor.
-        Nothing was ever handed to the transport, so no stanza left the
-        device.
-
-        On a handset that was: tap OTRv4+, no visible change, no DAKE, and
-        nothing at all arriving at the other end. Every layer above reported
-        success, because every layer above HAD succeeded: the tap ran, the
-        launcher ran, the provider ran, Python ran, a session was created and
-        `SessionStateChanged` was emitted. The only thing that did not happen
-        was the send.
-
-        The terminal client has always done this properly, and its comment is
-        the one that applies here:
-
-            "OK is reported from the result of the send, not from having
-             attempted it: a DAKE1 that never left the socket is not a
-             completed stage."
-
-        `handle_outgoing_message` returns `(payload, should_send)`, which is
-        why assigning it to a single name and reading it as a payload was easy
-        to miss -- the tuple is truthy either way.
-
-        Fragmentation is the transport's, not ours: `XmppTransport._send`
-        splits on `otrv4plus_fragment.MAX_FRAGMENT`, which exists because a
-        DAKE2 is ~11.7 KB after base64 and goes straight at the ~8 KB I2P
-        cliff.
+        This is the explicit request: from here on nothing in this conversation
+        goes out in the clear, even if the handshake fails. Success is reported
+        from the send itself, not from creating the session --
+        `handle_outgoing_message` returns `(payload, should_send)` and the payload
+        must be handed to the transport. The transport fragments it
+        (`otrv4plus_fragment.MAX_FRAGMENT`): a DAKE2 is ~11.7 KB after base64,
+        above I2P's ~8 KB comfortable message size.
         """
         peer = self.canonical_peer(peer)
         self._refuse_room(peer, 'room_not_encryptable')
@@ -1911,42 +1704,22 @@ class OtrApp:
 
     def send_user_text(self, peer: str, body: str, message_id: str = "",
                        reply_to: str = "") -> str:
-        """Send one typed line the way the terminal client does.
+        """Send one typed line. Returns SEND_ENCRYPTED, SEND_QUEUED,
+        SEND_PLAINTEXT or SEND_FAILED.
 
-        Returns SEND_ENCRYPTED, SEND_QUEUED or SEND_FAILED.
+        [message_id] (the UI's random id for the bubble) goes on the wire as the
+        message id and XEP-0359 origin-id, so receipts, read markers and copies on
+        other devices match it.
 
-        [message_id] (the UI's id for the bubble, random) goes on the wire as
-        the message's id and XEP-0359 origin-id, so receipts, read markers and
-        copies on our other devices can be matched back to it.
+        Unlike `send_message` (which raises `not_encrypted` and never downgrades),
+        this reports what actually happened: a line typed before the session is
+        ready is QUEUED and sent when the DAKE completes.
 
-        WHY THIS EXISTS ALONGSIDE `send_message`
-        ----------------------------------------
-        `send_message` raises `not_encrypted` when the engine has no session,
-        and that behaviour is deliberate and tested -- it is the guarantee that
-        this facade never downgrades to plaintext. What it is NOT is an
-        accurate report of what happened, because the engine does not discard
-        the text: `handle_outgoing_message` returns `should_send=False` and
-        keeps it, then flushes it when the DAKE completes. The terminal client
-        has always reported that as `[queued] will send once OTR with <peer>
-        is ready`.
-
-        So the Android side was treating a normal, expected, recoverable state
-        as a send failure. A user typing before a session exists would be told
-        their message failed, when in fact it is waiting and will go.
-
-        PLAINTEXT BEFORE OTR
-        --------------------
-        An ordinary XMPP message, to a conversation where nobody has asked for
-        OTR, goes out as typed. It does NOT go through
-        `handle_outgoing_message`, because that call is opportunistic: it would
-        create a session, start a DAKE, queue the text and hand back DAKE1 --
-        so typing "hello" would emit an 11 KB handshake and deliver nothing.
-
-        `OtrMode` decides, and it fails closed: an established or requested
-        session is never downgraded, and a peer's own protocol frame marks the
-        conversation before the handshake finishes. The result is reported as
-        SEND_PLAINTEXT, distinct from SEND_ENCRYPTED, so nothing downstream can
-        mistake one for the other.
+        Plaintext only where nobody asked for OTR: `OtrMode` decides and fails
+        closed -- a session that exists or was requested is never downgraded, and
+        a peer's own protocol frame marks the conversation before its handshake
+        finishes. Plain sends bypass `handle_outgoing_message`, which would start a
+        DAKE instead of delivering the text.
         """
         peer = self.canonical_peer(peer)
         if self._transport is None:
@@ -1974,11 +1747,9 @@ class OtrApp:
                 return self.SEND_FAILED
             return self.SEND_QUEUED if outcome == "held" else self.SEND_ENCRYPTED
         if self._groups is not None and self._groups.awaiting_welcome(peer):
-            # A secure group we accepted and whose keys (the Welcome) have
-            # not arrived: never plaintext, whether or not its room has been
-            # joined yet. Device report (2026-10-16): the room looked like an
-            # ordinary one meanwhile, and a line typed there would have gone
-            # to the room in the clear.
+            # A secure group we accepted whose keys (the Welcome) have not
+            # arrived: never plaintext, even though the room itself may
+            # already look like an ordinary one.
             self._emit(ErrorOccurred(peer=peer, code="group_joining"))
             return self.SEND_FAILED
         if peer in self._rooms:
@@ -2003,7 +1774,7 @@ class OtrApp:
                 return self.SEND_FAILED
             return self.SEND_PLAINTEXT
 
-        # NO PLAINTEXT TO ANYONE WHO MIGHT SPEAK OTRv4+ (owner, 2026-10-04).
+        # No plaintext to anyone who might speak OTRv4+.
         # Until the conversation is encrypted, a line waits in the outbox
         # (QUEUED) when the contact's app speaks OTRv4+ -- and a handshake is
         # made sure of -- or when that is not known yet (offline, still
@@ -2138,36 +1909,21 @@ class OtrApp:
 
         body = result.decode("utf-8", errors="replace") if isinstance(result, (bytes, bytearray)) else str(result)
 
-        # CALL SIGNALLING IS NOT A MESSAGE, and this branch is what keeps it
-        # out of the conversation. The terminal client tests `CALL_PREFIX` in
-        # three places on its decrypted bodies; this facade tested it nowhere,
-        # so a peer's control message was handed to the UI as chat text.
-        # Measured through two real bridges with a live session:
+        # Decrypted bodies that are protocol, not chat, never reach the screen.
+        # Each returns None like any other protocol frame.
         #
-        #     receive_message returned: '?OTRv4-CALL:INVITE:aa|bb|cc|dd'
-        #
-        # -- rendered to the user as a message from their contact. Routed
-        # here instead, where `VoiceCallManager` validates it: `parse_signal`
-        # is structural only, `handle_signal` rate-limits before any work,
-        # and `_on_invite` applies the SMP gate before a session exists, so an
-        # unverified peer cannot make this device ring.
-        #
-        # Returns None like every other protocol frame: nothing to display.
+        # Call signalling: `VoiceCallManager` validates it (`parse_signal` is
+        # structural, `handle_signal` rate-limits, and `_on_invite` applies the
+        # SMP gate before a session exists, so an unverified peer cannot make
+        # this device ring).
         if is_call_signal(body):
             self._touch(peer)
             self.calls.handle_signal(peer, body)
             self._announce_smp_change(peer, before_smp)
             return None
 
-        # FILE SIGNALLING IS NOT A MESSAGE EITHER, and this one is louder
-        # when it goes wrong: every DATA chunk is base64 of a sealed chunk,
-        # so a transfer would have rendered as hundreds of walls of base64
-        # from the user's contact. Measured before this branch existed:
-        #
-        #     returned: '?OTRv4-FILE:OFFER:deadbeef|secret.pdf|1024'
-        #
-        # The engine validates it, including refusing an offer from a peer
-        # who is not SMP-verified before a transfer exists at all.
+        # File transfer signalling: the engine validates it, and refuses an
+        # offer from a peer who is not SMP-verified before any transfer exists.
         if is_file_signal(body):
             self._touch(peer)
             self.files.handle_signal(peer, body)
@@ -2185,28 +1941,12 @@ class OtrApp:
                     pass
             return None
 
-        # AND THE THIRD ONE. `otrv4plus_trade` carries `?OTRv4-TRADE:` in a
-        # body exactly as voice and file transfer do, and Android has no
-        # trade support at all -- so without this branch a peer's trade
-        # signalling would reach the screen as a message from their contact,
-        # which is the same defect the two above fix.
-        #
-        # SUPPRESSED, NOT HANDLED, and the difference is stated because it
-        # matters: this does not make trading work on Android. It stops
-        # protocol text being rendered as something a person said. Wiring
-        # `TradeManager` up is separate work with its own gate to honour.
+        # Trade signalling: not supported on Android, so it is dropped rather
+        # than handled -- only so that it is never shown as chat text.
         if _is_trade_signal(body):
             self._touch(peer)
             return None
 
-        # AN EMPTY BODY IS A CARRIER, NOT A MESSAGE. SMP travels as TLVs on a
-        # data message whose text is empty, and OTRv4 heartbeats are empty
-        # data messages too. Before this branch every SMP step reached the
-        # screen as a blank bubble from the contact, on both sides, which is
-        # what a handset showed when SMP was started after ordinary chat.
-        # Measured through two real bridges: after four ordinary messages,
-        # smp_start produced MessageReceived(body='') on the responder, and
-        # each later SMP step produced another.
         # An ACTION on an earlier message. Inside an encrypted conversation
         # it came with the frame (MESSAGE_META, authenticated); in a plaintext
         # one a correction rides on its XEP-0308 element. Never both: the
@@ -2225,6 +1965,8 @@ class OtrApp:
                 outgoing=False, source="live"))
             return body if action[0] == "edit" and body else None
 
+        # An empty body is a carrier, not a message: SMP travels as TLVs on an
+        # empty data message, and heartbeats are empty too.
         if body == "":
             self._touch(peer)
             after = self.security_state(peer)
@@ -2484,33 +2226,14 @@ class OtrApp:
             pass
 
     def _announce_smp_change(self, peer: str, before: SmpState) -> None:
-        """Emit when an inbound frame moved this peer's verification state.
+        """Emit an event when an inbound frame moved this peer's verification
+        state.
 
-        THE DEFECT THIS FIXES
-        ---------------------
-        `receive_message` emitted `SessionStateChanged` only when the SECURITY
-        LEVEL changed. An SMP1 arriving on a session that is already ENCRYPTED
-        does not change the level -- it stays ENCRYPTED until SMP passes, which
-        is the whole point of having SMP -- so an incoming verification request
-        produced NO EVENT AT ALL.
-
-        The Rust core was doing its part: it parks the peer's SMP1 in
-        `SmpPhase::SecretRequired` and waits. The terminal clients notice
-        because they call `smp_secret_required(peer)` on their own inbound
-        path (`otrv4+.py:15404`, `otrv4plus_xmpp.py:2934`). Android had no
-        equivalent, so Bob's device knew a request was held and never said so.
-
-        WHY A TRANSITION AND NOT A POLL
-        -------------------------------
-        Emitted only when the state actually MOVED. A resent SMP1 lands in
-        SECRET_REQUIRED again, and re-announcing it would let a peer stack
-        prompts by resending -- the same idempotence `SmpFlow
-        .remote_smp1_arrived` enforces for the terminal, applied at the point
-        the Android UI actually learns about the request.
-
-        NOTHING HERE DECIDES WHAT THE USER'S NEXT INPUT MEANS. It reports a
-        state change; the UI opens a dialog with its own passphrase field. See
-        `smp_respond` for why that separation is what keeps INV-06.
+        Needed because an SMP1 on an already-encrypted session does not change the
+        security level, so no `SessionStateChanged` would announce it. Emitted only
+        on a real transition: a resent SMP1 must not stack prompts. This reports the
+        state only; the UI asks for the secret in its own dialog (see
+        `smp_respond`).
         """
         after = self.smp_state(peer)
         if after == before:
@@ -2610,14 +2333,9 @@ class OtrApp:
 
     @staticmethod
     def _smp_start_refusal(exc: BaseException) -> str:
-        """Name why the engine would not start a run.
-
-        Every refusal used to be `smp_start_failed`, so a user who retried
-        after a wrong passphrase was told only that verification "could not
-        be started" -- and the reason, a 30-second cooldown in the Rust
-        engine, was the one thing that would have told them to wait. The
-        engine's text is matched here and never shown: only the code leaves.
-        """
+        """Name why the engine would not start a run (cooldown, attempts used
+        up, ...), so the UI can say "wait" instead of "failed". The engine's
+        text is matched here and never shown: only the code leaves."""
         text = str(exc)
         if "cooldown" in text:
             return "smp_cooldown"
@@ -2630,36 +2348,13 @@ class OtrApp:
         return "smp_start_failed"
 
     def smp_respond(self, peer: str, secret: str) -> None:
-        """Answer a peer's verification challenge.
+        """Answer a peer's verification challenge: set the secret, resume the
+        SMP1 the core is holding (`resume_held_smp1`) and send the resulting SMP2.
 
-        THE DEFECT THIS FIXES
-        ---------------------
-        This method used to be `set_smp_secret` and nothing else. Setting the
-        secret is half the operation: the peer's SMP1 is HELD by the Rust core
-        in `SmpPhase::SecretRequired`, and answering it means calling
-        `resume_held_smp1` to consume the held message and produce SMP2 -- and
-        then PUTTING SMP2 ON THE WIRE.
-
-        Neither happened. The secret was stored, a progress event was emitted,
-        and the responder's answer never left the device. Both terminal
-        clients do this properly (`otrv4+.py:15312`,
-        `otrv4plus_xmpp.py:3661`); this facade did not, so an Android
-        responder could only ever hang.
-
-        WHY THIS IS SAFE UNDER INV-06
-        -----------------------------
-        SECURITY_INVARIANTS.md INV-06: a remote peer may cause the client to
-        ASK for the passphrase, but may never cause the next thing the user
-        types to BECOME the passphrase. On a terminal those are one step apart
-        because there is ONE input channel, which is why `SmpFlow` puts a
-        consent edge between them.
-
-        On Android the separation is structural instead. This is reached only
-        from a dialog with its OWN password field: a chat message typed into
-        the composer goes to `send_user_text` and cannot arrive here, whatever
-        a peer does. The peer chooses when a dialog appears; they cannot
-        choose what any other input means. That is the property INV-06 names,
-        obtained from the widget boundary rather than from a state machine.
+        Safe under INV-06 (SECURITY_INVARIANTS.md: a peer may cause the client to
+        ASK for the secret, never cause the next thing typed to BECOME it). Here
+        that separation is structural: this is reached only from a dialog with its
+        own secret field, while chat text goes to `send_user_text`.
         """
         peer = self.canonical_peer(peer)
         self._refuse_room(peer, 'room_not_verifiable')
@@ -2858,22 +2553,16 @@ class OtrApp:
     def call_gate(self, peer: str) -> Dict[str, Any]:
         """Whether a call may be offered to [peer], and if not, why.
 
-        ONE ANSWER, FROM THE ENGINE. Android used to decide this from the
-        security level carried on the last ROSTER POLL, so a peer that was not
-        on the roster was PLAINTEXT to the screen however encrypted and
-        verified the session was -- and PLAINTEXT hid the control with nothing
-        said. This asks what `start_call` itself will ask:
+        The same checks `start_call` makes, asked of the engine rather than the
+        last roster poll:
 
-          * an encrypted OTR session with the peer exists (`has_encrypted_
-            session`), and its level is not a changed fingerprint;
-          * the voice gate -- `otrv4plus_voice._smp_query_default`, the engine's
-            published SMP predicates, the one definition of verified that
-            calls and files share -- says verified;
-          * this device can run voice at all.
+          * an encrypted OTR session exists and its fingerprint has not changed;
+          * the peer is SMP-verified (`otrv4plus_voice._smp_query_default`, the
+            definition calls and files share);
+          * this device can run voice.
 
-        Only when all hold is the answer "available". Returns
-        `{"gate": code, "reason": str}`; `reason` is set only for
-        "voice_unavailable" and is the host hook's own words. No secrets.
+        Returns `{"gate": code, "reason": str}`; `reason` is set only for
+        "voice_unavailable". No secrets.
         """
         def answer(gate: str, reason: str = "") -> Dict[str, Any]:
             return {"gate": gate, "reason": reason}
@@ -2936,9 +2625,8 @@ class OtrApp:
     def keep_call_path_ready(self) -> Dict[str, Any]:
         """From sign-in until disconnect: keep the next call's I2P path built
         and replace it when it dies or a call takes it
-        (`otrv4plus_warmpath.WarmPath.hold`). Owner, 2026-10-15: "prepare
-        the phone tunnel as soon as user logs in, and just keep it running".
-        Nothing where voice cannot run."""
+        (`otrv4plus_warmpath.WarmPath.hold`), so a call starts without a
+        tunnel build. Nothing where voice cannot run."""
         cold = {"state": "cold", "seconds_left": 0}
         if self._wiped or self.voice_unavailable_reason():
             return cold
@@ -3087,8 +2775,7 @@ class OtrApp:
 
     def send_voice_note(self, peer: str, path: str) -> Dict[str, Any]:
         """Send a note made by `voice_note_stop`, keeping a sealed copy so it
-        can be played back from the chat like a received one (owner,
-        2026-10-20: "i should be able to play back any voice note i sent").
+        can be played back from the chat like a received one.
 
         {"outcome": FileOutcome, "path": the kept copy, or ""}. The gates are
         `send_file`'s; a refused note keeps nothing."""
