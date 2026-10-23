@@ -35,9 +35,13 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -201,15 +205,37 @@ private fun ChatsPane(model: AppModel) {
         Column(Modifier.width(320.dp).fillMaxHeight()) {
             Text("Chats", Modifier.padding(16.dp), style = MaterialTheme.typography.titleLarge,
                  fontWeight = FontWeight.SemiBold)
-            val list = model.conversations()
-            if (list.isEmpty()) {
+            val all = model.conversations()
+            val kindOf = all.associate { it.jid to org.otrv4plus.android.chat.ChatKinds.kind(
+                model.chat.isRoom(it.jid), model.chat.isSecureRoom(it.jid)) }
+            val chips = org.otrv4plus.android.chat.ChatKinds.chips(kindOf.values.toList())
+            var filterName by androidx.compose.runtime.saveable.rememberSaveable {
+                androidx.compose.runtime.mutableStateOf(org.otrv4plus.android.chat.ChatKinds.Filter.ALL.name) }
+            val filter = org.otrv4plus.android.chat.ChatKinds.Filter.valueOf(filterName).takeIf { it in chips }
+                ?: org.otrv4plus.android.chat.ChatKinds.Filter.ALL
+            val list = all.filter { filter.admits(kindOf.getValue(it.jid)) }
+            if (chips.isNotEmpty()) {
+                // Jump to one kind of chat (ChatKinds).
+                Row(Modifier.fillMaxWidth()
+                        .horizontalScroll(androidx.compose.foundation.rememberScrollState())
+                        .padding(horizontal = 12.dp).padding(bottom = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    for (chip in chips) {
+                        androidx.compose.material3.FilterChip(
+                            selected = chip == filter, onClick = { filterName = chip.name },
+                            label = { Text(org.otrv4plus.android.chat.ChatKinds.chipLabel(chip, kindOf.values.toList())) })
+                    }
+                }
+            }
+            if (all.isEmpty()) {
                 Text("No chats yet. Open People to start one.",
                      Modifier.padding(16.dp), color = MaterialTheme.colorScheme.onSurfaceVariant,
                      style = MaterialTheme.typography.bodyMedium)
             }
             ScrollLazyColumn(Modifier.fillMaxSize()) {
                 items(list, key = { it.jid }) { c ->
-                    ConversationRow(model, c, selected = model.openConversation == c.jid)
+                    ConversationRow(model, c, kindOf.getValue(c.jid),
+                                    selected = model.openConversation == c.jid)
                 }
             }
         }
@@ -259,9 +285,19 @@ fun Avatar(name: String, presence: Presence = Presence.UNKNOWN, size: Int = 40,
 }
 
 @Composable
-private fun ConversationRow(model: AppModel, c: Conversation, selected: Boolean) {
-    val bg = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
-    Row(Modifier.fillMaxWidth().background(bg).clickable { model.open(c.jid) }
+private fun ConversationRow(model: AppModel, c: Conversation, kind: org.otrv4plus.android.chat.ChatKinds.Kind,
+                            selected: Boolean) {
+    // The kind's colour at 50% behind the row and a stripe down its left
+    // edge (ChatKinds); the open chat gets a stronger stripe and an outline.
+    val hue = Color(kind.hue)
+    val outline = MaterialTheme.colorScheme.primary
+    Row(Modifier.fillMaxWidth()
+            .drawBehind {
+                drawRect(hue.copy(alpha = org.otrv4plus.android.chat.ChatKinds.TINT))
+                drawRect(hue, size = size.copy(width = (if (selected) 8 else 4).dp.toPx()))
+                if (selected) drawRect(outline, style = androidx.compose.ui.graphics.drawscope.Stroke(2.dp.toPx()))
+            }
+            .clickable { model.open(c.jid) }
             .padding(horizontal = 16.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically) {
         Avatar(c.displayName.ifBlank { c.jid }, c.presence, image = model.avatar(c.jid))
@@ -284,6 +320,8 @@ private fun ConversationRow(model: AppModel, c: Conversation, selected: Boolean)
             Text(c.preview.ifBlank { badge?.text ?: "" }, maxLines = 1, overflow = TextOverflow.Ellipsis,
                  style = MaterialTheme.typography.bodySmall,
                  color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(kind.label, style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.onSurface)
         }
         if (c.unread > 0) {
             Spacer(Modifier.width(8.dp))

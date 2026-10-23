@@ -5,6 +5,7 @@ package org.otrv4plus.android.ui
 import org.otrv4plus.android.BuildConfig
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
@@ -20,6 +21,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -28,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.chat.ChatDeletion
+import org.otrv4plus.android.chat.ChatKinds
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Conversation
@@ -64,7 +68,13 @@ fun ConversationsScreen(
     onTheme: ((ThemeTokens.Mode) -> Unit)? = null,
 ) {
     var choosingTheme by rememberSaveable { mutableStateOf(false) }
-    val conversations = model.conversations()
+    val all = model.conversations()
+    val kindOf = all.associate { it.jid to ChatKinds.kind(model.isRoom(it.jid), model.isSecureRoom(it.jid)) }
+    val chips = ChatKinds.chips(kindOf.values.toList())
+    var filterName by rememberSaveable { mutableStateOf(ChatKinds.Filter.ALL.name) }
+    // A chip whose kind has gone (its last chat deleted) falls back to All.
+    val filter = ChatKinds.Filter.valueOf(filterName).takeIf { it in chips } ?: ChatKinds.Filter.ALL
+    val conversations = all.filter { filter.admits(kindOf.getValue(it.jid)) }
     var showAdd by rememberSaveable { mutableStateOf(false) }
     // A JID, not a Conversation: the row can change under an open dialog.
     var deleting by rememberSaveable { mutableStateOf<String?>(null) }
@@ -317,10 +327,22 @@ fun ConversationsScreen(
                     onAdd = { showAdd = true },
                 )
             } else {
+                if (chips.isNotEmpty()) {
+                    // Jump to one kind of chat (ChatKinds).
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        for (chip in chips) {
+                            FilterChip(selected = chip == filter, onClick = { filterName = chip.name },
+                                       label = { Text(ChatKinds.chipLabel(chip, kindOf.values.toList())) })
+                        }
+                    }
+                }
                 LazyColumn(Modifier.weight(1f)) {
                     items(conversations, key = { it.jid }) { conversation ->
                         ConversationRow(
                             conversation,
+                            kind = kindOf.getValue(conversation.jid),
                             avatar = model.avatar(conversation.jid),
                             group = model.groupBadge(conversation.jid),
                             onClick = { onOpen(conversation.jid) },
@@ -546,6 +568,7 @@ private fun EmptyConversations(
 @Composable
 private fun ConversationRow(
     conversation: Conversation,
+    kind: ChatKinds.Kind,
     avatar: ImageBitmap?,
     group: RowSecurity.Badge?,
     onClick: () -> Unit,
@@ -553,8 +576,16 @@ private fun ConversationRow(
     /** The picture opens the person's profile (null for a room). */
     onAvatarClick: (() -> Unit)? = null,
 ) {
+    val hue = Color(kind.hue)
     Row(
         Modifier.fillMaxWidth()
+            // The kind's colour at 50% behind the row, and a solid stripe
+            // down its left edge (ChatKinds). The label below says the
+            // same in words.
+            .drawBehind {
+                drawRect(hue.copy(alpha = ChatKinds.TINT))
+                drawRect(hue, size = size.copy(width = 4.dp.toPx()))
+            }
             .combinedClickable(
                 onClick = onClick,
                 onLongClick = onLongClick,
@@ -613,6 +644,8 @@ private fun ConversationRow(
                     UnreadBadge(conversation.unread)
                 }
             }
+            Text(kind.label, style = MaterialTheme.typography.labelSmall,
+                 color = MaterialTheme.colorScheme.onSurface)
             SecurityBadge(conversation, group)
         }
     }

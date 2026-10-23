@@ -49,6 +49,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/chat/AccountSessions.kt",
     "org/otrv4plus/android/chat/AvatarPixels.kt",
     "org/otrv4plus/android/chat/ChatDeletion.kt",
+    "org/otrv4plus/android/chat/ChatKinds.kt",
     "org/otrv4plus/android/chat/ChatModels.kt",
     "org/otrv4plus/android/chat/ChatState.kt",
     "org/otrv4plus/android/chat/DeletedConversations.kt",

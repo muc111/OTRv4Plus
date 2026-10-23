@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.131 and Desktop — 2026-10-23 — the kind of each chat at a glance (core 0.13.1)
+
+- **The chat list tints each row by kind**, at 50%, with a solid stripe on
+  its left edge: **blue** for 1:1 chats, **green** for encrypted groups,
+  **amber** for public rooms such as Welcome (readable by the server). The
+  kind is also written under the name ("Chat", "Encrypted group", "Public
+  room · not encrypted"), so nothing depends on telling colours apart.
+- **Filter chips** over the list -- All · People (n) · Groups (n) · Public
+  (n) -- show one kind at a time. They appear only when there is more than
+  one kind of chat. Phone and desktop.
+
 ## Android 0.7.0-experimental.rc.130 and Desktop — 2026-10-21 — a room's people: find, add, message (core 0.13.1)
 
 - **People in an ordinary room (such as Welcome) can be added or messaged
