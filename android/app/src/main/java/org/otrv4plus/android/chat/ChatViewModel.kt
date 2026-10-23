@@ -41,27 +41,14 @@ import org.otrv4plus.android.crypto.Verification
 /**
  * The UI's window onto the conversation. It owns none of it.
  *
- * WHAT CHANGED, AND WHY
- * ---------------------
- * This class used to hold the [ChatState] and drain the engine's event queue.
- * The queue is DESTRUCTIVE -- a drain removes what it returns -- so whoever
- * drains it is the only one who will ever see those events. A ViewModel does
- * not exist while the UI is gone, so a message arriving with the app
- * backgrounded was dropped or left unread, and no amount of persistence
- * further down would have helped: the message never reached the code that
- * would have written it.
+ * `OtrConnectionService` owns the [ChatState] and drains the engine's event
+ * queue, because a drain is destructive and must keep running while no screen
+ * exists. This class holds a reference, re-reads it on a timer so Compose
+ * recomposes, and sends what the user types; clearing it changes nothing in
+ * the conversation.
  *
- * `OtrConnectionService` owns the state and the drain loop now. This class
- * holds a reference, re-reads it on a timer so Compose recomposes, and sends
- * what the user types. When it is cleared, nothing happens to the
- * conversation.
- *
- * SO WHAT IS LEFT HERE
- * --------------------
- * A redraw ticket and the outbound half of the composer. No routing, no
- * presence, no history, no rules -- those are in [ChatState], which is plain
- * Kotlin with real tests, and the structural suite fails if any of them
- * reappear above this line.
+ * No routing, presence, history or rules live here -- those are in
+ * [ChatState], plain Kotlin with JVM tests.
  */
 class ChatViewModel : ViewModel() {
 
@@ -265,7 +252,7 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    // -- our account signed in elsewhere (owner, 2026-10-16) --------------------
+    // -- our account signed in elsewhere ---------------------------------------
 
     /** Other sessions of our own account, as the server reports them. */
     var otherSessions by mutableStateOf(0)
@@ -1114,12 +1101,9 @@ class ChatViewModel : ViewModel() {
             // FORGOTTEN LOCALLY TOO, and only once the server confirmed it --
             // the mirror image of `addContact`, which saves only on `ok`.
             //
-            // Without this the removal did not remove anything the user could
-            // see. `conversations()` unions the roster with the message store
-            // AND the saved list, so a contact dropped from the roster came
-            // straight back from the local record, now rendered `saved =
-            // false` -- "remembered here, not confirmed by the server" -- with
-            // no way left to get rid of it.
+            // Otherwise the local record would bring the row straight back,
+            // since `conversations()` unions the roster, the message store and
+            // the saved list.
             //
             // The HISTORY is deliberately untouched. A conversation outlives
             // the roster entry, so somebody the user has actually talked to
@@ -1365,35 +1349,23 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    // A `startSession(jid)` used to sit here. It read
-    //
-    //     withContext(Dispatchers.IO) { runCatching { core.startSession(jid) } }
-    //
-    // and discarded the result. It has been REMOVED rather than fixed,
-    // because it had no caller -- [startEncryption] goes through
-    // [EncryptionLauncher] and the launcher's provider calls `core` directly
-    // -- and because what it was is a trap. `OtrApp.start_session` now raises
-    // when the handshake cannot be built or cannot be sent, and that is the
-    // entire point of the fix: the tap did nothing and said nothing. A
-    // method on this class, named the obvious thing, that swallows exactly
-    // those exceptions is what a future change would reach for, and the bug
-    // would be back with no test able to see it.
+    // No `startSession` here on purpose: encryption starts through
+    // [startEncryption] and [EncryptionLauncher], which report failures. A
+    // convenience wrapper that swallowed `OtrApp.start_session`'s exceptions
+    // would hide a handshake that was never sent.
 
     // -- encryption ----------------------------------------------------------
     //
-    // THE GAP THIS CLOSES. `startSession` existed on this class, and on
-    // `ChaquopyOtrCore`, and NO SCREEN CALLED IT. Nothing outside `crypto/` even
-    // imported the encryption package. So `OtrApp.send_user_text` kept doing
-    // the correct thing for "a conversation where nobody has asked for OTR" --
-    // sending plaintext -- because on Android nobody could ask.
+    // The user's request for encryption (the Encrypt button) goes through
+    // [EncryptionLauncher]; once asked, `OtrApp.send_user_text` never sends
+    // that conversation in the clear.
 
     /**
      * Built lazily, and only once a core exists.
      *
      * The providers need the engine: `OtrV4PlusProvider` reads the security
-     * state and starts the DAKE through it. A launcher built before the
-     * service bound would hold a dead lambda, which is the same bug
-     * `RoomsViewModel.core` had.
+     * state and starts the DAKE through it, so a launcher built before the
+     * service bound would hold a dead lambda.
      */
     private var launcher: EncryptionLauncher? = null
 
@@ -2151,7 +2123,7 @@ class ChatViewModel : ViewModel() {
     /**
      * Send the ready note. It travels as an encrypted file, but shows in the
      * chat as a voice-note bubble that plays, from a sealed copy the engine
-     * keeps (owner, 2026-10-20). The plaintext in the cache goes either way.
+     * keeps. The plaintext in the cache goes either way.
      */
     fun sendVoiceNote(jid: String) {
         val ready = voiceSheet as? VoiceSheet.Ready ?: return

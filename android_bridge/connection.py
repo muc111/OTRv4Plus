@@ -304,31 +304,17 @@ class ConnectionController:
     }
 
     def _on_subscription_request(self, jid: str) -> None:
-        """Someone asked to see our presence. Now it reaches the user.
+        """Someone asked to see our presence: tell the user.
 
-        THIS USED TO BE A LOG LINE. The comment explaining why was correct --
-        `EventQueue._describe` only walks dataclass fields, so a plain dict
-        arrives in Kotlin as `{"type": "dict"}` and the mapper drops it -- and
-        the answer was the dataclass it named. `SubscriptionRequested` is that
-        dataclass.
+        Emitted as `SubscriptionRequested` under every policy:
 
-        Emitted under every policy, because the two cases are different
-        sentences rather than one case worth suppressing:
+          * ASK -- the user decides, and `answer_subscription` replies.
+          * ACCEPT -- slixmpp already said yes, so the event tells the user that
+            this account can now see when they are online; granting presence is
+            never silent.
 
-          * ASK -- nothing has been answered and the user decides. Dropping it
-            here meant `answer_subscription` could never be called, so ASK was
-            a policy that quietly answered nothing and left the asker waiting
-            forever. That is the defect.
-          * ACCEPT -- slixmpp already said yes, and somebody now knows when
-            this device is online. Silence would make granting presence the
-            only privacy-relevant thing that happens without the user being
-            told. The event carries the policy so the screen can say "they can
-            now see you" rather than offering a choice already made.
-
-        The JID reaches the UI and NOT the log. It has to reach the UI: a
-        request that does not say who is asking cannot be answered. It must
-        not reach logcat, where it would be a durable record of who wants to
-        watch this device.
+        The JID goes to the UI (a request has to say who is asking) and never to
+        the log, where it would be a lasting record of who watches this device.
         """
         _log.info("a subscription request arrived")
         try:
@@ -367,13 +353,12 @@ class ConnectionController:
     def retire(self) -> None:
         """Kotlin is replacing this controller with a new one (each connect
         attempt builds one). From now on nothing this controller's transport
-        reports may touch the app: a late "disconnected" or "replaced" from
-        the old stream used to clear the NEW connection's rooms and presence
-        (owner report, 2026-10-17: typing in the Welcome room, then the
-        connection fell over and did not come back). A transport that is no
-        longer connected is also closed here, so its I2P tunnel and client
-        cannot linger beside the new one. A live one is left alone: retiring
-        is not disconnecting."""
+        reports may touch the app: a late "disconnected" from the old stream must
+        not clear the new connection's rooms and presence. A transport that is no
+        longer connected is also closed here, so its I2P tunnel and client cannot
+        linger beside the new one. A live one is left alone: retiring is not
+        disconnecting.
+        """
         self._retired = True
         transport = self._transport
         if transport is not None and not getattr(transport, "is_connected", False):
@@ -1039,11 +1024,10 @@ class ConnectionController:
         return self._with_held_groups(self._with_admin_rooms(result, service), service)
 
     def _with_admin_rooms(self, result: Dict[str, Any], service: str) -> Dict[str, Any]:
-        """A server admin sees EVERY room, hidden ones too (owner,
-        2026-10-17: "all rooms should be available for Alice"), from the
-        server's own admin command (mod_otrv4plus_moderation "List all
-        rooms"). Anyone else -- or a server without the module -- gets the
-        public listing unchanged."""
+        """A server admin sees every room, hidden ones too, from the server's own
+        admin command (mod_otrv4plus_moderation "List all rooms"). Anyone else --
+        or a server without the module -- gets the public listing unchanged.
+        """
         if not result.get("ok"):
             return result
         transport = self._transport
@@ -1081,7 +1065,7 @@ class ConnectionController:
 
         "secure" means HELD here -- keys on this device. A room's own
         description saying it is a group is only "claims_secure": anybody can
-        write that description (security audit, 2026-10-11)."""
+        write that description."""
         if not result.get("ok"):
             return result
         groups = getattr(self._app, "groups", None)
@@ -1106,15 +1090,13 @@ class ConnectionController:
         """Re-enter every secure group's room after a (re)connect, in the
         background.
 
-        A dropped stream takes every room membership with it (forget_rooms),
-        and only the Welcome room was joined again. A secure group's room
-        then dropped everything it carried: our sends failed ("message not
-        sent"), and our own commit adding a member never came back, so MLS
-        held it pending -- which refuses every later send -- and the new
-        member never got its Welcome (device test, 2026-10-02). Rejoining
-        also replays the room's recent history, which is how a commit that
-        landed while we were away is applied. The terminal client has always
-        rejoined its group rooms."""
+        A dropped stream takes every room membership with it (forget_rooms).
+        Without rejoining, a secure group's sends fail and our own pending commit
+        never comes back, so MLS refuses every later send and a new member never
+        gets their Welcome. Rejoining also replays the room's recent history,
+        which applies any commit that landed while we were away. Same as the
+        terminal client.
+        """
         groups = getattr(self._app, "groups", None)
         rooms_of = getattr(groups, "rooms", None)
         if rooms_of is None:
@@ -1128,7 +1110,7 @@ class ConnectionController:
         nick = self._profile.jid.split("@", 1)[0]
         # Until each room is joined again and its history applied, what is
         # typed is held: sent now it would be encrypted for an epoch the
-        # others may have left, and lost (device test, 2026-10-05).
+        # others may have left, and lost.
         mark = getattr(groups, "mark_syncing", None)
         if mark is not None:
             mark()
@@ -1254,8 +1236,8 @@ class ConnectionController:
             self.leave_room(room, nick)
             return result
         if passphrase:
-            # The group passphrase (owner design, 2026-10-10): kept in memory
-            # for this group's first verification; never stored or sent.
+            # The group passphrase: kept in memory for this group's first
+            # verification; never stored or sent.
             secret = bytearray(passphrase.encode("utf-8"))
             try:
                 self._app.group_verify.set_passphrase(room, secret)
@@ -1340,8 +1322,8 @@ class ConnectionController:
 
         A password-protected room uses the password the inviter sent with the
         invitation, or [password] when the user typed one. Without either,
-        `group_password_needed` asks the UI to prompt (device report,
-        2026-10-16: the join just failed with "not_authorized")."""
+        `group_password_needed` asks the UI to prompt, rather than the join
+        failing with "not_authorized"."""
         nick = self._profile.jid.split("@", 1)[0]
         try:
             pw = password or self._app.groups.invite_password(room)
@@ -1517,13 +1499,10 @@ class ConnectionController:
             result = self._destroy_as_admin(room, reason) or dict(
                 result, detail=self.DESTROY_REFUSED)
         if not result.get("ok") and result.get("code") in ("room_gone", "item_not_found"):
-            # Already deleted. Owner (2026-10-18): Delete on "lol" said "This
-            # room was deleted." in red and the room stayed listed -- Prosody
-            # keeps a destroyed room as a tombstone (31 days by default) and
-            # answers a destroy of it with <gone/>. That is the outcome asked
-            # for, not a failure. Its record still sits on the server's room
-            # list (prosodyctl muc:list) until the tombstone expires; an
-            # admin removes it too.
+            # Already deleted: Prosody keeps a destroyed room as a tombstone
+            # (31 days by default) and answers a destroy of it with <gone/>.
+            # That is the outcome asked for, not a failure. An admin also
+            # removes the tombstone from the server's room list.
             if result.get("code") == "room_gone":
                 self._destroy_as_admin(room, reason)
             result = {"ok": True, "code": "ok", "value": None,
@@ -1539,11 +1518,10 @@ class ConnectionController:
                             "again and restart Prosody.")
 
     def _is_server_admin(self) -> bool:
-        """Whether this account administers its server, asked for THIS
-        stream. Owner (2026-10-18): rc.120 still could not delete -- the
-        transport forgets the answer on every reconnect (and over I2P that
-        is often), while the screens remember it, so the admin route was
-        skipped as "not an admin". Asks once per stream; cached after."""
+        """Whether this account administers its server, asked for THIS stream
+        (the transport forgets on reconnect, which over I2P is frequent). Asked
+        once per stream, cached after.
+        """
         transport = self._transport
         if getattr(transport, "_server_admin", None) is True:
             return True
@@ -1554,12 +1532,12 @@ class ConnectionController:
         return code == "ok" and value is True
 
     def _destroy_as_admin(self, room: str, reason: str) -> Optional[Dict[str, Any]]:
-        """The server refused the owner destroy, but we are its admin: use
-        the admin command instead (mod_otrv4plus_moderation "Destroy a
-        room"). Owner's server, 2026-10-18: Prosody did not count the admin
-        as owner of other people's rooms (get_affiliation = nil), so every
-        admin Delete was refused. None when we are not an admin -- the
-        refusal then stands; otherwise what the admin command said."""
+        """The server refused the owner destroy, but we are its admin: use the
+        admin command (mod_otrv4plus_moderation "Destroy a room"). Needed because
+        Prosody does not count an admin as owner of other people's rooms. None
+        when we are not an admin -- the refusal then stands; otherwise what the
+        admin command said.
+        """
         if not self._is_server_admin():
             return None
         try:
@@ -2008,9 +1986,9 @@ class ConnectionController:
         else:
             if name in self._QUIET_POLLS and code == "ok":
                 # Polled every 10 s by the UI: recorded only when the answer
-                # changes, so the report's last events are not all this
-                # (device report, 2026-10-16). The admin answer itself is
-                # recorded -- a yes/no, nothing identifying.
+                # changes, so the diagnostic log is not filled with it. The
+                # admin answer itself is recorded -- a yes/no, nothing
+                # identifying.
                 summary = (bool(value) if name == "server_admin"
                            else len(value or ()))
                 last = self.__dict__.setdefault("_quiet_last", {})
@@ -2294,9 +2272,9 @@ def controller_for(app: Any, jid: str = "",
     nobody wants to answer twice.
 
     An empty `server` means "the JID's own domain" (`effective_server`), which
-    the router resolves by name. It used to mean `settings.DEFAULT_SERVER`,
-    which sent an account on ANY server to the default one whenever the
-    route was left blank. Empty SAM host and port mean the SAM defaults.
+    the router resolves by name -- never the default server, which would
+    send an account on another server to the wrong place. Empty SAM host and
+    port mean the SAM defaults.
     """
     profile = ConnectionProfile(
         jid=jid,

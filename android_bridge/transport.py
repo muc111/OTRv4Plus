@@ -179,19 +179,16 @@ _CANCELLED = (asyncio.CancelledError, _futures.CancelledError)
 
 
 def _sam_failure(exc: BaseException, server: str) -> "TransportError":
-    """The TransportError for a failure opening the I2P stream, by LAYER.
+    """The TransportError for a failure opening the I2P stream, by layer
+    (`otrv4+.py` `SamError`), so the user is not told to restart a router that
+    is working:
 
-    "Is the router running?" used to be the answer to every failure here,
-    including a name the router did not know and a destination that was not
-    online -- which sent people to restart a router that was working. The
-    SAM layer now says which stage failed (otrv4+.py `SamError`):
+      bridge  -> sam_unavailable              the local SAM bridge
+      naming  -> i2p_name_not_found           the router could not resolve the name
+      session -> i2p_session_failed           the router could not build our tunnels
+      stream  -> i2p_destination_unreachable  resolved, but not reachable
 
-      bridge  -> sam_unavailable        the local SAM bridge
-      naming  -> i2p_name_not_found     the router could not resolve the name
-      session -> i2p_session_failed     the router could not build our tunnels
-      stream  -> i2p_destination_unreachable   resolved, but not reachable
-
-    Only the SAM RESULT code is included, never the reply text, which can
+    Only the SAM result code is included, never the reply text, which can
     carry a destination.
     """
     stage = getattr(exc, "stage", "")
@@ -322,21 +319,17 @@ def _tls_in_place(client) -> bool:
 
 # ── clearnet: SRV, address order, and how an attempt ended ──────────────────
 #
-# THE 07f.de / yax.im REPORT (2026-09-28): both registrations ended
-# `clearnet_endpoint srv=true -> registration requested -> code=network`.
-# Two faults, both here:
+# Two things a clearnet connection needs from this section:
 #
-#  1. No SRV lookup happened. slixmpp asks for `_xmpp-client._tcp.<domain>`
-#     only through aiodns, which the APK does not ship; without it it dials
-#     `<domain>:5222`. yax.im's SRV points at xmpp.yax.im, a different
-#     machine. `_clearnet_dns_records` asks the SRV question itself
-#     (android_bridge.dns_srv) and hands slixmpp the ordered targets.
-#  2. The first failed ADDRESS ended the attempt. slixmpp tries every
-#     resolved address in turn (AAAA first, as slixmpp orders them), firing
-#     `connection_failed` for each one that fails; the handler here treated
-#     the first as final. Both domains publish AAAA records, so a phone with
-#     no working IPv6 gave up before IPv4 was tried. Reproduced against a
-#     real STARTTLS server in tests/test_clearnet_registration.py.
+#  1. An SRV lookup. slixmpp asks for `_xmpp-client._tcp.<domain>` only
+#     through aiodns, which the APK does not ship, and otherwise dials
+#     `<domain>:5222` -- the wrong machine for servers whose SRV points
+#     elsewhere. `_clearnet_dns_records` asks itself (android_bridge.dns_srv)
+#     and hands slixmpp the ordered targets.
+#  2. Every address tried. slixmpp fires `connection_failed` for each
+#     resolved address in turn (AAAA first); only the last one ends the
+#     attempt, so a phone without working IPv6 still reaches IPv4.
+#     tests/test_clearnet_registration.py runs this against a real server.
 #
 # `_StreamWatch` now decides when an attempt has failed -- after every
 # planned address -- and says at which stage, with nothing secret in it.
@@ -554,19 +547,16 @@ PEP_MISSING = frozenset({"feature-not-implemented", "service-unavailable",
                          "item-not-found"})
 
 #: Each of an avatar publish's two server round trips, the first carrying the
-#: picture (about 20 KB of base64) up an I2P tunnel. Was CALL_TIMEOUT (30 s)
-#: for both together: too short on a fresh tunnel (device report, 2026-10-16).
+#: picture (about 20 KB of base64) up an I2P tunnel, which can be slow on a
+#: fresh tunnel.
 AVATAR_TIMEOUT = 120.0
 
 
 def _avatar_publish_error(exc: BaseException) -> "TransportError":
     """What an avatar publish failure was, while the exception still says.
 
-    Classified INSIDE the coroutine: `_run` turns any exception that reaches
-    it into "unexpected_error", so classifying after it -- as rc.52 did --
-    never saw a server's answer, and every refusal and every timeout on a
-    phone read "could not be published". Device report (2026-10-16), with
-    PEP on: nothing said why."""
+    Classified inside the coroutine: `_run` turns any exception that reaches
+    it into "unexpected_error", which would hide the server's answer."""
     if isinstance(exc, TransportError):
         return exc
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or \
@@ -743,10 +733,8 @@ def _forwarder_log(message: str) -> None:
 
 #: The steps of a connection over I2P or Tor, in order, each recorded in the
 #: diagnostic log as it is reached ("connection" / <step>), and what it means
-#: when the 300 s wait expires after that step and before the next. A device
-#: report (2026-10-02) said only "did not finish within 300s": nothing
-#: between "building tunnels" and "connected" was recorded, so a tunnel that
-#: never opened and a server that never answered looked the same.
+#: when the 300 s wait expires after that step and before the next -- so a
+#: tunnel that never opened and a server that never answered read differently.
 _PROGRESS_HINTS = {
     "starting": "the connection had not started",
     "sam_opening": (
@@ -1144,36 +1132,14 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     def connect(self) -> None:
         """Bring the stream up. Blocks; must not be called on a UI thread.
 
-        Kept out of `_run` because this is the one call another thread needs to
-        be able to stop: a cold tunnel is minutes, and Android will rotate the
-        screen or send Back inside that window.
+        Separate from `_run` so another thread can stop it: a cold tunnel can take
+        minutes.
 
-        IDEMPOTENT ON A LIVE STREAM, and that is not tidiness. `_connect_inner`
-        builds a client and assigns `self._client` unconditionally, so a second
-        call on a connected transport used to build a second slixmpp client and
-        a second SAM tunnel and ORPHAN the first -- the reference was
-        overwritten, so nothing would ever abort it or close its sockets.
-        Measured:
-
-            after 1st connect: clients=1 tunnels=1 connected=True
-            after 2nd connect: clients=2 tunnels=2 connected=True
-            the FIRST client was told to stop: False
-            tunnel 0 sockets closed          : False
-
-        The orphan is not merely a leak. It is still wired to `on_payload`, so
-        inbound stanzas arrive twice; it is still authenticated, so the account
-        stays present on a stream nobody is watching; and its I2P tunnel stays
-        up for the life of the process.
-
-        `_abandon` already gives back all three for a FAILED attempt -- "a
-        connect that timed out left all three running ... so pressing Connect a
-        second time built a second tunnel on top of the first". That fix did
-        not cover the path where the first attempt SUCCEEDED, which is this
-        one.
-
-        Guarded on `is_connected` rather than on `_client`, so a stream the
-        keepalive has found dead can still be reconnected: the keepalive clears
-        that flag precisely when the link stops answering.
+        Idempotent on a live stream. A second connect must not build a second
+        client and SAM tunnel and orphan the first, which would stay authenticated,
+        deliver every stanza twice and keep its tunnel up. Guarded on
+        `is_connected` rather than `_client`, so a stream the keepalive found dead
+        can still be reconnected; a failed attempt is cleaned up by `_abandon`.
         """
         with self._lock:
             if self._connected.is_set() and self._client is not None:
@@ -1459,9 +1425,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
 
     def _watch_registration_discovery(self, client, done) -> None:
         """The registration GET (XEP-0077 discovery) is sent by slixmpp's
-        feature handler, where an error is logged and dropped -- a refused
-        discovery used to be a silent wait for the timeout. Wrapped so its
-        failure ends the attempt with its own code."""
+        feature handler, where an error is logged and dropped, which would
+        leave a silent wait for the timeout. Wrapped so its failure ends the
+        attempt with its own code."""
         try:
             plugin = client["xep_0077"]
             original = plugin.get_registration
@@ -1753,14 +1719,11 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                     _stream_failure_text(self._route, type(event).__name__)))
 
         def on_stream_error(stanza):
-            # Over I2P/Tor the server's own refusal -- `host-unknown` for a
-            # domain it does not serve, above all -- was dropped: slixmpp
-            # closed the stream, nothing failed the wait, and the attempt sat
-            # until the 300 s timeout with the reason thrown away (device
-            # report, 2026-10-02: 492 bytes of XMPP received, then nothing).
-            # _StreamWatch does this on clearnet only. The condition is a
-            # fixed RFC 6120 word and is traced; the server's free text is
-            # not -- it can name hosts.
+            # Over I2P/Tor a server's refusal (`host-unknown` for a domain it
+            # does not serve, above all) closes the stream without failing the
+            # wait, so it is caught here; _StreamWatch covers clearnet. The
+            # condition is a fixed RFC 6120 word and is traced; the server's
+            # free text is not -- it can name hosts.
             try:
                 cond = str(stanza["condition"] or "") or "unknown"
             except Exception:
@@ -1795,13 +1758,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
                     _stream_error_text(cond, self._profile)))
 
         def on_tls_error(exc):
-            # slixmpp raises EVERY TLS failure as `ssl_invalid_chain` and logs
-            # "Invalid certificate trust chain" -- wrongly here: over I2P/Tor
-            # the certificate is not checked at all (CERT_NONE), so any
-            # certificate is accepted. What fails is the handshake itself, and
-            # the OpenSSL reason says which side and why. Device report,
-            # 2026-10-02: STARTTLS offered and accepted, the client's hello
-            # sent, a few bytes back, closed -- with no reason recorded.
+            # slixmpp reports every TLS failure as `ssl_invalid_chain`, which is
+            # misleading over I2P/Tor where the certificate is not checked
+            # (CERT_NONE). What failed is the handshake, and the OpenSSL reason
+            # recorded here says which side and why.
             reason = (getattr(exc, "reason", None) or type(exc).__name__)
             _TRACE.record("connection", "tls_failed", "error",
                           reason=str(reason)[:80])
@@ -1813,10 +1773,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         def on_early_disconnect(_event):
             # The stream ended before sign-in finished and nothing above said
             # why: say where it stopped now rather than after the timeout.
-            # slixmpp signals `disconnected` BEFORE the `ssl_invalid_chain`
-            # that carries a failed TLS handshake's reason (the device report
-            # got the vague message, not the reason), so a precise event gets
-            # half a second to land first -- as _StreamWatch does on clearnet.
+            # slixmpp signals `disconnected` before the `ssl_invalid_chain`
+            # that carries a failed TLS handshake's reason, so a precise event
+            # gets half a second to land first (as _StreamWatch does on
+            # clearnet).
             if started.done():
                 return
             try:
@@ -2002,33 +1962,17 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     async def _keepalive_loop(self) -> None:
         """Keep the stream alive, and notice when it is not.
 
-        TWO MECHANISMS, because they answer different questions. This is the
-        terminal client's design and its numbers; the reasoning there is worth
-        repeating rather than re-deriving.
+        Two mechanisms (the terminal client's design):
 
-        **Whitespace, every 8 s.** Stops an idle I2P tunnel being torn down
-        during the long silences of a DAKE, an SMP exchange, or a
-        conversation where nobody is typing.
+        **Whitespace, every 8 s**, so an idle I2P tunnel is not torn down during the
+        long silences of a DAKE, SMP or a quiet conversation.
 
-        **A round trip, every 60 s.** This is the one that matters. Writing
-        to the socket succeeds whether or not anything is still listening at
-        the far end, and over I2P that is not a corner case: the SAM stream
-        can be gone while the local socket accepts writes indefinitely. A
-        whitespace-only keepalive therefore reports a healthy stream forever,
-        and -- in the terminal client's own words -- "the first symptom is the
-        peer appearing to go offline".
+        **A round trip, every 60 s**, because over I2P a socket can accept writes
+        after the far end is gone; only a server reply proves the whole path. A
+        XEP-0199 ping does that, and an IqError counts as alive (the server
+        answered).
 
-        Which is precisely what was reported from the handset. The app had no
-        keepalive of either kind.
-
-        A XEP-0199 ping makes the server answer, so it proves the whole path
-        rather than the first hop. An IqError counts as ALIVE: a server
-        replying `service-unavailable` has demonstrated the stream works,
-        which is the only thing being asked.
-
-        Silent while it is working. A heartbeat line every 8 s reports
-        nothing after the second one and buries the conversation it exists to
-        protect.
+        Silent while it is working.
         """
         failures = 0
         next_probe = asyncio.get_event_loop().time() + KEEPALIVE_PING_S
@@ -2094,20 +2038,13 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     async def _probe_stream(self) -> bool:
         """Round-trip liveness against our own server. True if it answered.
 
-        The round trip itself is `otrv4plus_ping.round_trip`, shared with the
-        terminal client, because this is where the handset bug lived: the call
-        was `async_ping`, which **slixmpp 1.17 does not have**. The
-        AttributeError was classified as "no answer", so every probe failed and
-        the keepalive tore down a healthy session about two minutes after it
-        connected. See the module docstring there for the full chain.
-
-        The three outcomes are kept distinct on purpose:
+        Uses `otrv4plus_ping.round_trip`, shared with the terminal client. Three
+        outcomes, kept distinct:
 
           * answered (including an IqError) -> alive;
-          * nothing came back within the timeout -> dead;
-          * we could not ask at all -> **alive**, because a client that cannot
-            pose the question has learned nothing, and inventing a disconnect
-            out of its own ignorance is the bug being fixed.
+          * nothing within the timeout -> dead;
+          * could not ask at all -> alive: not knowing is not evidence of a
+            disconnect, and treating it as one tore down healthy sessions.
         """
         client = self._client
         if client is None:
@@ -2130,28 +2067,11 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             raise
 
     async def _declare_stream_dead(self) -> None:
-        """Take the stream down so the app stops believing it is connected.
+        """Take a dead stream down so the app stops believing it is connected.
 
-        Breaking out of the loop is not enough: it only stops pinging. The
-        session has to actually end, or the UI shows a connection that cannot
-        carry a message and the user retries into silence.
-
-        AND IT HAS TO GIVE BACK WHAT IT TOOK. This called `client.disconnect()`
-        and stopped there: the client reference stayed, and the I2P tunnel and
-        its local listening socket stayed open. So every death-and-reconnect
-        cycle -- which on a handset is every walk out of coverage -- left one
-        behind. Measured:
-
-            connected                  : clients=1 tunnels=1
-            after the stream died      : tunnel 0 sockets closed: False
-            after the reconnect        : clients=2 tunnels=2
-                                         sockets still open: 6
-
-        `_abandon` is the method that already returns all three, and it is
-        what the FAILED-attempt path uses for exactly this reason. Using it
-        here also upgrades the stop from `disconnect()` to `abort()`, which is
-        the call that ends slixmpp's retry loop rather than merely closing the
-        socket.
+        Uses `_abandon`, which ends slixmpp's retry loop (`abort()`) and gives back
+        the client, the I2P tunnel and its local socket -- otherwise every
+        lose-coverage-and-reconnect cycle would leave one behind.
         """
         _log.info("keepalive: the stream is dead; disconnecting")
         # The single most important line in an export. An unexplained
@@ -2165,21 +2085,15 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         self._emit_state("disconnected")
 
     async def _abandon(self) -> None:
-        """Give back everything a failed or cancelled attempt took.
+        """Give back everything a failed or cancelled attempt took. Loop thread.
 
-        Runs on the loop thread. Three distinct things, and leaving any of them
-        is its own bug:
-
-        1. **slixmpp's retry loop.** `XMLStream._connect_loop` reschedules a
-           failed connection rather than giving up, so a client that is simply
-           dropped keeps dialling for the life of the process. `abort()` is the
-           call that stops it; `disconnect()` is the fallback for a client that
-           has not got one.
-        2. **The I2P tunnel and the local listening socket.** Opened by the
-           forwarder, and previously parked on `loop._i2p_keep` where nothing
-           could reach them.
-        3. **The reference to the client**, so a later call cannot find a
-           half-dead one and believe it is usable.
+        1. **slixmpp's retry loop.** `XMLStream._connect_loop` reschedules a failed
+           connection, so a dropped client keeps dialling; `abort()` stops it
+           (`disconnect()` if the client has no abort).
+        2. **The I2P tunnel and its local listening socket**, opened by the
+           forwarder.
+        3. **The reference to the client**, so nothing later mistakes a half-dead
+           one for usable.
         """
         self._connected.clear()
         self._stop_keepalive()
@@ -2592,10 +2506,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         # which is what reactions and deletions in a room name.
         #
         # Our own message in the room's HISTORY is not an echo: it is what we
-        # said before this session -- before Sign out, or on another phone --
-        # and it is shown, and our corrections in it applied (owner,
-        # 2026-10-17: "messages in the public room should be displayed for
-        # all users who login ... the corrected must overwrite the original").
+        # said before this session (before signing out, or on another device),
+        # so it is shown and our corrections in it applied.
         if own and not history and not body.startswith(("?OTRv4MLS1:", "?OTRv4F|")):
             if item is not None and item.own_id and item.stanza_id:
                 self._room_route(room, nick, "", item.when, True, item)
@@ -2779,12 +2691,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     async def _send(self, peer: str, payload: str, message_id: str = "") -> None:
         """One stanza per fragment, through the shared wire format.
 
-        This used to send the payload whole, which is why an Android peer and
-        a Termux peer could not complete a DAKE. A DAKE2 is about 11.7 KB
-        after base64 -- 1568 bytes of ML-KEM ciphertext, a 2592-byte ML-DSA-87
-        public key and a 4627-byte signature -- and that goes straight at the
-        ~8 KB I2P cliff that `otrv4plus_fragment.MAX_FRAGMENT` exists to stay
-        under.
+        A DAKE2 is about 11.7 KB after base64 (1568 bytes of ML-KEM ciphertext,
+        a 2592-byte ML-DSA-87 public key and a 4627-byte signature), above the
+        ~8 KB that `otrv4plus_fragment.MAX_FRAGMENT` keeps I2P messages under.
 
         `fragment` returns `[payload]` unchanged for anything at or below the
         threshold, so an ordinary message still goes out exactly as it did.
@@ -2830,10 +2739,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         # as an occasional empty contact list rather than as a crash.
         try:
             entries = self._run(self._roster(), CALL_TIMEOUT)
-            # The screen polls this about twice a second. Recorded on every
-            # call, it filled the 4000-entry diagnostic ring in minutes and a
-            # report lost the connection steps it was sent to explain (57568
-            # events dropped, device report 2026-10-02). Only a change now.
+            # The screen polls this about twice a second, so it is traced only
+            # when it changes; otherwise it would flood the diagnostic ring.
             if len(entries) != getattr(self, "_roster_traced", None):
                 self._roster_traced = len(entries)
                 _TRACE.record("roster", "read", "info", entries=len(entries))
@@ -2876,20 +2783,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         return default if value is None else value
 
     async def _roster(self) -> List[Dict[str, Any]]:
-        """The roster as plain dicts, per entry.
-
-        GUARDED PER ENTRY, not once around the loop. It used to be the latter,
-        so the first entry that raised anything discarded the whole contact
-        list -- which is exactly what happened: one AttributeError on entry
-        one, and the user had no contacts at all.
-
-        `OtrApp.contacts()` already guards per entry for this reason and says
-        so ("losing the whole contact list to one awkward peer is how a
-        working roster renders as an empty screen"). That reasoning was right
-        and this layer did not follow it.
-
-        A failure is still RECORDED, per entry and by JID, so a roster that is
-        partly unreadable says so in the diagnostics instead of looking empty.
+        """The roster as plain dicts, guarded per entry: one unreadable entry must
+        not empty the whole contact list. Failures are recorded by JID for the
+        diagnostics.
         """
         out: List[Dict[str, Any]] = []
         client = self._client
@@ -2957,11 +2853,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         """Finish with this transport. Safe to call more than once.
 
         After this the object is spent: every method raises `closed` rather
-        than starting a loop. That is the point. It used to leave `_client`
-        set and `_loop` cleared, so the next call -- and on Android the chat
-        screen polls every 500ms, so there is always a next call -- went
-        through `_ensure_loop` and got a fresh worker thread nothing would
-        ever join.
+        than starting a loop. The UI polls constantly, so a closed transport
+        that quietly restarted its loop would leak a worker thread per poll.
         """
         book = getattr(self, "_avatars", None)
         if book is not None:
@@ -3026,26 +2919,16 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         return client
 
     def _apply_tls_policy(self, client) -> None:
-        """Relax certificate checking where the address is already the key.
+        """Relax certificate checking where the address already authenticates
+        the server.
 
-        Without this the app hung. slixmpp's default context is
-        `check_hostname=True, verify_mode=CERT_REQUIRED` with the system trust
-        store, and it validates against `default_domain` -- the JID's domain.
-        Over I2P nothing in that path is CA-signed, so STARTTLS failed; and
-        `XMLStream._connect_loop` reschedules a failed connection rather than
-        giving up, so neither `session_start` nor `failed_auth` ever fired and
-        the connect sat until its 300s timeout with nothing to report.
-
-        The terminal client has always done this -- see
-        `endpoint_authenticated_by` -- and it does it automatically, precisely
-        so nobody has to type a flag with "insecure" in its name for a link
-        that is not insecure. The transport reimplemented everything around
-        this and quietly omitted it.
-
-        This is NOT a weakening. The `.b32.i2p` address is the hash of the
-        server's key; the SAM stream reaches that key-holder or it fails, and
-        I2P encrypts it end to end. On clearnet this does nothing at all and
-        the certificate is still required.
+        Over I2P nothing is CA-signed, so slixmpp's default (hostname check against
+        the JID's domain, system trust store) fails STARTTLS -- and its connect loop
+        retries silently until the timeout. A `.b32.i2p` address is the hash of the
+        server's key and the SAM stream reaches that key-holder or fails, end-to-end
+        encrypted by I2P, so a CA certificate adds nothing there. On clearnet this
+        changes nothing: the certificate is still required. Same rule as the
+        terminal client (`endpoint_authenticated_by`).
         """
         by = endpoint_authenticated_by(self._profile)
         self._tls_policy = ("certificate required"
@@ -3167,10 +3050,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             out.append(entry)
         return out
 
-    #: disco#info tries per item. Owner (2026-10-17): the Rooms tab said
-    #: "this server does not advertise a rooms service" -- one lost reply
-    #: over I2P left the rooms service without its identity, so nothing
-    #: looked like one.
+    #: disco#info tries per item: one lost reply over I2P must not leave the
+    #: rooms service without its identity (and the Rooms tab empty).
     DISCO_INFO_TRIES = 3
 
     async def _disco_info_retrying(self, disco, jid):
@@ -3396,8 +3277,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             wanted = False
         form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
         # Listed: a room the app makes is one people are meant to find in the
-        # service's room list (owner request, 2026-10-10). A service whose
-        # policy keeps it hidden still creates it.
+        # service's room list. A service whose policy keeps it hidden still
+        # creates it.
         form.add_field(var="muc#roomconfig_publicroom", ftype="boolean", value=True)
         if wanted:
             # A secure group's room outlives its occupants: when everybody is
@@ -3489,9 +3370,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         # the "accept the defaults" submission §10.1.2 describes. A secure
         # group's room asks to be persistent as well.
         if password:
-            # The persistent field too, for a secure group's room: this form
-            # used to carry only the password, so a password-protected secure
-            # group was never asked to outlive its occupants.
+            # The persistent field too, so a password-protected secure group's
+            # room also outlives its occupants.
             form, wanted = self._persistent_form(room)
             form.add_field(var="muc#roomconfig_passwordprotectedroom",
                            ftype="boolean", value=True)
@@ -3880,9 +3760,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     def owned_rooms(self) -> "tuple[str, str, list]":
         """The rooms we are in that the service lets us delete: those it
         reports us as OWNER of (the creator; Prosody reports a server admin
-        as owner too). Owner (2026-10-16): only they should see a delete
-        button -- it fails for everyone else. Read from the room roster: no
-        network, and a room we are not in is never listed."""
+        as owner too): only they get a Delete button, since it fails for
+        anyone else. Read from the room roster: no network, and a room we are
+        not in is never listed."""
         try:
             owned = []
             for room, nick in list(getattr(self, "_room_nicks", {}).items()):
@@ -3901,12 +3781,11 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     ADMIN_COMMAND_PREFIX = "http://jabber.org/protocol/admin#"
 
     def server_admin(self) -> "tuple[str, str, bool]":
-        """Whether this account administers its server. Owner (2026-10-16):
-        logged in as the server admin, "there is no delete button for users'
-        groups for me to moderate" -- rc.83 offered Delete only for rooms we
-        are in as owner. Read from the server's command list (Prosody's
-        mod_admin_adhoc lists XEP-0133 commands to admins only); asked once
-        per connection. The service still decides every destroy."""
+        """Whether this account administers its server, so the UI can offer
+        moderation (e.g. deleting other people's rooms). Read from the
+        server's command list (Prosody's mod_admin_adhoc lists XEP-0133
+        commands to admins only); asked once per connection. The service
+        still decides every destroy."""
         cached = getattr(self, "_server_admin", None)
         if cached is not None:
             return ("ok", _muc.CODES["ok"], cached)
@@ -3927,10 +3806,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
 
     # -- moderation (server admins; prosody/mod_otrv4plus_moderation.lua) ----
     #
-    # Owner (2026-10-17): "Alice should be able to ban any user on their user
-    # profile ... set amount of days or Perm ban or unban ... for server admin
-    # / mod use only." XEP-0050 commands the SERVER offers to its admins
-    # only; this side never decides who is one.
+    # Ban for N days or for good, and unban, from a user's profile: XEP-0050
+    # commands the SERVER offers to its admins only; this side never decides
+    # who is one.
 
     MODERATION_NS = "https://otrv4plus.i2p/protocol/admin#"
 
@@ -4019,10 +3897,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
 
     # -- our account signed in somewhere else ---------------------------------
     #
-    # Owner (2026-10-16): "I was able to login with alice on terminal but
-    # alice was already logged in on the pixel 7 phone ... i don't want people
-    # using same login details and cloning accounts". XMPP lets one account
-    # have several resources at once, and the server sends each of them the
+    # One account, one device. XMPP lets an account have several resources
+    # at once, and the server sends each of them the
     # others' presence (RFC 6121 4.2.2 / 4.4.2), so another session of OUR
     # account is visible here without asking anyone. What a client can do is
     # say so, and -- for a server admin -- end it (XEP-0133). Stopping it for
@@ -4284,7 +4160,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             client.add_filter("in", self._note_inbound)
         except Exception:
             # An older slixmpp without stream filters still works; the probe
-            # is then the only liveness signal, which is what this used to be.
+            # is then the only liveness signal.
             _log.warning("could not install the inbound filter")
         # Carbons, the archive, receipts, read markers and chat states
         # (android_bridge.sync): one handler that sees body-less messages too.
@@ -4417,7 +4293,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
             if len(png) > _avatar.MAX_BYTES:
                 raise _avatar.AvatarError("too_large")
             # Any picture the app made, fitted to our limits here: square,
-            # at most OWN_SIZE, at most TARGET_BYTES (owner, 2026-10-16).
+            # at most OWN_SIZE, at most TARGET_BYTES.
             png = _avatar.fit(png)
         except _avatar.AvatarError as exc:
             raise TransportError("avatar_refused", exc.code)
@@ -4426,12 +4302,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
         # _avatar_publish_error): a server without PEP (XEP-0163) is
         # "pep_unavailable", any other refusal names its condition.
         #
-        # Device report (2026-10-16, rc.85): "The server did not answer over
-        # I2P in time" -- messages fine, the picture never answered. Either
-        # the server or the I2P path will not carry a stanza that size. So:
-        # after an unanswered try, a much smaller copy (SMALL_SIZE, a few KB)
-        # is sent at once if the stream is still up, or on the next attempt
-        # if it dropped; and the report says which happened.
+        # Some servers or I2P paths will not carry a stanza this size. After
+        # an unanswered try a much smaller copy (SMALL_SIZE, a few KB) is sent
+        # at once if the stream is still up, or on the next attempt if it
+        # dropped; the result says which happened.
         self.avatar_sent_small = False
         dropped_before = getattr(self, "_disconnects", 0)
         small_first = getattr(self, "_avatar_small_next", False)
@@ -4467,12 +4341,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
 
     @staticmethod
     def _avatar_info(avatar_id: str, png: bytes, w: int, h: int) -> Dict[str, str]:
-        """The XEP-0084 <info/> attributes, as TEXT. Device report
-        (2026-10-16): with numbers here slixmpp's serializer raised a
-        TypeError while writing the metadata stanza, so it was never sent --
-        the picture itself reached the server (the server log shows it
-        stored), the announcement never did, and the app waited out its
-        timeout: "The server did not answer over I2P in time"."""
+        """The XEP-0084 <info/> attributes, as text: slixmpp's serializer
+        raises a TypeError on numbers here, and the metadata stanza would
+        silently never be sent."""
         return {"id": avatar_id, "type": _avatar.PNG_TYPE, "bytes": str(len(png)),
                 "width": str(w), "height": str(h)}
 
@@ -4545,9 +4416,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
     def _on_message_error(self, stanza) -> None:
         """A message the server bounced. Recorded, never shown as text.
 
-        Ignored before, which hid the failure of every secure group on a
-        stock Prosody: mod_muc_limits refused each MLS room fragment as too
-        long (device test, 2026-10-02) and the report said nothing. The
+        Recorded so a server refusing our room traffic (e.g. mod_muc_limits
+        rejecting MLS fragments as too long) shows up in the diagnostics. The
         condition is a fixed RFC 6120 word; the error text, which can quote
         the message, is not recorded."""
         try:
@@ -4852,20 +4722,14 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, Transport):
 
 
 def endpoint_authenticated_by(profile) -> Optional[str]:
-    """Whether the ADDRESS already authenticates the endpoint, and by what.
+    """Whether the ADDRESS already authenticates the endpoint: "I2P", "Tor",
+    or None for clearnet.
 
-    "I2P", "Tor", or None for clearnet.
-
-    This is the rule `otrv4plus_xmpp.main()` applies around line 7170, and the
-    reasoning there is worth repeating rather than re-deriving: a `.b32.i2p`
-    label is the hash of the destination's key, and a v3 onion name is the key
-    itself. Reaching that address means reaching that key-holder, with the
-    transport's own end-to-end encryption in between. There is no certificate
-    authority in the path and no MITM position for one to defend against, so
-    demanding a CA-valid certificate there is asking for a weaker second name
-    for a server already named by its key.
-
-    None means clearnet, and clearnet still demands a real certificate.
+    A `.b32.i2p` label is the hash of the destination's key and a v3 onion name
+    is the key itself, so reaching the address means reaching that key-holder
+    with the network's own encryption in between; a CA certificate adds nothing.
+    Clearnet still requires a real certificate. Same rule as the terminal
+    client's `main()`.
     """
     try:
         route = profile.route

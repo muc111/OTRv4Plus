@@ -19,25 +19,10 @@ import org.otrv4plus.android.bridge.SendOutcome
 /**
  * What the chat DECIDES, separated from how Android is told about it.
  *
- * WHY THIS IS NOT THE VIEWMODEL
- * -----------------------------
- * Every interesting rule in the chat layer is a decision about data: which
- * conversation an inbound message belongs to, whether a contact's presence is
- * known or merely unreported, whether an outgoing message is appended once or
- * twice, what a send outcome means. None of it needs Compose, a Looper, a
- * coroutine or a device.
- *
- * But if it lives in a `ViewModel` it needs all four to run, because
- * `androidx.lifecycle` and `androidx.compose.runtime` are published only to
- * Google's Maven repository -- which this development environment cannot reach
- * (see `.github/workflows/android.yml`). Logic that cannot be compiled outside
- * an Android build is logic that gets checked by reading it, and reading is how
- * the routing bug in the first version of this screen survived review.
- *
- * So the rules live here, in plain Kotlin against plain data classes, where a
- * JVM test can drive them directly and a deliberately planted fault -- skip the
- * append, ignore the roster, route everything to whatever is on screen, send
- * twice -- makes a test go red rather than a reviewer go quiet.
+ * Which conversation an inbound message belongs to, whether presence is known,
+ * whether a message is appended once, what a send outcome means: plain Kotlin
+ * over plain data classes, with no Compose, Looper or coroutines, so JVM tests
+ * drive every rule directly (and the desktop app shares it).
  *
  * [ChatViewModel] owns one of these and does the Android half: polling, the
  * coroutine scope, and telling Compose when to look again.
@@ -63,11 +48,9 @@ class ChatState(
      * Whose conversation this is.
      *
      * The store enforces the boundary for anything that reaches a disk; this
-     * field is what closes it for the state that never does — the roster, the
-     * drafts, the open conversation, the unread badge. All of it is private
-     * to an account and all of it used to survive a sign-in as somebody else,
-     * because this object is a service singleton and nothing ever told it the
-     * account had changed.
+     * field closes it for the state that never does -- the roster, drafts,
+     * the open conversation, the unread badge -- so none of it survives a
+     * sign-in as another account (this object is a service singleton).
      */
     var account: AccountScope = AccountScope.NONE
         private set
@@ -169,18 +152,9 @@ class ChatState(
     /**
      * Whether we are managing to READ the bridge at all.
      *
-     * This exists because the app got it badly wrong on a handset: the poll
-     * gathered four things in one `runCatching`, so a single throw discarded
-     * the connection status along with everything else, and the screen fell
-     * back to a default `ConnectionStatus()` whose `connected` is false. The
-     * UI then stated, in red, "Not connected. Messages cannot be sent or
-     * received." about a stream that was up.
-     *
-     * That is a fabricated state, and the wrong kind: an app that says the
-     * network is down when it has merely failed to ask is indistinguishable
-     * from one that knows. So "we have not heard" is now its own answer, and
-     * the only thing entitled to claim a disconnection is [Link.OK] plus a
-     * transport that says so.
+     * "We have not heard" is its own answer: failing to ask must never be
+     * shown as "Not connected". Only [Link.OK] plus a transport that says so
+     * may claim a disconnection.
      */
     var link: Link = Link.UNKNOWN
         private set
@@ -391,18 +365,13 @@ class ChatState(
      * somebody remembered on this device but not confirmed by the server is
      * visible and is not described as confirmed.
      *
-     * KEYED THROUGH [bare], like everything else here. The bridge already
-     * canonicalises what it emits, so this agrees with it rather than
-     * correcting it -- but `contacts` is unioned with the message store in
-     * [conversations], the store is keyed by `bare(event.peer)`, and two
-     * spellings of one person there is two rows with separate history. This
-     * is the one place a JID enters this object from outside, so it is the
-     * one place that has to fold.
+     * Keyed through [bare], like everything else here: the roster is unioned
+     * with the message store in [conversations], and two spellings of one
+     * person would be two rows with separate history.
      */
     /**
      * The person behind someone else's message in a SECURE GROUP, for "Add
-     * to contacts" and "Message privately" on that message (owner,
-     * 2026-10-20: "easy to 1:1 direct chat after group mls chats").
+     * to contacts" and "Message privately" on that message.
      *
      * Only [Message.author]: the bare JID MLS authenticated as the writer.
      * Never the room nickname, which the room assigns and anyone can pick --
@@ -509,19 +478,10 @@ class ChatState(
                 noteSubscription(event)
                 false
             }
-            // Verification moved. Recorded here rather than waited for on the
-            // next roster poll: an incoming request is the case that matters,
-            // and the peer is sitting there while we decide when to notice.
-            //
-            // Returns false. A verification request is not a message and must
-            // not buzz the phone — a peer able to trigger a notification by
-            // running SMP would be a peer with a way to ring somebody at will.
-            // Keyed through `bare`, because [conversations] reads this map
-            // with a bared JID. A key that did not fold would silently miss
-            // and fall back to the last roster poll -- which for a
-            // verification that just FAILED means the row goes on showing the
-            // previous, better state until the poll catches up. Folding here
-            // is the fail-closed direction.
+            // Verification moved: recorded now rather than on the next roster
+            // poll, so an incoming request shows at once. Returns false -- not
+            // a message, and a peer must not be able to make the phone buzz
+            // by running SMP. Keyed through `bare` (see [conversations]).
             is OtrEvent.SmpProgressed -> {
                 smpStates[bare(event.peer)] = event.progress.state
                 smpSteps[bare(event.peer)] = event.progress.step to event.progress.total
@@ -553,7 +513,7 @@ class ChatState(
             // to act on, and only an SMP-verified peer can make one (the
             // engine drops offers from anybody else before they exist).
             is OtrEvent.FileTransferChanged -> noteTransfer(event)
-            // A voice note is a message, not a file (owner, 2026-10-20).
+            // A voice note is a message, not a file.
             is OtrEvent.VoiceNoteReceived -> receiveVoiceNote(event)
             // An invitation is worth a banner, not a buzz: returned false.
             is OtrEvent.GroupInvited -> {
@@ -930,8 +890,8 @@ class ChatState(
     }
 
     /** Rooms the server reports us as owner of (the creator, or a server
-     *  admin). Owner (2026-10-16): only they see "Delete for everyone" --
-     *  for anyone else the server refuses it. Unknown means not shown. */
+     *  admin): only they see "Delete for everyone", which the server refuses
+     *  for anyone else. Unknown means not shown. */
     private val ownedRooms = mutableSetOf<String>()
 
     fun noteOwnedRooms(jids: Collection<String>) {
@@ -939,8 +899,7 @@ class ChatState(
         jids.forEach { ownedRooms.add(bare(it)) }
     }
 
-    /** A server admin may delete any room (owner, 2026-10-16: "no delete
-     *  button for users' groups for me to moderate"). */
+    /** A server admin may delete any room. */
     var serverAdmin: Boolean = false
         private set
 
@@ -1124,11 +1083,8 @@ class ChatState(
             store.conversationIds().map { bare(it) } +
             savedContacts.all().map { bare(it.jid) } +
             // Anybody who has opened an encrypted OTRv4+ session with us,
-            // contact or not, message or not. Device test, 2026-10-02: a
-            // Termux user completed the handshake with this app so it could be
-            // invited to a secure group, and nothing appeared here -- the
-            // session was recorded and never listed, so the person was
-            // invisible and there was no conversation to invite them from.
+            // contact or not, message or not -- so they can be found (and,
+            // say, invited to a group).
             sessionStates.filterValues { it != SecurityState.PLAINTEXT }
                 .keys.map { bare(it) } +
             // The Welcome room is the landing room: listed once joined, even
@@ -1563,24 +1519,12 @@ class ChatState(
         /**
          * The bare JID, case-folded. One contact, one key.
          *
-         * Resources come and go with each reconnect and each device, and a
-         * conversation keyed by a full JID would fork every time the peer's
-         * client restarted -- one thread per resource, none of them the whole
-         * conversation.
-         *
-         * CASE WAS THE HALF THIS MISSED. slixmpp normalises an inbound
-         * stanza's `from`, so everything arriving from the server is already
-         * lower-case; a JID the USER types is not. Add `Bob@Example.test` and
-         * the roster echoes `bob@example.test`, so `conversations()` -- which
-         * unions the roster, the message store and the saved list -- showed
-         * the same person twice, and the two rows had separate history.
-         *
-         * XMPP says the localpart and domain are case-insensitive, so folding
-         * is correct rather than merely convenient. It is also the safe
-         * direction: it can only merge two keys into one, never split one
-         * into two. `OtrApp.canonical_peer` applies the same rule on the
-         * Python side, where the consequence of splitting was a conversation
-         * that had asked for OTR reporting that plaintext was allowed.
+         * Resources come and go with each reconnect and device, so a
+         * conversation keyed by a full JID would fork per resource. Case is
+         * folded because XMPP localparts and domains are case-insensitive and
+         * a typed JID may differ from the server's spelling. Folding only
+         * merges keys, never splits them; `OtrApp.canonical_peer` applies the
+         * same rule in Python.
          */
         fun bare(jid: String): String =
             jid.trim().substringBefore('/').lowercase()
