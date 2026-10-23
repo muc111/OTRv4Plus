@@ -38,7 +38,7 @@ name: Python
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main, dev, "claude/**"]
   pull_request:
   workflow_dispatch:
 

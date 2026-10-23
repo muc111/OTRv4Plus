@@ -385,7 +385,7 @@ On the phone (Termux from F-Droid), once:
 
 ```bash
 pkg install python rust openssl clang git openssh
-git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
+git clone https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus/Rust && bash build.sh && cd ..
 passwd                      # a password for Termux's SSH server
 ```

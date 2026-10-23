@@ -31,7 +31,7 @@ name: Android
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main, dev, "claude/**"]
     paths: &android_paths
       - "android/**"
       - "android_bridge/**"
@@ -766,7 +766,7 @@ jobs:
     # kotlin-tests or python-deps.
     # `screens` too, but it is continue-on-error: its failure never blocks this.
     needs: [configure, python-deps, rust, i2pd, apk, apk-release, kotlin-tests, screens]
-    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
     permissions:
       # Narrower than it looks: this replaces the workflow-level `contents:
       # read` for this job only. Nothing else in the run can write.

@@ -120,10 +120,10 @@ Details, design notes and caveats are in [TECHNICAL.md](TECHNICAL.md) and
 
 > **MLS+** — MLS (RFC 9420) on a hybrid post-quantum ciphersuite (`0xF0A1`, X448 + ML-KEM-1024 / Ed448 + ML-DSA-87). Not interoperable with standard MLS.
 
-Secure groups use **MLS+** through OpenMLS, with every primitive from the same Rust core: hybrid KEM **X448 + ML-KEM-1024**, composite signature **Ed448 + ML-DSA-87** (both must verify), AES-256-GCM, HKDF-SHA-384 (ciphersuite 0xF0A1). Standard MLS suites have no post-quantum protection; these groups resist "record now, decrypt later". The XMPP room carries only `?OTRv4MLS1:` ciphertext. Invitations and Welcomes travel inside 1:1 OTRv4+ sessions; keys move on at every membership change and on a timer; a removed member reads nothing after the removal; messages typed while a group resyncs wait instead of being lost. The server still sees the room, its members and message timing. 0xF0A1 is a private code point and the hybrid constructions are this project's own, not independently audited. Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls), [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md).
+Secure groups use **MLS+** through OpenMLS, with every primitive from the same Rust core: hybrid KEM **X448 + ML-KEM-1024**, composite signature **Ed448 + ML-DSA-87** (both must verify), AES-256-GCM, HKDF-SHA-384 (ciphersuite 0xF0A1). Standard MLS suites have no post-quantum protection; these groups resist "record now, decrypt later". The XMPP room carries only `?OTRv4MLS1:` ciphertext. Invitations and Welcomes travel inside 1:1 OTRv4+ sessions; keys move on at every membership change and on a timer; a removed member reads nothing after the removal; messages typed while a group resyncs wait instead of being lost. The server still sees the room, its members and message timing. 0xF0A1 is in the IANA private-use range (0xF000–0xFFFF), which is the correct place for a suite that isn't registered; the hybrid constructions are this project's own, not independently audited. Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls), [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md).
 
 **Known limits**
-- **MLS+ is not standard MLS.** Groups use a private ciphersuite (`0xF0A1`) and cannot be joined by Wire, Element, or any other RFC 9420 implementation.
+- **MLS+ is not standard MLS.** Groups use an unregistered ciphersuite (`0xF0A1`, in the IANA private-use range) and cannot be joined by Wire, Element, or any other RFC 9420 implementation.
 - **About 100 members per group.** A Welcome carries the whole ratchet tree (~9.4 KB per member) and the core refuses MLS+ messages over 1 MiB, so joins stop near 100 members ([STRESS_TEST.md](STRESS_TEST.md)).
 
 ## Quick start
@@ -133,7 +133,7 @@ Secure groups use **MLS+** through OpenMLS, with every primitive from the same R
 Built from source on your machine. **Ubuntu 24.04+ / Debian 13+**, one line (re-run to update):
 
 ```bash
-sudo apt install -y git && git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+sudo apt install -y git && git clone https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
 ```
 What it installs: [desktop/README.md](desktop/README.md#install-on-ubuntu-or-debian). Qubes OS 4.2: [qubes/README.md](qubes/README.md).
 
@@ -160,14 +160,14 @@ Do not `pip install` anything: `build.sh` puts the Python modules in the project
 the build tool once, so it takes longer; later builds are much faster):
 
 ```bash
-git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
+git clone https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus/Rust
 bash build.sh
 cd ..
 ```
 
-That branch matches the APK on the Releases page (`main` lags behind). To switch an
-existing clone: `git fetch origin && git checkout claude/otrv4plus-android-spec-a3oq4d`.
+`main` matches the APK on the Releases page. A clone made earlier from the
+`claude/...` branch moves over with `git fetch origin && git checkout main`.
 `build.sh` sets up its own Python environment in `.venv`, runs the Rust tests and
 lints, installs the core (with secure groups) and ends with `BUILD OK`. Keep Termux
 open while it runs; details in [TECHNICAL.md](TECHNICAL.md#buildsh-in-detail).

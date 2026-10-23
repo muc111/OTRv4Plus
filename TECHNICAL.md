@@ -609,7 +609,7 @@ For **Tor**: Orbot must be running with SOCKS5 on port 9050.
 ### 2. Clone and build
 
 ```bash
-git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git
+git clone https://github.com/muc111/OTRv4Plus.git
 cd OTRv4Plus/Rust
 bash build.sh        # tests, lints, builds the core with secure groups into ../.venv
 cd ..

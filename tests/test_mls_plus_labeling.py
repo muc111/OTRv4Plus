@@ -20,8 +20,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFINITION = ("**MLS+** — MLS (RFC 9420) on a hybrid post-quantum ciphersuite "
               "(`0xF0A1`, X448 + ML-KEM-1024 / Ed448 + ML-DSA-87). Not "
               "interoperable with standard MLS.")
-INTEROP = ("**MLS+ is not standard MLS.** Groups use a private ciphersuite "
-           "(`0xF0A1`) and cannot be joined by Wire, Element, or any other "
+INTEROP = ("**MLS+ is not standard MLS.** Groups use an unregistered ciphersuite "
+           "(`0xF0A1`, in the IANA private-use range) and cannot be joined by Wire, Element, or any other "
            "RFC 9420 implementation.")
 
 BARE = re.compile(r"(?<!standard )\bMLS\b(?!\+)(?!\s*\()", re.IGNORECASE)

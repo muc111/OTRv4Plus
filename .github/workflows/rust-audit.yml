@@ -10,7 +10,7 @@ name: Rust audit
 
 on:
   push:
-    branches: [main, "claude/**"]
+    branches: [main, dev, "claude/**"]
     paths:
       - "Rust/Cargo.toml"
       - "Rust/Cargo.lock"

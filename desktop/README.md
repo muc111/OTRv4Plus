@@ -100,7 +100,7 @@ Ubuntu 24.04+ or Debian 13+. Everything is built from source on your
 machine; nothing prebuilt is downloaded except the toolchains. One line:
 
 ```bash
-sudo apt install -y git && git clone -b claude/otrv4plus-android-spec-a3oq4d https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+sudo apt install -y git && git clone https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
 ```
 
 Already have the clone? `bash ~/OTRv4Plus/desktop/install.sh`. Running it
