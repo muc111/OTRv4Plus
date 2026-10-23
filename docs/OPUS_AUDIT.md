@@ -3,7 +3,7 @@
 > **Status note (v10.12.0).** The measurement phase recorded here led to the
 > production default moving to **60 ms frames at 24 kbit/s** (279-byte packet,
 > 16.7 packets/s), which is what ships today — see
-> [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md). The audit's central finding
+> [Rust/VOICE_TUNING.md](../Rust/VOICE_TUNING.md). The audit's central finding
 > holds and has since been confirmed on the real path: **Opus is not the
 > bottleneck.** Median mouth-to-ear over I2P is about 917 ms, and the codec
 > accounts for very little of it.

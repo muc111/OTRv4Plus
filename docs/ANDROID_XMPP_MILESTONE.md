@@ -7,7 +7,7 @@
 > the IRC terminal client, the XMPP terminal client, and this — a **native
 > Android app under construction**. The terminal clients running under Termux
 > are the supported way to use OTRv4+ today; this app is not yet a replacement
-> for them. See [README.md](README.md#project-status).
+> for them. See [README.md](../README.md#project-status).
 
 Covers the work from `52da9ea` onward on
 `claude/otrv4plus-android-spec-a3oq4d`, the milestone immediately before OTR

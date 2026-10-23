@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 133
+        versionCode = 134
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -62,19 +62,19 @@ android {
         // repository-level gate is closed (INV-08's at-rest secrets in Rust,
         // documentation licence decided, icon provenance recorded, dependency
         // audit clean, release variant built and inspected). `-experimental`
-        // stays, per VERSIONING.md, because the handset list in
-        // ANDROID_CALL_AND_FILE_DEVICE_TEST.md has not been run; `.rc.1` says
+        // stays, per docs/VERSIONING.md, because the handset list in
+        // docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md has not been run; `.rc.1` says
         // nothing else is known to be missing.
         //
-        // 0.4.0 -> 0.5.0: MINOR, per VERSIONING.md. New capability reachable
+        // 0.4.0 -> 0.5.0: MINOR, per docs/VERSIONING.md. New capability reachable
         // from the APK for the first time: SMP-gated voice calls (the engine
         // and the AAudio backend were already packaged; nothing could reach
         // them), SMP-gated file transfer through the system document picker,
         // and a metadata choice before a photo is sent. None of it has run on
-        // a handset: ANDROID_CALL_AND_FILE_DEVICE_TEST.md is the open list,
+        // a handset: docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md is the open list,
         // and the AAudio gate in tests/test_android_audio_path.py stays shut.
         //
-        // 0.3.0 -> 0.4.0: MINOR, per VERSIONING.md. Not a new feature, but
+        // 0.3.0 -> 0.4.0: MINOR, per docs/VERSIONING.md. Not a new feature, but
         // the capability the whole track exists for. At 0.3.0 nothing in this
         // APK had been run on a handset. At 0.4.0 sign-in, the roster,
         // contacts, presence, 1:1 conversations, rooms and room navigation
@@ -83,7 +83,7 @@ android {
         //
         // NOT 1.0 and not out of -experimental: OTR end to end has not been
         // observed between a handset and a peer, and voice on the APK has
-        // never run. ANDROID_XMPP_MILESTONE.md §7 is the open list.
+        // never run. docs/ANDROID_XMPP_MILESTONE.md §7 is the open list.
         //
         // The `-experimental` suffix replaces `-phase2`, which named a
         // programme rather than a maturity and had stopped meaning anything
@@ -91,7 +91,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.132+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.133+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //

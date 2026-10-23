@@ -16,7 +16,7 @@
 # Corrected a second time for rc.4: the body still said OTR, SMP and file
 # transfer had never run on a device after the owner's rc.1 handset run had
 # proved all three against a Termux peer (recorded in
-# ANDROID_CALL_AND_FILE_DEVICE_TEST.md and the rc.2 CHANGELOG entry). That
+# docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md and the rc.2 CHANGELOG entry). That
 # line was no longer true. Corrected again when the owner reported two-way
 # calls working app to app and app to Termux.
 #
@@ -143,6 +143,7 @@ installed), and with the Termux client.
 | Room people | In the Welcome room tap **People**: a sheet lists everyone under Moderators / Participants / Visitors with counts, a search box when there are 8 or more, and each person's address. **Add** sends a contact request, **Message** opens a 1:1 chat; someone the room hides the address of shows "This room does not show their address" and no buttons. Same on the desktop (People panel beside the room) | rc.130 |
 | Chat kinds | Chats list: 1:1 chats tinted blue, encrypted groups green, public rooms (Welcome) amber, each with a stripe on the left and its kind in words under the name. With more than one kind there are chips at the top (All · People (n) · Groups (n) · Public (n)); a chip shows only that kind. Check light and dark theme: names stay readable | rc.131 |
 | Security update | Nothing to see: the ctutils crate updated for RUSTSEC-2026-0385 (a constant-time fix). Check that 1:1 chats, a group message and a call still work as on rc.131 | rc.132 |
+| Bundled router | Nothing to see: the bundled I2P router is rebuilt from the same pinned sources. With no I2P app on the phone, sign in over I2P: the app starts its own router and connects | rc.133 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
@@ -161,7 +162,7 @@ installed), and with the Termux client.
 | Password-protected group | Create a secure group **with a room password**, invite someone: they join without typing it (it comes with the invitation, encrypted); if it does not arrive they are **asked for it** instead of an error | rc.90 |
 | Group status and call limit | A new group reads **"Encrypted Chat \| 0/1 users verified"**; the count rises only as verification succeeds (you count once a verification you took part in succeeds); a group of **6 or more has no call button** ("Text only") | rc.84–rc.90 |
 | Signed in elsewhere | Sign in with the same account on a second device: the first shows **"Your account is also signed in on another device"**; as server admin, **Sign out other devices** ends the second session (your own stays up) | rc.91 |
-| One session per account | With `mod_otrv4plus_one_session` and `max_resources = 1` (SECURITY_SESSIONS.md), sign in on a second device: it gets in, and the first says **"Signed out: this account signed in on another device"** and does **not** reconnect by itself. Drop the connection (airplane mode) and reconnect: you get straight back in | rc.95 |
+| One session per account | With `mod_otrv4plus_one_session` and `max_resources = 1` (docs/SECURITY_SESSIONS.md), sign in on a second device: it gets in, and the first says **"Signed out: this account signed in on another device"** and does **not** reconnect by itself. Drop the connection (airplane mode) and reconnect: you get straight back in | rc.95 |
 | Sign out | Shows the sign-in screen at once (the teardown carries on in the background). There is no Disconnect: the app stays connected until Sign out or until it is closed | rc.95, rc.100 |
 | Built-in router stays warm | With the built-in router: Cancel a sign-in, then sign in again: it connects without the 5-10 minute warm-up | rc.100 |
 | Sound and vibration | App in the background: a message, a verification request and a group invitation each sound **and vibrate**; the notification says only "New message", "Verification requested" or "Group invitation" (no name), and nothing shows on the locked screen. App open in another chat: a tone and a buzz. Phone on vibrate: buzz only; on silent: nothing | rc.102 |
@@ -189,7 +190,7 @@ installed), and with the Termux client.
 ## ⚠️ Known limits
 
 - **A synthetic voice is harder to recognise, not impossible.** Measured
-  against a speaker-recognition network (see \`VOICE_NOTES.md\`), Synthetic
+  against a speaker-recognition network (see \`docs/VOICE_NOTES.md\`), Synthetic
   is the strongest. What you *say* — words, accent, background — can still
   identify you. Where it matters, type.
 - **I2P is slow to start.** Building tunnels takes 30–120 s; the first start
@@ -200,15 +201,15 @@ installed), and with the Termux client.
   stop at roughly 100. Only four members have been tested on phones. Every
   group change also goes through the server room, so big groups are slow on
   a server with the default room rate limits. Server admins can measure
-  their own server with the terminal client's stress test (`STRESS_TEST.md`).
+  their own server with the terminal client's stress test (`docs/STRESS_TEST.md`).
 - **Group calls are for groups of up to 5 members.** Each phone sends its
   audio to every other phone directly over I2P, so a larger group has no
   call button and stays text only (rc.84).
 - Secure groups made before rc.27 must be re-created to add members.
 
-The full gate list is \`ANDROID_XMPP_MILESTONE.md\` §7; the device-test
-procedures are \`ANDROID_MESSAGING_DEVICE_TEST.md\` and
-\`ANDROID_CALL_AND_FILE_DEVICE_TEST.md\`.
+The full gate list is \`docs/ANDROID_XMPP_MILESTONE.md\` §7; the device-test
+procedures are \`docs/ANDROID_MESSAGING_DEVICE_TEST.md\` and
+\`docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md\`.
 
 ## Verified by CI
 
@@ -274,11 +275,11 @@ little traffic for others (bandwidth class L, at most 50 transit tunnels),
 is never a floodfill, opens no ports on your home router (no UPnP), and is
 kept running between connections (a router started cold cannot be reached
 for minutes) and stopped on Sign out, Wipe & Exit and when the app is closed. The icon is a
-**placeholder** (AI-generated, no licence asserted -- see \`ASSETS.md\`).
+**placeholder** (AI-generated, no licence asserted -- see \`docs/ASSETS.md\`).
 
-\`ANDROID_XMPP_MILESTONE.md\` §7 is the open gate list, item by item;
-\`ANDROID_MESSAGING_DEVICE_TEST.md\` is the procedure;
-\`ANDROID_CHAT_ARCHITECTURE.md\` §7 records what is and is not covered by tests.
+\`docs/ANDROID_XMPP_MILESTONE.md\` §7 is the open gate list, item by item;
+\`docs/ANDROID_MESSAGING_DEVICE_TEST.md\` is the procedure;
+\`docs/ANDROID_CHAT_ARCHITECTURE.md\` §7 records what is and is not covered by tests.
 
 ## Install
 

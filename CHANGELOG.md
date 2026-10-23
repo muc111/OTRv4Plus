@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.133 — 2026-10-24 — the bundled I2P router builds from scratch again (core 0.13.1)
+
+- **The bundled i2pd builds on a fresh CI machine again.** The first build
+  on `main` failed to link (`-l:libjitterentropy.a`, `-lzstd` not found):
+  CMake asked `pkg-config` for the static OpenSSL's dependencies and got the
+  build machine's own Ubuntu OpenSSL, not the Android one built beside it.
+  `pkg-config` now sees only that Android build. The router's sources and
+  pins are unchanged; earlier branches had passed on a cached router.
+
 ## Android 0.7.0-experimental.rc.132 — 2026-10-23 — ctutils security update (core 0.13.1)
 
 - **ctutils 0.4.3 → 0.4.4** in all three Rust lockfiles, for RUSTSEC-2026-0385
@@ -238,7 +247,7 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   cannot join. Nothing on the wire changed.
 - **Gates:** `test_signin_status.py`, `test_room_destroy.py` and
   `test_mls_plus_labeling.py` in CI, with Kotlin `ConnectProblemTest` and
-  `RoomDeletionTest`; handset items 12 and 13 in ANDROID_XMPP_MILESTONE.md
+  `RoomDeletionTest`; handset items 12 and 13 in docs/ANDROID_XMPP_MILESTONE.md
   §7.
 - **Stress test:** empty rooms left by earlier, interrupted runs are removed
   at the start and end of a run, and big runs raise the open-files limit.
@@ -275,7 +284,7 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   its admins, and refuses a ban on an admin or on yourself. A banned
   account is signed out at once; its app says until when and stops trying.
   Needs the new server module `mod_otrv4plus_moderation` (run the install
-  script again; SERVER_HARDENING.md).
+  script again; docs/SERVER_HARDENING.md).
 - **Admins see every room**, hidden ones included (marked "hidden (admins
   see it)"), from the same module.
 
@@ -456,7 +465,7 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 - **The phone's ring mode decides:** normal, a tone and a buzz; vibrate, a
   buzz; silent, nothing.
 - **Server:** `prosody/install-server-limits.sh` installs both server
-  modules and the limits in one command (SERVER_HARDENING.md).
+  modules and the limits in one command (docs/SERVER_HARDENING.md).
 
 ## Android 0.7.0-experimental.rc.101 — 2026-10-17 — sign-ins paced, retries spread (core 0.13.1)
 
@@ -496,7 +505,7 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   online as it allows. The app keeps trying and gets in when someone
   leaves." Android, desktop and the terminal client, which all keep
   retrying.
-- **SERVER_HARDENING.md:** what protects the server now, the module, and
+- **docs/SERVER_HARDENING.md:** what protects the server now, the module, and
   recommended Prosody (`c2s_timeout`, `mod_limits`, no s2s), i2pd and
   systemd settings.
 
@@ -535,7 +544,7 @@ The README badge now names all four tracks: `v10.31.0 · Rust core 0.13.1 ·
 Android 0.7.0 (pre-release) · Desktop 0.13.1 (pre-release)`, each checked
 against its source by `tests/test_readme_matches_the_code.py`. The desktop app
 gets its own track (it carried the core's number); it starts at 0.13.1 so
-installed packages upgrade, and its window title shows it. VERSIONING.md had the core at 0.13.0
+installed packages upgrade, and its window title shows it. docs/VERSIONING.md had the core at 0.13.0
 and the Android example at rc.26; both are corrected.
 
 ## Android 0.7.0-experimental.rc.97 — 2026-10-16 — tap a picture to see the profile (core 0.13.1)
@@ -572,7 +581,7 @@ and the Android example at rc.26; both are corrected.
   `prosody/mod_otrv4plus_one_session.lua` lets the **newest** sign-in win
   and signs the older one out. That also stops someone with a stolen
   password locking you out by signing in first. Setup is in
-  SECURITY_SESSIONS.md; it replaces `mod_c2s_limit_sessions`.
+  docs/SECURITY_SESSIONS.md; it replaces `mod_c2s_limit_sessions`.
 - **A device signed out that way stops and says so**: "Signed out: this
   account signed in on another device… If it wasn't you, change your
   password." It does not reconnect by itself, so two devices cannot keep
@@ -584,7 +593,7 @@ and the Android example at rc.26; both are corrected.
 - **Rooms:** a refusal the server calls "forbidden" no longer says "You are
   banned"; banned is one reason, the server's rules are another.
 - **Stress test:** its rooms are created non-persistent and destroyed at
-  the end. STRESS_TEST.md has the console lines that removed the 97 left
+  the end. docs/STRESS_TEST.md has the console lines that removed the 97 left
   over from earlier runs, and the capacity figures (about 1,000 users on
   the T450).
 - **Desktop on Ubuntu/Debian:** one line builds it from source and installs
@@ -618,7 +627,7 @@ and the Android example at rc.26; both are corrected.
   half-received OTRv4+ handshake by sending 65 small fragments.
 - **Stress test:** non-observer bots no longer decrypt chat (the test was
   measuring itself), and each minute shows undecryptable messages and the
-  test's own loop lag. `STRESS_TEST.md` records the first run on the T450.
+  test's own loop lag. `docs/STRESS_TEST.md` records the first run on the T450.
 
 ## Android 0.7.0-experimental.rc.92 — 2026-10-16 — "already signed in on another device" (core 0.13.1)
 
@@ -629,7 +638,7 @@ and the Android example at rc.26; both are corrected.
   setting up". It now says "This account is already signed in on another
   device, and the server allows one at a time", and keeps retrying, because
   a session that just lost its network is timed out by the server. The
-  terminal client says the same and stops. `SECURITY_SESSIONS.md` has the
+  terminal client says the same and stops. `docs/SECURITY_SESSIONS.md` has the
   install without `luarocks` and what the module does.
 
 ## Android 0.7.0-experimental.rc.91 — 2026-10-16 — warned when your account is signed in elsewhere (core 0.13.1)
@@ -645,14 +654,14 @@ and the Android example at rc.26; both are corrected.
   session of your account with the server's XEP-0133 `end-user-session`,
   naming each by its full JID so your own session is never touched. It does
   not stop them signing in again: change the password too.
-- **Doc: one session per account on the server** (`SECURITY_SESSIONS.md`):
+- **Doc: one session per account on the server** (`docs/SECURITY_SESSIONS.md`):
   Prosody's `mod_c2s_limit_sessions` with `max_resources`. It also covers
   what another session with your password can and cannot see (OTRv4+ and
   MLS messages stay encrypted to your device) and the I2P reconnect
   trade-off of a limit of 1.
 - **Fixed: `build.sh` failed at clippy on Rust 1.99** (new lint
   `chunks_exact_to_as_chunks` in the voice code); the CI licence check now
-  covers `STRESS_TEST.md`.
+  covers `docs/STRESS_TEST.md`.
 
 ## Android 0.7.0-experimental.rc.90 — 2026-10-16 — password-protected groups can be joined; "0/1 verified" (core 0.13.1)
 
@@ -670,7 +679,7 @@ and the Android example at rc.26; both are corrected.
   start; now you count once a verification you took part in succeeds, so a
   new group reads 0/1 and the number rises as members are verified.
 - **New: a server load test for admins** (`--stresstest` in the terminal
-  client; `STRESS_TEST.md`). It measured the secure-group ceiling at about
+  client; `docs/STRESS_TEST.md`). It measured the secure-group ceiling at about
   100 members (the Welcome grows ~9.4 KB per member; the core caps MLS
   messages at 1 MiB), which the release page now states.
 
@@ -810,7 +819,7 @@ and the Android example at rc.26; both are corrected.
   understand, remove it from all, we can use synthetic only."* The choice
   is now Synthetic (default) or My voice, in the app, the desktop app and
   the terminal (`/voice [synthetic|natural]`); the Rust core refuses
-  "disguise". Disguised was also the weaker mask (VOICE_NOTES.md). A silent
+  "disguise". Disguised was also the weaker mask (docs/VOICE_NOTES.md). A silent
   stretch of a Synthetic note is now silent, not noise.
 - **Verification shows a moving bar on every client.** Owner: *"Verification
   took a while, it should display a loading bar on all clients"*. From the
@@ -903,7 +912,7 @@ and the Android example at rc.26; both are corrected.
   above 4 kHz, no dominant tone. A Rust test fails any setting that
   whistles. Settings are still drawn per note and never leave the
   function; "My voice" is unchanged.
-- **Measured against a speaker-recognition network** (VOICE_NOTES.md; EER,
+- **Measured against a speaker-recognition network** (docs/VOICE_NOTES.md; EER,
   50 % = guessing): Disguised 31 % (knows your voice) / 32 % (links two
   notes); Synthetic 41 % / 37 %; word recognition 37 % / 46 %. rc.76 was
   34/39 and 42/47 with 44/44: Synthetic is as strong against someone who
@@ -1032,7 +1041,7 @@ and the Android example at rc.26; both are corrected.
 
 - **Mic button in the message bar** (Android and desktop): with nothing
   typed, Send becomes a microphone. It records a voice note that is
-  disguised on the device (Synthetic by default, see VOICE_NOTES.md) and
+  disguised on the device (Synthetic by default, see docs/VOICE_NOTES.md) and
   sent as an encrypted file. Offered wherever a file may be sent: a
   verified contact, or a secure group.
 - **Wipe & Exit: "Also delete my account on the server"** -- a checkbox,
@@ -1118,7 +1127,7 @@ link voice note to specific user".
 - Measured against a speaker-recognition network on real speakers: from
   0 % EER undisguised to 42 % / 47 % (synthetic) and 34 % / 39 %
   (disguised), where 50 % is guessing. What you say can still identify
-  you, and no disguise can promise more. See VOICE_NOTES.md.
+  you, and no disguise can promise more. See docs/VOICE_NOTES.md.
 - Notes are Ogg Opus (WAV where a build has no Opus encoder) with no
   metadata and a random name. Received notes are parsed as untrusted input.
 
@@ -1327,7 +1336,7 @@ was never asked to verify, and its own \`/smp\` reached nobody.
   - \`Rust/build.sh\` installs \`opuslib==3.0.1\` into \`.venv\`, checks that
     libopus loads and that parec/pacat exist, and prints a \`!!!\` notice
     naming the package to install when not.
-  - The Ubuntu/Debian apt line in README and TECHNICAL.md includes
+  - The Ubuntu/Debian apt line in README and docs/TECHNICAL.md includes
     \`libopus0 pulseaudio-utils\`.
   - In a call without audio, Termux now says NO AUDIO in plain words, that
     you cannot hear or be heard, and the exact fix -- instead of a one-line
@@ -1374,12 +1383,12 @@ was never asked to verify, and its own \`/smp\` reached nobody.
   private staging directory, never beside a file picked from shared storage.
 - The app now explains a "cannot check this file" refusal instead of a
   generic one.
-- CI: SECURITY_AUDIT_2026-10-11.md declared in REUSE.toml (the rc.53
+- CI: docs/SECURITY_AUDIT_2026-10-11.md declared in REUSE.toml (the rc.53
   licensing check).
 
 ## Android 0.7.0-experimental.rc.53 — 2026-10-11 — security audit: dependencies updated, three fixes (core 0.13.1)
 
-Full record: SECURITY_AUDIT_2026-10-11.md (developer-led with AI assistance;
+Full record: docs/SECURITY_AUDIT_2026-10-11.md (developer-led with AI assistance;
 not an independent audit).
 
 - **Dependencies.** All Rust lockfiles updated to the latest compatible
@@ -1412,7 +1421,7 @@ not an independent audit).
   where XEP-0084 keeps avatars, and the app only said "could not be
   published". A refusal for lack of PEP is now \`pep_unavailable\`:
   "This server does not store profile pictures ... Prosody: add "pep" to
-  modules_enabled." PROSODY_USER_DISCOVERY.md §6.
+  modules_enabled." docs/PROSODY_USER_DISCOVERY.md §6.
 
 ---
 
@@ -1428,7 +1437,7 @@ a join with \`<gone/>\`.
   deleted."), in the app and in Termux, exactly as for a room deleted while
   they were online. Before, Termux printed "could not rejoin the room" at
   every reconnect and the app failed silently, both keeping a dead group.
-- PROSODY_USER_DISCOVERY.md §5: tombstones, how to check one, and
+- docs/PROSODY_USER_DISCOVERY.md §5: tombstones, how to check one, and
   \`muc_tombstones = false\`.
 
 ---
@@ -1443,7 +1452,7 @@ a join with \`<gone/>\`.
   (Prosody makes them owners of every room), which is moderation. A group
   held on the phone still goes through the secure-group delete, which also
   destroys its keys here.
-- PROSODY_USER_DISCOVERY.md §5: the server settings for listed, kept and
+- docs/PROSODY_USER_DISCOVERY.md §5: the server settings for listed, kept and
   deletable rooms (\`muc_room_default_public\`,
   \`muc_room_default_persistent\`, \`admins\`), and console commands for
   rooms that already exist.
@@ -1905,7 +1914,7 @@ create a new one.
 
 **Termux: run \`build.sh\` again** (core 0.13.0).
 
-- **Group voice calls in secure groups** (MLS_SECURITY_HARDENING.md §5).
+- **Group voice calls in secure groups** (docs/MLS_SECURITY_HARDENING.md §5).
   Keys come from the group's MLS exporter -- hybrid X448+ML-KEM-1024 since
   rc.27 -- per epoch and per sender, and never leave Rust
   (\`RustGroupVoice\`): AES-256-GCM, nonce epoch||counter, a ratchet every
@@ -1951,7 +1960,7 @@ group's next rekey).
   Repeats are harmless (MLS drops a replay and a stale commit). The Termux
   client says it once a minute, not per piece.
 - **M2: one MLS signing key per group, replaced at every rekey**
-  (MLS_SECURITY_HARDENING.md §1, decision D1 "rotate only"). A member can no
+  (docs/MLS_SECURITY_HARDENING.md §1, decision D1 "rotate only"). A member can no
   longer be linked across groups by key, and each key signs only until the
   next rekey; the old private key is dropped. The rotation is signed with
   the old key, so a member verified over SMP **stays verified** across it;
@@ -1978,7 +1987,7 @@ group's next rekey).
 ## Android 0.7.0-experimental.rc.26 — 2026-10-03 — MLS hardening, step M1 (core 0.11.0)
 
 The owner's MLS + audio hardening specification is audited, point by point,
-in **MLS_SECURITY_HARDENING.md**, with what is met, what is not, the
+in **docs/MLS_SECURITY_HARDENING.md**, with what is met, what is not, the
 library flags that need a decision, and the commit plan (M1-M5).
 
 - **Automatic MLS rekey every 50 messages or 30 minutes** (was 100 / 24 h),
@@ -2330,10 +2339,10 @@ with 57568 events dropped and none of them about the connection.*
   invite | accept | say | members | remove | rekey | leave`, and `/wipe`.
   `/quit` keeps the sealed group state; `/wipe` destroys it. Build the Termux
   core with `--features mls` (Rust/build.sh does). Not yet tested on devices:
-  `PHYSICAL_TEST_PLAN.md` §7a.
+  `docs/PHYSICAL_TEST_PLAN.md` §7a.
 - Recorded: a tampered copy of a group message that arrives before the
   genuine one makes the genuine one undecryptable (fail closed; OpenMLS
-  spends the key). See MLS_FEASIBILITY.md.
+  spends the key). See docs/MLS_FEASIBILITY.md.
 - **Termux build: `cd Rust && bash build.sh` is now all it takes.** It creates
   and uses the project's own `.venv`, installs the pinned maturin 1.13.3
   there, runs the Rust tests and clippy (-D warnings), installs the MLS build
@@ -2412,7 +2421,7 @@ with 57568 events dropped and none of them about the connection.*
 *Handset report on rc.5: registering on 07f.de and on yax.im (no CAPTCHA)
 both ended `clearnet_endpoint srv=true -> registration failed code=network`.
 Reproduced against a real STARTTLS server; not yet re-run on a handset —
-`PHYSICAL_TEST_PLAN.md` §0.*
+`docs/PHYSICAL_TEST_PLAN.md` §0.*
 
 **Root cause (two faults, both client-side)**
 
@@ -2449,11 +2458,11 @@ the JID's domain). I2P and Tor paths are unchanged.
 
 ## Android 0.7.0-experimental.rc.5 — 2026-09-28 — clearnet servers work; no password to a substituted I2P server (core 0.11.0)
 
-*Not tested on a handset. `PHYSICAL_TEST_PLAN.md` §0 is the first thing to
+*Not tested on a handset. `docs/PHYSICAL_TEST_PLAN.md` §0 is the first thing to
 run. Also carries everything committed on the branch since rc.4 (Wipe &
 Exit completion, SMP and reconnect recovery, MLS stages, file transfer).*
 
-**Transport chosen from the server name** (`TRANSPORT_POLICY.md` §8.2)
+**Transport chosen from the server name** (`docs/TRANSPORT_POLICY.md` §8.2)
 
 - `07f.de` failed with `checking_router` in 3 ms: every server was treated as
   an I2P server. The route now comes from the name alone, in one place
@@ -2463,7 +2472,7 @@ Exit completion, SMP and reconnect recovery, MLS stages, file transfer).*
 - No fallback between routes. A clearnet server that offers no TLS gets no
   password (`tls_required`).
 
-**X1 resolved on Android** (`SECURITY_ISSUES.md` X1)
+**X1 resolved on Android** (`docs/SECURITY_ISSUES.md` X1)
 
 - The I2P destination a server name resolves to is pinned on first use. A
   different one is refused before any stream opens, and a security warning
@@ -2471,16 +2480,16 @@ Exit completion, SMP and reconnect recovery, MLS stages, file transfer).*
   connect on its own. No background retry.
 - SCRAM only wherever certificate checks are off (I2P, onion). A server
   offering only PLAIN gets nothing.
-- Residuals are stated in `SECURITY_ISSUES.md`: first contact is TOFU, and
+- Residuals are stated in `docs/SECURITY_ISSUES.md`: first contact is TOFU, and
   SCRAM against an impostor allows offline guessing of weak passwords.
 
 ## Android 0.7.0-experimental.rc.4 — 2026-09-24 — automatic OTRv4+ only where OTRv4Plus is, one People list, files you can see (core 0.11.0)
 
 *Supersedes rc.3; the release page now keeps only the newest APK. None of
 this has run on a handset yet. The new checklist steps are §18–§21 of
-`ANDROID_CALL_AND_FILE_DEVICE_TEST.md`.*
+`docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md`.*
 
-**Automatic OTRv4+, gated on real capability** (`OTRV4PLUS_CAPABILITY.md`)
+**Automatic OTRv4+, gated on real capability** (`docs/OTRV4PLUS_CAPABILITY.md`)
 
 - Both clients advertise `https://github.com/muc111/OTRv4Plus#otrv4plus-1`
   in XEP-0030 and XEP-0115. Capability is learned per resource from
@@ -2491,7 +2500,7 @@ this has run on a handset yet. The new checklist steps are §18–§21 of
   not: "OTRv4Plus unavailable", no traffic and no downgrade.
 - Capability is not trust: SMP still gates calls and files.
 
-**People list** (`PROSODY_USER_DISCOVERY.md`)
+**People list** (`docs/PROSODY_USER_DISCOVERY.md`)
 
 - Roster, subscription requests and the server's own online list are merged
   into one list: Accept / Online — Added / Online (Add) / Pending /
@@ -2515,7 +2524,7 @@ this has run on a handset yet. The new checklist steps are §18–§21 of
 - Dark purple theme by default, with Light and Follow system; WCAG AA
   contrast is checked in tests.
 - Blank username on first launch.
-- `MLS_FEASIBILITY.md`: a study only; no MLS is implemented.
+- `docs/MLS_FEASIBILITY.md`: a study only; no MLS is implemented.
 
 ## Android 0.7.0-experimental.rc.3 — 2026-09-24 — the APK gets a voice codec (core 0.11.0)
 
@@ -2562,7 +2571,7 @@ running.*
 *The rc.1 handset run proved OTR and SMP on Android, the Termux client's
 stored SMP state, and Termux file transfer with the hashes checked. It also
 found UI gaps, and this release fixes them. It stays `-experimental`: the rc.2
-checklist in `ANDROID_CALL_AND_FILE_DEVICE_TEST.md` (§12–§17) has not been run
+checklist in `docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md` (§12–§17) has not been run
 yet. The OTR wire format is unchanged. File transfer adds one control verb,
 `RECEIVED`, which older peers ignore.*
 
@@ -2590,7 +2599,7 @@ returns, but no history.
 - Server-side deletion is not supported, because no XEP lets a client delete
   a server archive, and the app says so. It reports whether the server
   advertises a message archive (disco#info) and never claims the server
-  deleted anything. See `ANDROID_CHAT_DELETION.md`.
+  deleted anything. See `docs/ANDROID_CHAT_DELETION.md`.
 
 **File transfer finishes on screen.**
 
@@ -2628,8 +2637,8 @@ shows. Plaintext and a changed key never carry a padlock.
 ## Android 0.7.0-experimental.rc.1 — 2026-09-24 — release candidate (core 0.11.0)
 
 *The first release candidate: every repository-level gate is closed. It stays
-`-experimental`, per VERSIONING.md, because the handset checklist in
-`ANDROID_CALL_AND_FILE_DEVICE_TEST.md` has not been run. Wire format
+`-experimental`, per docs/VERSIONING.md, because the handset checklist in
+`docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md` has not been run. Wire format
 unchanged; interoperates with 0.6.0 and with the Termux client.*
 
 **Verification Cancel works.** The bridge's Cancel called an engine method
@@ -2655,7 +2664,7 @@ otherwise with the debug key, and the release notes say which.
 with reasons and a weekly `cargo audit --deny warnings` job catches anything
 new. NOTICE now lists exactly what the APK bundles, with each package's own
 licence text. Documentation is CC BY-SA 4.0 (`LICENSING.md`). The icon is
-recorded as an AI-generated placeholder (`ASSETS.md`).
+recorded as an AI-generated placeholder (`docs/ASSETS.md`).
 
 **Tests.** Termux↔Termux and Android↔Termux runs (DAKE, fragmentation,
 ratchet, SMP, abort, reconnect, changed key, call/file gate); I2P never falls
@@ -2667,7 +2676,7 @@ both variants.
 *The Rust core's Python API changed; the wire format did not. Every DH
 agreement, KEM encapsulation and signature computes the same bytes as before,
 so a peer on 0.5.0 or on the Termux client interoperates unchanged. None of
-this has run on a handset yet -- see `ANDROID_CALL_AND_FILE_DEVICE_TEST.md`
+this has run on a handset yet -- see `docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md`
 steps 35-54.*
 
 **Four session secrets stopped crossing into Python (INV-08).** The X448
@@ -2709,7 +2718,7 @@ the transport's loop thread (where unsendable DAKE outputs live), deletes the
 AndroidKeyStore vault key (cryptographic erasure of history, contacts and
 credentials), overwrites and removes the engine's files and received files,
 clears notifications and cache, and ends the process. Idempotent; nothing can
-resurrect a session afterwards. `ANDROID_WIPE_AND_EXIT.md` states exactly what
+resurrect a session afterwards. `docs/ANDROID_WIPE_AND_EXIT.md` states exactly what
 is and is not guaranteed.
 
 **The Connect screen's "Sign out" only disconnected.** It is now labelled
@@ -2732,7 +2741,7 @@ Pillow- and PyYAML-dependent checks fail rather than skip in CI.
 *Android only. No client `VERSION` bump: no engine, protocol or cryptographic
 code changed. Everything below is wiring onto engines that already shipped,
 plus the defects that wiring exposed. None of it has run on a handset --
-`ANDROID_CALL_AND_FILE_DEVICE_TEST.md` is the open list.*
+`docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md` is the open list.*
 
 **Calls.** `VoiceCallManager` and the AAudio backend were packaged and
 unreachable. `android_bridge/voice.py` wires them, on a loop of its own so a
@@ -2899,7 +2908,7 @@ and the pip closure re-resolved on every run
 (`.github/scripts/verify_python_closure.py`, `tests/test_apk_python_deps.py`).
 
 **What this does not prove:** the APK has never been installed or launched.
-Green means it builds and packages. `ANDROID_PHASE2_REPORT.md` §14 keeps the
+Green means it builds and packages. `docs/ANDROID_PHASE2_REPORT.md` §14 keeps the
 three device gates open.
 
 ---
@@ -2910,7 +2919,7 @@ three device gates open.
 
 Asked to find whatever latency could be found without touching the three-hop
 tunnel configuration, which is not negotiable and is the reason the project
-exists.  Full analysis in **[VOICE_LATENCY_BUDGET.md](VOICE_LATENCY_BUDGET.md)**.
+exists.  Full analysis in **[docs/VOICE_LATENCY_BUDGET.md](docs/VOICE_LATENCY_BUDGET.md)**.
 
 The measured budget, from the v10.15.1 soak:
 
@@ -3014,7 +3023,7 @@ conversation is not recoverable.
 
 51 tests, 25 mutations killed.  Full suite: 3299 passed, 44 skipped, 1 xfailed.
 The buffer change is predicted, not measured; the two-handset run in the
-morning is what settles it, and VOICE_LATENCY_BUDGET.md says what to look at.
+morning is what settles it, and docs/VOICE_LATENCY_BUDGET.md says what to look at.
 
 ---
 
@@ -3042,7 +3051,7 @@ with unavoidable long propagation, a geostationary satellite hop being about
 A call here crosses three garlic-routed I2P hops in each direction, plus the
 jitter buffer that has to absorb each hop's variance.  This repository has
 recorded the consequence for some time without acting on it: `README.md`,
-`FEATURES.md` and `ROADMAP.md` all state a measured median mouth-to-ear of
+`docs/FEATURES.md` and `docs/ROADMAP.md` all state a measured median mouth-to-ear of
 **917 ms** on this path.  The scale was calling its own transport's median a
 fault.
 
@@ -3063,7 +3072,7 @@ The 914 ms call now reads `🟢 call ended — good`.
 
 **The measurement has not moved and is not being flattered.**  917 ms is still
 917 ms, it is still the price of the anonymity configuration, and reducing it is
-still open work — `ROADMAP.md` keeps it as a target.  What changed is the
+still open work — `docs/ROADMAP.md` keeps it as a target.  What changed is the
 sentence printed next to it.  G.114's numbers are kept as named constants,
 `G114_GOOD_MS` / `G114_WARN_MS`, cited by the legend, and one environment
 variable away for a LAN or clearnet deployment:
@@ -3642,7 +3651,7 @@ Full suite 3079 passed / 44 skipped / 1 xfailed.
 `normal` completed a full DAKE cleanly at 18:26 including a 24-fragment send,
 and separately coincided with a disconnect at 17:42 while idle and with no
 ERROR line.  One success and one ambiguous failure is not an answer.
-`TWO_DEVICE_TEST.md` section 6 is the ladder for getting one.
+`docs/TWO_DEVICE_TEST.md` section 6 is the ladder for getting one.
 
 ---
 
@@ -3853,7 +3862,7 @@ See v10.25.1.
 
 **Not hardware-tested.** The arithmetic matches the observed handshake, but
 whether irc.postman.i2p tolerates the new default is exactly the thing only a
-real run can answer. `TWO_DEVICE_TEST.md` section 7 says how to find out
+real run can answer. `docs/TWO_DEVICE_TEST.md` section 7 says how to find out
 without losing a session to it.
 
 ---
@@ -3911,7 +3920,7 @@ reported again rather than going quiet for the rest of the process.
 including the silent drop returning, the session being re-keyed onto the new
 nick, and a hostile nick's terminal escapes reaching the panel.
 
-Still not hardware-tested; this is step 7 of `TWO_DEVICE_TEST.md`.
+Still not hardware-tested; this is step 7 of `docs/TWO_DEVICE_TEST.md`.
 
 ---
 
@@ -4045,7 +4054,7 @@ v10.23.2.  16 mutants killed across the three areas, including the storage-only
 write, the resume guard, the fail-open session check, `OK` printed regardless
 of outcome, and the initiator reporting `OK` without checking the send.
 
-Two-handset re-test of all three is still outstanding, and `TWO_DEVICE_TEST.md` is new: it says what the suite proves, what it cannot (the Termux hidden read, a real SAM tunnel dropping, a resumed ratchet actually carrying messages), and the order to check them in.
+Two-handset re-test of all three is still outstanding, and `docs/TWO_DEVICE_TEST.md` is new: it says what the suite proves, what it cannot (the Termux hidden read, a real SAM tunnel dropping, a resumed ratchet actually carrying messages), and the order to check them in.
 
 ---
 
@@ -4210,7 +4219,7 @@ get it wrong.
 
 ### The coverage that was asked for in the audit and never shipped
 
-`SMP_UX_AUDIT.md` §7 item 4: *"IRC. Remove the remotely-armed generic capture
+`docs/SMP_UX_AUDIT.md` §7 item 4: *"IRC. Remove the remotely-armed generic capture
 and extend INV-06's test to cover `otrv4+.py`."* The removal shipped in v10.15.
 The coverage did not — `test_no_remote_input_capture.py` walks
 `otrv4plus_xmpp.py` only, which is how this client could grow a masked read
@@ -4464,7 +4473,7 @@ wallet.
 *2026-09-05.  `VERSION → 10.20.0`.  `otrv4_core` stays at 0.10.28: there is no
 Rust change in this release, and that is the headline rather than an omission.*
 
-`MONERO_ESCROW_AUDIT.md` looked at putting Monero's multisig cryptography in
+`docs/MONERO_ESCROW_AUDIT.md` looked at putting Monero's multisig cryptography in
 the Rust core and recommended against it. `monero-serai` is `0.1.4-alpha` from
 May 2023 with every version yanked; its successor `monero-oxide` implements
 multisig as **FROST** (`modular-frost 0.11`), which produces wallets
@@ -4560,7 +4569,7 @@ financial activity.
 It cannot tell you a multisig address was formed from the right keys, that a
 payment landed, or that a signature is valid. Your wallet does. Comparing the
 multisig address with your counterparty out of band is the one check nothing
-here can do for you, and [TRADE.md](TRADE.md) says so at the step where it
+here can do for you, and [docs/TRADE.md](docs/TRADE.md) says so at the step where it
 matters. This is a real limitation, and it is the price of the client not
 becoming a wallet.
 
@@ -4578,7 +4587,7 @@ gained `_clear_trades`, since the disconnect path now calls it.
 
 **Not live-tested between wallets.** Nothing here has carried a real
 `prepare_multisig` blob between two `monero-wallet-cli` instances yet. The
-next step is [TRADE.md](TRADE.md)'s runbook on stagenet, by hand, on the two
+next step is [docs/TRADE.md](docs/TRADE.md)'s runbook on stagenet, by hand, on the two
 handsets — which is also what will tell us whether 24 KiB is the right cap.
 
 ---
@@ -5162,7 +5171,7 @@ Copyright holders are read from each crate's own licence files. Where a crate
 ships none — `x448` and `ed448-goldilocks-plus` among them — the manifest's
 `authors` is used and the line says so, rather than inventing a holder.
 
-`LICENSING_AUDIT.md` records the re-measurement and closes the NOTICE item it
+`docs/LICENSING_AUDIT.md` records the re-measurement and closes the NOTICE item it
 had left open. What remains is a delivery requirement rather than an audit
 one: the APK must render this on a licences screen, and whoever bundles i2pd
 must attribute its own dependencies (Boost, OpenSSL 3.x).
@@ -5234,7 +5243,7 @@ everyone, plus a [commercial licence](LICENSE-COMMERCIAL.md) for anyone who
 cannot or will not comply with it.
 
 **The audit came first, because a licence you cannot grant is worse than the
-one you have.** `LICENSING_AUDIT.md` had left this open, and re-running it over
+one you have.** `docs/LICENSING_AUDIT.md` had left this open, and re-running it over
 the resolved graph settled it: 137 Rust packages, the Python layer, Chaquopy
 (MIT since 12.0.1) and i2pd (BSD-3-Clause) are **all permissive**. Not one
 imposes copyleft. The only copyleft in play was the project's own — which is
@@ -5285,7 +5294,7 @@ documents arrive with it:
 
 * **No NOTICE file exists.** Every permissive dependency requires its notice
   reproduced in a distributed binary, so an APK on a store needs one under
-  either licence. `LICENSING_AUDIT.md` §2-§5 has the raw material.
+  either licence. `docs/LICENSING_AUDIT.md` §2-§5 has the raw material.
 * **Whether AI-generated code is copyrightable is unsettled**, and this
   project's README states plainly that it is AI-generated under the author's
   direction. It does not affect the AGPL side in any way that matters. It does
@@ -5803,7 +5812,7 @@ now explains that short names are not global, and prints the exact line to
 add. A b32 that fails is reported as a router or tunnel problem instead, since
 naming is not involved.
 
-`TRANSPORT_POLICY.md` §8.1 records the resolution paths and the property that
+`docs/TRANSPORT_POLICY.md` §8.1 records the resolution paths and the property that
 matters: **no system resolver ever sees an `.i2p` or `.onion` name.** b32 needs
 no lookup, the alias file is a local read, and `NAMING LOOKUP` travels the same
 loopback SAM socket as the stream.
@@ -5873,7 +5882,7 @@ Python 2404 passed, 43 skipped, 1 xfailed. Rust 111 passed.
 **Live-tested to here:** DAKE, pinning and the initiator prompt all worked on
 two handsets. The responder prompt has still never been seen working, because
 of defect 1 — both phones need this build before step 3 of
-`SMP_UX_AUDIT.md` §8.3 can be run at all.
+`docs/SMP_UX_AUDIT.md` §8.3 can be run at all.
 
 ---
 
@@ -5906,7 +5915,7 @@ The fix is `otrv4plus_coreapi.py`: the clients declare the core methods they req
 
 **Six states, six messages, and none of them lying about the others.**  Secret required, cancelled, declined, aborted, wrong passphrase, internal error.  An internal failure now says so and says "no secret was transmitted or stored" instead of reading like a mismatch; a wrong passphrase is still a genuine cryptographic failure and is still reported as one.
 
-**Not live-tested.**  Every claim here is from the test suite on a development machine.  Two-handset validation over I2P — including the reversed roles and the ordinary-message case — is in `SMP_UX_AUDIT.md` §8 and has not been run.
+**Not live-tested.**  Every claim here is from the test suite on a development machine.  Two-handset validation over I2P — including the reversed roles and the ordinary-message case — is in `docs/SMP_UX_AUDIT.md` §8 and has not been run.
 
 Python 2386 passed, 43 skipped, 1 xfailed.  Rust 111 passed.
 
@@ -5944,7 +5953,7 @@ Python 2386 passed, 43 skipped, 1 xfailed.  Rust 111 passed.
 
 **`/sendfile` with no path opens the Android file picker.**  You have `termux-api`, so there is no reason to make anyone type `~/storage/dcim/Camera/20260901_143022.jpg`.  The picker runs in an executor because it waits for a human scrolling a gallery, which is far longer than anything else in this client may block for.  Two honest caveats, both surfaced in the client rather than buried: `termux-storage-get` hands over bytes and **not a name**, so the file is renamed from its magic number and a timestamp — cosmetically worse, marginally better for privacy, and `/sendfile <path>` still preserves a name exactly; and the apt package is only shell shims, so a missing **Termux:API app** is reported as the missing half rather than as a timeout.  The staged copy is plaintext, lives at 0600 under a `.picked/` directory separate from received files, and is unlinked as soon as the file is sealed — including when sealing raises.
 
-**Termux cannot see your photos until you tell it to.**  Termux's home is inside the app's private data directory and has no view of Android storage, so `/sendfile photo.jpg` on a fresh install reports "no such file" and the fix is `termux-setup-storage` — a command a user has no reason to have heard of.  Nothing in the repository mentioned it.  The error now names it, but only on Android and only when `~/storage` is genuinely absent, so it never nags someone who simply mistyped.  `FILE_TRANSFER_TEST_PLAN.md` covers both directions: getting a file in (`~/storage/dcim/Camera/...`, or `termux-storage-get` for the graphical picker) and getting a received one back out — with what that costs, since copying from a 0700 private directory into shared storage makes the file readable by every app holding the storage permission.
+**Termux cannot see your photos until you tell it to.**  Termux's home is inside the app's private data directory and has no view of Android storage, so `/sendfile photo.jpg` on a fresh install reports "no such file" and the fix is `termux-setup-storage` — a command a user has no reason to have heard of.  Nothing in the repository mentioned it.  The error now names it, but only on Android and only when `~/storage` is genuinely absent, so it never nags someone who simply mistyped.  `docs/FILE_TRANSFER_TEST_PLAN.md` covers both directions: getting a file in (`~/storage/dcim/Camera/...`, or `termux-storage-get` for the graphical picker) and getting a received one back out — with what that costs, since copying from a 0700 private directory into shared storage makes the file readable by every app holding the storage permission.
 
 **Verification.**  Python 2283 passed, 43 skipped, 1 xfailed (was 2109).  Rust 101 passed (was 87).  `tests/test_file_transfer_crypto.py` runs against real ratchets from a real DAKE, not stubs.  **No live XMPP or device testing** — nothing here has moved a file between two phones.
 
@@ -5982,7 +5991,7 @@ Python 2386 passed, 43 skipped, 1 xfailed.  Rust 111 passed.
 
 **Why now.**  Three transports exist (I2P, Tor, clearnet TLS) and each was added under a different set of assumptions, written down in a different place or not at all.  Two more routes are wanted — a SOCKS5 proxy and a proxy chain under clearnet TLS — and the point of writing the rules before that code is that the rules are what the code will be built against.
 
-**[TRANSPORT_POLICY.md](TRANSPORT_POLICY.md)** is the new authoritative document.  Five modes, a transition matrix, and the separation the rest of it hangs from: `TransportClass {I2P, TOR, CLEARNET_TLS}` is security-relevant and is what the UI reports; `Route {direct, proxy, proxy_chain}` is operational and sits *underneath* a class.  A proxy is not a fourth privacy tier next to I2P and Tor — it is a route beneath clearnet — and only the class would ever reach the cryptographic transcript, because two peers who chose different proxies must still be able to talk.
+**[docs/TRANSPORT_POLICY.md](docs/TRANSPORT_POLICY.md)** is the new authoritative document.  Five modes, a transition matrix, and the separation the rest of it hangs from: `TransportClass {I2P, TOR, CLEARNET_TLS}` is security-relevant and is what the UI reports; `Route {direct, proxy, proxy_chain}` is operational and sits *underneath* a class.  A proxy is not a fourth privacy tier next to I2P and Tor — it is a route beneath clearnet — and only the class would ever reach the cryptographic transcript, because two peers who chose different proxies must still be able to talk.
 
 **The rule, stated once:** the transport class is fixed for the lifetime of a call; an endpoint may change within a class if the change is authenticated; a class change requires ending the call.  `MEDIAPATH` is the authenticated endpoint change, and it is what recovered the Wi-Fi-to-mobile transition — so "nothing may change mid-call" would have been the wrong rule.  I2P→TLS, Tor→TLS and TLS→I2P are forbidden, the last of those included because a silent *upgrade* is still a class change the peer did not agree to.  The matrix is an allowlist: an unlisted transition is forbidden, not undefined.
 
@@ -6048,7 +6057,7 @@ A hardening pass driven by a repository-wide security inventory.  Five findings,
 
 **One premise corrected.**  The brief for this work stated that IRC had Argon2-based SMP protection and XMPP did not.  That asymmetry has never existed: both transports call the same `SMPAutoRespondStorage` and the same `_derive_key`, and no commit in history wrote SMP secrets in plaintext on either.  The real defect was terminal echo, fixed at `a687ff2`.
 
-**New:** `SECURITY_INVARIANTS.md` and `tests/security_invariants.py` — sixteen invariants, each naming the test that enforces it.  `tests/test_invariant_registry.py` fails if an invariant has no test, if a named test module does not exist, or if the document and the registry disagree.
+**New:** `docs/SECURITY_INVARIANTS.md` and `tests/security_invariants.py` — sixteen invariants, each naming the test that enforces it.  `tests/test_invariant_registry.py` fails if an invariant has no test, if a named test module does not exist, or if the document and the registry disagree.
 
 **Verification.**  Python 1932 passed, 43 skipped, 1 xfailed (was 1633).  Rust 77 passed.  Mutation-tested: the input-capture, log-boundary and rekey fixes each fail their tests when reverted.  **No live XMPP or I2P testing** — everything here was exercised through the PyO3 boundary and over loopback.
 
@@ -6066,11 +6075,11 @@ A hardening pass driven by a repository-wide security inventory.  Five findings,
 
 **What did NOT change.**  The `0x02` derivation is retained byte-for-byte, pinned by a frozen test vector that was cross-checked against an independent Python implementation rather than against the Rust code.  Message layouts are identical between `0x02` and `0x03` — measured wire sizes unchanged at 5849 / 12096 / 6248 / 5472 bytes.  No other key schedule, no message authentication rule, no replay window, no ratchet, no DAKE, no voice cryptography.  Cost on this hardware: 0.192 s per derivation, run once per verification.
 
-**Documentation retraction.**  `FEATURES.md` and `README.md` had both claimed an "Argon2id KDF protecting the SMP vault" running inside `otrv4_core`, and audit finding 6 was recorded closed on the same premise.  None of it was true: `argon2` was not a crate dependency, no Rust source referenced it, and `src/smp_vault.rs` is an in-memory zeroizing store with no key derivation in it.  The only real Argon2id was Python-side and at-rest.  The claim survived a documentation-synchronisation pass because the table was read and not checked.  Retracted in `dc82681`, then made true where it mattered here.  `tests/test_kdf_claims_are_true.py` now reads `Cargo.toml` and the Rust sources instead of the prose, and SECURITY.md carries the retraction as caveats 14 and 15.
+**Documentation retraction.**  `docs/FEATURES.md` and `README.md` had both claimed an "Argon2id KDF protecting the SMP vault" running inside `otrv4_core`, and audit finding 6 was recorded closed on the same premise.  None of it was true: `argon2` was not a crate dependency, no Rust source referenced it, and `src/smp_vault.rs` is an in-memory zeroizing store with no key derivation in it.  The only real Argon2id was Python-side and at-rest.  The claim survived a documentation-synchronisation pass because the table was read and not checked.  Retracted in `dc82681`, then made true where it mattered here.  `tests/test_kdf_claims_are_true.py` now reads `Cargo.toml` and the Rust sources instead of the prose, and SECURITY.md carries the retraction as caveats 14 and 15.
 
 **At-rest KDF downgrade is no longer silent.**  `otrv4+.py::_derive_key` caught every Argon2 failure with a bare `except Exception: pass` and fell through to scrypt, with the only notice an import-time print.  A 64 MiB allocation genuinely can fail on a pressured handset, so this was reachable.  The fallback is kept — losing access to your own SMP secrets is worse than a weaker KDF at rest, and the load path already tries both — but it warns once with the reason, and `kdf_backend()` reports which KDF actually ran.
 
-**Also.**  The SMP wire byte is now pinned by `tests/test_protocol_version.py`, which `VERSIONING.md` had claimed for it without it being true.
+**Also.**  The SMP wire byte is now pinned by `tests/test_protocol_version.py`, which `docs/VERSIONING.md` had claimed for it without it being true.
 
 **Verification.**  Python 1633 passed, 43 skipped, 1 xfailed.  Rust 77 passed (was 65).  Twelve new Rust tests cover the derivation directly — that the salt binds the session ID, that it binds the fingerprints, that it is role-independent, that field boundaries cannot collide, that Argon2 and the legacy stretch disagree, and that a mixed-version pair aborts with an actionable error.  Sixteen new Python tests in `tests/test_smp_argon2_wire_v3.py` drive the real compiled extension through all four SMP steps, plus three in `tests/test_protocol_version.py` pinning the wire byte.  **Not yet live-tested between two handsets** — the derivation is exercised through the PyO3 boundary and over loopback only.
 
@@ -6090,7 +6099,7 @@ A hardening pass driven by a repository-wide security inventory.  Five findings,
 
 **Cold paths are no longer mistaken for broken ones (`09f800d`).**  Media first flowed at t=96 s on a live call while the watchdog fired at 26.6 s and rebuilt an endpoint that was merely still coming up, costing ~70 s of silence.  Until one frame has authenticated, `VOICE_RX_START_GRACE_S` (120 s) replaces the warning threshold and the dead horizon moves with it.
 
-**Bounded.**  Worst case from media death to teardown is 465 s for a proven path and 795 s for one that never carried audio.  All four figures (held and unheld) are computed from the constants by `TestTheWorstCaseIsBounded`, which fails if `VOICE_MEDIA_PATH.md` and the code disagree.
+**Bounded.**  Worst case from media death to teardown is 465 s for a proven path and 795 s for one that never carried audio.  All four figures (held and unheld) are computed from the constants by `TestTheWorstCaseIsBounded`, which fails if `docs/VOICE_MEDIA_PATH.md` and the code disagree.
 
 **PyO3 thread-affinity crash fixed (`c98ba9b`).**  `DakeOutput` is `#[pyclass(unsendable)]`: it records its creating thread and panics if touched from another.  The OTR executor was a `ThreadPoolExecutor(max_workers=2)` directly contradicting its own "single thread" comment, so a DAKE could be started on one worker and continued on the other — `DakeOutput is unsendable, but sent to another thread`, a hard crash.  Serialised to one worker.  This protects more than the PyO3 requirement: OTR session processing is stateful, and two messages for one peer must not be processed concurrently regardless — ratchet state, skipped-message-key accounting, SMP state and DAKE state all depend on it.  The dead synchronous fallback `_handle_otr_in`, which would have re-introduced engine calls on the event loop, was deleted in `df7349d`; `tests/test_otr_thread_affinity.py` asserts it stays gone.
 
@@ -6102,7 +6111,7 @@ A hardening pass driven by a repository-wide security inventory.  Five findings,
 
 **Terminal and session UX (`648f089`).**  Mouth-to-ear readout colour-banded against ITU-T G.114 (green ≤400 ms, yellow ≤800 ms, red above); wrong login passwords re-prompt instead of failing the session; an OTR session whose peer leaves and does not return is cleared automatically, so `/otr` works on their return.
 
-**Documentation synchronised and versioning made explicit.**  `VERSIONING.md` added.  Version strings, which had drifted to five different values across `otrv4+.py`, `otrv4plus_xmpp.py`, `Rust/Cargo.toml`, `Rust/pyproject.toml` and the README badge, were reconciled to one.  Stale wire figures corrected across the README (the Opus frame default moved 40 ms → 60 ms and the packet 199 B → 279 B in an earlier cycle without the documentation following).  `FEATURES.md` still listed voice as out of scope and is rewritten.  **Correction:** the "no Python `cryptography` dependency" claim from v10.7 no longer holds — `otrv4plus_voice.py` uses that library for the media AES-256-GCM, HKDF-SHA512 and X448.  The chat path remains Rust-only; the voice path does not, and every document that claimed otherwise now says so.
+**Documentation synchronised and versioning made explicit.**  `docs/VERSIONING.md` added.  Version strings, which had drifted to five different values across `otrv4+.py`, `otrv4plus_xmpp.py`, `Rust/Cargo.toml`, `Rust/pyproject.toml` and the README badge, were reconciled to one.  Stale wire figures corrected across the README (the Opus frame default moved 40 ms → 60 ms and the packet 199 B → 279 B in an earlier cycle without the documentation following).  `docs/FEATURES.md` still listed voice as out of scope and is rewritten.  **Correction:** the "no Python `cryptography` dependency" claim from v10.7 no longer holds — `otrv4plus_voice.py` uses that library for the media AES-256-GCM, HKDF-SHA512 and X448.  The chat path remains Rust-only; the voice path does not, and every document that claimed otherwise now says so.
 
 **XMPP gets a persistent identity and real TOFU; IRC deliberately does not.**  Both protocols regenerated their Ed448 identity every launch, and both wrote to the same `~/.otrv4plus/trust.json`.  For IRC that is correct — a nick is ephemeral, so a fingerprint pinned to one is pinned to nothing.  For XMPP it was not: a JID is durable, so a fingerprint that changed every restart carried no information, and because `add_trust` raises `FingerprintMismatchError` when the stored value differs, the *second* session with any peer you had trusted printed "This may indicate a MITM attack".  Every reconnect.  A warning shown that often is a warning that will be ignored the once it is real.  A complete TOFU implementation, `TrustDatabase.check_or_pin()`, had been sitting in the tree with zero callers because it could not work against an identity that never persisted.
 
@@ -6127,7 +6136,7 @@ changelog sections were written at the time.  Rather than reconstruct them after
 the fact, they are recorded here as a gap.  The contemporaneous record is:
 
 * **XMPP transport and hardening (v10.10.4)** — README *"XMPP transport"* and *"Security hardening"*.
-* **Voice calling, hybrid voice key exchange, two-phase rekey, AAudio backend (v10.11.0)** — README *"Encrypted voice calls"*; `VOICE_AUDIT_REPORT.md`.
+* **Voice calling, hybrid voice key exchange, two-phase rekey, AAudio backend (v10.11.0)** — README *"Encrypted voice calls"*; `docs/VOICE_AUDIT_REPORT.md`.
 * **Voice security fixes (v10.11.1)** — README *"Security fixes in v10.11.1"*.
 * Commit range `da691d1..624bbca` and the audit documents dated in that window.
 
@@ -6135,9 +6144,9 @@ the fact, they are recorded here as a gap.  The contemporaneous record is:
 
 ## v10.9.2 — formal protocol specification + documentation pass
 
-**`SPEC.md` added.**  A complete byte-level wire specification: exact field offsets and sizes for DAKE1/2/3 and the ClientProfile, the KDF construction with the full usage-ID table, the normative session-key derivation order, the hybrid PQC SMP construction (group params, length-prefixed wire encoding, group-element validation bounds, the 50,000-round secret derivation, the Schnorr ZKP construction, and the PQ binding layer), the fragmentation format, the DAKE/SMP state machines, normative security requirements, and the RFC 3526 prime in full.  The goal is that a qualified developer can write a compatible implementation in any language from this document alone, without reading the source.
+**`docs/SPEC.md` added.**  A complete byte-level wire specification: exact field offsets and sizes for DAKE1/2/3 and the ClientProfile, the KDF construction with the full usage-ID table, the normative session-key derivation order, the hybrid PQC SMP construction (group params, length-prefixed wire encoding, group-element validation bounds, the 50,000-round secret derivation, the Schnorr ZKP construction, and the PQ binding layer), the fragmentation format, the DAKE/SMP state machines, normative security requirements, and the RFC 3526 prime in full.  The goal is that a qualified developer can write a compatible implementation in any language from this document alone, without reading the source.
 
-**Documentation updated** for the hybrid PQC SMP across `README.md` (added a "Why OTRv4+ vs alternatives" comparison table and a 30-second pitch, and linked `SPEC.md` prominently), `SECURITY.md` (MITM and quantum-adversary rows note hybrid PQC SMP; memory table adds the SMP ML-KEM secret key, ML-DSA signing key, and `pq_binding_key` rows; new caveat documenting the construction and the variable-time ZKP scalar limitation), and `WHY.md` (SMP description rewritten, I2P timing corrected to the measured ~15–16 min).  `termux_install.sh` rewritten Rust-only.
+**Documentation updated** for the hybrid PQC SMP across `README.md` (added a "Why OTRv4+ vs alternatives" comparison table and a 30-second pitch, and linked `docs/SPEC.md` prominently), `SECURITY.md` (MITM and quantum-adversary rows note hybrid PQC SMP; memory table adds the SMP ML-KEM secret key, ML-DSA signing key, and `pq_binding_key` rows; new caveat documenting the construction and the variable-time ZKP scalar limitation), and `docs/WHY.md` (SMP description rewritten, I2P timing corrected to the measured ~15–16 min).  `termux_install.sh` rewritten Rust-only.
 
 Version strings aligned to 10.9.2 across `otrv4+.py` and `smp.rs`.  No protocol or wire change from v10.9.1.
 
@@ -6206,7 +6215,7 @@ No protocol or wire change.  Existing offline-cached profiles older than 14 days
 - `git rm`: `otr4_crypto_ext.c`, `otr4_crypto_ext.so`, `otr4_crypto_ext.cpython-313-aarch64-linux-android.so`, `otr4_ed448_ct.c`, `otr4_ed448_ct.so`, `otr4_mldsa_ext.c`, `otr4_mldsa_ext.so` (the last set was orphaned since v10.6.18), `setup_otr4.py`.
 - Test migration: seven test files in `tests/` (`test_mlkem_kat.py`, `test_property.py`, `test_differential.py`, `fuzz_harnesses.py`, `test_ratchet_torture.py`, `test_ring_android.py`, `test_attacks.py`) migrated from `import otr4_crypto_ext as _ossl` to `import otrv4_core as _ossl`.  The Rust module exposes `mlkem1024_keygen` / `_encaps` / `_decaps` with identical signatures, so the migration was a one-line import swap for six of them.  `test_attacks.py` additionally uses `_ossl.cleanse`, so it received a small `_OsslShim` providing the Rust ML-KEM functions plus a `ctypes.memset` cleanse.
 - `git rm tests/test_otr.py` — this was a smoke test for all three retired C extensions' surfaces (bignum ops, `ring_sign`, `ed448_scalarmult`, `mldsa87_*`); after the migration it tested only deleted code.
-- Documentation updated across `README.md`, `SECURITY.md`, `ROADMAP.md`, `CHANGELOG.md`, `FEATURES.md`, `DEVELOPMENT.md`, `MIGRATION.md`, `CONTRIBUTING.md`, and both `prebuilt/` READMEs.
+- Documentation updated across `README.md`, `SECURITY.md`, `docs/ROADMAP.md`, `CHANGELOG.md`, `docs/FEATURES.md`, `docs/DEVELOPMENT.md`, `docs/MIGRATION.md`, `CONTRIBUTING.md`, and both `prebuilt/` READMEs.
 
 **Phase 5.3i-D — `aead.rs` warning cleanup.**
 The 13 deprecation warnings emitted by `aead.rs` since v10.6.19 were all uses of `aes-gcm 0.10`'s deprecated `GenericArray::from_slice` helper.  Fix: production sites now use `Aes256Gcm::new_from_slice(key)` (from the `KeyInit` trait, takes `&[u8]`, returns `Result<Self, InvalidLength>`) and convert the nonce slice to `&[u8; 12]` via `try_into()` then `Nonce::from(*nonce_arr)` (matching the actual `impl From<[u8; 12]> for GenericArray<u8, U12>` in `generic-array 0.14.7`).  Test sites use `Nonce::from(n)` directly since `n` is already `[u8; 12]`.  Restored the zero-warning Rust build that v10.6.18 originally achieved.
@@ -6297,8 +6306,8 @@ is gone, replaced by a comment recording that all crypto is now Rust-side.
 - `otrv4+.py`: deleted `OTRv4DAKE` class and `_use_rust`/`_py_fallback` machinery; rescued `_safe_b64decode` to module scope; rewrote `ClientProfile.__init__` (B1); removed four `serialization.Raw` sites; removed the `from cryptography...` import; VERSION → `10.7`
 - `README.md`: chip → v10.7; architecture box notes the library is removed; caveat about the cryptography library replaced; Quick start drops the `pip install cryptography` step
 - `SECURITY.md`: known-issue 3 rewritten — the cryptography library is gone, with the v10.6.18→v10.7 removal sequence documented; memory-safety model updated
-- `ROADMAP.md`: Phase 5.3h-D marked complete; 5.3i is now the largest remaining hardening item
-- `FEATURES.md`: primitive table no longer lists any cryptography-library implementation
+- `docs/ROADMAP.md`: Phase 5.3h-D marked complete; 5.3i is now the largest remaining hardening item
+- `docs/FEATURES.md`: primitive table no longer lists any cryptography-library implementation
 - `CHANGELOG.md`: this entry
 
 ### Build verification
@@ -6433,7 +6442,7 @@ Dropped `AESGCM` (replaced by Rust) and `hashes` (confirmed unused). The `ed448`
 - `Rust/src/lib.rs`: added `pub mod aead;` and two `add_function` registrations
 - `Rust/Cargo.toml`: version 0.10.18 → 0.10.19
 - `otrv4+.py`: AESGCM/hashes imports dropped; three AESGCM sites swapped; six Ed448PublicKey wrap sites replaced; `_check_rust_requirements` requires the aead functions; startup orphan-file migration; VERSION → `10.6.19`
-- `README.md`, `SECURITY.md`, `ROADMAP.md`, `CHANGELOG.md`, `FEATURES.md`: updated
+- `README.md`, `SECURITY.md`, `docs/ROADMAP.md`, `CHANGELOG.md`, `docs/FEATURES.md`: updated
 
 ### Build verification
 
@@ -6462,14 +6471,14 @@ Byte-identical to v10.6.17. Both v10.6.17 and v10.6.18 peers can DAKE with each 
 
 ### Phase 5.3g — ephemeral identity (DECIDED)
 
-After consideration, OTRv4+ keeps ephemeral identities by design. Fingerprints regenerate at every launch; no persistent vault. Rationale documented in ROADMAP.md and SECURITY.md.
+After consideration, OTRv4+ keeps ephemeral identities by design. Fingerprints regenerate at every launch; no persistent vault. Rationale documented in docs/ROADMAP.md and SECURITY.md.
 
 ### Files touched
 - `Rust/src/mldsa.rs`: new file, ~120 lines including tests
 - `Rust/src/lib.rs`: added `pub mod mldsa;` and three `add_function` registrations
 - `Rust/Cargo.toml`: pqcrypto-mldsa pinned to `default-features = false`, version 0.10.17 → 0.10.18
 - `otrv4+.py`: removed `import otr4_mldsa_ext as _mldsa` block; `MLDSA87_AVAILABLE` reduced to a hardcoded `True`; three `_mldsa.*` calls in `MLDSA87Auth` swapped to `_RustDAKE_module.*`; `_check_rust_requirements` now requires `mldsa87_keygen/sign/verify`; VERSION → `10.6.18`
-- `README.md`, `SECURITY.md`, `ROADMAP.md`, `FEATURES.md`: updated
+- `README.md`, `SECURITY.md`, `docs/ROADMAP.md`, `docs/FEATURES.md`: updated
 
 ### Build verification
 

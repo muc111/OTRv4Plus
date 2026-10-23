@@ -35,7 +35,7 @@ as you on the server. Treat it as urgent.
 
 This has to be enforced by the server; a client cannot stop another client
 signing in. Use this repository's module
-[`prosody/mod_otrv4plus_one_session.lua`](prosody/mod_otrv4plus_one_session.lua):
+[`prosody/mod_otrv4plus_one_session.lua`](../prosody/mod_otrv4plus_one_session.lua):
 one session per account, and **the newest sign-in wins**. The older session
 is signed out with the stream error `conflict`.
 

@@ -11,7 +11,7 @@ The **chat** path is Rust-core-only: the Python `cryptography` library was
 removed from it at v10.7. The **voice** path is not — `otrv4plus_voice.py` uses
 that library for the media AES-256-GCM, the HKDF-SHA512 key schedule and the
 voice X448, so `pip install cryptography` is required to build or test voice.
-See [SECURITY.md](SECURITY.md) caveat 11.
+See [SECURITY.md](../SECURITY.md) caveat 11.
 
 ---
 
@@ -300,7 +300,7 @@ retain sensitive data in the small-object arenas.
   from transitive to direct dependency at v10.7.6.
 - `num-bigint` — still used for public-value ZKP arithmetic and random sampling
   (no secret-dependent timing in those paths). See the known limitation in
-  [SECURITY.md](SECURITY.md) regarding the ZKP scalar response.
+  [SECURITY.md](../SECURITY.md) regarding the ZKP scalar response.
 - `ed448-goldilocks-plus` 0.16, `x448` 0.6 — pure-Rust Ed448 / X448.
 - `aes-gcm` 0.10, `sha3` 0.10, `zeroize`, `subtle` — AEAD, hashing, wiping,
   constant-time comparison.

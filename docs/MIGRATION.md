@@ -153,7 +153,7 @@ New environment switches, all optional:
 
 If you are building voice for the first time, note that it needs the Python
 `cryptography` package and `libopus`, which chat does not. See
-[SECURITY.md](SECURITY.md) caveat 11 for why that is the case and what it costs.
+[SECURITY.md](../SECURITY.md) caveat 11 for why that is the case and what it costs.
 
 ## To v10.10.0 – v10.11.1
 

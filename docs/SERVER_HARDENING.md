@@ -48,7 +48,7 @@ i2pd sees the connecting I2P destination (see the i2pd section).
 
 ## `mod_otrv4plus_capacity`: online cap and sign-up limits
 
-[`prosody/mod_otrv4plus_capacity.lua`](prosody/mod_otrv4plus_capacity.lua):
+[`prosody/mod_otrv4plus_capacity.lua`](../prosody/mod_otrv4plus_capacity.lua):
 
 | Option | Default | Effect |
 |---|---|---|
@@ -108,7 +108,7 @@ at 1,000 and raise it once a real I2P test shows the headroom.
 
 ## `mod_otrv4plus_moderation`: bans and every room, for admins
 
-[`prosody/mod_otrv4plus_moderation.lua`](prosody/mod_otrv4plus_moderation.lua)
+[`prosody/mod_otrv4plus_moderation.lua`](../prosody/mod_otrv4plus_moderation.lua)
 gives this server's admins (the `admins = { ... }` list) four ad-hoc
 commands, offered to nobody else:
 

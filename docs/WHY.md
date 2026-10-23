@@ -87,6 +87,6 @@ This is the communication tool I wanted for myself. I'm sharing it because other
 
 ## Getting started
 
-Build and install instructions are in the [README](README.md#quick-start). The
+Build and install instructions are in the [README](../README.md#quick-start). The
 core cryptographic engine builds from source with `cargo`; there are no prebuilt
 binaries and no C extensions.

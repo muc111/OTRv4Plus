@@ -44,7 +44,7 @@ I2P app already running on the phone, and its own router otherwise. The first
 start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+.
 
 **What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms, OTRv4+ encryption, SMP identity verification, encrypted file transfer with a Termux peer, two-way voice calls (app to app, and app to Termux), end-to-end encrypted group chat (four accounts on two phones: two in the app, two in Termux, all sending and receiving), and account creation and login on an ordinary clearnet server (yax.im, over TLS with the certificate verified).
-**Not yet tested on a phone:** the newest additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list is [ANDROID_CALL_AND_FILE_DEVICE_TEST.md](ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
+**Not yet tested on a phone:** the newest additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list is [docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md](docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 
 ## Project status
 
@@ -57,7 +57,7 @@ start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+
 | Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
 | Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls are implemented but **not yet tested on a phone**. Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
-| Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [CRYPTO_AUDIT_2026-09.md](CRYPTO_AUDIT_2026-09.md) and [SECURITY_AUDIT_2026-10-11.md](SECURITY_AUDIT_2026-10-11.md) |
+| Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [docs/CRYPTO_AUDIT_2026-09.md](docs/CRYPTO_AUDIT_2026-09.md) and [docs/SECURITY_AUDIT_2026-10-11.md](docs/SECURITY_AUDIT_2026-10-11.md) |
 
 ## Server capacity (stress test)
 
@@ -69,7 +69,7 @@ One 2015 ThinkPad T450 running Prosody, measured with the built-in stress test: 
 | 400 | 17.5% | 106 MB | 0.17 s / 0.34 s | ~100% |
 | 800 | 37% | 303 MB | 0.31 s / 0.56 s | ~100% |
 
-On a 2015 ThinkPad T450, **1,600 users** chatting in groups of 20 used about 40% of the one core Prosody uses (p95 0.5 s), and the server recovered within two minutes of a burst of joins. The server is capped at **1,600 online**, lets sign-ins in 10 a second so a restart does not spike it, and limits new accounts per hour (and caps accounts in total at 5,000). Method and raw results: [STRESS_TEST.md](STRESS_TEST.md); limits: [SERVER_HARDENING.md](SERVER_HARDENING.md).
+On a 2015 ThinkPad T450, **1,600 users** chatting in groups of 20 used about 40% of the one core Prosody uses (p95 0.5 s), and the server recovered within two minutes of a burst of joins. The server is capped at **1,600 online**, lets sign-ins in 10 a second so a restart does not spike it, and limits new accounts per hour (and caps accounts in total at 5,000). Method and raw results: [docs/STRESS_TEST.md](docs/STRESS_TEST.md); limits: [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md).
 
 ## Security assessment and audit status
 
@@ -82,7 +82,7 @@ on Android. Findings were fixed, each with a regression test.
 
 It has **not** had a paid independent third-party audit or a formal external
 cryptographic assessment, and that work is not equivalent to one. Known limitations:
-[SECURITY_ISSUES.md](SECURITY_ISSUES.md) (some, A1 and A2, need a future protocol
+[docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) (some, A1 and A2, need a future protocol
 version). The evidence, layer by layer: [SECURITY.md](SECURITY.md#security-assessment-and-audit-status).
 
 ## Cryptography
@@ -113,18 +113,18 @@ All of this runs in the Rust core (`otrv4_core`). Python handles networking
 and Kotlin handles the Android screens; neither holds session keys. SMP
 (identity verification) is also hybrid post-quantum and runs in Rust.
 
-Details, design notes and caveats are in [TECHNICAL.md](TECHNICAL.md) and
-[SPEC.md](SPEC.md).
+Details, design notes and caveats are in [docs/TECHNICAL.md](docs/TECHNICAL.md) and
+[docs/SPEC.md](docs/SPEC.md).
 
 ## Encrypted group chat (MLS)
 
 > **MLS+** — MLS (RFC 9420) on a hybrid post-quantum ciphersuite (`0xF0A1`, X448 + ML-KEM-1024 / Ed448 + ML-DSA-87). Not interoperable with standard MLS.
 
-Secure groups use **MLS+** through OpenMLS, with every primitive from the same Rust core: hybrid KEM **X448 + ML-KEM-1024**, composite signature **Ed448 + ML-DSA-87** (both must verify), AES-256-GCM, HKDF-SHA-384 (ciphersuite 0xF0A1). Standard MLS suites have no post-quantum protection; these groups resist "record now, decrypt later". The XMPP room carries only `?OTRv4MLS1:` ciphertext. Invitations and Welcomes travel inside 1:1 OTRv4+ sessions; keys move on at every membership change and on a timer; a removed member reads nothing after the removal; messages typed while a group resyncs wait instead of being lost. The server still sees the room, its members and message timing. 0xF0A1 is in the IANA private-use range (0xF000–0xFFFF), which is the correct place for a suite that isn't registered; the hybrid constructions are this project's own, not independently audited. Details: [TECHNICAL.md](TECHNICAL.md#encrypted-group-chat-mls), [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md).
+Secure groups use **MLS+** through OpenMLS, with every primitive from the same Rust core: hybrid KEM **X448 + ML-KEM-1024**, composite signature **Ed448 + ML-DSA-87** (both must verify), AES-256-GCM, HKDF-SHA-384 (ciphersuite 0xF0A1). Standard MLS suites have no post-quantum protection; these groups resist "record now, decrypt later". The XMPP room carries only `?OTRv4MLS1:` ciphertext. Invitations and Welcomes travel inside 1:1 OTRv4+ sessions; keys move on at every membership change and on a timer; a removed member reads nothing after the removal; messages typed while a group resyncs wait instead of being lost. The server still sees the room, its members and message timing. 0xF0A1 is in the IANA private-use range (0xF000–0xFFFF), which is the correct place for a suite that isn't registered; the hybrid constructions are this project's own, not independently audited. Details: [docs/TECHNICAL.md](docs/TECHNICAL.md#encrypted-group-chat-mls), [docs/MLS_SECURITY_HARDENING.md](docs/MLS_SECURITY_HARDENING.md).
 
 **Known limits**
 - **MLS+ is not standard MLS.** Groups use an unregistered ciphersuite (`0xF0A1`, in the IANA private-use range) and cannot be joined by Wire, Element, or any other RFC 9420 implementation.
-- **About 100 members per group.** A Welcome carries the whole ratchet tree (~9.4 KB per member) and the core refuses MLS+ messages over 1 MiB, so joins stop near 100 members ([STRESS_TEST.md](STRESS_TEST.md)).
+- **About 100 members per group.** A Welcome carries the whole ratchet tree (~9.4 KB per member) and the core refuses MLS+ messages over 1 MiB, so joins stop near 100 members ([docs/STRESS_TEST.md](docs/STRESS_TEST.md)).
 
 ## Quick start
 
@@ -170,7 +170,7 @@ cd ..
 `claude/...` branch moves over with `git fetch origin && git checkout main`.
 `build.sh` sets up its own Python environment in `.venv`, runs the Rust tests and
 lints, installs the core (with secure groups) and ends with `BUILD OK`. Keep Termux
-open while it runs; details in [TECHNICAL.md](TECHNICAL.md#buildsh-in-detail).
+open while it runs; details in [docs/TECHNICAL.md](docs/TECHNICAL.md#buildsh-in-detail).
 
 **3. Update later.** Pull, then rebuild the core (both Python and Rust change):
 
@@ -214,13 +214,13 @@ Encrypted group chat (XMPP): `/group create mls3` (then its passphrase),
 `/group invite mls3 bob`, `y` to join, then just type; `/group verify mls3`
 checks every member, then `/group call mls3` or `/sendfile` (to the group).
 App: Rooms, "Create end-to-end encrypted group"; Verify, Call, Send a file.
-Building on musl (Alpine), every option and all commands: [TECHNICAL.md](TECHNICAL.md).
+Building on musl (Alpine), every option and all commands: [docs/TECHNICAL.md](docs/TECHNICAL.md).
 
 ## Documentation
 
-[TECHNICAL.md](TECHNICAL.md) (full reference) · [SPEC.md](SPEC.md) (wire protocol) · [SECURITY.md](SECURITY.md) (threat model, known issues) · [CHANGELOG.md](CHANGELOG.md) · [MLS_SECURITY_HARDENING.md](MLS_SECURITY_HARDENING.md) (group chat design) · [OTRV4PLUS_CAPABILITY.md](OTRV4PLUS_CAPABILITY.md) (who can receive OTRv4+) · [PROSODY_USER_DISCOVERY.md](PROSODY_USER_DISCOVERY.md) (People list, Welcome room) · [CONTRIBUTING.md](CONTRIBUTING.md)
+[docs/TECHNICAL.md](docs/TECHNICAL.md) (full reference) · [docs/SPEC.md](docs/SPEC.md) (wire protocol) · [SECURITY.md](SECURITY.md) (threat model, known issues) · [CHANGELOG.md](CHANGELOG.md) · [docs/MLS_SECURITY_HARDENING.md](docs/MLS_SECURITY_HARDENING.md) (group chat design) · [docs/OTRV4PLUS_CAPABILITY.md](docs/OTRV4PLUS_CAPABILITY.md) (who can receive OTRv4+) · [docs/PROSODY_USER_DISCOVERY.md](docs/PROSODY_USER_DISCOVERY.md) (People list, Welcome room) · [CONTRIBUTING.md](CONTRIBUTING.md) · [all documents](docs/README.md)
 
-Running a server: [STRESS_TEST.md](STRESS_TEST.md) · [SERVER_HARDENING.md](SERVER_HARDENING.md) (limits, one-command install) · [SECURITY_SESSIONS.md](SECURITY_SESSIONS.md) (one session per account)
+Running a server: [docs/STRESS_TEST.md](docs/STRESS_TEST.md) · [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md) (limits, one-command install) · [docs/SECURITY_SESSIONS.md](docs/SECURITY_SESSIONS.md) (one session per account)
 
 ## License
 

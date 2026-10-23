@@ -8,13 +8,13 @@
 > produced, but its DEK comes from a 0600 file rather than an Android Keystore
 > wrapping key: **on Termux the at-rest protection is filesystem permissions,
 > not hardware-backed key custody.** The Android column of row 1 still
-> describes the Android design and is unchanged. See [SECURITY.md](SECURITY.md)
+> describes the Android design and is unchanged. See [SECURITY.md](../SECURITY.md)
 > caveat 5b.
 
 
 > **Status note (v10.12.0).** This audit covers at-rest storage for the Android
 > application. It does not cover voice key material, which is per-call,
-> in-memory only, and never written to disk — see [SECURITY.md](SECURITY.md) for
+> in-memory only, and never written to disk — see [SECURITY.md](../SECURITY.md) for
 > how it is held and wiped. No finding below is retracted.
 
 

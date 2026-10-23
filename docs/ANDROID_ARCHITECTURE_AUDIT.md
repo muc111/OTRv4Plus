@@ -7,7 +7,7 @@
 > subsystem's arrival, so its account of the cryptographic surface — "everything
 > in Rust" — does not cover `otrv4plus_voice.py`, which uses the Python
 > `cryptography` library for the media AEAD, the HKDF-SHA512 voice key schedule
-> and the voice X448 (see [SECURITY.md](SECURITY.md) caveat 11).
+> and the voice X448 (see [SECURITY.md](../SECURITY.md) caveat 11).
 
 > **Status note (2026-09-14) — the calculator disguise is withdrawn.** This
 > document proposes it in several places: a `feature-calculator` module, a

@@ -1,10 +1,10 @@
 <!-- The full technical reference. The short introduction is README.md. -->
 
 > This is the full technical reference that used to be the README. For a
-> short introduction and the Android APK download, see [README.md](README.md).
+> short introduction and the Android APK download, see [README.md](../README.md).
 
 <p align="center">
-  <img src="icon.png" width="160" alt="OTRv4+">
+  <img src="../icon.png" width="160" alt="OTRv4+">
 </p>
 
 <h1 align="center">OTRv4+</h1>
@@ -78,7 +78,7 @@ version of this argument.
 ### How it got here
 
 The order matters, because each step was forced by the one before it. Milestones
-by version, all traceable in [CHANGELOG.md](CHANGELOG.md):
+by version, all traceable in [CHANGELOG.md](../CHANGELOG.md):
 
 | | |
 |---|---|
@@ -182,7 +182,7 @@ not make traffic analysis impossible. Message size and timing still leak
 metadata; the fact and duration of a voice call remain observable even though
 constant-rate shaping removes the speech-dependent parts; and an XMPP server
 still sees that two JIDs exchanged encrypted stanzas.
-[SECURITY.md](SECURITY.md) states plainly what is and is not defended against,
+[SECURITY.md](../SECURITY.md) states plainly what is and is not defended against,
 and [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) §1 explains why encryption,
 anonymity and routing are three separate properties.
 
@@ -341,7 +341,7 @@ Architecture:
   live in Rust `SecretBytes` with `ZeroizeOnDrop` and no accessor. Python holds
   opaque handles.
 
-Then: [SECURITY.md](SECURITY.md) for the threat model and what is *not*
+Then: [SECURITY.md](../SECURITY.md) for the threat model and what is *not*
 defended against · [SPEC.md](SPEC.md) for the wire format ·
 [SECURITY_INVARIANTS.md](SECURITY_INVARIANTS.md) for the machine-checked list.
 
@@ -376,7 +376,7 @@ Android app is being built alongside them and is not yet a replacement.
 
 **Security and protocol**
 
-- [SECURITY.md](SECURITY.md) — threat model: what is defended against, and what is not
+- [SECURITY.md](../SECURITY.md) — threat model: what is defended against, and what is not
 - [SPEC.md](SPEC.md) — the formal wire-level protocol specification
 - [SECURITY_INVARIANTS.md](SECURITY_INVARIANTS.md) — the machine-checked invariant list
 - [SECURITY_ISSUES.md](SECURITY_ISSUES.md) — open and resolved security findings
@@ -394,7 +394,7 @@ Android app is being built alongside them and is not yet a replacement.
 - [VOICE_LATENCY_BUDGET.md](VOICE_LATENCY_BUDGET.md) — where the milliseconds go
 - [VOICE_SOAK_TEST.md](VOICE_SOAK_TEST.md) — the long-call test procedure
 - [VOICE_AUDIT_REPORT.md](VOICE_AUDIT_REPORT.md) — the voice security audit
-- [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md) — every tuning knob and its trade-off
+- [Rust/VOICE_TUNING.md](../Rust/VOICE_TUNING.md) — every tuning knob and its trade-off
 
 **Android**
 
@@ -410,17 +410,17 @@ Android app is being built alongside them and is not yet a replacement.
 **Development**
 
 - [DEVELOPMENT.md](DEVELOPMENT.md) — build environment and test plan
-- [CONTRIBUTING.md](CONTRIBUTING.md) — PR guidelines
-- [CHANGELOG.md](CHANGELOG.md) — per-version changes
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — PR guidelines
+- [CHANGELOG.md](../CHANGELOG.md) — per-version changes
 - [VERSIONING.md](VERSIONING.md) — the version scheme, and which numbers are wire formats
 - [MIGRATION.md](MIGRATION.md) — moving from earlier versions
 
 **Licensing**
 
-- [LICENSE](LICENSE) (AGPL-3.0) · [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) · [LICENSING.md](LICENSING.md) (what is licensed how; documentation is CC BY-SA 4.0) · [ASSETS.md](ASSETS.md) · [LICENSING_AUDIT.md](LICENSING_AUDIT.md) · [CLA.md](CLA.md)
+- [LICENSE](../LICENSE) (AGPL-3.0) · [LICENSE-COMMERCIAL.md](../LICENSE-COMMERCIAL.md) · [LICENSING.md](../LICENSING.md) (what is licensed how; documentation is CC BY-SA 4.0) · [ASSETS.md](ASSETS.md) · [LICENSING_AUDIT.md](LICENSING_AUDIT.md) · [CLA.md](../CLA.md)
 
 **Known limitations** — [Honest caveats](#honest-caveats) below, and
-[SECURITY.md](SECURITY.md) §"What OTRv4+ does not defend against".
+[SECURITY.md](../SECURITY.md) §"What OTRv4+ does not defend against".
 
 ---
 
@@ -428,7 +428,7 @@ Android app is being built alongside them and is not yet a replacement.
 
 
 <p align="center">
-  <img src="example.png" width="680" alt="OTRv4+ TUI, encrypted session with SMP verified">
+  <img src="images/example.png" width="680" alt="OTRv4+ TUI, encrypted session with SMP verified">
 </p>
 
 <p align="center"><em>The IRC client. Full OTRv4 DAKE + SMP verification with a hybrid PQC layer (ML-KEM-1024 + ML-DSA-87 + classical ZKP). Blue 🔵 = identity confirmed. Tested live on both Libera.chat TLS and irc.postman.i2p I2P SAM.<br>Ctrl+P or Ctrl+S to pause and scroll back. Type <code>/tui</code> to toggle pinned chrome.</em></p>
@@ -436,13 +436,13 @@ Android app is being built alongside them and is not yet a replacement.
 ### The XMPP client
 
 <p align="center">
-  <img src="xmpp-verify.png" width="420" alt="OTRv4+ XMPP client: device provisioning, DAKE, and SMP verified">
+  <img src="images/xmpp-verify.png" width="420" alt="OTRv4+ XMPP client: device provisioning, DAKE, and SMP verified">
 </p>
 
 <p align="center"><em>Provisioning checks the packages, the microphone, the I2P SAM bridge and the Rust ratchet before it will start, then <code>/otr</code> and <code>/smp</code>. The passphrase prompt is a hidden read — it never reaches the scrollback. Same Rust crypto core as the IRC client.</em></p>
 
 <p align="center">
-  <img src="xmpp-call-sendfile.png" width="420" alt="OTRv4+ XMPP client: encrypted voice call and file transfer after SMP verification">
+  <img src="images/xmpp-call-sendfile.png" width="420" alt="OTRv4+ XMPP client: encrypted voice call and file transfer after SMP verification">
 </p>
 
 <p align="center"><em>The same session continuing into <code>/call</code> and <code>/sendfile</code>. Voice is Opus 16 kHz over I2P datagrams with constant-rate shaping, so packet size and timing carry no speech information; <code>/hangup</code> reports what was sent, what was dropped, and that every media key was zeroized. File transfer runs inside the established OTR session and waits for the peer to accept.</em></p>
@@ -1222,7 +1222,7 @@ wire — for the whole call. Muting encodes digital silence rather than stopping
 transmission, so it is invisible to anyone counting packets. Both the frame
 length and the bitrate are wire-format settings: peers that disagree establish
 a call, report it healthy, and carry no audio. See
-[Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md).
+[Rust/VOICE_TUNING.md](../Rust/VOICE_TUNING.md).
 
 ### Key schedule
 
@@ -1831,9 +1831,9 @@ limits: [VOICE_NOTES.md](VOICE_NOTES.md).
 
 3. **The Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448 implementation but has no formal review. `x448` 0.6 is a pure-Rust X448 with no formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.
 
-4. **Chat and voice are both Rust-core-only — chat since v10.7.5, voice since v10.13.2.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed from the messaging path at v10.7, which lives entirely inside the Rust `otrv4_core` PyO3 module. **Voice did not meet that standard until v10.13.2**, and this caveat said so until v10.16.1: its media AES-256-GCM, HKDF-SHA512 key schedule and X448 came from the Python `cryptography` library, so there were two AES-256-GCM implementations in the tree and voice key material sat in Python `bytearray`s. That is no longer true — the epoch root, the media keys and the X448 private scalar are Rust-owned with no accessor, `_require_rust_voice()` is a hard requirement with no fallback, and there are no `AESGCM(` call sites left in the repository (the archived pre-Rust copy under `.attic/` that held the last ones was deleted in 0.6.0-experimental). What voice still does not have is what no amount of moving code can supply: review, and more than one pair of devices. See [SECURITY.md](SECURITY.md) caveat 11 and the voice caveat below. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
+4. **Chat and voice are both Rust-core-only — chat since v10.7.5, voice since v10.13.2.** Every C extension (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) has been retired and the Python `cryptography` library was removed from the messaging path at v10.7, which lives entirely inside the Rust `otrv4_core` PyO3 module. **Voice did not meet that standard until v10.13.2**, and this caveat said so until v10.16.1: its media AES-256-GCM, HKDF-SHA512 key schedule and X448 came from the Python `cryptography` library, so there were two AES-256-GCM implementations in the tree and voice key material sat in Python `bytearray`s. That is no longer true — the epoch root, the media keys and the X448 private scalar are Rust-owned with no accessor, `_require_rust_voice()` is a hard requirement with no fallback, and there are no `AESGCM(` call sites left in the repository (the archived pre-Rust copy under `.attic/` that held the last ones was deleted in 0.6.0-experimental). What voice still does not have is what no amount of moving code can supply: review, and more than one pair of devices. See [SECURITY.md](../SECURITY.md) caveat 11 and the voice caveat below. As of v10.7.6 (Phase 5.4) the SMP modular exponentiation is constant-time via `crypto-bigint` `DynResidue`, intended to close a timing side-channel on the secret SMP exponents (not independently verified to be constant-time on every target). As of v10.9.1 the SMP protocol is hybrid post-quantum. As of v10.10.4 the XMPP transport has production-grade security hardening (subscription approval gate, rate limiting, SMP secret validation, block list, stream management, delivery receipts, and I2P-aware reconnect). See the CHANGELOG for the full migration history.
 
-5. **Ephemeral identity on IRC, persistent identity on XMPP.** IRC regenerates identity keys at every launch and fingerprints change on every restart — a deliberate threat-model choice for an I2P privacy client, not a missing feature. Tor Browser, Cwtch (default) and Briar all keep identities short-lived for similar reasons. **XMPP is the opposite as of v10.12.0**: a JID is a durable name, so the identity behind it persists and peer fingerprints are pinned. Its at-rest protection is filesystem permissions, not a passphrase — see [SECURITY.md](SECURITY.md) caveat 5b. See ROADMAP Phase 5.3g for both halves.
+5. **Ephemeral identity on IRC, persistent identity on XMPP.** IRC regenerates identity keys at every launch and fingerprints change on every restart — a deliberate threat-model choice for an I2P privacy client, not a missing feature. Tor Browser, Cwtch (default) and Briar all keep identities short-lived for similar reasons. **XMPP is the opposite as of v10.12.0**: a JID is a durable name, so the identity behind it persists and peer fingerprints are pinned. Its at-rest protection is filesystem permissions, not a passphrase — see [SECURITY.md](../SECURITY.md) caveat 5b. See ROADMAP Phase 5.3g for both halves.
 
 6. **Wire-incompatible with stock OTRv4.** Implementations such as `pidgin-otr4` and CoyIM cannot talk to OTRv4+. The ML-DSA-87 extension, the ML-KEM-1024 brace key, and the SHAKE-256 transcript hashing are OTRv4+ additions and there is no negotiation path. Both peers must run OTRv4+.
 
@@ -1856,11 +1856,11 @@ AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 
 `OR` means you choose. The two halves are:
 
-* **[AGPL-3.0](LICENSE)** — the default, and what you get by cloning this
+* **[AGPL-3.0](../LICENSE)** — the default, and what you get by cloning this
   repository. Read it, run it, fork it, study it, publish your fork. If you
   distribute it or run a modified version as a network service, AGPL §13
   requires you to offer that version's source to its users.
-* **[Commercial licence](LICENSE-COMMERCIAL.md)** — for shipping OTRv4+ inside
+* **[Commercial licence](../LICENSE-COMMERCIAL.md)** — for shipping OTRv4+ inside
   a closed-source product, or operating it as a service without publishing your
   source.
 
@@ -1876,16 +1876,16 @@ withdraw anything already granted. `LICENSE` says so in its own words rather
 than implying a retraction nobody could enforce.
 
 **Documentation is licensed separately**, under
-[CC BY-SA 4.0](LICENSES/CC-BY-SA-4.0.txt), from 2026-09-24: the README, the
+[CC BY-SA 4.0](../LICENSES/CC-BY-SA-4.0.txt), from 2026-09-24: the README, the
 specifications, and the design, audit and test documents, so the protocol can
 be quoted and reimplemented freely. Code inside documents is also available
 under the software licence. Legal texts, third-party material and the icon are
-outside both licences. [LICENSING.md](LICENSING.md) is the map, and
+outside both licences. [LICENSING.md](../LICENSING.md) is the map, and
 [ASSETS.md](ASSETS.md) records where every image came from — the icon is an
 AI-generated placeholder in which no licence is asserted.
 
-Contributions are welcome under the [CLA](CLA.md), which keeps both licences
-grantable. Paid work has [its own terms](CONTRACTOR-IP.md).
+Contributions are welcome under the [CLA](../CLA.md), which keeps both licences
+grantable. Paid work has [its own terms](../CONTRACTOR-IP.md).
 
 Every third-party dependency is permissive — MIT, Apache-2.0, BSD-2-Clause,
 BSD-3-Clause, Unicode-3.0 or PSF, with SQLite in the public domain — across the Rust crates compiled into the core and the Python and Android
@@ -1895,7 +1895,7 @@ licence, and two guards keep it that way: the Rust graph is checked by
 `./gradlew :app:checkRuntimeDependencyLicences`. Both fail the build on a
 dependency with no permissive option.
 
-[NOTICE](NOTICE) carries the attribution, lists the exact crate count, and
+[NOTICE](../NOTICE) carries the attribution, lists the exact crate count, and
 **must travel with any binary you distribute**. The Android app packages it and
 renders it under *About & licences*; if you ship a build of your own, do the
 equivalent. [LICENSING_AUDIT.md](LICENSING_AUDIT.md) shows the working, and its
@@ -1905,20 +1905,20 @@ full-graph count are different numbers.
 ## See also
 
 - [SPEC.md](SPEC.md) - **formal wire-level protocol specification**: byte layouts, KDF inputs, state machines, test vectors, and the voice protocol in §9. v10.10.4 fixed two previously underspecified derivations: the GCM associated-data `ad` component (now defined as `ssid`, 8 bytes, from §4.4) and the `pq_binding_key` inputs `domain` and `transcript_tag` in §6.7. Write a compatible implementation in any language from this document alone.
-- [CHANGELOG.md](CHANGELOG.md) - per-version changes
-- [SECURITY.md](SECURITY.md) - threat model and known issues
+- [CHANGELOG.md](../CHANGELOG.md) - per-version changes
+- [SECURITY.md](../SECURITY.md) - threat model and known issues
 - [FEATURES.md](FEATURES.md) - full feature inventory
 - [ROADMAP.md](ROADMAP.md) - what's planned next
 - [DEVELOPMENT.md](DEVELOPMENT.md) - build environment, test plan
-- [CONTRIBUTING.md](CONTRIBUTING.md) - PR guidelines
+- [CONTRIBUTING.md](../CONTRIBUTING.md) - PR guidelines
 - [WHY.md](WHY.md) - design rationale
 - [MIGRATION.md](MIGRATION.md) - moving from earlier versions
 - [VERSIONING.md](VERSIONING.md) - the version scheme, and which version numbers are wire formats that must never be bumped for a release
 - [SPEC_GROUP.md](SPEC_GROUP.md) - the group protocol: an authenticated group-state layer over independent pairwise channels. Epochs, a signed state chain, membership transitions and consensus policy — and deliberately **no group key, no group ratchet and no group cipher**
 - [GROUP_CRYPTO_AUDIT.md](GROUP_CRYPTO_AUDIT.md) - what the Rust core already provides for a future group layer, and ML-KEM-1024 cross-checked against Go's FIPS 140-validated `crypto/mlkem` in both directions
-- [tests/group_vectors/](tests/group_vectors/) - the group protocol test vectors, generated from SPEC_GROUP.md **before** any implementation exists, signed by a transcription of the RFC 8032 reference algorithm rather than by this project's own Ed448. A disagreement between an implementation and a vector is a question about which one misread the spec — not a reason to regenerate the vector
+- [tests/group_vectors/](../tests/group_vectors/) - the group protocol test vectors, generated from SPEC_GROUP.md **before** any implementation exists, signed by a transcription of the RFC 8032 reference algorithm rather than by this project's own Ed448. A disagreement between an implementation and a vector is a question about which one misread the spec — not a reason to regenerate the vector
 - [FILE_TRANSFER_TEST_PLAN.md](FILE_TRANSFER_TEST_PLAN.md) - the ten-step two-phone validation for `/sendfile`, smallest file first, with the misbehaving-sender recipes for the replay, corruption and wrong-metadata cases
 - [SPEC.md §9A](SPEC.md) - the encrypted file-transfer format: transfer-key derivation, chunk AAD, and the six checks a receiver must pass before placing a file
 - [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md) - which networks may carry traffic, how one is chosen, and what may change mid-call; the five transport modes, the transition matrix, and why voice over Tor is not implemented
 - [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md) - the voice media path end to end: latency budget, liveness detection, authenticated endpoint recovery, and its bounds
-- [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md) - every voice tuning knob, its range, and what it trades against what
+- [Rust/VOICE_TUNING.md](../Rust/VOICE_TUNING.md) - every voice tuning knob, its range, and what it trades against what

@@ -103,6 +103,11 @@ fi
 # ── i2pd ──────────────────────────────────────────────────────────────────
 BUILD="$WORK/i2pd-build-$ABI"
 rm -rf "$BUILD"
+# pkg-config sees only the OpenSSL built above. Newer CMake asks it for a
+# static OpenSSL's dependencies, and the runner's own libcrypto.pc (Ubuntu's,
+# built with jitterentropy and zstd) made the link want -l:libjitterentropy.a
+# and -lzstd, which do not exist for Android.
+export PKG_CONFIG_LIBDIR="$PREFIX/openssl/lib/pkgconfig" PKG_CONFIG_PATH=""
 cmake -S "$SRC/i2pd/build" -B "$BUILD" -G "Unix Makefiles" \
     -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$ABI" -DANDROID_PLATFORM="android-$API" \

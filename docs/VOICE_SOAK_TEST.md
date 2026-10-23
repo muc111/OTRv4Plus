@@ -55,7 +55,7 @@ The reported figures were cross-checked against the constants in
 > 16.7 fps, ~37.2 kbit/s — chosen because I2P charges by the packet rather
 > than the byte. The figures above are left as measured; they are a record of
 > that run, not a description of the current wire format. See
-> [Rust/VOICE_TUNING.md](Rust/VOICE_TUNING.md).
+> [Rust/VOICE_TUNING.md](../Rust/VOICE_TUNING.md).
 
 | Media bitrate | `VOICE_BITRATE = 24000` | 24 kbit/s Opus |
 

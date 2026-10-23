@@ -2,7 +2,7 @@
 
 Date: 2026-10-12. Scope: run OTRv4Plus in an isolated Qubes OS setup that
 talks to the Android app and to the terminal client on Ubuntu and Termux.
-Files: [`qubes/`](qubes/) (operator guide: [`qubes/README.md`](qubes/README.md)).
+Files: [`qubes/`](../qubes/) (operator guide: [`qubes/README.md`](../qubes/README.md)).
 
 > **Where this was done.** The work was done in an Ubuntu 24.04 cloud
 > container, not on Qubes. That container has no Xen and no dom0, and no
@@ -122,7 +122,7 @@ ships the same bytes that are tested in CI on every commit.
 
 ## 5. Recommended build method
 
-Full commands: [`qubes/README.md`](qubes/README.md). Summary:
+Full commands: [`qubes/README.md`](../qubes/README.md). Summary:
 
 ```
 otr-fetch-dvm (disposable, networked) ─ fetch-sources.sh ─▶ bundle ─ qvm-copy ─▶

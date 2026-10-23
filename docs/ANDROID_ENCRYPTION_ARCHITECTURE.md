@@ -6,7 +6,7 @@
 > OTRv4+ is an I2P-first private communications client. It has three surfaces:
 > the IRC terminal client, the XMPP terminal client, and a **native Android app
 > under construction**. The terminal clients running under Termux are the
-> supported way to use OTRv4+ today. See [README.md](README.md#project-status).
+> supported way to use OTRv4+ today. See [README.md](../README.md#project-status).
 
 This document covers the Android client's encryption architecture, the account
 boundary underneath it, and — plainly — what is not implemented.
