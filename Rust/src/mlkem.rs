@@ -61,7 +61,7 @@ use pqcrypto_traits::kem::{
 };
 
 /// ML-KEM-1024 encapsulation-key (public) length, FIPS 203.
-const MLKEM_EK_SIZE: usize = 1568;
+pub(crate) const MLKEM_EK_SIZE: usize = 1568;
 /// ML-KEM-1024 ciphertext length, FIPS 203.
 const MLKEM_CT_SIZE: usize = 1568;
 
@@ -198,7 +198,21 @@ impl MlKemKeypair {
     pub(crate) fn decapsulate_consume(&mut self, ct: &[u8])
         -> PyResult<crate::secure_mem::SecretBytes<32>>
     {
-        let dk = self.dk.take().ok_or_else(|| {
+        let ss = self.decapsulate_keep(ct);
+        // Spent whether or not `ct` was well formed (a_bad_ciphertext_spends_the_key).
+        self.dk = None;
+        ss
+    }
+
+    /// Decapsulate `ct` and KEEP the decapsulation key. For a caller that
+    /// commits only after the message carrying `ct` authenticates (the v2
+    /// ratchet, SPEC §5.2): a forged ciphertext must not destroy the key the
+    /// genuine one needs. ML-KEM's implicit rejection makes a forged `ct`
+    /// yield an unrelated secret, so the forgery then fails its AEAD.
+    pub(crate) fn decapsulate_keep(&self, ct: &[u8])
+        -> PyResult<crate::secure_mem::SecretBytes<32>>
+    {
+        let dk = self.dk.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(
                 "this ML-KEM keypair has already been used")
         })?;

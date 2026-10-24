@@ -76,7 +76,12 @@ Semantic versioning, with one project-specific reading of MAJOR.
 > Both peers must run the **same** version. There is no fallback path, no
 > negotiation, and no interoperability with stock OTRv4.
 
-That policy predates this document and is unchanged by it. It means the version
+That policy predates this document. It has one exception, the ratchet: a peer
+that lists `PQ_RATCHET_VERSION` in its signed profile runs the v2 ratchet
+(SPEC §5.1) with another that does, and v1 with one that does not, so releases
+from before v2 keep talking to releases after it. The choice is made from the
+two signed profiles in the DAKE transcript and cannot be forced down in
+transit. It means the version
 string is a *release* identifier, not a compatibility predicate — the wire
 formats carry their own version bytes for that, and those are what a peer
 actually checks.
@@ -90,6 +95,7 @@ mark a release**:
 | Constant | Value | Meaning |
 |---|---|---|
 | `OTRConstants.PROTOCOL_VERSION` | `4` | ClientProfile / DAKE format |
+| `OTRConstants.PQ_RATCHET_VERSION` | `0x50` | capability in the profile's version list: "runs the v2 ratchet" (SPEC §5.1) |
 | `OTRv4DataMessage.PROTOCOL_VERSION` | `0x0005` | data-message format (incremented by the MKmac fix) |
 | `VOICE_PROTOCOL_VERSION` | `4` | voice frame header |
 | SMP wire byte | `0x01` / `0x02` / `0x03` | classical / hybrid-PQ (SHAKE stretch) / hybrid-PQ (Argon2id stretch) |

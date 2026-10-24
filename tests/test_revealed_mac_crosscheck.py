@@ -289,7 +289,7 @@ class _FakeRatchet:
         self._known = known
         self.ratchet_id = 1
 
-    def decrypt_message(self, header, ct, nonce, tag):
+    def decrypt_message(self, header, ct, nonce, tag, kem_ek=None, kem_ct=None):
         return self._plaintext, self._mac_key
 
     def knows_revealed_mac_key(self, key):

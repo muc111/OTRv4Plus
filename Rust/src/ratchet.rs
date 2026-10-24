@@ -31,6 +31,71 @@ const AD_DEFAULT: &[u8] = b"OTRv4-DATA";
 /// is 32 bytes and is a hash, not key material.
 const MAX_MAC_FINGERPRINTS: usize = 4096;
 
+// ── v2: the post-quantum fold (SPEC §5.2, audit A1) ─────────────────
+//
+// In a v2 session every root step derives from `dh_secret || brace_key`, and
+// every sending chain carries one ML-KEM item on EVERY one of its messages:
+//
+//   Ct  -- an encapsulation to the peer's advertised key. The sender folds
+//          the shared secret into the brace key at this send step; the
+//          receiver decapsulates and folds the same secret at the matching
+//          receive step. One fresh post-quantum secret per round trip.
+//   Ek  -- our own key, advertised so the peer can answer with a Ct at its
+//          next send step. No fold at this step.
+//   None -- our key is already out and unanswered; nothing new to say.
+//
+// Carried on every message so that whichever message of a chain arrives
+// first can perform the receive step: losing a chain's first message must
+// not lose the chain. Bound into each message's AAD, and nothing (brace key,
+// our pending key pair, the peer's key) is committed unless the message
+// authenticates. A v1 session uses none of this and derives as before.
+
+/// What a v2 sending chain carries for the post-quantum fold.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum KemItem {
+    None,
+    Ek(Vec<u8>),
+    Ct(Vec<u8>),
+}
+
+impl KemItem {
+    /// Built from a received message's two optional fields; both is invalid.
+    pub fn from_parts(ek: Option<&[u8]>, ct: Option<&[u8]>) -> Result<Self, RatchetError> {
+        match (ek, ct) {
+            (None, None) => Ok(KemItem::None),
+            (Some(e), None) => Ok(KemItem::Ek(e.to_vec())),
+            (None, Some(c)) => Ok(KemItem::Ct(c.to_vec())),
+            (Some(_), Some(_)) => Err(RatchetError::Protocol(
+                "a message carries both an ML-KEM key and a ciphertext".into())),
+        }
+    }
+
+    /// What the AAD binds: a kind byte, then SHA3-256 of the item if any.
+    fn binding(&self) -> Vec<u8> {
+        use sha3::{Digest, Sha3_256};
+        let (kind, body): (u8, &[u8]) = match self {
+            KemItem::None => return vec![0x00],
+            KemItem::Ek(e) => (0x01, e),
+            KemItem::Ct(c) => (0x02, c),
+        };
+        let mut out = vec![kind];
+        out.extend_from_slice(&Sha3_256::digest(body));
+        out
+    }
+}
+
+/// The send step's outcome, computed before anything is committed.
+struct SendPlan {
+    brace: [u8; 32],
+    item: KemItem,
+    used_peer_ek: bool,
+    new_kp: Option<crate::mlkem::MlKemKeypair>,
+}
+
+impl Drop for SendPlan {
+    fn drop(&mut self) { self.brace.zeroize(); }
+}
+
 // ── Skipped key storage ─────────────────────────────────────────────
 #[derive(Zeroize, ZeroizeOnDrop)]
 struct SkippedKey {
@@ -91,6 +156,8 @@ pub struct EncryptResult {
     /// receives a `MessageMacKey` handle, never these bytes. This ratchet
     /// keeps its own copy in `last_mac_key` for later revelation.
     pub mac_key: Vec<u8>,
+    /// v2: the item this message carries (its chain's); None in v1.
+    pub kem_item: KemItem,
 }
 
 /// Result of decrypting one message.
@@ -145,6 +212,16 @@ pub struct DoubleRatchet {
     derived_mac_fp_order: VecDeque<[u8; 32]>,
     rekey_interval: u32,
     max_skip: u32,
+
+    /// v2 (SPEC §5.2): fold the brace key into every root step. Set before
+    /// the first message by `enable_pq` and never cleared.
+    pq: bool,
+    /// v2: our ML-KEM key pair, advertised and not yet answered.
+    kem_kp: Option<crate::mlkem::MlKemKeypair>,
+    /// v2: the peer's advertised key, to answer at our next send step.
+    kem_peer_ek: Option<Vec<u8>>,
+    /// v2: what every message of the current sending chain carries.
+    out_item: KemItem,
 }
 
 impl Drop for DoubleRatchet {
@@ -162,6 +239,8 @@ impl Drop for DoubleRatchet {
         self.derived_mac_fp_order.clear();
         self.ad.zeroize();
         self.skipped.clear();
+        if let Some(ref mut kp) = self.kem_kp { kp.zeroize_key(); }
+        self.kem_kp = None;
     }
 }
 
@@ -206,7 +285,79 @@ impl DoubleRatchet {
             derived_mac_fp_order: VecDeque::new(),
             rekey_interval: REKEY_INTERVAL,
             max_skip: MAX_SKIP,
+            pq: false,
+            kem_kp: None,
+            kem_peer_ek: None,
+            out_item: KemItem::None,
         })
+    }
+
+    /// Switch this session to v2 (SPEC §5.2). Only before the first message
+    /// in either direction: both peers must derive every key the same way.
+    pub fn enable_pq(&mut self) -> Result<(), RatchetError> {
+        if self.ratchet_id != 0 || self.msg_num_send != 0 || self.msg_num_recv != 0
+            || self.dh_pub_remote.is_some() || !self.skipped.is_empty()
+        {
+            return Err(RatchetError::Protocol(
+                "the post-quantum ratchet must be enabled before the first message".into()));
+        }
+        self.pq = true;
+        Ok(())
+    }
+
+    pub fn pq(&self) -> bool { self.pq }
+
+    /// The root step's input: `dh || brace` in v2 (SPEC §5.2), `dh` in v1.
+    fn fold_input(&self, dh_secret: &[u8], brace: &[u8; 32]) -> Vec<u8> {
+        let mut input = dh_secret.to_vec();
+        if self.pq {
+            input.extend_from_slice(brace);
+        }
+        input
+    }
+
+    /// The v2 send step, computed without committing: answer the peer's key
+    /// if we hold one, else advertise ours unless it is already out.
+    fn plan_send(&self, brace: &[u8; 32], peer_ek: Option<&[u8]>, have_kp: bool)
+        -> Result<SendPlan, RatchetError>
+    {
+        if let Some(ek) = peer_ek {
+            let (ct, ss) = crate::mlkem::encapsulate_internal(ek)
+                .map_err(|e| RatchetError::Protocol(format!("ML-KEM encapsulation: {e}")))?;
+            return Ok(SendPlan { brace: kdf_brace_rotate(brace, ss.expose_slice()),
+                                 item: KemItem::Ct(ct), used_peer_ek: true, new_kp: None });
+        }
+        if have_kp {
+            return Ok(SendPlan { brace: *brace, item: KemItem::None,
+                                 used_peer_ek: false, new_kp: None });
+        }
+        let kp = crate::mlkem::MlKemKeypair::generate();
+        let item = KemItem::Ek(kp.ek_bytes().to_vec());
+        Ok(SendPlan { brace: *brace, item, used_peer_ek: false, new_kp: Some(kp) })
+    }
+
+    fn commit_send_plan(&mut self, mut plan: SendPlan) {
+        self.brace_key.zeroize();
+        self.brace_key = plan.brace;
+        if plan.used_peer_ek {
+            if let Some(ref mut ek) = self.kem_peer_ek { ek.zeroize(); }
+            self.kem_peer_ek = None;
+        }
+        if let Some(kp) = plan.new_kp.take() {
+            self.kem_kp = Some(kp);
+        }
+        self.out_item = std::mem::replace(&mut plan.item, KemItem::None);
+    }
+
+    /// The AAD a message binds: header and session ad, then (v2) the item.
+    fn aad(&self, header_bytes: &[u8], item: &KemItem) -> Vec<u8> {
+        let mut aad = Vec::with_capacity(header_bytes.len() + self.ad.len() + 33);
+        aad.extend_from_slice(header_bytes);
+        aad.extend_from_slice(&self.ad);
+        if self.pq {
+            aad.extend_from_slice(&item.binding());
+        }
+        aad
     }
 
     pub fn set_ad(&mut self, ad: &[u8]) {
@@ -228,8 +379,22 @@ impl DoubleRatchet {
     }
 
     // ── Send‑side DH ratchet ────────────────────────────────────
-    pub fn send_ratchet(&mut self, dh_secret: &[u8], new_local_pub: &[u8; 56]) {
-        let (new_root, new_chain) = kdf_root(&self.root_key, dh_secret);
+    pub fn send_ratchet(&mut self, dh_secret: &[u8], new_local_pub: &[u8; 56])
+        -> Result<(), RatchetError>
+    {
+        let plan = if self.pq {
+            Some(self.plan_send(&self.brace_key, self.kem_peer_ek.as_deref(), self.kem_kp.is_some())?)
+        } else {
+            None
+        };
+        let mut brace = plan.as_ref().map(|p| p.brace).unwrap_or(self.brace_key);
+        let mut input = self.fold_input(dh_secret, &brace);
+        brace.zeroize();
+        let (new_root, new_chain) = kdf_root(&self.root_key, &input);
+        input.zeroize();
+        if let Some(plan) = plan {
+            self.commit_send_plan(plan);
+        }
         self.root_key.zeroize();
         self.root_key = new_root;
         self.chain_key_send.zeroize();
@@ -253,6 +418,7 @@ impl DoubleRatchet {
                 mac.zeroize();
             }
         }
+        Ok(())
     }
 
     pub fn rotate_brace_key(&mut self, shared_secret: &[u8]) {
@@ -271,9 +437,8 @@ impl DoubleRatchet {
         let header = RatchetHeader::new(self.dh_pub_local, self.prev_chain_len_send, self.msg_num_send);
         let header_bytes = header.encode();
 
-        let mut aad = Vec::with_capacity(header_bytes.len() + self.ad.len());
-        aad.extend_from_slice(&header_bytes);
-        aad.extend_from_slice(&self.ad);
+        let item = if self.pq { self.out_item.clone() } else { KemItem::None };
+        let aad = self.aad(&header_bytes, &item);
 
         let mut nonce_bytes = [0u8; 12];
         OsRng.fill_bytes(&mut nonce_bytes);
@@ -314,13 +479,14 @@ impl DoubleRatchet {
             ratchet_id: rid,
             reveal_mac_keys: reveal,
             mac_key: mkmac.to_vec(),
+            kem_item: item,
         })
     }
 
     // ── Decrypt same DH ────────────────────────────────────────
     pub fn decrypt_same_dh(
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
-        nonce: &[u8; 12], tag: &[u8; 16],
+        nonce: &[u8; 12], tag: &[u8; 16], item: &KemItem,
     ) -> Result<DecryptResult, RatchetError> {
         let header = RatchetHeader::decode(header_bytes)?;
 
@@ -341,7 +507,7 @@ impl DoubleRatchet {
         let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: header.msg_num };
         if let Some(skipped) = self.skipped.get(&skip_id) {
             let key = skipped.enc_key;
-            let pt = self.aes_decrypt(&key, header_bytes, ciphertext, nonce, tag)?;
+            let pt = self.aes_decrypt(&key, header_bytes, ciphertext, nonce, tag, item)?;
             self.skipped.remove(&skip_id);
             self.seen.insert(&header.dh_pub, header.msg_num);
             // Skipped path: MKmac is re-derived from the stored MKenc rather
@@ -389,7 +555,7 @@ impl DoubleRatchet {
         scratch_ck.zeroize();
 
         let recv_enc_key = enc_key;
-        let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag) {
+        let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag, item) {
             Ok(pt) => pt,
             Err(e) => {
                 // Forged or corrupt: discard every derived key and leave the
@@ -500,6 +666,7 @@ impl DoubleRatchet {
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
         nonce: &[u8; 12], tag: &[u8; 16],
         dh_secret_recv: &[u8], dh_secret_send: &[u8], new_local_pub: &[u8; 56],
+        item: &KemItem,
     ) -> Result<DecryptResult, RatchetError> {
         let header = RatchetHeader::decode(header_bytes)?;
 
@@ -519,7 +686,28 @@ impl DoubleRatchet {
         // high msg_num therefore burned the CPU, flooded the skipped-key
         // store (evicting genuine keys), and rotated the root, all on
         // unauthenticated input.
-        let (new_root_recv, new_recv_chain) = kdf_root(&self.root_key, dh_secret_recv);
+        // v2: the receive step folds what this chain carries. A Ct is
+        // decapsulated with our pending key pair WITHOUT spending it; the
+        // pair is spent only if the message authenticates.
+        let mut recv_brace = self.brace_key;
+        if self.pq {
+            match item {
+                KemItem::Ct(ct) => {
+                    let kp = self.kem_kp.as_ref().ok_or_else(|| RatchetError::Protocol(
+                        "an ML-KEM ciphertext arrived with no key of ours outstanding".into()))?;
+                    let ss = kp.decapsulate_keep(ct)
+                        .map_err(|e| RatchetError::Protocol(format!("ML-KEM decapsulation: {e}")))?;
+                    recv_brace = kdf_brace_rotate(&self.brace_key, ss.expose_slice());
+                }
+                KemItem::Ek(ek) if ek.len() != crate::mlkem::MLKEM_EK_SIZE => {
+                    return Err(RatchetError::Protocol("ML-KEM key has the wrong length".into()));
+                }
+                _ => {}
+            }
+        }
+        let mut recv_input = self.fold_input(dh_secret_recv, &recv_brace);
+        let (new_root_recv, new_recv_chain) = kdf_root(&self.root_key, &recv_input);
+        recv_input.zeroize();
 
         let mut scratch_ck = new_recv_chain;
         let mut pending_skipped: Vec<(u32, [u8; 32])> = Vec::new();
@@ -534,18 +722,43 @@ impl DoubleRatchet {
         scratch_ck.zeroize();
         let mut recv_enc_key = enc_key;
 
-        let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag) {
+        let pt = match self.aes_decrypt(&enc_key, header_bytes, ciphertext, nonce, tag, item) {
             Ok(pt) => pt,
             Err(e) => {
                 enc_key.zeroize();
                 recv_enc_key.zeroize();
                 next_recv_ck.zeroize();
+                recv_brace.zeroize();
                 let mut r = new_root_recv;  r.zeroize();
                 for (_, mut k) in pending_skipped { k.zeroize(); }
                 return Err(e);
             }
         };
         enc_key.zeroize();
+
+        // v2: the reply step, planned against the state this message leaves
+        // (its Ek to answer, our pair spent by its Ct) before anything is
+        // committed: an encapsulation failure must leave the ratchet as it was.
+        let send_plan = if self.pq {
+            let peer_ek: Option<&[u8]> = match item {
+                KemItem::Ek(ek) => Some(ek.as_slice()),
+                _ => self.kem_peer_ek.as_deref(),
+            };
+            let have_kp = self.kem_kp.is_some() && !matches!(item, KemItem::Ct(_));
+            match self.plan_send(&recv_brace, peer_ek, have_kp) {
+                Ok(plan) => Some(plan),
+                Err(e) => {
+                    recv_enc_key.zeroize();
+                    next_recv_ck.zeroize();
+                    recv_brace.zeroize();
+                    let mut r = new_root_recv;  r.zeroize();
+                    for (_, mut k) in pending_skipped { k.zeroize(); }
+                    return Err(e);
+                }
+            }
+        } else {
+            None
+        };
 
         // ── Authenticated: commit the ratchet step ──────────────────────
         for (n, mk) in pending_skipped {
@@ -569,7 +782,31 @@ impl DoubleRatchet {
         }
         self.dh_pub_remote = Some(header.dh_pub);
 
-        let (new_root_send, new_send_chain) = kdf_root(&self.root_key, dh_secret_send);
+        // v2 commit: the receive step's KEM effect, then the reply step's.
+        if self.pq {
+            self.brace_key.zeroize();
+            self.brace_key = recv_brace;
+            match item {
+                KemItem::Ct(_) => {
+                    if let Some(ref mut kp) = self.kem_kp { kp.zeroize_key(); }
+                    self.kem_kp = None;
+                }
+                KemItem::Ek(ek) => {
+                    if let Some(ref mut old) = self.kem_peer_ek { old.zeroize(); }
+                    self.kem_peer_ek = Some(ek.clone());
+                }
+                KemItem::None => {}
+            }
+        }
+        recv_brace.zeroize();
+        let mut send_brace = send_plan.as_ref().map(|p| p.brace).unwrap_or(self.brace_key);
+        let mut send_input = self.fold_input(dh_secret_send, &send_brace);
+        send_brace.zeroize();
+        if let Some(plan) = send_plan {
+            self.commit_send_plan(plan);
+        }
+        let (new_root_send, new_send_chain) = kdf_root(&self.root_key, &send_input);
+        send_input.zeroize();
         self.root_key.zeroize();
         self.root_key = new_root_send;
         self.chain_key_send.zeroize();
@@ -622,10 +859,9 @@ impl DoubleRatchet {
     // ── Internal helper ────────────────────────────────────────
     fn aes_decrypt(&self, enc_key: &[u8; 32],
                    header_bytes: &[u8], ciphertext: &[u8],
-                   nonce: &[u8; 12], tag: &[u8; 16]) -> Result<Vec<u8>, RatchetError> {
-        let mut aad = Vec::with_capacity(header_bytes.len() + self.ad.len());
-        aad.extend_from_slice(header_bytes);
-        aad.extend_from_slice(&self.ad);
+                   nonce: &[u8; 12], tag: &[u8; 16], item: &KemItem)
+        -> Result<Vec<u8>, RatchetError> {
+        let aad = self.aad(header_bytes, item);
 
         let mut ct_with_tag = ciphertext.to_vec();
         ct_with_tag.extend_from_slice(tag);
@@ -989,16 +1225,36 @@ impl RustDoubleRatchet {
             .map(|k| PyBytes::new(py, k)).collect();
         d.set_item("reveal_mac_keys", mac_list)?;
         d.set_item("mac_key", Py::new(py, MessageMacKey::new(&result.mac_key))?)?;
+        // v2: the item this message must carry (SPEC §5.2); absent in v1.
+        match &result.kem_item {
+            KemItem::Ek(ek) => d.set_item("kem_ek", PyBytes::new(py, ek))?,
+            KemItem::Ct(ct) => d.set_item("kem_ct", PyBytes::new(py, ct))?,
+            KemItem::None => {}
+        }
         Ok(d)
     }
 
+    /// Switch to the v2 post-quantum ratchet (SPEC §5.2). Both peers, before
+    /// the first message: the DAKE negotiates it from the two profiles.
+    fn enable_pq_ratchet(&mut self) -> PyResult<()> {
+        self.inner.enable_pq()
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    #[getter]
+    fn pq_ratchet(&self) -> bool { self.inner.pq() }
+
+    #[pyo3(signature = (header, ciphertext, nonce, tag, kem_ek=None, kem_ct=None))]
     fn decrypt_same_dh<'py>(&mut self, py: Python<'py>,
-        header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+        header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
+        kem_ek: Option<&[u8]>, kem_ct: Option<&[u8]>) -> PyResult<Bound<'py, PyDict>> {
+        let item = KemItem::from_parts(kem_ek, kem_ct)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let nonce_arr: &[u8; 12] = nonce.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("nonce must be 12 bytes"))?;
         let tag_arr: &[u8; 16] = tag.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("tag must be 16 bytes"))?;
-        let r = self.inner.decrypt_same_dh(header, ciphertext, nonce_arr, tag_arr)
+        let r = self.inner.decrypt_same_dh(header, ciphertext, nonce_arr, tag_arr, &item)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let d = PyDict::new(py);
         d.set_item("plaintext", PyBytes::new(py, &r.plaintext))?;
@@ -1019,11 +1275,15 @@ impl RustDoubleRatchet {
     /// them. The commit discipline is unchanged: nothing is committed unless
     /// the message authenticates.
     #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (header, ciphertext, nonce, tag, local, new_local, kem_ek=None, kem_ct=None))]
     fn decrypt_new_dh<'py>(&mut self, py: Python<'py>,
         header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
         local: PyRef<'py, crate::key_handles::X448KeyHandle>,
         new_local: PyRef<'py, crate::key_handles::X448KeyHandle>,
+        kem_ek: Option<&[u8]>, kem_ct: Option<&[u8]>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        let item = KemItem::from_parts(kem_ek, kem_ct)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let nonce_arr: &[u8; 12] = nonce.try_into()
             .map_err(|_| pyo3::exceptions::PyValueError::new_err("nonce must be 12 bytes"))?;
         let tag_arr: &[u8; 16] = tag.try_into()
@@ -1035,7 +1295,7 @@ impl RustDoubleRatchet {
         let secret_send = new_local.dh_internal(&remote)?;
         let new_local_pub = *new_local.public_array();
         let r = self.inner.decrypt_new_dh(header, ciphertext, nonce_arr, tag_arr,
-            secret_recv.expose_slice(), secret_send.expose_slice(), &new_local_pub)
+            secret_recv.expose_slice(), secret_send.expose_slice(), &new_local_pub, &item)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let d = PyDict::new(py);
         d.set_item("plaintext", PyBytes::new(py, &r.plaintext))?;
@@ -1052,8 +1312,8 @@ impl RustDoubleRatchet {
     ) -> PyResult<()> {
         let secret = new_local.dh_internal(remote_pub)?;
         let new_local_pub = *new_local.public_array();
-        self.inner.send_ratchet(secret.expose_slice(), &new_local_pub);
-        Ok(())
+        self.inner.send_ratchet(secret.expose_slice(), &new_local_pub)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     /// Brace rotation, responder half: encapsulate to the peer's ML-KEM key
@@ -1062,6 +1322,7 @@ impl RustDoubleRatchet {
     fn brace_encapsulate<'py>(&mut self, py: Python<'py>, peer_ek: &[u8])
         -> PyResult<Bound<'py, PyBytes>>
     {
+        self.refuse_in_v2()?;
         let (ct, ss) = crate::mlkem::encapsulate_internal(peer_ek)?;
         self.inner.rotate_brace_key(ss.expose_slice());
         Ok(PyBytes::new(py, &ct))
@@ -1073,6 +1334,7 @@ impl RustDoubleRatchet {
         mut keypair: PyRefMut<'_, crate::mlkem::MlKemKeypair>,
         ct: &[u8],
     ) -> PyResult<()> {
+        self.refuse_in_v2()?;
         let ss = keypair.decapsulate_consume(ct)?;
         self.inner.rotate_brace_key(ss.expose_slice());
         Ok(())
@@ -1215,6 +1477,18 @@ impl RustDoubleRatchet {
 // Requires `cargo test` to link, which means extension-module must not be
 // in `default`. See Cargo.toml.
 
+impl RustDoubleRatchet {
+    /// v2 rotates the brace key inside the ratchet, per sending chain; a
+    /// rotation from outside would desynchronise the two ends.
+    fn refuse_in_v2(&self) -> PyResult<()> {
+        if self.inner.pq() {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "v2 session: the ratchet rotates the brace key itself"));
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,14 +1510,14 @@ mod tests {
 
     fn deliver(rx: &mut DoubleRatchet, m: &EncryptResult)
         -> Result<Vec<u8>, RatchetError> {
-        rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag)
+        rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag, &m.kem_item)
           .map(|r| r.plaintext.clone())
     }
 
     /// Deliver and keep the receive-side MKmac.
     fn deliver_full(rx: &mut DoubleRatchet, m: &EncryptResult)
         -> Result<DecryptResult, RatchetError> {
-        rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag)
+        rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag, &m.kem_item)
     }
 
     // ── Audit C2: revealed-key cross-check ──────────────────────────────
@@ -1301,7 +1575,7 @@ mod tests {
         let m = a.encrypt(b"real").unwrap();
         let mut forged_ct = m.ciphertext.clone();
         forged_ct[0] ^= 0x01;
-        assert!(b.decrypt_same_dh(&m.header, &forged_ct, &m.nonce, &m.tag).is_err());
+        assert!(b.decrypt_same_dh(&m.header, &forged_ct, &m.nonce, &m.tag, &m.kem_item).is_err());
         // The genuine key is still unknown to Bob: he never authenticated it.
         assert!(!b.knows_derived_mac(&m.mac_key));
     }
@@ -1588,30 +1862,215 @@ mod tests {
 
 #[cfg(test)]
 mod audit_brace_folding {
-    //! AUDIT FINDING (2026-09), pinned: SPEC §5.2 says the brace key is
-    //! folded into every root-key derivation (`dh_secret || brace_key`).
-    //! `send_ratchet` / `decrypt_new_dh` call `kdf_root(root, dh_secret)`
-    //! only, so an ML-KEM brace rotation after the DAKE changes no message
-    //! key. Post-DAKE PQ protection therefore rests on the DAKE root alone
-    //! (which does include the DAKE ML-KEM secret); there is no PQ
-    //! post-compromise recovery. Fixing it changes key derivation for both
-    //! peers, so it needs a negotiated protocol version -- see the audit
-    //! report. When it is fixed, this test must be inverted, not deleted.
+    //! AUDIT FINDING A1 (2026-09): SPEC §5.2 folds the brace key into every
+    //! root step (`dh_secret || brace_key`); the original ratchet derived from
+    //! `dh_secret` alone, so an ML-KEM brace rotation changed no key. A v1
+    //! session still derives that way (its peers depend on it, and changing it
+    //! silently would desync every v1 conversation); v2 folds. Both pinned.
     use super::*;
 
+    fn mk(bk: &[u8; 32], pq: bool) -> DoubleRatchet {
+        let mut r = DoubleRatchet::new(&[0x11; 32], &[0x22; 32], &[0x33; 32],
+                                       bk, &[0xAA; 56], true).expect("ratchet");
+        if pq { r.enable_pq().expect("pq"); }
+        r
+    }
+
     #[test]
-    fn a_brace_rotation_does_not_change_the_next_chain() {
-        let mk = |bk: &[u8; 32]| DoubleRatchet::new(&[0x11; 32], &[0x22; 32], &[0x33; 32],
-                                                    bk, &[0xAA; 56], true).expect("ratchet");
-        let mut a = mk(&[0x44; 32]);
-        let mut b = mk(&[0x44; 32]);
+    fn v1_still_derives_from_the_dh_secret_alone() {
+        let mut a = mk(&[0x44; 32], false);
+        let mut b = mk(&[0x44; 32], false);
         b.rotate_brace_key(&[0x99; 32]);
         assert_ne!(a.brace_key(), b.brace_key(), "rotation happened");
-        a.send_ratchet(&[0x55; 56], &[0xBB; 56]);
-        b.send_ratchet(&[0x55; 56], &[0xBB; 56]);
+        a.send_ratchet(&[0x55; 56], &[0xBB; 56]).expect("step");
+        b.send_ratchet(&[0x55; 56], &[0xBB; 56]).expect("step");
         let (ra, sa, _, _) = a.key_refs();
         let (rb, sb, _, _) = b.key_refs();
-        assert_eq!(ra, rb, "FINDING: brace key not folded into root (SPEC §5.2)");
-        assert_eq!(sa, sb, "FINDING: brace key not folded into chain (SPEC §5.2)");
+        assert_eq!(ra, rb, "v1 must not change: its peers derive this way");
+        assert_eq!(sa, sb);
+    }
+
+    #[test]
+    fn v2_folds_the_brace_key_into_the_root_and_chain() {
+        let mut a = mk(&[0x44; 32], true);
+        let mut b = mk(&[0x45; 32], true);
+        a.send_ratchet(&[0x55; 56], &[0xBB; 56]).expect("step");
+        b.send_ratchet(&[0x55; 56], &[0xBB; 56]).expect("step");
+        let (ra, sa, _, _) = a.key_refs();
+        let (rb, sb, _, _) = b.key_refs();
+        assert_ne!(ra, rb, "A1: a different brace key must give a different root");
+        assert_ne!(sa, sb, "A1: ... and a different sending chain");
+    }
+}
+
+#[cfg(test)]
+mod pq_ratchet {
+    //! v2 end to end (SPEC §5.2): two ratchets with real X448 keys, driven the
+    //! way the engine drives them (first message on the DAKE chains, a forced
+    //! step, then a new key from the peer triggers the receive and reply steps).
+    use super::*;
+    use crate::key_handles::{generate_x448_keypair, X448KeyHandle};
+
+    struct Party { r: DoubleRatchet, key: X448KeyHandle }
+
+    fn pair(pq: bool) -> (Party, Party) {
+        let ka = generate_x448_keypair().expect("key");
+        let kb = generate_x448_keypair().expect("key");
+        let mut a = DoubleRatchet::new(&[0x11; 32], &[0x22; 32], &[0x33; 32], &[0x44; 32],
+                                       ka.public_array(), true).expect("alice");
+        let mut b = DoubleRatchet::new(&[0x11; 32], &[0x22; 32], &[0x33; 32], &[0x44; 32],
+                                       kb.public_array(), false).expect("bob");
+        if pq {
+            a.enable_pq().expect("pq");
+            b.enable_pq().expect("pq");
+        }
+        (Party { r: a, key: ka }, Party { r: b, key: kb })
+    }
+
+    fn send(p: &mut Party, text: &[u8]) -> EncryptResult { p.r.encrypt(text).expect("encrypt") }
+
+    /// The engine's dispatch: a new peer key (once one is known) is a DH step.
+    fn recv(p: &mut Party, m: &EncryptResult) -> Result<Vec<u8>, RatchetError> {
+        recv_as(p, m, &m.kem_item)
+    }
+
+    fn recv_as(p: &mut Party, m: &EncryptResult, item: &KemItem) -> Result<Vec<u8>, RatchetError> {
+        if p.r.dh_pub_remote.is_some() && p.r.is_new_dh(&m.header) {
+            let remote = DoubleRatchet::header_dh_pub(&m.header).expect("dh");
+            let next = generate_x448_keypair().expect("key");
+            let s_recv = p.key.dh_internal(&remote).expect("dh");
+            let s_send = next.dh_internal(&remote).expect("dh");
+            let r = p.r.decrypt_new_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag,
+                                       s_recv.expose_slice(), s_send.expose_slice(),
+                                       next.public_array(), item)?;
+            p.key = next;
+            Ok(r.plaintext.clone())
+        } else {
+            p.r.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag, item)
+               .map(|r| r.plaintext.clone())
+        }
+    }
+
+    /// A forced (rekey) step, as the engine's `_ratchet` does it.
+    fn force(p: &mut Party) {
+        let remote = p.r.dh_pub_remote.expect("a peer key is known");
+        let next = generate_x448_keypair().expect("key");
+        let secret = next.dh_internal(&remote).expect("dh");
+        p.r.send_ratchet(secret.expose_slice(), next.public_array()).expect("step");
+        p.key = next;
+    }
+
+    fn kind(m: &EncryptResult) -> &'static str {
+        match m.kem_item { KemItem::None => "none", KemItem::Ek(_) => "ek", KemItem::Ct(_) => "ct" }
+    }
+
+    /// Both ends hold the same brace key.
+    fn same_brace(a: &Party, b: &Party) -> bool { a.r.brace_key() == b.r.brace_key() }
+
+    /// Initial chains, then Alice forces the first step: the engine's start.
+    fn started(pq: bool) -> (Party, Party) {
+        let (mut a, mut b) = pair(pq);
+        let m = send(&mut a, b"hello");
+        assert_eq!(recv(&mut b, &m).expect("first"), b"hello");
+        let m = send(&mut b, b"hi");
+        assert_eq!(recv(&mut a, &m).expect("first reply"), b"hi");
+        force(&mut a);
+        (a, b)
+    }
+
+    #[test]
+    fn a_conversation_rotates_a_fresh_post_quantum_secret_every_round_trip() {
+        let (mut a, mut b) = started(true);
+        let start = *a.r.brace_key();
+        let mut rotations = 0;
+        for round in 0..6 {
+            let before = *a.r.brace_key();
+            let m = send(&mut a, format!("a{round}").as_bytes());
+            assert_eq!(recv(&mut b, &m).expect("a->b"), format!("a{round}").as_bytes());
+            let m = send(&mut b, format!("b{round}").as_bytes());
+            assert_eq!(recv(&mut a, &m).expect("b->a"), format!("b{round}").as_bytes());
+            assert!(same_brace(&a, &b), "both ends agree after round {round}");
+            if *a.r.brace_key() != before { rotations += 1; }
+        }
+        assert!(rotations >= 5, "a fresh ML-KEM secret nearly every round trip ({rotations})");
+        assert_ne!(*a.r.brace_key(), start);
+    }
+
+    #[test]
+    fn chains_carry_an_ek_then_the_answer_is_a_ct_on_every_message() {
+        let (mut a, mut b) = started(true);
+        let xs: Vec<_> = (0..3).map(|i| send(&mut a, format!("x{i}").as_bytes())).collect();
+        assert!(xs.iter().all(|m| kind(m) == "ek"), "the forced chain advertises our key, on every message");
+        assert!(xs.windows(2).all(|w| w[0].kem_item == w[1].kem_item), "the same item throughout the chain");
+        for m in &xs { recv(&mut b, m).expect("x"); }
+        let ys: Vec<_> = (0..2).map(|i| send(&mut b, format!("y{i}").as_bytes())).collect();
+        assert!(ys.iter().all(|m| kind(m) == "ct"), "the reply chain answers it");
+        for m in &ys { recv(&mut a, m).expect("y"); }
+        assert!(same_brace(&a, &b));
+    }
+
+    #[test]
+    fn losing_a_chains_first_message_does_not_lose_the_chain() {
+        let (mut a, mut b) = started(true);
+        let x1 = send(&mut a, b"x1");
+        let x2 = send(&mut a, b"x2");
+        assert_eq!(recv(&mut b, &x2).expect("x2 first"), b"x2", "the second message performs the step");
+        assert_eq!(recv(&mut b, &x1).expect("x1 late"), b"x1", "the first still decrypts");
+        let y1 = send(&mut b, b"y1");
+        let y2 = send(&mut b, b"y2");
+        assert_eq!(recv(&mut a, &y2).expect("y2 first"), b"y2");
+        assert_eq!(recv(&mut a, &y1).expect("y1 late"), b"y1");
+        assert!(same_brace(&a, &b));
+        let m = send(&mut a, b"on");
+        assert_eq!(recv(&mut b, &m).expect("next round"), b"on");
+    }
+
+    #[test]
+    fn a_tampered_item_is_refused_and_changes_nothing() {
+        let (mut a, mut b) = started(true);
+        let x = send(&mut a, b"x");
+        let KemItem::Ek(mut ek) = x.kem_item.clone() else { panic!("ek expected") };
+        ek[0] ^= 1;
+        assert!(recv_as(&mut b, &x, &KemItem::Ek(ek)).is_err(), "the item is bound to the message");
+        assert!(recv_as(&mut b, &x, &KemItem::None).is_err(), "and cannot be stripped");
+        assert_eq!(recv(&mut b, &x).expect("the genuine one"), b"x");
+        let y = send(&mut b, b"y");
+        let KemItem::Ct(mut ct) = y.kem_item.clone() else { panic!("ct expected") };
+        ct[7] ^= 0x40;
+        assert!(recv_as(&mut a, &y, &KemItem::Ct(ct)).is_err());
+        assert!(a.r.kem_kp.is_some(), "a forged ciphertext must not spend the key the genuine one needs");
+        assert_eq!(recv(&mut a, &y).expect("the genuine ct"), b"y");
+        assert!(a.r.kem_kp.is_some() || kind(&send(&mut a, b"z")) == "ek",
+                "after the answer a new key is advertised");
+        assert!(same_brace(&a, &b));
+    }
+
+    #[test]
+    fn a_v1_peer_and_a_v2_peer_cannot_talk_past_the_first_step() {
+        let (mut a, _) = pair(true);
+        let (_, mut b) = pair(false);
+        // Separate pairs share the DAKE keys here; only the mode differs.
+        let m = send(&mut a, b"hello");
+        assert!(recv(&mut b, &m).is_err(), "v2 binds the item into the AAD; v1 does not");
+    }
+
+    #[test]
+    fn the_mode_is_fixed_before_the_first_message() {
+        let (mut a, _) = pair(false);
+        send(&mut a, b"x");
+        assert!(a.r.enable_pq().is_err());
+    }
+
+    #[test]
+    fn both_an_ek_and_a_ct_is_invalid() {
+        assert!(KemItem::from_parts(Some(&[1u8; 4]), Some(&[2u8; 4])).is_err());
+    }
+
+    #[test]
+    fn v1_carries_no_item_and_binds_none() {
+        let (mut a, mut b) = started(false);
+        let m = send(&mut a, b"v1");
+        assert_eq!(kind(&m), "none");
+        assert_eq!(recv(&mut b, &m).expect("v1"), b"v1");
     }
 }

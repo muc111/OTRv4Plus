@@ -142,6 +142,15 @@ it was written to do, but that falls short of what the spec claims.
 
 ### A1 — High (spec divergence): brace key never folded into the ratchet
 
+> **Update 2026-10-24: resolved for v2 sessions.** Ratchet v2 (SPEC §5.1-5.2)
+> is negotiated through `PQ_RATCHET_VERSION` in both signed profiles. Each
+> sending chain carries one ML-KEM item, bound into the AEAD; the receive is
+> transactional (a keypair is spent only after GCM succeeds); every root step
+> folds `dh ‖ brace`. v1 is unchanged for older peers. Tests:
+> `ratchet::pq_ratchet`, `ratchet::audit_brace_folding` (v1 and v2 pins),
+> `tests/test_pq_ratchet_v2.py`. Item 3 of §7 (the interleaving with DH steps
+> and loss) still wants review.
+
 - **Where:** `Rust/src/ratchet.rs:232`, `:522` and `:572` call
   `kdf_root(&self.root_key, dh_secret)`. `kdf.rs:147` takes only
   `root ‖ dh_output`.

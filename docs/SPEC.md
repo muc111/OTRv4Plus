@@ -443,32 +443,58 @@ are used by the receiver to bound skipped-key derivation across ratchet steps
 
 ### 5.1 Brace Key Rotation
 
-At each DH ratchet step:
+Two ratchet versions exist. Which one a session runs is fixed when the ratchet
+is built, before its first message, and both ends decide it from the same two
+signed ClientProfiles (§4.1): **v2** when both version lists contain
+`PQ_RATCHET_VERSION` (`0x50`), **v1** otherwise. The profiles are signed by
+their identity keys and are part of the DAKE transcript, so the byte cannot be
+removed in transit; a decoder that predates it accepts the profile because
+`0x04` is still listed.
 
-1. The party performing the ratchet step generates a fresh ML-KEM-1024 keypair
-   and includes the encapsulation key in the data message header.
-2. The receiving party encapsulates to that key:
-   ```
-   (ct, mlkem_ss) = ML-KEM-1024.Encapsulate(ek)
-   ```
-   and includes `ct` in its next data message.
-3. Both parties update the brace key:
-   ```
-   new_brace_key = KDF_1(0x16, old_brace_key || mlkem_ss, 32)   // BRACE_KEY_ROTATE
-   ```
+**v1** (peers that do not list `0x50`). After a DH step the stepping party
+sends an ML-KEM-1024 encapsulation key in the data message's optional `kem_ek`
+field, the other party answers with `kem_ct`, and both set
+`brace_key = KDF_1(0x16, brace_key || mlkem_ss, 32)`. The brace key is not an
+input to any message key (§5.2), so in v1 this exchange protects nothing. It is
+kept only so v1 peers still interoperate.
+
+**v2.** Every message of a sending chain carries one KEM item in the data
+message's `kem_ek` / `kem_ct` fields (at most one is present), fixed at the
+send step that started the chain:
+
+| Item | When | Effect at that send step |
+|---|---|---|
+| `Ct` | we hold the peer's encapsulation key | `(ct, ss) = Encapsulate(peer_ek)`; `brace_key = KDF_1(0x16, brace_key \|\| ss, 32)`; the peer's key is spent |
+| `Ek` | we have no key of ours outstanding | a fresh ML-KEM-1024 keypair; its `ek` is advertised |
+| none | our key is outstanding, unanswered | nothing |
+
+The receiver acts on the item at the receive step for that chain (§5.2), the
+first time it decrypts any message of the chain: a `Ct` is decapsulated with
+our outstanding keypair and folds the same secret into the brace key (a `Ct`
+with no key outstanding is refused); an `Ek` is remembered and answered at our
+next send step. The item is bound into the AEAD (§5.4), so an item that is
+altered, added or removed fails GCM and changes nothing: a keypair is spent
+only after the message carrying its `Ct` has authenticated. Because every
+message of the chain carries the item, losing a chain's first message loses
+nothing. Each new key is answered once, so in a conversation a fresh ML-KEM
+secret enters the root roughly every round trip once the first DH step has
+happened.
+
+*Residual.* An `Ek` is advertised once, on the chain that starts after it is
+generated. If every message of that chain is lost and our side later takes a
+forced step (`REKEY_INTERVAL` messages or `REKEY_TIMEOUT`), the key stays
+outstanding and v2 adds no new ML-KEM secret in that direction for the rest of
+the session. The X448 ratchet is unaffected.
 
 ### 5.2 Root Key Folding
 
-> **Implementation status (audit 2026-09): NOT IMPLEMENTED.** `ratchet.rs`
-> derives `kdf_root(root_key, dh_secret)` without the brace key, so a brace
-> rotation (§5.1) changes no message key. What protects post-DAKE traffic
-> against a quantum adversary is the DAKE root, which does include the DAKE
-> ML-KEM secret; what is missing is post-quantum *post-compromise* recovery.
-> Pinned by `ratchet::audit_brace_folding`. Implementing the derivation below
-> changes every key after the first DH ratchet step, so both peers must switch
-> together, behind a negotiated version.
+> **v1 (audit 2026-09, A1):** derives `kdf_root(root_key, dh_secret)` without
+> the brace key, so a brace rotation changes no message key. Unchanged, because
+> v1 peers derive that way; pinned by
+> `ratchet::audit_brace_folding::v1_still_derives_from_the_dh_secret_alone`.
 
-The brace key is folded into the root key derivation at every ratchet step:
+In **v2** the brace key is folded into the root key derivation at every ratchet
+step, receive and send alike, after that step's KEM item (§5.1) has updated it:
 
 ```
 root_key_input = dh_secret || brace_key
@@ -476,6 +502,9 @@ seed           = KDF_1(0x11, root_key || root_key_input, 64)    // ROOT_KEY
 new_root_key   = seed[0..32]
 new_chain_key  = seed[32..64]
 ```
+
+Pinned by `ratchet::audit_brace_folding::v2_folds_the_brace_key_into_the_root_and_chain`
+and, end to end, by `ratchet::pq_ratchet` and `tests/test_pq_ratchet_v2.py`.
 
 ### 5.3 Per-Message Keys
 
@@ -512,6 +541,16 @@ identically as the fixed `ad` component. The derivation and total AAD are:
 ```
 ad  = ssid                           // 8 bytes; KDF_1(0x01, mixed_secret, 8) from §4.4
 aad = header_bytes(64) || ad         // 72 bytes total
+```
+
+In **v2** the KEM item (§5.1) is appended, so it is authenticated with the
+message:
+
+```
+binding = 0x00                              // no item
+        | 0x01 || SHA3-256(kem_ek)          // Ek
+        | 0x02 || SHA3-256(kem_ct)          // Ct
+aad     = header_bytes(64) || ad || binding
 ```
 
 `ad` is fixed for the lifetime of the session (it does not change per message or per

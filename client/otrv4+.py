@@ -255,6 +255,11 @@ class OTRConstants:
     """OTRv4 Protocol Constants (Spec §2.1)"""
 
     PROTOCOL_VERSION = 0x04
+    #: Capability byte in the signed ClientProfile version list: "I run the
+    #: v2 ratchet" (SPEC §5.2, docs/VERSIONING.md). The profile is signed and
+    #: is in the DAKE transcript, so it cannot be stripped in transit; a
+    #: decoder that predates it accepts the profile because 4 is still listed.
+    PQ_RATCHET_VERSION = 0x50
     SESSION_ID_BYTES = 32
     ED448_PUBLIC_KEY_SIZE = 57
     ED448_SIGNATURE_SIZE = 114
@@ -3553,7 +3558,7 @@ class ClientProfile:
         else:
             self.prekey = prekey
 
-        self.versions = [OTRConstants.PROTOCOL_VERSION]
+        self.versions = [OTRConstants.PROTOCOL_VERSION, OTRConstants.PQ_RATCHET_VERSION]
         self.created = int(time.time())
         self.expires = self.created + self.VALIDITY_SECONDS
         self.signature = None
@@ -4137,6 +4142,8 @@ class RustBackedDoubleRatchet:
         self._brace_kem_ct_out = None
 
         self._brace_key = bytes(32)
+        self.pq = False
+        self._v2_item = (None, None)
 
         if not RUST_RATCHET_AVAILABLE:
             raise RuntimeError(
@@ -4235,6 +4242,19 @@ class RustBackedDoubleRatchet:
         """Original send chain key (set at construction, never advanced)."""
         return self._rks_send_init
 
+    def enable_pq(self):
+        """Switch this ratchet to v2 (SPEC §5.2) before its first message.
+
+        Both ends must do it, which they do when both signed profiles list
+        PQ_RATCHET_VERSION. From then on the Rust ratchet carries an ML-KEM
+        item on every message, binds it into the AAD and folds each new
+        shared secret into the root step; the v1 brace methods below stand
+        down, because a rotation from outside would desynchronise the ends.
+        """
+        with self.lock:
+            self._rust.enable_pq_ratchet()
+            self.pq = True
+
     def encrypt_message(self, plaintext):
         """Encrypt a message (Spec §4.4.3). Same return signature as Python."""
         with self.lock:
@@ -4252,6 +4272,8 @@ class RustBackedDoubleRatchet:
                 plaintext = plaintext.encode("utf-8")
 
             enc = self._rust.encrypt(plaintext)
+            if getattr(self, "pq", False):
+                self._v2_item = (enc.get("kem_ek"), enc.get("kem_ct"))
             self.message_counter_send += 1
             self._sync_mirrors()
 
@@ -4265,8 +4287,12 @@ class RustBackedDoubleRatchet:
                 enc["mac_key"],
             )
 
-    def decrypt_message(self, header_bytes, ciphertext, nonce, tag):
+    def decrypt_message(self, header_bytes, ciphertext, nonce, tag, kem_ek=None, kem_ct=None):
         """Decrypt a message (OTRv4 §4.4.4).
+
+        `kem_ek` / `kem_ct` are the message's ML-KEM item. A v2 ratchet
+        authenticates and acts on it; a v1 ratchet never sees it (v1 handles
+        the brace exchange after decryption, in process_incoming_kem_*).
 
         Returns ``(plaintext, mac_key)`` where ``mac_key`` is a Rust
         ``MessageMacKey`` handle, not bytes: the caller verifies the outer
@@ -4290,7 +4316,7 @@ class RustBackedDoubleRatchet:
                 if is_new_dh and self.dh_ratchet_remote_pub is not None:
 
                     pt, _mkmac = self._decrypt_new_dh(
-                        header_bytes, ciphertext, nonce, tag)
+                        header_bytes, ciphertext, nonce, tag, kem_ek, kem_ct)
                 else:
 
                     if self.dh_ratchet_remote_pub is None:
@@ -4301,7 +4327,7 @@ class RustBackedDoubleRatchet:
                             self.dh_ratchet_remote_pub = dh_pub_h
 
                     _res = self._rust.decrypt_same_dh(
-                        header_bytes, ciphertext, nonce, tag)
+                        header_bytes, ciphertext, nonce, tag, **self._item_args(kem_ek, kem_ct))
                     pt, _mkmac = _res["plaintext"], _res["mac_key"]
 
                 _did_dh_ratchet_recv = (
@@ -4353,7 +4379,13 @@ class RustBackedDoubleRatchet:
             return bool(self._rust.knows_revealed_mac_key(bytes(key)))
         return bool(self._rust.knows_mac_key_handle(key))
 
-    def _decrypt_new_dh(self, header_bytes, ciphertext, nonce, tag):
+    def _item_args(self, kem_ek, kem_ct):
+        """The ML-KEM item for Rust: v2 only."""
+        if not getattr(self, "pq", False):
+            return {}
+        return {"kem_ek": kem_ek, "kem_ct": kem_ct}
+
+    def _decrypt_new_dh(self, header_bytes, ciphertext, nonce, tag, kem_ek=None, kem_ct=None):
         """Handle decrypt with DH ratchet step.
 
         Called only when is_new_dh=True AND dh_ratchet_remote_pub is not None
@@ -4369,7 +4401,8 @@ class RustBackedDoubleRatchet:
         new_local_pub = new_local.public_bytes()
 
         _res = self._rust.decrypt_new_dh(
-            header_bytes, ciphertext, nonce, tag, self.dh_ratchet_local, new_local
+            header_bytes, ciphertext, nonce, tag, self.dh_ratchet_local, new_local,
+            **self._item_args(kem_ek, kem_ct)
         )
 
         if self.dh_ratchet_remote_pub is not None:
@@ -4421,6 +4454,8 @@ class RustBackedDoubleRatchet:
         self._brace_key = bytes(tags["brace"])
 
     def prepare_brace_rotation(self):
+        if getattr(self, "pq", False):
+            return
         if self._brace_kem_local is not None:
             return
         if self._brace_kem_ct_out is not None:
@@ -4429,17 +4464,25 @@ class RustBackedDoubleRatchet:
         self._brace_kem_ek_out = bytes(self._brace_kem_local.encap_key)
 
     def consume_outgoing_kem_ek(self):
+        if getattr(self, "pq", False):
+            ek, self._v2_item = self._v2_item[0], (None, self._v2_item[1])
+            return ek
         ek = self._brace_kem_ek_out
         self._brace_kem_ek_out = None
         return ek
 
     def consume_outgoing_kem_ct(self):
+        if getattr(self, "pq", False):
+            ct, self._v2_item = self._v2_item[1], (self._v2_item[0], None)
+            return ct
         ct = self._brace_kem_ct_out
         self._brace_kem_ct_out = None
         return ct
 
     def process_incoming_kem_ek(self, ek):
         """Encapsulate to the peer's brace key; the shared secret stays in Rust."""
+        if getattr(self, "pq", False):
+            return  # v2: the ratchet already acted on it, authenticated
         if len(ek) != MLKEM1024BraceKEM.EK_BYTES:
             raise ValueError(
                 f"ML-KEM-1024 encap key must be {MLKEM1024BraceKEM .EK_BYTES } bytes, got {len (ek )}"
@@ -4449,6 +4492,8 @@ class RustBackedDoubleRatchet:
 
     def process_incoming_kem_ct(self, ct):
         """Decapsulate with our pending keypair, inside Rust, consuming it."""
+        if getattr(self, "pq", False):
+            return  # v2: the ratchet already acted on it, authenticated
         if self._brace_kem_local is None:
             raise ValueError("Received KEM ct but no local keypair pending")
         if len(ct) != MLKEM1024BraceKEM.CT_BYTES:
@@ -6601,6 +6646,8 @@ class EnhancedOTRSession:
                     rekey_timeout=OTRConstants.REKEY_TIMEOUT,
                 )
                 self._ratchet_backend = "rust"
+                if self._negotiated_pq_ratchet():
+                    self.ratchet.enable_pq()
 
                 self._dake_output = None
                 _backend_label = "Rust (Phase-4 opaque handle; keys never in Python)"
@@ -6621,6 +6668,19 @@ class EnhancedOTRSession:
             raise RuntimeError("no DAKE output to initialise the ratchet from")
         finally:
             self._release_lock()
+
+    def _negotiated_pq_ratchet(self) -> bool:
+        """v2 when both signed profiles list PQ_RATCHET_VERSION (SPEC §5.2).
+
+        Both ends evaluate the same two profiles, so they agree. The profiles
+        are signed by their identity keys and are in the DAKE transcript: a
+        network attacker cannot strip the byte to force v1.
+        """
+        engine = getattr(self, "dake_engine", None)
+        mine = getattr(getattr(engine, "client_profile", None), "versions", None) or ()
+        theirs = getattr(getattr(engine, "remote_profile", None), "versions", None) or ()
+        v2 = OTRConstants.PQ_RATCHET_VERSION
+        return v2 in mine and v2 in theirs
 
     def initialize_smp(self):
         """Initialize the Rust SMP engine and secret vault (lazy, idempotent)."""
@@ -6941,7 +7001,7 @@ class EnhancedOTRSession:
         # is a second, spec-mandated check whose key is later published.
         _rid_before = self.ratchet.ratchet_id
         plaintext, mac_key = self.ratchet.decrypt_message(
-            rh_bytes, ct, dmsg.nonce, tag)
+            rh_bytes, ct, dmsg.nonce, tag, kem_ek=dmsg.kem_ek, kem_ct=dmsg.kem_ct)
         _did_dh_ratchet = self.ratchet.ratchet_id != _rid_before
 
         try:

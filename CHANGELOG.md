@@ -4,6 +4,26 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.158 and Desktop — 2026-10-24 — protocol v2: the post-quantum ratchet (A1) (core 0.13.1)
+
+- **A1 resolved for v2 sessions.** The ratchet's ML-KEM-1024 secret now goes
+  into every root step, as SPEC §5.2 always said. Before, the brace key was
+  rotated but no message key depended on it, so the post-quantum exchange
+  after the handshake protected nothing.
+- **How it works** (SPEC §5.1): each sending chain carries one KEM item — a
+  new encapsulation key, or a ciphertext answering the peer's — on every
+  message, bound into AES-GCM, so it cannot be altered or stripped and losing
+  a chain's first message loses nothing. A key is spent only after the message
+  carrying its answer has authenticated. In a conversation a fresh ML-KEM
+  secret enters the root about every round trip; messages grow by about
+  1.6 KB.
+- **Negotiated, not forced.** v2 runs when both signed profiles list
+  `PQ_RATCHET_VERSION` (0x50). An older peer gets the previous ratchet,
+  unchanged, and still talks. The byte is in the signed profile and the DAKE
+  transcript, so it cannot be removed in transit.
+- Tests: `ratchet::pq_ratchet` (8), `ratchet::audit_brace_folding` (v1 and v2
+  pinned), `tests/test_pq_ratchet_v2.py` (through two real sessions).
+
 ## Android 0.7.0-experimental.rc.157 and Desktop — 2026-10-24 — three tracked security issues closed; rc.156 builds again (core 0.13.1)
 
 - **rc.156 did not build** (`MainActivity.kt` used `@Composable` without

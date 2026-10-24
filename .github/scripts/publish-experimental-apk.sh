@@ -170,6 +170,7 @@ installed), and with the Termux client.
 | Code split, step 10 | Nothing to see: the chat list and the conversation screen are in parts. Open a chat, use ⋮ (profile, block), accept an invitation, change the theme, as on the previous build | rc.155 |
 | Code split, step 11 | Nothing to see: the app's navigation is in parts. Move between Chats, People, Rooms and Profile; open a contact's profile from People and press Back (returns to People), as on the previous build | rc.156 |
 | Security fixes G1, G2, X1 | Nothing new to see on the phone: this build repairs the previous one and closes three tracked issues (see docs/SECURITY_ISSUES.md). Sign in, chat, verify and call as before | rc.157 |
+| Post-quantum ratchet (v2) | Both phones on this build: chat for a while in both directions; every message arrives. Messages are larger (about 2.5 KB) once the conversation is under way. A phone on an older build still chats with this one, using the previous ratchet | rc.158 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
