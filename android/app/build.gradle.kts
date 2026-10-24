@@ -436,6 +436,9 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_xmpp_admin.py",
             "otrv4plus_xmpp_tui.py",
             "otrv4plus_xmpp_trust.py",
+            "otrv4plus_xmpp_trade.py",
+            "otrv4plus_xmpp_files.py",
+            "otrv4plus_host.py",
             "otrv4plus_voicenote.py",
             "otrv4plus_roomsync.py",
             // Whether a conversation may send in the clear. Shared with the

@@ -757,7 +757,7 @@ class TestPersistenceAndWipe:
 
     def _cleanup_client(self, w, monkeypatch, home):
         monkeypatch.setenv("HOME", home)
-        monkeypatch.setattr(X, "XMPP_STATE_DIR", os.path.join(home, ".otrv4plus", "xmpp"))
+        monkeypatch.setattr(X._host, "XMPP_STATE_DIR", os.path.join(home, ".otrv4plus", "xmpp"))
         c = w.a.client
         c._cleaned_up = False
         c._peer_gone_task = None
@@ -767,7 +767,7 @@ class TestPersistenceAndWipe:
                                     printer=w.a.printed.append)
         assert c._groups.open(w.a.jid)
         c._groups.groups.create(ROOM)
-        xdir = X.XMPP_STATE_DIR
+        xdir = X._host.XMPP_STATE_DIR
         for name in ("trust.json", ".identity_dek", "identity.sealed"):
             with open(os.path.join(xdir, name), "w") as f:
                 f.write("x")

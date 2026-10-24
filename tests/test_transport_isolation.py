@@ -98,7 +98,7 @@ class TestTheStoresAreInDifferentPlaces:
 
     def test_xmpp_uses_its_own_directory(self):
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        assert xmpp.XMPP_STATE_DIR.rstrip("/").endswith("/xmpp")
+        assert xmpp._host.XMPP_STATE_DIR.rstrip("/").endswith("/xmpp")
 
     def test_every_xmpp_path_is_under_that_directory(self):
         xmpp = pytest.importorskip("otrv4plus_xmpp")
@@ -107,7 +107,7 @@ class TestTheStoresAreInDifferentPlaces:
                      "identity_dek_path"):
             value = getattr(cfg, name)
             assert value, "%s is unset for XMPP" % name
-            assert value.startswith(xmpp.XMPP_STATE_DIR), (
+            assert value.startswith(xmpp._host.XMPP_STATE_DIR), (
                 "%s escapes the XMPP state directory: %s" % (name, value))
 
     def test_the_xmpp_config_turns_both_switches_on(self):

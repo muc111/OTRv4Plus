@@ -501,8 +501,13 @@ class TestTheFeatureIsXmppOnly:
                 continue
             if "otrv4plus_filetransfer" in open(path, encoding="utf-8").read():
                 importers.append(name)
-        assert importers == ["otrv4plus_xmpp.py"], (
-            "file transfer is referenced by %s; it is XMPP-only" % importers)
+        # The XMPP client is otrv4plus_xmpp.py and the otrv4plus_xmpp_*.py
+        # modules its class is mixed from; nothing else may touch it.
+        assert "otrv4plus_xmpp.py" in importers
+        outside = [n for n in importers
+                   if not (n == "otrv4plus_xmpp.py" or n.startswith("otrv4plus_xmpp_"))]
+        assert outside == [], (
+            "file transfer is referenced by %s; it is XMPP-only" % outside)
 
     def test_the_module_says_so(self):
         head = inspect.getdoc(ft) or ""

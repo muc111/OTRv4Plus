@@ -243,7 +243,7 @@ class TestAudiotestOnLinux:
             def stop(self):
                 pass
 
-        monkeypatch.setattr(X, "IS_TERMUX", False)
+        monkeypatch.setattr(X._host, "IS_TERMUX", False)
         monkeypatch.setattr(A, "open_playback", lambda **k: (Out(), []))
         monkeypatch.setattr(A, "open_capture", lambda **k: (In(), []))
         monkeypatch.setattr(X, "_capture_selftest",
