@@ -68,26 +68,85 @@ def test_every_ceiling_still_names_a_function_over_the_limit():
 #: their own state; each section that moves out lowers its number here.
 KT_CEILING = {
     ("android/app/src/main/java/org/otrv4plus/android/ui/ConnectScreen.kt", "ConnectScreen"): 206,
-    ("android/app/src/main/java/org/otrv4plus/android/ui/ConversationsScreen.kt",
-     "ConversationsScreen"): 358,
-    ("android/app/src/main/java/org/otrv4plus/android/ui/ProfileScreen.kt", "ProfileScreen"): 344,
     ("android/app/src/main/java/org/otrv4plus/android/MainActivity.kt", "onCreate"): 322,
-    ("android/app/src/main/java/org/otrv4plus/android/ui/ConversationScreen.kt",
-     "ConversationScreen"): 278,
     ("android/app/src/main/java/org/otrv4plus/android/ui/DevShellScreen.kt", "DevShellScreen"): 246,
 }
 
 
 def _strip_kotlin(src):
-    """Comments and string contents removed, line count kept, so braces in
-    either cannot be miscounted."""
-    import re
-    keep = lambda m: "\n" * m.group(0).count("\n")  # noqa: E731
-    src = re.sub(r'"""(.|\n)*?"""', lambda m: '""' + keep(m), src)
-    src = re.sub(r"/\*(.|\n)*?\*/", keep, src)
-    src = re.sub(r"//[^\n]*", "", src)
-    src = re.sub(r'"(\\.|[^"\\\n])*"', '""', src)
-    return re.sub(r"'(\\.|[^'\\\n])'", "''", src)
+    """Code with comment and string contents blanked, newlines kept, read in
+    one pass as the compiler does: a "/*" inside a string is not a comment,
+    a quote inside a comment is not a string, block comments nest, and a
+    string template's ${...} is code again (with strings of its own)."""
+    out, i, n = [], 0, len(src)
+
+    def blank(text):
+        out.append("".join(c if c == "\n" else " " for c in text))
+
+    def string(i, raw):
+        end = '"""' if raw else '"'
+        out.append('"')
+        i += len(end)
+        while i < n:
+            if src.startswith(end, i):
+                out.append('"')
+                return i + len(end)
+            if not raw and src[i] == "\\":
+                blank(src[i:i + 2])
+                i += 2
+                continue
+            if src.startswith("${", i):
+                out.append("  ")
+                i = code(i + 2, closing=True)
+                continue
+            blank(src[i])
+            i += 1
+        return i
+
+    def code(i, closing=False):
+        depth = 0
+        while i < n:
+            c = src[i]
+            if src.startswith("//", i):
+                j = src.find("\n", i)
+                j = n if j < 0 else j
+                blank(src[i:j])
+                i = j
+            elif src.startswith("/*", i):
+                level, j = 1, i + 2
+                while j < n and level:
+                    if src.startswith("/*", j):
+                        level, j = level + 1, j + 2
+                    elif src.startswith("*/", j):
+                        level, j = level - 1, j + 2
+                    else:
+                        j += 1
+                blank(src[i:j])
+                i = j
+            elif src.startswith('"""', i):
+                i = string(i, raw=True)
+            elif c == '"':
+                i = string(i, raw=False)
+            elif c == "'" and i + 2 < n and (src[i + 2] == "'" or src[i + 1] == "\\"):
+                j = src.find("'", i + 2 if src[i + 1] == "\\" else i + 1)
+                j = n if j < 0 else j + 1
+                blank(src[i:j])
+                i = j
+            else:
+                if closing:
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        if depth == 0:
+                            out.append(" ")
+                            return i + 1
+                        depth -= 1
+                out.append(c)
+                i += 1
+        return i
+
+    code(0)
+    return "".join(out)
 
 
 def _kotlin_functions():

@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.155 — 2026-10-24 — code split, step 10: the chat screens (core 0.13.1)
+
+Nothing changes on the phone.
+
+- The chat list (`ConversationsScreen`, 358 lines) becomes the screen, its
+  ⋮ menu, the account banners above the list (other sessions, contact
+  requests, invitations, join requests, a group's room password) and the
+  theme dialog.
+- The conversation (`ConversationScreen`, 278 lines) becomes the screen, its
+  title, its ⋮ menu and the stack above a one-to-one chat (security line,
+  handshake, calls and files, encryption and verification).
+- The length guard read a string containing `/*` (`"image/*"`) as the
+  start of a comment and so over-counted `ProfileScreen`, which is in fact
+  173 lines. It now reads Kotlin in one pass, as the compiler does: strings,
+  nested comments and `${...}` templates.
+
 ## Android 0.7.0-experimental.rc.154 and Desktop — 2026-10-24 — birthdays in any year; code split, step 9 (core 0.13.1)
 
 - **A profile birthday can be in any year**, in ISO 8601's expanded form:

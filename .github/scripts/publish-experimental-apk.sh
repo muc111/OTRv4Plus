@@ -167,6 +167,7 @@ installed), and with the Termux client.
 | Chats that need you | Ask this phone to verify from another one: that chat pulses yellow in the list with "⚑ Verification requested", and so does the Chats tab, until you answer | rc.152 |
 | Code split, step 8 | Nothing to see: the Rooms screen is in parts. Open Rooms, create and delete an encrypted group, join a plain room, as on the previous build | rc.153 |
 | Any-year birthdays | Profile → edit, Birthday -450000-01-01, save: it is kept and shown. 2023-02-29 is refused | rc.154 |
+| Code split, step 10 | Nothing to see: the chat list and the conversation screen are in parts. Open a chat, use ⋮ (profile, block), accept an invitation, change the theme, as on the previous build | rc.155 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

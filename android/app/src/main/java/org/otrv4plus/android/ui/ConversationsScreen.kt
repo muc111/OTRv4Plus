@@ -79,7 +79,6 @@ fun ConversationsScreen(
     // A JID, not a Conversation: the row can change under an open dialog.
     var deleting by rememberSaveable { mutableStateOf<String?>(null) }
 
-    var menuOpen by remember { mutableStateOf(false) }
     var wiping by rememberSaveable { mutableStateOf(false) }
 
     Scaffold(
@@ -94,62 +93,9 @@ fun ConversationsScreen(
                     }
                 },
                 actions = {
-                    // The connection, in one word, and the way to it.
-                    TextButton(onClick = onOpenConnection) {
-                        Text(when {
-                            model.link != ChatState.Link.OK -> "Checking…"
-                            model.connection.connected -> "\u25CF Online"
-                            else -> "\u25CB Offline"
-                        }, color = if (model.connection.connected) MaterialTheme.colorScheme.primary
-                                   else MaterialTheme.colorScheme.error)
-                    }
-                    // Everything that is not a conversation, in one place:
-                    // the bottom of this screen used to carry six buttons
-                    // in a sideways-scrolling row.
-                    Box {
-                        TextButton(onClick = { menuOpen = true }) {
-                            Text("\u22EE", style = MaterialTheme.typography.titleLarge)
-                        }
-                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                            if (onTheme != null) {
-                                DropdownMenuItem(text = { Text("Theme") },
-                                                 onClick = { menuOpen = false; choosingTheme = true })
-                            }
-                            // What this device tells contacts (XEP-0085 and
-                            // XEP-0333). Delivery receipts are always answered.
-                            val context = androidx.compose.ui.platform.LocalContext.current
-                            DropdownMenuItem(
-                                text = { Text((if (model.sendTyping) "\u2713 " else "    ") + "Send typing notifications") },
-                                onClick = {
-                                    model.setPrivacy(!model.sendTyping, model.sendReadReceipts)
-                                    org.otrv4plus.android.ui.PrivacyStore.save(context, model.sendTyping, model.sendReadReceipts)
-                                })
-                            DropdownMenuItem(
-                                text = { Text((if (model.sendReadReceipts) "\u2713 " else "    ") + "Send read receipts") },
-                                onClick = {
-                                    model.setPrivacy(model.sendTyping, !model.sendReadReceipts)
-                                    org.otrv4plus.android.ui.PrivacyStore.save(context, model.sendTyping, model.sendReadReceipts)
-                                })
-                            DropdownMenuItem(text = { Text("About & licences") },
-                                             onClick = { menuOpen = false; onOpenAbout() })
-                            // Debug builds only: a release build is for people
-                            // who want to chat, not to read a transport trace.
-                            if (org.otrv4plus.android.BuildConfig.DEV_DIAGNOSTICS) {
-                                DropdownMenuItem(text = { Text("Debug") },
-                                                 onClick = { menuOpen = false; onOpenDiagnostics() })
-                            }
-                            // Reachable from the conversation list without
-                            // going back to the connection screen. The same
-                            // confirmation and teardown as everywhere else.
-                            onWipeAndExit?.let {
-                                HorizontalDivider()
-                                DropdownMenuItem(
-                                    text = { Text("Wipe & Exit", color = MaterialTheme.colorScheme.error) },
-                                    onClick = { menuOpen = false; wiping = true },
-                                )
-                            }
-                        }
-                    }
+                    ChatsMenu(model, onOpenConnection, onOpenAbout, onOpenDiagnostics,
+                              onChooseTheme = if (onTheme != null) ({ choosingTheme = true }) else null,
+                              onWipe = if (onWipeAndExit != null) ({ wiping = true }) else null)
                 },
             )
         },
@@ -187,121 +133,7 @@ fun ConversationsScreen(
                 NoticeBanner(notice) { model.dismissNotice() }
             }
 
-            // Our own account signed in somewhere else (owner, 2026-10-16).
-            // Shown while the server reports it; a server admin can end it.
-            val sessionsLine = org.otrv4plus.android.chat.AccountSessions.banner(model.otherSessions)
-            if (sessionsLine != null || model.sessionsStatus != null) {
-                Surface(color = MaterialTheme.colorScheme.errorContainer) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        sessionsLine?.let {
-                            Text(it, style = MaterialTheme.typography.bodyMedium,
-                                 color = MaterialTheme.colorScheme.onErrorContainer)
-                        }
-                        model.sessionsStatus?.let {
-                            Text(it, style = MaterialTheme.typography.bodySmall,
-                                 color = MaterialTheme.colorScheme.onErrorContainer)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            if (sessionsLine != null && model.isServerAdmin) {
-                                TextButton(onClick = { model.endOtherSessions() }) {
-                                    Text(org.otrv4plus.android.chat.AccountSessions.END_BUTTON)
-                                }
-                            }
-                            if (model.sessionsStatus != null) {
-                                TextButton(onClick = { model.sessionsStatus = null }) { Text("OK") }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Above the conversation list and below the connection state,
-            // because it is about this account rather than about any one
-            // conversation. Every pending request is rendered: a second asker
-            // hidden behind the first is a question the user never gets.
-            for (request in model.pendingSubscriptions) {
-                SubscriptionBanner(
-                    request = request,
-                    onAllow = { model.answerSubscription(request.peer, true) },
-                    onDecline = { model.answerSubscription(request.peer, false) },
-                    onIgnore = { model.dismissSubscription(request.peer) },
-                    onRevoke = { model.removeContact(request.peer) },
-                )
-            }
-
-            // Secure-group invitations, each answered explicitly. Accepting
-            // joins the room and sends our key over OTRv4+; nothing is
-            // accepted without the user.
-            for (invite in model.groupInvites()) {
-                Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        Text(
-                            org.otrv4plus.android.chat.GroupText.invite(invite),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            TextButton(onClick = { model.acceptGroupInvite(invite.room) }) {
-                                Text("Join")
-                            }
-                            TextButton(onClick = { model.declineGroupInvite(invite.room) }) {
-                                Text("Decline")
-                            }
-                        }
-                    }
-                }
-            }
-
-            // "X asks to join" (owner, 2026-10-17: request entry instead of
-            // a room password). Invite sends the usual OTRv4+ invitation to
-            // the address they gave; Dismiss hides it.
-            for (request in model.entryRequests()) {
-                Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
-                    Column(Modifier.fillMaxWidth().padding(12.dp)) {
-                        Text(
-                            org.otrv4plus.android.chat.GroupText.entryRequest(
-                                request.requester, request.room),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Text(
-                            org.otrv4plus.android.chat.GroupText.ENTRY_REQUEST_NOTE,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSecondaryContainer,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                            TextButton(onClick = {
-                                model.answerEntryRequest(request.room, request.requester, true)
-                            }) { Text("Invite") }
-                            TextButton(onClick = {
-                                model.answerEntryRequest(request.room, request.requester, false)
-                            }) { Text("Dismiss") }
-                        }
-                    }
-                }
-            }
-
-            // A password-protected group's room (device report, 2026-10-16:
-            // the join failed with "not_authorized" and nothing asked).
-            model.groupRoomPasswordFor?.let { room ->
-                // A tone and a buzz when the prompt appears (owner,
-                // 2026-10-17), once per room asked about.
-                val context = androidx.compose.ui.platform.LocalContext.current
-                LaunchedEffect(room) {
-                    org.otrv4plus.android.connection.AlertFeedback.inApp(context)
-                }
-                GroupRoomPasswordPrompt(model, room)
-            }
-
-            if (BuildConfig.DEV_DIAGNOSTICS && model.droppedEvents > 0) {
-                Text(
-                    "${model.droppedEvents} update(s) were dropped while the " +
-                        "app was busy.",
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                )
-            }
+            AccountBanners(model)
 
             // PEOPLE lives on its own screen (PeopleScreen), opened from the
             // button beside the connection state. A request still gets its
@@ -378,29 +210,7 @@ fun ConversationsScreen(
     }
 
     if (choosingTheme && onTheme != null) {
-        AlertDialog(
-            onDismissRequest = { choosingTheme = false },
-            title = { Text("Theme") },
-            text = {
-                Column {
-                    for (mode in ThemeTokens.Mode.entries) {
-                        Row(
-                            Modifier.fillMaxWidth().clickable {
-                                onTheme(mode); choosingTheme = false
-                            }.padding(vertical = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            RadioButton(selected = mode == theme,
-                                        onClick = { onTheme(mode); choosingTheme = false })
-                            Text(mode.label + if (mode == ThemeTokens.DEFAULT) " (default)" else "")
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { choosingTheme = false }) { Text("Done") }
-            },
-        )
+        ThemeDialog(theme, onTheme, onDismiss = { choosingTheme = false })
     }
 
     if (showAdd) {
@@ -409,6 +219,228 @@ fun ConversationsScreen(
             onDismiss = { showAdd = false },
         )
     }
+}
+
+/** The connection word and the ⋮ menu: theme, privacy, about, debug, wipe. */
+@Composable
+private fun ChatsMenu(
+    model: ChatViewModel,
+    onOpenConnection: () -> Unit,
+    onOpenAbout: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onChooseTheme: (() -> Unit)?,
+    onWipe: (() -> Unit)?,
+) {
+    var menuOpen by remember { mutableStateOf(false) }
+    // The connection, in one word, and the way to it.
+    TextButton(onClick = onOpenConnection) {
+        Text(when {
+            model.link != ChatState.Link.OK -> "Checking…"
+            model.connection.connected -> "\u25CF Online"
+            else -> "\u25CB Offline"
+        }, color = if (model.connection.connected) MaterialTheme.colorScheme.primary
+                   else MaterialTheme.colorScheme.error)
+    }
+    // Everything that is not a conversation, in one place:
+    // the bottom of this screen used to carry six buttons
+    // in a sideways-scrolling row.
+    Box {
+        TextButton(onClick = { menuOpen = true }) {
+            Text("\u22EE", style = MaterialTheme.typography.titleLarge)
+        }
+        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+            if (onChooseTheme != null) {
+                DropdownMenuItem(text = { Text("Theme") },
+                                 onClick = { menuOpen = false; onChooseTheme() })
+            }
+            // What this device tells contacts (XEP-0085 and
+            // XEP-0333). Delivery receipts are always answered.
+            val context = androidx.compose.ui.platform.LocalContext.current
+            DropdownMenuItem(
+                text = { Text((if (model.sendTyping) "\u2713 " else "    ") + "Send typing notifications") },
+                onClick = {
+                    model.setPrivacy(!model.sendTyping, model.sendReadReceipts)
+                    org.otrv4plus.android.ui.PrivacyStore.save(context, model.sendTyping, model.sendReadReceipts)
+                })
+            DropdownMenuItem(
+                text = { Text((if (model.sendReadReceipts) "\u2713 " else "    ") + "Send read receipts") },
+                onClick = {
+                    model.setPrivacy(model.sendTyping, !model.sendReadReceipts)
+                    org.otrv4plus.android.ui.PrivacyStore.save(context, model.sendTyping, model.sendReadReceipts)
+                })
+            DropdownMenuItem(text = { Text("About & licences") },
+                             onClick = { menuOpen = false; onOpenAbout() })
+            // Debug builds only: a release build is for people
+            // who want to chat, not to read a transport trace.
+            if (org.otrv4plus.android.BuildConfig.DEV_DIAGNOSTICS) {
+                DropdownMenuItem(text = { Text("Debug") },
+                                 onClick = { menuOpen = false; onOpenDiagnostics() })
+            }
+            // Reachable from the conversation list without
+            // going back to the connection screen. The same
+            // confirmation and teardown as everywhere else.
+            onWipe?.let { wipe ->
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Wipe & Exit", color = MaterialTheme.colorScheme.error) },
+                    onClick = { menuOpen = false; wipe() },
+                )
+            }
+        }
+    }
+}
+
+/** What is about this account rather than one chat: other sessions,
+ *  contact requests, invitations, join requests, a group's room password. */
+@Composable
+private fun AccountBanners(model: ChatViewModel) {
+    // Our own account signed in somewhere else (owner, 2026-10-16).
+    // Shown while the server reports it; a server admin can end it.
+    val sessionsLine = org.otrv4plus.android.chat.AccountSessions.banner(model.otherSessions)
+    if (sessionsLine != null || model.sessionsStatus != null) {
+        Surface(color = MaterialTheme.colorScheme.errorContainer) {
+            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                sessionsLine?.let {
+                    Text(it, style = MaterialTheme.typography.bodyMedium,
+                         color = MaterialTheme.colorScheme.onErrorContainer)
+                }
+                model.sessionsStatus?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onErrorContainer)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (sessionsLine != null && model.isServerAdmin) {
+                        TextButton(onClick = { model.endOtherSessions() }) {
+                            Text(org.otrv4plus.android.chat.AccountSessions.END_BUTTON)
+                        }
+                    }
+                    if (model.sessionsStatus != null) {
+                        TextButton(onClick = { model.sessionsStatus = null }) { Text("OK") }
+                    }
+                }
+            }
+        }
+    }
+
+    // Above the conversation list and below the connection state,
+    // because it is about this account rather than about any one
+    // conversation. Every pending request is rendered: a second asker
+    // hidden behind the first is a question the user never gets.
+    for (request in model.pendingSubscriptions) {
+        SubscriptionBanner(
+            request = request,
+            onAllow = { model.answerSubscription(request.peer, true) },
+            onDecline = { model.answerSubscription(request.peer, false) },
+            onIgnore = { model.dismissSubscription(request.peer) },
+            onRevoke = { model.removeContact(request.peer) },
+        )
+    }
+
+    // Secure-group invitations, each answered explicitly. Accepting
+    // joins the room and sends our key over OTRv4+; nothing is
+    // accepted without the user.
+    for (invite in model.groupInvites()) {
+        Surface(color = MaterialTheme.colorScheme.tertiaryContainer) {
+            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                Text(
+                    org.otrv4plus.android.chat.GroupText.invite(invite),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = { model.acceptGroupInvite(invite.room) }) {
+                        Text("Join")
+                    }
+                    TextButton(onClick = { model.declineGroupInvite(invite.room) }) {
+                        Text("Decline")
+                    }
+                }
+            }
+        }
+    }
+
+    // "X asks to join" (owner, 2026-10-17: request entry instead of
+    // a room password). Invite sends the usual OTRv4+ invitation to
+    // the address they gave; Dismiss hides it.
+    for (request in model.entryRequests()) {
+        Surface(color = MaterialTheme.colorScheme.secondaryContainer) {
+            Column(Modifier.fillMaxWidth().padding(12.dp)) {
+                Text(
+                    org.otrv4plus.android.chat.GroupText.entryRequest(
+                        request.requester, request.room),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Text(
+                    org.otrv4plus.android.chat.GroupText.ENTRY_REQUEST_NOTE,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        model.answerEntryRequest(request.room, request.requester, true)
+                    }) { Text("Invite") }
+                    TextButton(onClick = {
+                        model.answerEntryRequest(request.room, request.requester, false)
+                    }) { Text("Dismiss") }
+                }
+            }
+        }
+    }
+
+    // A password-protected group's room (device report, 2026-10-16:
+    // the join failed with "not_authorized" and nothing asked).
+    model.groupRoomPasswordFor?.let { room ->
+        // A tone and a buzz when the prompt appears (owner,
+        // 2026-10-17), once per room asked about.
+        val context = androidx.compose.ui.platform.LocalContext.current
+        LaunchedEffect(room) {
+            org.otrv4plus.android.connection.AlertFeedback.inApp(context)
+        }
+        GroupRoomPasswordPrompt(model, room)
+    }
+
+    if (BuildConfig.DEV_DIAGNOSTICS && model.droppedEvents > 0) {
+        Text(
+            "${model.droppedEvents} update(s) were dropped while the " +
+                "app was busy.",
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+        )
+    }
+}
+
+/** Pick the theme. */
+@Composable
+private fun ThemeDialog(
+    theme: ThemeTokens.Mode,
+    onTheme: (ThemeTokens.Mode) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = { onDismiss() },
+        title = { Text("Theme") },
+        text = {
+            Column {
+                for (mode in ThemeTokens.Mode.entries) {
+                    Row(
+                        Modifier.fillMaxWidth().clickable {
+                            onTheme(mode); onDismiss()
+                        }.padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = mode == theme,
+                                    onClick = { onTheme(mode); onDismiss() })
+                        Text(mode.label + if (mode == ThemeTokens.DEFAULT) " (default)" else "")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onDismiss() }) { Text("Done") }
+        },
+    )
 }
 
 /**

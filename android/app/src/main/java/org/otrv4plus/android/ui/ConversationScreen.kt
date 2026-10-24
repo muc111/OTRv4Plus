@@ -129,60 +129,10 @@ fun ConversationScreen(
                     TextButton(onClick = onBack) { Text("Back") }
                 },
                 title = {
-                  Row(verticalAlignment = Alignment.CenterVertically,
-                      horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    // A person's picture opens their profile, as in every
-                    // messenger (owner, 2026-10-16). A room has no profile.
-                    if (!model.isRoom(jid)) {
-                        AvatarPlaceholder(
-                            conversation.displayName, model.avatar(jid), size = 36.dp,
-                            onClick = onOpenProfile?.let { open -> { open(jid) } },
-                        )
-                    }
-                    Column {
-                        Text(
-                            conversation.displayName,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            style = MaterialTheme.typography.titleMedium,
-                        )
-                        // "typing..." (XEP-0085) replaces the presence line
-                        // while it lasts, as messengers do.
-                        if (!model.isRoom(jid) && model.isTyping(jid)) {
-                            Text("typing\u2026", style = MaterialTheme.typography.labelSmall,
-                                 color = MaterialTheme.colorScheme.primary)
-                        } else {
-                            PresenceDot(conversation.presence)
-                        }
-                    }
-                  }
+                    ConversationTitle(model, jid, conversation, onOpenProfile)
                 },
                 actions = {
-                    // A person's profile and blocking; a room has neither.
-                    if (!model.isRoom(jid)) {
-                        Box {
-                            TextButton(onClick = { model.conversationMenu = true }) {
-                                Text("\u22EE", style = MaterialTheme.typography.titleLarge)
-                            }
-                            DropdownMenu(expanded = model.conversationMenu,
-                                         onDismissRequest = { model.conversationMenu = false }) {
-                                if (onOpenProfile != null) {
-                                    DropdownMenuItem(text = { Text("Profile") },
-                                                     onClick = { model.conversationMenu = false; onOpenProfile(jid) })
-                                }
-                                if (model.blockingSupported) {
-                                    if (model.isBlocked(jid)) {
-                                        DropdownMenuItem(text = { Text("Unblock") },
-                                                         onClick = { model.conversationMenu = false; model.unblock(jid) })
-                                    } else {
-                                        DropdownMenuItem(
-                                            text = { Text("Block\u2026", color = MaterialTheme.colorScheme.error) },
-                                            onClick = { model.conversationMenu = false; model.askBlock = jid })
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    ConversationMenu(model, jid, onOpenProfile)
                 },
             )
         },
@@ -256,73 +206,7 @@ fun ConversationScreen(
             if (room) {
                 RoomHeader(model, jid, onOpenChat)
             } else {
-            SecurityLine(conversation.security, conversation.otrCapability)
-            // The handshake, while it runs: step, parts received, elapsed.
-            // Without it a DAKE over I2P looked like nothing happening.
-            if (conversation.security == SecurityState.PLAINTEXT) {
-                HandshakeCard(model.handshake(jid))
-            }
-
-            // Directly under the security line, because it is the same
-            // subject: what this conversation is, and what it lets you do.
-            CallBar(model, jid)
-
-            // Same subject again: what this conversation lets you do.
-            TransferBar(model, jid)
-
-            // The remedy, next to the statement of the problem.
-            //
-            // Only while the conversation is actually plaintext: once a DAKE
-            // has run, offering to start one again is offering to do something
-            // already done. FINGERPRINT_MISMATCH is deliberately NOT included
-            // -- that conversation IS encrypted, to somebody, and the answer
-            // to it is the blocking dialog, not another handshake.
-            if (conversation.security == SecurityState.PLAINTEXT) {
-                EncryptionOffer(
-                    offered = model.encryptionOffered(jid),
-                    reason = { model.encryptionUnavailableReason(jid) },
-                    onStart = { model.startEncryption(jid) },
-                )
-            }
-
-            // Verification. Its own row, because it answers a different
-            // question from the one above: encryption asks whether the server
-            // can read this, verification asks who is on the other end. The
-            // row draws nothing at all until there is a session to verify.
-            VerificationOffer(
-                offer = model.verificationOffer(jid),
-                steps = model.verificationSteps(jid),
-                onVerify = { model.requestVerification(jid) },
-                onCancel = { model.dismissVerification(jid) },
-            )
-
-            // The prompt, in BOTH directions. `verificationPrompt` is derived
-            // from the engine's state on every read, so an incoming request
-            // opens this with no button pressed -- which is the requirement:
-            // the Verify Identity control is only for initiating.
-            model.verificationPrompt(jid)?.let { prompt ->
-                VerificationPrompt(
-                    prompt = prompt,
-                    peer = conversation.displayName,
-                    onSubmit = { model.submitVerification(jid, it) },
-                    onDismiss = { model.dismissVerification(jid) },
-                )
-            }
-
-            // Somebody who messaged us and was never added.
-            //
-            // Not an error and not a warning: a message from a stranger is
-            // still a message, and the conversation works. What it explains is
-            // why their presence says nothing and will go on saying nothing —
-            // the server does not send us the presence of somebody we have not
-            // subscribed to, so this is permanent rather than slow. Saving
-            // them is what asks.
-            if (conversation.canBeSaved) {
-                UnsavedSenderBanner(
-                    enabled = model.canSend(),
-                    onSave = { model.addContact(conversation.jid) },
-                )
-            }
+                ContactHeader(model, jid, conversation)
             }
 
             if (messages.isEmpty()) {
@@ -344,6 +228,150 @@ fun ConversationScreen(
                 }
             }
         }
+    }
+}
+
+/** The name, picture and presence (or "typing…") at the top. */
+@Composable
+internal fun ConversationTitle(
+    model: ChatViewModel,
+    jid: String,
+    conversation: org.otrv4plus.android.chat.Conversation,
+    onOpenProfile: ((String) -> Unit)?,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+      // A person's picture opens their profile, as in every
+      // messenger (owner, 2026-10-16). A room has no profile.
+      if (!model.isRoom(jid)) {
+          AvatarPlaceholder(
+              conversation.displayName, model.avatar(jid), size = 36.dp,
+              onClick = onOpenProfile?.let { open -> { open(jid) } },
+          )
+      }
+      Column {
+          Text(
+              conversation.displayName,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              style = MaterialTheme.typography.titleMedium,
+          )
+          // "typing..." (XEP-0085) replaces the presence line
+          // while it lasts, as messengers do.
+          if (!model.isRoom(jid) && model.isTyping(jid)) {
+              Text("typing\u2026", style = MaterialTheme.typography.labelSmall,
+                   color = MaterialTheme.colorScheme.primary)
+          } else {
+              PresenceDot(conversation.presence)
+          }
+      }
+    }
+}
+
+/** ⋮ for a person: their profile, and blocking. A room has neither. */
+@Composable
+internal fun ConversationMenu(model: ChatViewModel, jid: String, onOpenProfile: ((String) -> Unit)?) {
+    // A person's profile and blocking; a room has neither.
+    if (!model.isRoom(jid)) {
+        Box {
+            TextButton(onClick = { model.conversationMenu = true }) {
+                Text("\u22EE", style = MaterialTheme.typography.titleLarge)
+            }
+            DropdownMenu(expanded = model.conversationMenu,
+                         onDismissRequest = { model.conversationMenu = false }) {
+                if (onOpenProfile != null) {
+                    DropdownMenuItem(text = { Text("Profile") },
+                                     onClick = { model.conversationMenu = false; onOpenProfile(jid) })
+                }
+                if (model.blockingSupported) {
+                    if (model.isBlocked(jid)) {
+                        DropdownMenuItem(text = { Text("Unblock") },
+                                         onClick = { model.conversationMenu = false; model.unblock(jid) })
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("Block\u2026", color = MaterialTheme.colorScheme.error) },
+                            onClick = { model.conversationMenu = false; model.askBlock = jid })
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Above a one-to-one chat: its security, the handshake, calls and files,
+ *  encryption and verification, and the unsaved-sender note. */
+@Composable
+internal fun ContactHeader(
+    model: ChatViewModel,
+    jid: String,
+    conversation: org.otrv4plus.android.chat.Conversation,
+) {
+    SecurityLine(conversation.security, conversation.otrCapability)
+    // The handshake, while it runs: step, parts received, elapsed.
+    // Without it a DAKE over I2P looked like nothing happening.
+    if (conversation.security == SecurityState.PLAINTEXT) {
+        HandshakeCard(model.handshake(jid))
+    }
+
+    // Directly under the security line, because it is the same
+    // subject: what this conversation is, and what it lets you do.
+    CallBar(model, jid)
+
+    // Same subject again: what this conversation lets you do.
+    TransferBar(model, jid)
+
+    // The remedy, next to the statement of the problem.
+    //
+    // Only while the conversation is actually plaintext: once a DAKE
+    // has run, offering to start one again is offering to do something
+    // already done. FINGERPRINT_MISMATCH is deliberately NOT included
+    // -- that conversation IS encrypted, to somebody, and the answer
+    // to it is the blocking dialog, not another handshake.
+    if (conversation.security == SecurityState.PLAINTEXT) {
+        EncryptionOffer(
+            offered = model.encryptionOffered(jid),
+            reason = { model.encryptionUnavailableReason(jid) },
+            onStart = { model.startEncryption(jid) },
+        )
+    }
+
+    // Verification. Its own row, because it answers a different
+    // question from the one above: encryption asks whether the server
+    // can read this, verification asks who is on the other end. The
+    // row draws nothing at all until there is a session to verify.
+    VerificationOffer(
+        offer = model.verificationOffer(jid),
+        steps = model.verificationSteps(jid),
+        onVerify = { model.requestVerification(jid) },
+        onCancel = { model.dismissVerification(jid) },
+    )
+
+    // The prompt, in BOTH directions. `verificationPrompt` is derived
+    // from the engine's state on every read, so an incoming request
+    // opens this with no button pressed -- which is the requirement:
+    // the Verify Identity control is only for initiating.
+    model.verificationPrompt(jid)?.let { prompt ->
+        VerificationPrompt(
+            prompt = prompt,
+            peer = conversation.displayName,
+            onSubmit = { model.submitVerification(jid, it) },
+            onDismiss = { model.dismissVerification(jid) },
+        )
+    }
+
+    // Somebody who messaged us and was never added.
+    //
+    // Not an error and not a warning: a message from a stranger is
+    // still a message, and the conversation works. What it explains is
+    // why their presence says nothing and will go on saying nothing —
+    // the server does not send us the presence of somebody we have not
+    // subscribed to, so this is permanent rather than slow. Saving
+    // them is what asks.
+    if (conversation.canBeSaved) {
+        UnsavedSenderBanner(
+            enabled = model.canSend(),
+            onSave = { model.addContact(conversation.jid) },
+        )
     }
 }
 
