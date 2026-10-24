@@ -224,6 +224,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Viewer tabs | Open a photo taken with location on: Metadata lists GPS position, camera and time, and scrolls to the end. Hidden content says nothing follows the picture; a photo with a ZIP appended (cat photo.jpg x.zip > y.jpg) shows its size and says ZIP. A PDF lists its findings | rc.166 |
 | Viewer tabs (fix) | As rc.166; the Metadata tab no longer lists a SHA-256 | rc.167 |
 | Wipe & Exit text | Profile → Wipe & Exit: the confirmation says files saved with Save to device are not touched; cancel | rc.168 |
+| Never plaintext 1:1 | Send a message to a contact who is offline: it shows as waiting and arrives encrypted once they are online. Send to an account on another XMPP app without OTRv4+: it waits, the chat says why, nothing arrives unencrypted | rc.169 |
 
 ## ⚠️ Known limits
 

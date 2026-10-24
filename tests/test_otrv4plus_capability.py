@@ -388,14 +388,16 @@ class TestAutomaticOtr:
         assert outcome != a.SEND_PLAINTEXT
         assert aw.plain_sent == [], "plaintext went to an OTRv4Plus-capable peer"
 
-    def test_an_incapable_peer_is_sent_plaintext_only_as_plaintext(self, pair):
-        """Not silent: reported as SEND_PLAINTEXT, which the screen labels,
-        and the conversation says OTRv4Plus is unavailable."""
+    def test_an_incapable_peer_is_never_sent_plaintext(self, pair):
+        """Owner, 2026-10-24: never plaintext between 1:1 users. A contact
+        whose client has no OTRv4+ is not written to in the clear (it used to
+        be, labelled): the line waits, and the screen says why."""
         a, b, aw, bw = pair
         aw.book.presence_available(BOB + "/pidgin")
         aw.book.disco_result(BOB + "/pidgin", [])
-        assert a.send_user_text(BOB, "hi") == a.SEND_PLAINTEXT
-        assert aw.otr_sent == []
+        assert a.send_user_text(BOB, "hi") == a.SEND_QUEUED
+        assert aw.otr_sent == [] and aw.plain_sent == []
+        assert any(getattr(e, "code", "") == "plaintext_refused" for e in a._sink.events)
 
     def test_the_departed_resource_ends_the_session_without_downgrade(self, pair):
         a, b, aw, bw = pair

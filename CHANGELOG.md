@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.169 — 2026-10-24 — 1:1 messages are never sent unencrypted (core 0.13.1)
+
+- **A 1:1 message is never sent unencrypted** (owner report: another
+  plaintext regression). The app used to write in the clear to a contact
+  detected online without OTRv4+ (labelled "not encrypted"), and corrections,
+  deletions and reactions to such a contact went as plain XMPP. A capability
+  check that misjudged a real OTRv4+ phone therefore sent its owner's words
+  unencrypted. Now every 1:1 message waits in the outbox until the contact is
+  online and an OTRv4+ session is established, and the session is started for
+  it; for a contact whose app offers no OTRv4+ the chat says the message waits
+  and is never sent unencrypted. A last check refuses anything but an OTRv4
+  frame on the wire for a 1:1 contact. Rooms are unchanged (plain rooms say
+  they are not encrypted; secure groups are MLS).
+- Tests rewritten from "plaintext before OTR" to the new rule, and
+  `tests/test_outbox_no_plaintext.py` checks every capability state.
+
 ## Android 0.7.0-experimental.rc.168 — 2026-10-24 — documentation audit; Wipe & Exit says what it leaves (core 0.13.1)
 
 - **Wipe & Exit's confirmation says what it does not touch:** files you saved

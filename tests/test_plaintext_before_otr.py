@@ -180,9 +180,12 @@ class TestBothClientsShareOneRule:
     def test_neither_client_reimplements_the_rule(self):
         """Two copies of this rule would drift, and one direction of the drift
         sends plaintext where the user expected encryption."""
-        for path, source in (("the XMPP client", client_source()),
-                             ("OtrApp", app_source())):
-            assert "may_send_plaintext" in source, path
-            # The decision is the module's; a client that recomputes it from
-            # its own set has forked the policy.
-            assert "def may_send_plaintext" not in source, path
+        source = client_source()
+        assert "may_send_plaintext" in source, "the XMPP client"
+        # The decision is the module's; a client that recomputes it from
+        # its own set has forked the policy.
+        assert "def may_send_plaintext" not in source, "the XMPP client"
+        # The app is stricter (owner, 2026-10-24): it never sends a 1:1
+        # message in the clear, so it does not ask the rule at all.
+        app = app_source()
+        assert "may_send_plaintext" not in app and "def may_send_plaintext" not in app

@@ -157,7 +157,10 @@ def test_no_session_means_no_action_in_the_clear():
     assert sent == []
 
 
-def test_a_plaintext_conversation_uses_the_standard_elements():
+def test_a_one_to_one_action_never_goes_in_the_clear():
+    """Owner, 2026-10-24: never plaintext between 1:1 users. A correction,
+    deletion or reaction without an encrypted session is refused and nothing
+    is sent (it used to go as standard XMPP elements)."""
     sent = []
 
     class T(Transport):
@@ -169,13 +172,10 @@ def test_a_plaintext_conversation_uses_the_standard_elements():
         def roster(self): return []
 
     app = OtrApp(_manager(), T())
-    assert app.send_action("carol@example.test", "edit", "ID1", body="fixed") == app.SEND_PLAINTEXT
-    assert app.send_action("carol@example.test", "retract", "ID1") == app.SEND_PLAINTEXT
-    assert app.send_action("carol@example.test", "react", "ID1", emojis=["ok"]) == app.SEND_PLAINTEXT
-    assert sent[0] == ("fixed", ["{urn:xmpp:message-correct:0}replace"])
-    assert sent[1][0] == A.RETRACT_FALLBACK
-    assert "{urn:xmpp:message-retract:1}retract" in sent[1][1]
-    assert sent[2][0] is None and "{urn:xmpp:reactions:0}reactions" in sent[2][1]
+    assert app.send_action("carol@example.test", "edit", "ID1", body="fixed") == app.SEND_FAILED
+    assert app.send_action("carol@example.test", "retract", "ID1") == app.SEND_FAILED
+    assert app.send_action("carol@example.test", "react", "ID1", emojis=["ok"]) == app.SEND_FAILED
+    assert sent == []
 
 
 def test_meta_codec_rules():

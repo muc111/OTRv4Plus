@@ -93,15 +93,18 @@ def test_a_line_typed_during_the_handshake_is_not_lost():
     assert [e.body for e in _events(sb, MessageReceived)] == ["typed mid-handshake"]
 
 
-def test_a_contact_without_otrv4_gets_plaintext_labelled():
+def test_a_contact_without_otrv4_never_gets_plaintext():
+    """Owner, 2026-10-24: never plaintext between 1:1 users. It used to be
+    sent in the clear, labelled, once the contact was confirmed to have no
+    OTRv4+; now it waits."""
     alice, bob, aw, bw, A, B, sa, sb = _pair()
     alice.send_user_text(B, "hi")                     # capability unknown: held
     aw.cap = "unavailable"
     alice.note_capability(B)
-    assert aw.sent == [(B, "hi")]
-    sent = _events(sa, QueuedSent)
-    assert sent and not sent[-1].encrypted
-    assert alice.send_user_text(B, "next") == OtrApp.SEND_PLAINTEXT
+    assert all("hi" != body for _p, body in aw.sent)
+    assert not any(not e.encrypted for e in _events(sa, QueuedSent))
+    assert alice.send_user_text(B, "next") == OtrApp.SEND_QUEUED
+    assert alice.outbox_count(B) == 2
 
 
 def test_a_capable_contact_coming_online_starts_otr_on_one_side_only():
@@ -142,3 +145,18 @@ def test_sign_out_lets_go_of_the_groups_so_sign_in_can_open_them(monkeypatch, tm
     again, *_ = _pair()                            # a new engine, same phone
     assert again.open_groups(a_jid), "the groups were still held by the old app"
     again.shutdown()
+
+
+@pytest.mark.parametrize("cap", ["unknown", "checking", "offline", "available", "unavailable"])
+def test_nothing_but_otrv4_frames_reach_the_wire_in_any_capability_state(cap):
+    """Owner, 2026-10-24: 1:1 messages wait until the contact is online and an
+    OTRv4+ session is established, and are never sent in plaintext. A typed
+    line and an action, in every capability state, before the session.""" 
+    alice, bob, aw, bw, A, B, sa, sb = _pair()
+    aw.cap = bw.cap = cap
+    alice.send_user_text(B, "secret one")
+    alice.send_action(B, "react", "ID1", emojis=["ok"])
+    alice.note_capability(B)
+    for _peer, body in aw.sent:
+        assert str(body).startswith("?OTRv4"), body
+    assert all("secret one" not in str(b) for _p, b in aw.sent)

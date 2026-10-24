@@ -147,33 +147,38 @@ class TestSendUserText:
       FAILED     it did not go and nothing is holding it
     """
 
-    # -- plaintext before OTR (the interoperability requirement) -------------
+    # -- never plaintext (owner, 2026-10-24) ----------------------------------
+    #
+    # These used to assert the opposite: "a conversation nobody has asked to
+    # encrypt is ordinary XMPP". The owner's rule replaced that: between 1:1
+    # users a message is sent only inside an established OTRv4+ session, and
+    # waits until there is one.
 
-    def test_an_ordinary_message_goes_out_as_typed(self):
-        """A conversation nobody has asked to encrypt is ordinary XMPP."""
+    def test_an_ordinary_message_waits_for_the_session(self):
         app, _engine, transport = build()
-        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_PLAINTEXT
-        assert transport.sent == [(PEER, "hello")]
+        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_QUEUED
+        assert all("hello" not in body for _p, body in transport.sent)
+        assert app.outbox_count(PEER) == 1
 
-    def test_a_plaintext_send_does_not_start_a_dake(self):
-        """`handle_outgoing_message` is opportunistic: reaching it at all
-        would create a session, start a handshake and queue the text, so
-        typing "hello" would emit an 11 KB DAKE1 and deliver nothing."""
+    def test_the_wait_starts_a_session_and_does_not_use_the_engines_queue(self):
+        """`handle_outgoing_message` would answer with a DAKE1 "to send" and
+        keep the text in a queue of its own, dropped at handshake end."""
         app, engine, transport = build()
         app.send_user_text(PEER, "hello")
-        assert engine.calls == [], "the engine was asked, and it starts a DAKE"
-        assert transport.sent == [(PEER, "hello")]
+        assert engine.calls == [], "handle_outgoing_message was asked"
+        assert all("hello" not in body for _p, body in transport.sent)
 
-    def test_several_plaintext_messages_all_go(self):
+    def test_several_messages_all_wait_in_order(self):
         app, _engine, transport = build()
         for word in ("one", "two", "three"):
-            assert app.send_user_text(PEER, word) == OtrApp.SEND_PLAINTEXT
-        assert [body for _p, body in transport.sent] == ["one", "two", "three"]
+            assert app.send_user_text(PEER, word) == OtrApp.SEND_QUEUED
+        assert app.outbox_count(PEER) == 3
+        assert all(b not in ("one", "two", "three") for _p, b in transport.sent)
 
-    def test_a_transport_failure_on_a_plaintext_send_reports_failed(self):
+    def test_a_body_that_looks_like_protocol_is_not_sent_either(self):
         app, _engine, transport = build()
-        transport.raises = True
-        assert app.send_user_text(PEER, "hello") == OtrApp.SEND_FAILED
+        assert app.send_user_text(PEER, "?OTRv4 is a protocol") == OtrApp.SEND_QUEUED
+        assert (PEER, "?OTRv4 is a protocol") not in transport.sent
 
     # -- and never once OTR is in the picture --------------------------------
 
@@ -189,7 +194,8 @@ class TestSendUserText:
         app, engine, transport = build(should_send=False)
         app.start_session(PEER)
         engine.raises = True
-        assert app.send_user_text(PEER, "the secret") == OtrApp.SEND_FAILED
+        assert app.send_user_text(PEER, "the secret") in (OtrApp.SEND_QUEUED,
+                                                          OtrApp.SEND_FAILED)
         assert all("the secret" not in body for _p, body in transport.sent)
 
     def test_the_peer_starting_otr_also_stops_plaintext(self):
@@ -209,14 +215,6 @@ class TestSendUserText:
         app, _engine, transport = build(should_send=True, level=3)
         assert app.send_user_text(PEER, "the secret") == OtrApp.SEND_ENCRYPTED
         assert all("the secret" not in body for _p, body in transport.sent)
-
-    def test_an_ordinary_body_that_looks_like_protocol_is_still_plaintext(self):
-        """A user may type anything. It is where the conversation is, not what
-        the body looks like, that decides."""
-        app, _engine, transport = build()
-        assert app.send_user_text(PEER, "?OTRv4 is a protocol") == \
-            OtrApp.SEND_PLAINTEXT
-        assert transport.sent == [(PEER, "?OTRv4 is a protocol")]
 
     # -- the encrypted path, unchanged ---------------------------------------
 

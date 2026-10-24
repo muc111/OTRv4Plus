@@ -164,6 +164,12 @@ class Transport:
 
 # ── The facade ────────────────────────────────────────────────────────────────
 
+
+def _is_otr_frame(text: str) -> bool:
+    """Whether [text] is an OTRv4 frame -- the only thing a 1:1 send may put
+    on the wire (owner, 2026-10-24: never plaintext between 1:1 users)."""
+    return isinstance(text, str) and text.startswith("?OTRv4")
+
 class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
     """Typed facade over EnhancedSessionManager + Transport."""
 
@@ -681,6 +687,8 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
                         break
                     text = (payload.decode("utf-8", errors="replace")
                             if isinstance(payload, (bytes, bytearray)) else str(payload))
+                    if not _is_otr_frame(text):
+                        break                       # never the clear: it waits
                     self._send_user(peer, text, getattr(body, "message_id", ""))
                 except Exception:
                     break
@@ -689,24 +697,9 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
             if sent:
                 self._touch(peer)
                 self._emit(QueuedSent(peer=peer, count=sent, encrypted=True))
-        elif (self._capability_enforced()
-              and self.otr_capability(peer) == "unavailable"
-              and not self._mode.is_otr(peer)):
-            # Online and confirmed not to speak OTRv4+: written to in the
-            # clear, labelled as such. Never a contact that ever asked for
-            # OTR (`is_otr`).
-            sent = 0
-            while box:
-                try:
-                    self._send_user(peer, str(box[0]),
-                                    getattr(box[0], "message_id", ""))
-                except Exception:
-                    break
-                box.pop(0)
-                sent += 1
-            if sent:
-                self._touch(peer)
-                self._emit(QueuedSent(peer=peer, count=sent, encrypted=False))
+        # Not encrypted: everything waits. A 1:1 message is never sent in the
+        # clear (owner, 2026-10-24), not even to a contact whose client says
+        # it has no OTRv4+.
         if not box:
             self._outbox.pop(peer, None)
 
@@ -1214,22 +1207,25 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
                 return self.SEND_QUEUED
             if capability in ("checking", "unknown", "offline"):
                 return self.SEND_QUEUED if self._hold(peer, body, message_id, reply_to) else self.SEND_FAILED
-
-        if self._mode.may_send_plaintext(
-                peer, self.security_state(peer) is not SecurityState.PLAINTEXT):
-            try:
-                plain = getattr(self._transport, "send_plain_action", None)
-                if reply_to and message_id and plain is not None and \
-                        _actions.valid_id(reply_to):
-                    # XEP-0461: a reply says which message it answers.
-                    plain(peer, body, message_id,
-                          _actions.action_elements("reply", reply_to))
-                else:
-                    self._send_user(peer, body, message_id)
-            except Exception:
+            # Confirmed online without OTRv4+. Owner, 2026-10-24: a 1:1
+            # message is NEVER sent in the clear -- it used to be, labelled,
+            # and a capability check that misjudged a real OTRv4+ phone sent
+            # its owner's words unencrypted. It waits; the screen says why.
+            self._emit(ErrorOccurred(peer=peer, code="plaintext_refused"))
+            return self.SEND_QUEUED if self._hold(peer, body, message_id, reply_to) else self.SEND_FAILED
+        if not secure:
+            # Not encrypted and nothing above decided: it waits for the
+            # session, which is started now. Never the engine's opportunistic
+            # path, which would answer with a DAKE1 "to send" and keep the
+            # text in a queue of its own.
+            if not self._hold(peer, body, message_id, reply_to):
                 return self.SEND_FAILED
-            self._touch(peer)
-            return self.SEND_PLAINTEXT
+            try:
+                if not self._engine.has_session(peer):
+                    self.start_session(peer)
+            except (BridgeError, Exception):
+                pass
+            return self.SEND_QUEUED
 
         try:
             payload, should_send = self._encrypt_user(peer, body, message_id, reply_to)
@@ -1245,6 +1241,10 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
 
         text = (payload.decode("utf-8", errors="replace")
                 if isinstance(payload, (bytes, bytearray)) else str(payload))
+        if not _is_otr_frame(text):
+            # Whatever the engine handed back, only an OTRv4 frame leaves for
+            # a 1:1 contact. The line waits for the session.
+            return self.SEND_QUEUED if self._hold(peer, body, message_id, reply_to) else self.SEND_FAILED
         try:
             self._send_user(peer, text, message_id)
         except Exception:
@@ -1520,24 +1520,10 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
                 return self.SEND_FAILED
             self._touch(peer)
             return self.SEND_ENCRYPTED
-        if not self._mode.may_send_plaintext(peer, False):
-            return self.SEND_FAILED
-        # The rule plaintext messages follow: never in the clear to somebody
-        # who might speak OTRv4+ (send_user_text holds those until it knows).
-        if self._capability_enforced() and self.otr_capability(peer) != "unavailable":
-            return self.SEND_FAILED
-        plain = getattr(self._transport, "send_plain_action", None)
-        if plain is None:
-            return self.SEND_FAILED
-        try:
-            elements = _actions.action_elements(action, target_id, emojis)
-            out_body = (text if action == "edit" else
-                        _actions.RETRACT_FALLBACK if action == "retract" else None)
-            plain(peer, out_body, message_id, elements)
-        except Exception:
-            return self.SEND_FAILED
-        self._touch(peer)
-        return self.SEND_PLAINTEXT
+        # A correction, deletion or reaction in a 1:1 chat goes only inside
+        # an encrypted session, like the message it is about: never in the
+        # clear (owner, 2026-10-24).
+        return self.SEND_FAILED
 
     def mark_displayed(self, peer: str) -> bool:
         """The user is looking at [peer]'s conversation: tell them their
