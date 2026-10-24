@@ -6956,7 +6956,13 @@ def main():
                 "Failed to connect - check server address and network."
             ),
         }
-        safe_print(colorize(_fail_hints.get(_fail_net, "Failed to connect."), "red"))
+        _notice = colorize(_fail_hints.get(_fail_net, "Failed to connect."), "red")
+        safe_print(_notice)
+        # The exit purge wipes the terminal (scrollback included), which took
+        # this reason with it: on Termux only "Clean shutdown" was left and the
+        # client seemed to close for no reason (owner report, 2026-10-24).
+        # Nothing private was ever shown, so the purge repeats the reason.
+        _b._exit_notice = _notice
         return 1
 
     client.start_auto_smp_monitor()
@@ -7007,6 +7013,11 @@ def run():
                 client._purge_scrollback("process exit", announce=False)
             except Exception:
                 pass
+        # Why the client is closing, said again after the wipe (which only
+        # happens on a terminal; a pipe or log already has it once).
+        notice = getattr(__import__("builtins"), "_exit_notice", None)
+        if notice and sys.stdout.isatty():
+            safe_print(notice)
         safe_print(colorize("\nClean shutdown", "green"))
 
     atexit.register(_purge_on_exit)

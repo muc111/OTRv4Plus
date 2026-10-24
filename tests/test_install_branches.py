@@ -72,3 +72,16 @@ def test_the_readme_says_which_script_is_for_the_desktop():
     script = _read(os.path.join("desktop", "install.sh"))
     assert "(cd Rust && bash build.sh)" in script
     assert "git pull --ff-only" in script
+
+
+def test_the_readme_says_how_to_start_the_desktop_app():
+    """Owner (2026-10-24): after updating, the README only showed how to run
+    the terminal clients, not the desktop app. It must name the launcher
+    install.sh writes, and the menu entry."""
+    readme = _read("README.md")
+    desktop = readme[readme.index("### Desktop app"):readme.index("### Termux")]
+    assert "**Run it:**" in desktop
+    assert "`otrv4plus-desktop`" in desktop and "**OTRv4+**" in desktop
+    script = _read(os.path.join("desktop", "install.sh"))
+    assert 'LAUNCHER="$HOME/.local/bin/otrv4plus-desktop"' in script
+    assert "Name=OTRv4+" in script
