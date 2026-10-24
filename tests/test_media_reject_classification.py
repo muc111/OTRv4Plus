@@ -18,6 +18,7 @@ Classifying a rejection does not soften it.  Every reason still discards the
 frame; these tests check that too.
 """
 
+from source_of import voice_source  # noqa: E402
 import os
 import sys
 
@@ -80,8 +81,7 @@ class TestTheRaiseSitesAreClassified:
     """Read the source: an unclassified raise is the regression."""
 
     def _src(self):
-        return open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
-                    encoding="utf-8").read()
+        return voice_source()
 
     def test_the_no_key_path_is_classified(self):
         src = self._src()
@@ -117,8 +117,7 @@ class TestNothingIsAccepted:
     """Classification must not have become tolerance."""
 
     def _src(self):
-        return open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
-                    encoding="utf-8").read()
+        return voice_source()
 
     def test_every_reason_still_drops_the_frame(self):
         src = self._src()
@@ -143,8 +142,7 @@ class TestNothingIsAccepted:
 class TestTheDiagnosticSaysWhich:
 
     def _src(self):
-        return open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
-                    encoding="utf-8").read()
+        return voice_source()
 
     def test_the_no_media_diagnosis_breaks_out_the_causes(self):
         src = self._src()

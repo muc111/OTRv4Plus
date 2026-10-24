@@ -506,6 +506,9 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_tip.py",
             "otrv4plus_trade.py",
             "otrv4plus_voice.py",
+            "otrv4plus_voice_jitter.py",
+            "otrv4plus_voice_crypto.py",
+            "otrv4plus_voice_params.py",
         )
     }
     // The SAME file again, under a name Python can import.

@@ -8,6 +8,7 @@ wrappers have not grown an accessor that would let material escape, and that
 the Python side is not holding what Rust should.
 """
 
+from source_of import voice_source  # noqa: E402
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
 import re
@@ -135,8 +136,7 @@ class TestPythonDoesNotHoldWhatRustShould:
         gap is closed: every cipher comes from a root handle's `make_cipher`,
         and the Python HKDF that duplicated the Rust schedule is gone.
         """
-        src = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
-                   encoding="utf-8").read()
+        src = voice_source()
         for gone in ("def derive_media_key(", "def ratchet_key(", "def _hkdf(",
                      "from cryptography", "kyber_py"):
             assert gone not in src, "%s is back in the voice module" % gone

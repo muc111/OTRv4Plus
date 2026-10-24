@@ -22,6 +22,7 @@ call identity all survive; only the address changes. That is the whole reason
 this is an announcement and not a rekey.
 """
 
+from source_of import voice_source  # noqa: E402
 import asyncio
 import threading
 import types
@@ -1270,7 +1271,7 @@ class TestNoStorms:
 
     def test_the_watchdog_is_the_only_thing_that_starts_recovery(self):
         import inspect
-        src = inspect.getsource(V)
+        src = voice_source()
         callers = [line.strip() for line in src.split("\n")
                    if "_request_recovery()" in line
                    and "def " not in line]

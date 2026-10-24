@@ -26,6 +26,7 @@ preferred, and where a capability is added later these tests are the place it
 has to prove itself.
 """
 
+from source_of import voice_source  # noqa: E402
 import os
 import re
 import sys
@@ -156,7 +157,7 @@ class TestTheClassIsFixedForTheCall:
         section 5 is what has to land with it -- not a deletion of this test.
         """
         voice = pytest.importorskip("otrv4plus_voice")
-        src = _read(voice.__file__)
+        src = voice_source()
         # "STREAM CONNECT" is SAM's own verb, so match route mechanisms
         # rather than the word connect.
         for route in ("socks5", "SOCKS5", "PROXY_TYPE", "set_proxy",

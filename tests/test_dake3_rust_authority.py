@@ -145,7 +145,8 @@ class TestNoPythonDake3Crypto:
 
     def test_no_production_module_signs_a_ring_signature(self):
         for rel in ("client/otrv4+.py", "client/otrv4plus_irc.py", "client/otrv4plus_xmpp.py",
-                    "client/otrv4plus_voice.py"):
+                    "client/otrv4plus_voice.py",
+                    "client/otrv4plus_voice_params.py", "client/otrv4plus_voice_crypto.py", "client/otrv4plus_voice_jitter.py"):
             with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
                 src = f.read()
             calls = [m.start() for m in re.finditer(r"RingSignature\.sign\(", src)]

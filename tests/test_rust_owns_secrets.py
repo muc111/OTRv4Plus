@@ -31,6 +31,7 @@ behaviour (a real exchange with DH steps and brace rotations works through
 the handles alone).
 """
 
+from source_of import voice_source  # noqa: E402
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import ast
 import os
@@ -106,7 +107,7 @@ ALLOWED = {
     ("android_bridge/diagnostics.py", "*"),
 }
 
-PRODUCTION = ["client/otrv4+.py", "client/otrv4plus_irc.py", "client/otrv4plus_voice.py", "client/otrv4plus_xmpp.py",
+PRODUCTION = ["client/otrv4+.py", "client/otrv4plus_irc.py", "client/otrv4plus_voice.py", "client/otrv4plus_voice_params.py", "client/otrv4plus_voice_crypto.py", "client/otrv4plus_voice_jitter.py", "client/otrv4plus_xmpp.py",
               "client/otrv4plus_filetransfer.py", "client/otrv4plus_identity.py"] + [
     "android_bridge/" + f for f in sorted(os.listdir(os.path.join(ROOT, "android_bridge")))
     if f.endswith(".py")]
@@ -161,7 +162,7 @@ class TestProductionDoesNotHoldRawSecrets:
 
     def test_the_voice_exchange_does_not_use_the_python_kem(self):
         import otrv4plus_voice as V
-        src = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"), encoding="utf-8").read()
+        src = voice_source()
         body = src[src.index("class VoiceKeyExchange"):src.index("class ReplayWindow")]
         assert "self._kem." not in body
         assert "_mlkem_dk" not in body

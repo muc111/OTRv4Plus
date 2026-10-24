@@ -13,6 +13,7 @@ README true; they stop the specific things that have already drifted from
 drifting again silently.
 """
 
+from source_of import voice_source  # noqa: E402
 import os
 import re
 
@@ -155,7 +156,7 @@ class TestTheVoiceCaveatIsNotStale:
     def test_voice_has_no_python_fallback(self, readme):
         """The caveat's replacement claims this; a fallback would restore
         exactly what was removed."""
-        voice = _read("client/otrv4plus_voice.py")
+        voice = voice_source()
         assert "def _require_rust_voice():" in voice
         assert "RUST_VOICE_AVAILABLE" in voice, (
             "the hard requirement is gone; voice may run without the core")

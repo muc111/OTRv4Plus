@@ -13,6 +13,7 @@ it -- the transition matrix and the wording rules -- is in
 tests/test_transport_policy.py.
 """
 
+from source_of import voice_source  # noqa: E402
 import asyncio
 import types
 
@@ -151,14 +152,14 @@ class TestTransportSelectionIsExplicit:
 class TestVoiceMediaIsNotCoupledToTheXmppTransport:
     def test_media_creates_its_own_sam_session(self):
         import otrv4plus_voice as voice
-        source = open(voice.__file__, encoding="utf-8").read()
+        source = voice_source()
         assert "SESSION CREATE STYLE=DATAGRAM" in source
 
     def test_media_has_no_clearnet_path(self):
         # There is no socket path in the media session that is not SAM, so a
         # transport downgrade cannot exist there to begin with.
         import otrv4plus_voice as voice
-        source = open(voice.__file__, encoding="utf-8").read()
+        source = voice_source()
         assert "PROXY_TYPE" not in source
         assert "set_proxy" not in source
 
@@ -176,13 +177,13 @@ class TestVoiceMediaIsNotCoupledToTheXmppTransport:
 class TestVoiceAuthorizationIgnoresTransport:
     def test_both_entry_points_require_smp_verification(self):
         import otrv4plus_voice as voice
-        source = open(voice.__file__, encoding="utf-8").read()
+        source = voice_source()
         # Outgoing and incoming both gate on the engine's own predicate.
         assert source.count("if not self._smp_verified(peer):") >= 2
 
     def test_the_gate_does_not_consult_the_transport(self):
         import otrv4plus_voice as voice
-        source = open(voice.__file__, encoding="utf-8").read()
+        source = voice_source()
         start = source.index("def _smp_verified")
         body = source[start:start + 1800]
         for token in ("_is_i2p", "transport", "sam_host", "clearnet"):

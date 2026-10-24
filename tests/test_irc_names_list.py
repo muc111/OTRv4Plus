@@ -16,6 +16,7 @@ authenticate, mark trusted, satisfy TOFU, stand in for SMP, or enable voice
 -- and TestIdentificationIsNotAuthentication is what fails if it starts to.
 """
 
+from source_of import voice_source  # noqa: E402
 import ast
 import inspect
 import os
@@ -709,7 +710,7 @@ class TestIdentificationIsNotAuthentication:
 
     def test_voice_authorisation_never_reads_the_map(self):
         voice = pytest.importorskip("otrv4plus_voice")
-        src = inspect.getsource(voice)
+        src = voice_source()
         for banned in ("_otrv4_users", "advertises_otrv4",
                        "otrv4_client_version"):
             assert banned not in src, (

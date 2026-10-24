@@ -91,3 +91,18 @@ def connection_files() -> list:
 def connection_source() -> str:
     """All of the controller's source, one file after another."""
     return "\n".join(open(p, encoding="utf-8").read() for p in connection_files())
+
+
+def voice_files() -> list:
+    """The voice subsystem: client/otrv4plus_voice.py and the
+    otrv4plus_voice_*.py modules split out of it (params, crypto, jitter)."""
+    import glob
+    import os
+    client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
+    return ([os.path.join(client, "otrv4plus_voice.py")]
+            + sorted(glob.glob(os.path.join(client, "otrv4plus_voice_*.py"))))
+
+
+def voice_source() -> str:
+    """All of the voice subsystem's source, one file after another."""
+    return "\n".join(open(p, encoding="utf-8").read() for p in voice_files())

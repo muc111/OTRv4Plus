@@ -8,6 +8,7 @@ messages, calls etc".
 """
 from __future__ import annotations
 
+from source_of import voice_source  # noqa: E402
 import io
 import pathlib
 
@@ -154,7 +155,7 @@ def test_the_client_answers_calls_and_files_with_y_n_and_sounds_messages():
     # The y/n check sits before group questions and before command parsing.
     assert src.index("quick().answer(line)") < src.index(
         "groups.answer_prompt(line)") < src.index('if lstrip == "/tui":')
-    voice = (ROOT / "client" / "otrv4plus_voice.py").read_text()
+    voice = voice_source()
     assert 'getattr(self.client, "ask_answer_call", None)' in voice
     assert "Answer? [y/n]" in voice
 

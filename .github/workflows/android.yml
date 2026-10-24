@@ -99,6 +99,9 @@ on:
       - "client/otrv4plus_tip.py"
       - "client/otrv4plus_trade.py"
       - "client/otrv4plus_voice.py"
+      - "client/otrv4plus_voice_jitter.py"
+      - "client/otrv4plus_voice_crypto.py"
+      - "client/otrv4plus_voice_params.py"
       - "client/otrv4plus_xmpp.py"
   pull_request:
     paths: *android_paths

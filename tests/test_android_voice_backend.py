@@ -28,6 +28,7 @@ WHAT THESE HOLD
 9. Voice stays I2P datagrams and the codec fits the fixed encrypted slot.
 """
 
+from source_of import voice_source  # noqa: E402
 import builtins
 import os
 import re
@@ -227,7 +228,9 @@ class TestTermuxIsUnchanged:
         assert voice._HOST["load_opus"] is not android_audio.voice_available
 
     def test_the_backends_are_separate_in_source(self):
-        for name in ("otrv4plus_xmpp.py", "otrv4plus_voice.py", "otrv4plus_audio.py"):
+        for name in ("otrv4plus_xmpp.py", "otrv4plus_voice.py", "otrv4plus_voice_params.py",
+                     "otrv4plus_voice_crypto.py", "otrv4plus_voice_jitter.py",
+                     "otrv4plus_audio.py"):
             src = open(os.path.join(ROOT, "client", name), encoding="utf-8").read()
             assert "android_audio" not in src, name
             assert "OpusEncoder" not in src, name
@@ -265,7 +268,7 @@ class TestTransportIsUntouched:
         monkeypatch.delenv("OTRV4PLUS_VOICE_TRANSPORT", raising=False)
         mode = voice._voice_transport_mode() if hasattr(voice, "_voice_transport_mode") else None
         if mode is None:
-            src = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"), encoding="utf-8").read()
+            src = voice_source()
             assert 'VOICE_TRANSPORT_DATAGRAM = "datagram"' in src
         else:
             assert mode == voice.VOICE_TRANSPORT_DATAGRAM
