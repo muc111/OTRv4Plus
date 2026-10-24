@@ -74,7 +74,7 @@ def no_term(monkeypatch):
 
 def _armed(text):
     """The state the input loop leaves behind for a line it just read."""
-    return (xmpp._PRINT_SEQ, text)
+    return (xmpp._term._PRINT_SEQ, text)
 
 
 # ---------------------------------------------------------------------------
@@ -148,7 +148,7 @@ class TestItRefusesWhenItCannotBeSure:
         erasing it would delete what the peer said.
         """
         c = Client(pending=_armed("hello"))
-        monkeypatch.setattr(xmpp, "_PRINT_SEQ", xmpp._PRINT_SEQ + 1)
+        monkeypatch.setattr(xmpp._term, "_PRINT_SEQ", xmpp._term._PRINT_SEQ + 1)
         c._erase_plain_echo("hello")
         assert term.text() == ""
 
@@ -252,13 +252,13 @@ class TestTerminalCols:
 class TestTheWiring:
 
     def test_printing_advances_the_counter(self, capsys):
-        before = xmpp._PRINT_SEQ
+        before = xmpp._term._PRINT_SEQ
         xmpp.print("anything")
-        assert xmpp._PRINT_SEQ > before
+        assert xmpp._term._PRINT_SEQ > before
 
     def test_the_input_loop_arms_it(self):
         src = open("client/otrv4plus_xmpp.py").read()
-        assert "client._plain_echo = (_PRINT_SEQ, line.rstrip(\"\\n\"))" in src
+        assert "client._plain_echo = (_term._PRINT_SEQ, line.rstrip(\"\\n\"))" in src
 
     def test_the_echo_erases_before_it_prints(self):
         """Order matters: erase, then print.

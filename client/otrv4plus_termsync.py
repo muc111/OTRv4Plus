@@ -212,7 +212,7 @@ class TermSyncMixin:
             pass
 
     def _ts_print_copy(self, item: S.Item, tag: str) -> None:
-        from otrv4plus_xmpp import _sanitise
+        from otrv4plus_term import _sanitise
         if item.action:
             self._ts_show_action(item.peer, item.action, item.target, item.body,
                                  list(item.emojis), mine=item.direction == "out", tag=tag)
@@ -276,7 +276,7 @@ class TermSyncMixin:
         return None
 
     def _ts_reply_prefix(self, peer: str, reply: str) -> str:
-        from otrv4plus_xmpp import _sanitise
+        from otrv4plus_term import _sanitise
         if not reply:
             return ""
         target = self._ts_find(peer, reply)
@@ -288,7 +288,7 @@ class TermSyncMixin:
         """Print what a correction, deletion or reaction did. The author
         rule: a correction or deletion only applies to that author's own
         message."""
-        from otrv4plus_xmpp import _sanitise
+        from otrv4plus_term import _sanitise
         who = "you" if mine else _sanitise(peer, 128)
         m = self._ts_find(peer, target)
         snippet = _sanitise((m or {}).get("text", "a message"))[:50]
@@ -381,7 +381,7 @@ class TermSyncMixin:
 
     def _ts_send_action(self, peer: str, action: str, target: str, text: str,
                         emojis=None) -> None:
-        from otrv4plus_xmpp import _sanitise
+        from otrv4plus_term import _sanitise
         mid = S.new_message_id()
         encrypted = peer in getattr(self, "_encrypted", ())
         if encrypted:
@@ -425,7 +425,7 @@ class TermSyncMixin:
     async def _ts_block_server(self, word: str, jid: str, report: str) -> None:
         """The same on the server (XEP-0191): every device of the account, and
         they stop seeing our presence; optionally reported as spam."""
-        from otrv4plus_xmpp import _sanitise
+        from otrv4plus_term import _sanitise
         st = self._tsync()
         try:
             iq = self.make_iq_set()

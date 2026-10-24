@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.135 and Desktop — 2026-10-24 — splitting the big files, step 1 (core 0.13.1)
+
+Nothing changes in the app. Phase 3 of the code tidy-up splits the largest
+files into modules with one job each:
+
+- **`client/otrv4plus_term.py`: the terminal output layer** (300 lines out of
+  `otrv4plus_xmpp.py`): the client's `print` (TUI panel, channel log, session
+  transcript), the transcript's redaction, and the coloured status tags. Its
+  state (the active client, the transcript file, the print counter) lives in
+  that module and is set there, not copied. The colour tests now read the
+  module that holds the code.
+- `client/otrv4+.py` and `client/otrv4plus_xmpp.py` carry the SPDX licence
+  header; CI's header check counted them as new files after the move, which
+  failed rc.134's Python run.
+
 ## Android 0.7.0-experimental.rc.134 and Desktop — 2026-10-24 — a tidier repository (core 0.13.1)
 
 Nothing changes in the app; the repository is laid out like a project:

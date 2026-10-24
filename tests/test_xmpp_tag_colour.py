@@ -24,7 +24,7 @@ def _module_constant(name):
     looked for the closing brace and found the one inside `frozenset({`.
     """
     import ast
-    tree = ast.parse(open("client/otrv4plus_xmpp.py").read())
+    tree = ast.parse(open("client/otrv4plus_term.py").read())
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -37,17 +37,17 @@ def _module_constant(name):
 def _load(colorize=None):
     """Exec just the colouring helper, with a visible stand-in for ANSI.
 
-    Importing otrv4plus_xmpp pulls in slixmpp and the OTR engine, neither of
+    Importing the client pulls in slixmpp and the OTR engine, neither of
     which this code touches. The real `_colorize` is the engine's, and is
     substituted here so an assertion failure prints `<yellow>[keepalive]</>`
     instead of a line of escape bytes.
     """
-    src = open("client/otrv4plus_xmpp.py").read()
+    src = open("client/otrv4plus_term.py").read()
     start = src.index("_TAG_COLOURS = {")
     end = src.index("def print(*args, **kwargs):")
     ns = {"re": re,
           "_colorize": colorize or (lambda s, c: "<%s>%s</>" % (c, s))}
-    exec(compile(src[start:end], "otrv4plus_xmpp.py", "exec"), ns)
+    exec(compile(src[start:end], "otrv4plus_term.py", "exec"), ns)
     return ns
 
 
@@ -216,15 +216,13 @@ class TestItDoesNotBreakTheTranscript:
                 "[%s] is coloured but nothing prints it" % tag)
 
     def test_the_log_is_written_before_the_colour_is_applied(self):
-        src = open("client/otrv4plus_xmpp.py").read()
+        src = open("client/otrv4plus_term.py").read()
         body = src[src.index("def print(*args, **kwargs):"):]
-        body = body[:body.index("\ntry:")]
         assert body.index("_log_to_file(msg)") < body.index("_colour_tag(msg)")
 
     def test_the_channel_log_is_written_before_the_colour_is_applied(self):
-        src = open("client/otrv4plus_xmpp.py").read()
+        src = open("client/otrv4plus_term.py").read()
         body = src[src.index("def print(*args, **kwargs):"):]
-        body = body[:body.index("\ntry:")]
         assert body.index("channel_log.append") < body.index("_colour_tag(msg)")
 
 
@@ -238,9 +236,8 @@ class TestItDoesNotBreakPanelRouting:
         of those tests fails silently: keepalive ticks stop going to the
         debug panel and land in whichever chat panel was last active.
         """
-        src = open("client/otrv4plus_xmpp.py").read()
+        src = open("client/otrv4plus_term.py").read()
         body = src[src.index("def print(*args, **kwargs):"):]
-        body = body[:body.index("\ntry:")]
         assert "_tui_route_output(msg)" in body
         assert "_tui_route_output(shown)" not in body
 

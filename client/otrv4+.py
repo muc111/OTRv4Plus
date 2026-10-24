@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
 # =============================================================================
 #  OTRv4+  -  IRC transport client
 #  Post-quantum Off-the-Record messaging over IRC (clearnet TLS / Tor / I2P).
