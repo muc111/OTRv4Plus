@@ -12,7 +12,7 @@ does NOT vanish from a `script` capture, which records the keystrokes as they
 were echoed, before the erase. Masking the echo is the only thing that helps.
 """
 
-from source_of import class_source  # noqa: E402
+from source_of import irc_and_engine_source, open_irc_and_engine, class_source  # noqa: E402
 import inspect
 import os
 import re
@@ -62,7 +62,7 @@ class TestTheEngineCanHideIt:
 
         The submit path is the single exception: it must return the real text.
         """
-        src = inspect.getsource(otr)
+        src = irc_and_engine_source()
         lines = [l.strip() for l in src.split("\n")
                  if '"".join(_input_buffer)' in l]
         # Exactly two are legitimate: the submit, which must return the real
@@ -78,7 +78,7 @@ class TestTheEngineCanHideIt:
 
     def test_the_character_echo_is_masked_too(self):
         """Redraws are not the only way a character reaches the terminal."""
-        src = inspect.getsource(otr)
+        src = irc_and_engine_source()
         i = src.index("if _input_pos == len(_input_buffer):")
         window = src[i - 300:i + 400]
         assert "_mask_input" in window, (

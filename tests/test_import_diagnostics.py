@@ -27,6 +27,7 @@ This is the same failure mode as the musl and cdylib bugs before it: the
 program knew exactly what was wrong and said something else.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
 
 import pytest
@@ -114,7 +115,7 @@ class TestTheEngineNamesPySocksItself:
     @staticmethod
     @pytest.fixture(scope="class")
     def engine_source():
-        with open(os.path.join(ROOT, "client", "otrv4+.py"), "r", encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             return fh.read()
 
     def test_the_import_is_guarded(self, engine_source):

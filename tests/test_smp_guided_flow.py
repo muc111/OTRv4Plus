@@ -19,7 +19,7 @@ leaves nothing behind and says accurately what happened.
 The engine is real (`otrv4_core`); the transport and the terminal are not.
 """
 
-from source_of import class_source  # noqa: E402
+from source_of import irc_and_engine_source, open_irc_and_engine, class_source  # noqa: E402
 import ast
 import inspect
 import os
@@ -751,7 +751,7 @@ class TestTheCoreApiContract:
         import otrv4plus_coreapi as coreapi
         declared = {attr for owner, attr, _ in coreapi.REQUIRED_CORE_API
                     if owner == "RustSMPVault"}
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         tree = ast.parse(src)
         called = set()
         for node in ast.walk(tree):
@@ -903,7 +903,7 @@ class TestTheGuidedFlagActuallyReachesTheEngine:
             "responder flow is dead code")
 
     def test_the_manager_passes_it_to_new_sessions(self):
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         assert src.count("session.smp_guided_prompt = getattr(") == 3, (
             "a session-creation path does not receive the flag; sessions "
             "made there would silently abort instead of parking")

@@ -32,6 +32,7 @@ ENTRY_POINTS = ("otrv4plus_xmpp.py", "otrv4+.py")
 FORBIDDEN = {
     "smp_engine_compat.py": "re-implements the SMP KDF in pure Python",
     "otrv4plus_tui.py": "the terminal UI has no place in an APK",
+    "otrv4plus_irc.py": "the IRC client; the app is XMPP",
     "weechat_otrv4plus.py": "a WeeChat plugin",
     "otrv4_testlib.py": "test-only helpers",
     # Retired 2026-09-28: the XMPP half of OMEMO 2, never imported, packaged
@@ -55,6 +56,11 @@ pytestmark = [
 ]
 
 
+def _is_main_guard(node):
+    return (isinstance(node, ast.If) and isinstance(node.test, ast.Compare)
+            and getattr(node.test.left, "id", None) == "__name__")
+
+
 def import_closure():
     """Every otrv4plus_* module reachable from the two entry points."""
     seen, queue = set(), list(ENTRY_POINTS)
@@ -63,7 +69,12 @@ def import_closure():
         if path in seen or not os.path.exists(os.path.join(CLIENT, path)):
             continue
         seen.add(path)
-        for node in ast.walk(ast.parse(open(os.path.join(CLIENT, path)).read())):
+        tree = ast.parse(open(os.path.join(CLIENT, path)).read())
+        # The `if __name__ == "__main__":` block runs only when the file is
+        # started as a program (otrv4+.py hands over to the IRC client
+        # there); the app imports the file and never reaches it.
+        tree.body = [n for n in tree.body if not _is_main_guard(n)]
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:

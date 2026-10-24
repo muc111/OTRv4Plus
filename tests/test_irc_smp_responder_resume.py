@@ -50,10 +50,11 @@ import threading
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 core = pytest.importorskip("otrv4_core")
 
-CLIENT = otr.EnhancedOTRv4IRCClient
+CLIENT = irc.EnhancedOTRv4IRCClient
 PEER = "SwiftOmega"
 SECRET = "correct horse battery staple"
 WRONG = "not the same passphrase"

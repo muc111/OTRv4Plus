@@ -26,6 +26,7 @@ for. This only ensures the reviewer is reading numbers that match the code, so
 their time goes on the design rather than on chasing stale constants.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import re
 
 import pytest
@@ -55,7 +56,7 @@ class TestTheVersionStamp:
         answer to give them.
         """
         engine = re.search(r'^VERSION = "OTRv4\+ ([\d.]+)"',
-                           open("client/otrv4+.py").read(), re.M)
+                           irc_and_engine_source(), re.M)
         assert engine, "VERSION is no longer a module-level literal in otrv4+.py"
         stamped = re.search(r'^\*\*Version:\*\* ([\d.]+)', spec_text(), re.M)
         assert stamped, "docs/SPEC.md has no version header"
@@ -122,7 +123,7 @@ def code_tlv_types():
     one the engine constructs and dispatches on, so it is the one the spec must
     match.
     """
-    src = open("client/otrv4+.py").read()
+    src = irc_and_engine_source()
     block = src[src.index("class OTRv4TLV:"):]
     block = block[:block.index("SMP_TYPES")]
     return {m.group(1): int(m.group(2), 16)

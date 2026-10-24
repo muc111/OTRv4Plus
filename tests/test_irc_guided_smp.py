@@ -43,12 +43,14 @@ import threading as _threading
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENGINE = os.path.join(ROOT, "client", "otrv4+.py")
+# The engine and the IRC client, which were one file (otrv4+.py).
+from source_of import open_irc_and_engine  # noqa: E402
 
-CLIENT = otr.EnhancedOTRv4IRCClient
+CLIENT = irc.EnhancedOTRv4IRCClient
 
 #: Every method the guided flow needs, bound onto the stub below. Named
 #: explicitly so adding a method to the flow without considering how a peer
@@ -369,7 +371,7 @@ class TestInv06CoversTheIrcClientNow:
     @staticmethod
     @pytest.fixture(scope="class")
     def methods():
-        with open(ENGINE, encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         out = {}
         for node in ast.walk(tree):
@@ -454,7 +456,7 @@ class TestInv06CoversTheIrcClientNow:
         of the fix and fails forever -- which is the trap
         `test_no_remote_input_capture.py` documents for the XMPP side.
         """
-        with open(ENGINE, encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -479,7 +481,7 @@ class TestFirstContactPinsInsteadOfAsking:
     @staticmethod
     @pytest.fixture(scope="class")
     def source():
-        with open(ENGINE, encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             return fh.read()
 
     def test_the_yes_no_trust_prompt_is_gone(self, source):

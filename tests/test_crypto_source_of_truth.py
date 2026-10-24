@@ -8,6 +8,7 @@ while it is true. These checks tie its names to Cargo.toml, to the built
 module's exports, and to the Kotlin sources.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
 import re
 
@@ -68,7 +69,7 @@ def test_only_the_vault_uses_platform_cryptography_in_kotlin():
 
 
 def test_the_removed_duplicates_stay_removed():
-    engine = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+    engine = irc_and_engine_source()
     voice = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"), encoding="utf-8").read()
     assert not os.path.exists(os.path.join(ROOT, ".attic"))
     for gone in ("def _unpack_session_keys", "def _kdf_ck", "def _enh_dec_legacy"):

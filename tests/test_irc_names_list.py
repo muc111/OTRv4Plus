@@ -28,6 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 otr = pytest.importorskip("otrv4_")
+irc = pytest.importorskip("otrv4plus_irc")
 
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -247,8 +248,8 @@ class TestClientIdentification:
         NickServ nick advertised the bare nick, so two whole classes of
         OTRv4+ user were invisible to their own peers.  A detection
         mechanism the client does not consistently feed is not one."""
-        for nick in list(otr.TwentySevenClubNick._LOOKUP)[:3] + ["AngryMouse"]:
-            realname = otr.TwentySevenClubNick.real_name(nick)
+        for nick in list(irc.TwentySevenClubNick._LOOKUP)[:3] + ["AngryMouse"]:
+            realname = irc.TwentySevenClubNick.real_name(nick)
             assert otr.advertises_otrv4(realname), (
                 "%s advertises %r, which its peers cannot detect"
                 % (nick, realname))
@@ -261,7 +262,7 @@ class TestClientIdentification:
         A NickServ-registered user is exactly the sort of long-lived peer
         another user most wants to find in /names.
         """
-        src = inspect.getsource(otr)
+        src = inspect.getsource(irc)
         i = src.index("self.nick = self.config.nickserv_nick")
         window = src[i:i + 400]
         assert "self.realname = self.nick\n" not in window, (
@@ -276,18 +277,18 @@ class TestClientIdentification:
 
     def test_the_27_club_identity_is_still_shown(self):
         """The version was appended, not substituted."""
-        nick = list(otr.TwentySevenClubNick._LOOKUP)[0]
-        assert "27 Club" in otr.TwentySevenClubNick.real_name(nick)
+        nick = list(irc.TwentySevenClubNick._LOOKUP)[0]
+        assert "27 Club" in irc.TwentySevenClubNick.real_name(nick)
 
     def test_the_registration_line_sends_that_realname(self):
-        src = inspect.getsource(otr)
+        src = inspect.getsource(irc)
         assert 'USER {self .nick } 0 * :{self .realname }' in src
 
     def test_ctcp_version_is_still_refused(self):
         """The realname is the identification channel BECAUSE CTCP VERSION
         is not.  If CTCP were answered, this would be the wrong mechanism to
         be building on."""
-        assert "VERSION" in otr.OTRv4IRCClient._CTCP_BLOCKED
+        assert "VERSION" in irc.OTRv4IRCClient._CTCP_BLOCKED
 
 
 # ==========================================================================
@@ -297,10 +298,10 @@ class TestClientIdentification:
 class _Harness:
     """Only the surface the NAMES/WHO handlers touch."""
 
-    handle_numeric_reply = otr.OTRv4IRCClient.handle_numeric_reply
-    handle_message = otr.OTRv4IRCClient.handle_message
-    parse_irc_message = otr.OTRv4IRCClient.parse_irc_message
-    _handle_unknown_command = otr.OTRv4IRCClient._handle_unknown_command
+    handle_numeric_reply = irc.OTRv4IRCClient.handle_numeric_reply
+    handle_message = irc.OTRv4IRCClient.handle_message
+    parse_irc_message = irc.OTRv4IRCClient.parse_irc_message
+    _handle_unknown_command = irc.OTRv4IRCClient._handle_unknown_command
 
     def __init__(self):
         self.names_data = {}
@@ -727,7 +728,7 @@ class TestIdentificationIsNotAuthentication:
         metadata, never from something a peer typed into a channel."""
         import textwrap
         tree = ast.parse(textwrap.dedent(
-            inspect.getsource(otr.OTRv4IRCClient.handle_numeric_reply)))
+            inspect.getsource(irc.OTRv4IRCClient.handle_numeric_reply)))
         writes = []
         for node in ast.walk(tree):
             if (isinstance(node, ast.Subscript)
@@ -735,7 +736,7 @@ class TestIdentificationIsNotAuthentication:
                     and "_otrv4_users" in ast.dump(node.value)):
                 writes.append(node.lineno)
         assert writes, "nothing populates the OTRv4+ map any more"
-        src = inspect.getsource(otr.OTRv4IRCClient.handle_numeric_reply)
+        src = inspect.getsource(irc.OTRv4IRCClient.handle_numeric_reply)
         head = src[:src.index("_otrv4_users[")]
         assert "code == 352" in head, (
             "the map is populated somewhere other than the WHO reply")
@@ -743,19 +744,22 @@ class TestIdentificationIsNotAuthentication:
     def test_only_the_who_reply_and_a_rename_write_the_map(self):
         """A message handler writing this map would mean a peer could set
         their own marker by typing, which is exactly what must not happen."""
-        src = inspect.getsource(otr)
         writers = set()
-        tree = ast.parse(src)
-        for fn in ast.walk(tree):
-            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            body = ast.dump(fn)
-            if "_otrv4_users" in body and (
-                    "Subscript" in body or "'pop'" in body):
-                seg = ast.get_source_segment(src, fn) or ""
-                if "_otrv4_users[" in seg or "_otrv4_users\", {}).pop" in seg \
-                        or "_o[new_nick]" in seg:
-                    writers.add(fn.name)
+        # The engine and the IRC client (otrv4plus_irc.py), where the
+        # handlers live.
+        for src in (inspect.getsource(otr), inspect.getsource(irc)):
+            tree = ast.parse(src)
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                body = ast.dump(fn)
+                if "_otrv4_users" in body and (
+                        "Subscript" in body or "'pop'" in body):
+                    seg = ast.get_source_segment(src, fn) or ""
+                    if "_otrv4_users[" in seg or "_otrv4_users\", {}).pop" in seg \
+                            or "_o[new_nick]" in seg:
+                        writers.add(fn.name)
+        assert writers, "found no writer at all; this test is reading the wrong code"
         assert writers <= {"handle_numeric_reply", "handle_message",
                            "dispatch_command", "handle_command"}, (
             "the OTRv4+ map is written in %s" % sorted(writers))

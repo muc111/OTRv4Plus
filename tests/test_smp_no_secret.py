@@ -16,6 +16,7 @@ Two separate problems, fixed together because they meet at the same prompt.
    is supplied by an explicit local command, and these tests hold that line.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import ast
 import inspect
 import os
@@ -159,7 +160,7 @@ class TestRemoteInputCannotBecomeASecret:
     def test_nothing_in_the_engine_arms_it(self):
         """The engine handles remote input. The prompt belongs to the UI."""
         import otrv4_
-        src = inspect.getsource(otrv4_)
+        src = irc_and_engine_source()
         assert "_request_smp_secret" not in src, (
             "the protocol engine can arm the secret prompt")
 

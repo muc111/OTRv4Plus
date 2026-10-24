@@ -1019,9 +1019,10 @@ except Exception as exc:
     fail("MLS self-test: %s: %s" % (type(exc).__name__, exc))
 print("MLS self-test (2 members, 1 message, hybrid suite, group voice): OK")
 
-# Both clients load the engine, otrv4+.py (the IRC client; the XMPP client
-# imports it as otrv4plus). Its import-time check names every core entry
-# point the 1:1 path needs (DAKE, ring signatures, key handles).
+# Both clients load the engine, otrv4+.py (imported as otrv4plus; run as a
+# program it starts the IRC client, otrv4plus_irc.py). Its import-time check
+# names every core entry point the 1:1 path needs (DAKE, ring signatures, key
+# handles).
 import importlib.util
 for name, path in (("otrv4plus", "otrv4+.py"),):
     try:
@@ -1032,7 +1033,12 @@ for name, path in (("otrv4plus", "otrv4+.py"),):
     except Exception as exc:
         fail("the engine (%s) does not load with this core: %s: %s"
              % (path, type(exc).__name__, exc))
-print("IRC client / OTRv4+ engine (otrv4+.py): OK")
+print("OTRv4+ engine (otrv4+.py): OK")
+try:
+    import otrv4plus_irc  # noqa: F401
+except Exception as exc:
+    fail("the IRC client does not load: %s: %s" % (type(exc).__name__, exc))
+print("IRC client (otrv4plus_irc.py): OK")
 try:
     import otrv4plus_xmpp  # noqa: F401
 except Exception as exc:

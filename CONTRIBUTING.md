@@ -73,7 +73,7 @@ policy applies going forward without rewriting what is already here.
 | Path | What is there |
 |---|---|
 | `Rust/` | The core: every cryptographic primitive, built as the `otrv4_core` Python module |
-| `client/` | The Python engine and terminal clients (`otrv4+.py`, `otrv4plus_*.py`) |
+| `client/` | The Python engine (`otrv4+.py`) and the terminal clients: IRC (`otrv4plus_irc.py`) and XMPP (`otrv4plus_xmpp.py` and its `otrv4plus_xmpp_*.py` parts) |
 | `android_bridge/` | The app's Python API over the engine, used by the phone and the desktop app |
 | `android/`, `desktop/` | The Android app and the desktop app (Kotlin, Compose) |
 | `desktop_bridge/` | The desktop app's engine process |

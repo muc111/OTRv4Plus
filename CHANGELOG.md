@@ -4,6 +4,26 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.139 and Desktop — 2026-10-24 — the engine and the IRC client are separate files (core 0.13.1)
+
+- **`otrv4+.py` is the engine only** (10,500 lines, from 17,350): sessions,
+  the DAKE and SMP state machines, fragmentation, the TUI widgets. The IRC
+  client -- connection, nicks, commands, its `main()` -- is
+  `client/otrv4plus_irc.py` (6,900 lines). `python otrv4+.py` still starts
+  it: run as a program, the engine registers itself under its import names
+  and hands over, so the client uses that same module rather than loading a
+  second copy of the engine.
+- **The APK no longer carries the IRC client.** It shipped inside the engine
+  file; the app is XMPP and never ran it. The build excludes the new module
+  and the APK check refuses it.
+- The engine values the IRC side changes while it runs (debug flags, prompt
+  and scrollback state, Termux detection) are read and written on the engine
+  module, so both see one value.
+- Tests that scanned the whole of `otrv4+.py` for something that must not
+  happen now scan the engine and the IRC client together, so none of them
+  went quiet when the code moved; one that would have now also fails if it
+  finds nothing to check. `Rust/build.sh` checks that the IRC client loads.
+
 ## Android 0.7.0-experimental.rc.138 and Desktop — 2026-10-24 — splitting the big files, step 4 (core 0.13.1)
 
 Nothing changes in the app. **`otrv4plus_termux.py`** takes the terminal

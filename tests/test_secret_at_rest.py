@@ -6,6 +6,7 @@ these check the bytes that land in the file rather than the intent of the
 code that wrote them.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import json
 import os
 import sys
@@ -184,13 +185,13 @@ class TestPasswordsNeverReachDisk:
         buffer -- Python strings are immutable -- which is why INV-02 records
         that limit rather than claiming zeroization."""
         import inspect
-        src = inspect.getsource(otr)
+        src = irc_and_engine_source()
         assert "self.config.sasl_pass = None" in src
         assert "self.config.nickserv_pass = None" in src
 
     def test_the_password_prompts_use_getpass(self):
         import inspect
-        src = inspect.getsource(otr)
+        src = irc_and_engine_source()
         assert 'getpass.getpass("SASL password: ")' in src
         assert 'getpass.getpass("NickServ password: ")' in src
 
@@ -198,7 +199,7 @@ class TestPasswordsNeverReachDisk:
         """Every write/dump call in the engine, checked for credential names."""
         import ast
         import inspect
-        tree = ast.parse(inspect.getsource(otr))
+        tree = ast.parse(irc_and_engine_source())
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue

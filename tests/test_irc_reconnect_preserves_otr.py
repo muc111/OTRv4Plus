@@ -38,14 +38,16 @@ and INV-24 (the conversation still must not cross the connection boundary on
 screen, even though the keys now do).
 """
 
+from source_of import open_irc_and_engine  # noqa: E402
 import threading
 
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 
-CLIENT = otr.EnhancedOTRv4IRCClient
+CLIENT = irc.EnhancedOTRv4IRCClient
 PEER = "IronFenrir"
 OTHER = "GlacialWolf"
 
@@ -344,7 +346,7 @@ class TestTheReconnectPathUsesIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "_try_reconnect")
@@ -373,7 +375,7 @@ class TestTheReconnectPathUsesIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         found = [ast.unparse(n) for n in ast.walk(tree)
                  if isinstance(n, ast.FunctionDef) and n.name == "shutdown"]

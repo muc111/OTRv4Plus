@@ -13,6 +13,7 @@ Keys the peer has already PUBLISHED are public by design (deniability), and
 are the only MKmac bytes Python ever holds.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
 
 import pytest
@@ -90,7 +91,7 @@ class TestTheSessionDestroysIt:
         assert not msg.verify_mac(os.urandom(64))
 
     def test_production_python_never_hashes_a_mac_key(self):
-        with open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8") as f:
+        with open_irc_and_engine() as f:
             src = f.read()
         assert "sha3_512(mac_key" not in src
         assert 'enc["mac_key"]' in src           # passed through, as a handle

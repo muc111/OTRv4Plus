@@ -38,9 +38,11 @@ import time
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENGINE = os.path.join(ROOT, "client", "otrv4+.py")
+# The engine and the IRC client, which were one file (otrv4+.py).
+from source_of import open_irc_and_engine  # noqa: E402
 
 PEER = "IronFenrir"
 STARTING = "🔑 Starting OTR session with IronFenrir…"
@@ -60,7 +62,7 @@ class Client:
         self._prompt_refresh_cb = None
         self.channel_log = None
         self.panel_manager = otr.PanelManager(self)
-        self._switch_panel = otr.OTRv4IRCClient._switch_panel.__get__(self)
+        self._switch_panel = irc.OTRv4IRCClient._switch_panel.__get__(self)
 
 
 @pytest.fixture
@@ -138,7 +140,7 @@ class TestRealSwitchesStillWork:
 
     def test_force_defaults_to_off(self):
         import inspect
-        sig = inspect.signature(otr.OTRv4IRCClient._switch_panel)
+        sig = inspect.signature(irc.OTRv4IRCClient._switch_panel)
         assert sig.parameters["force"].default is False, (
             "a default of True restores the bug for every unguarded caller"
         )
@@ -184,7 +186,7 @@ class TestTheFragmentCallbackNoLongerAsksForIt:
     @staticmethod
     @pytest.fixture(scope="class")
     def switch_call_guards():
-        with open(ENGINE, encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -229,7 +231,7 @@ class TestTheUserCommandAsksForTheRedraw:
     @staticmethod
     @pytest.fixture(scope="class")
     def forced_calls():
-        with open(ENGINE, encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         return [c for c in ast.walk(tree)
                 if isinstance(c, ast.Call)
@@ -247,7 +249,7 @@ class TestTheUserCommandAsksForTheRedraw:
         """Counted from the other direction: every remaining call site must
         take the guard. A new one passing force=True is a new way to get the
         duplicate back on screen."""
-        with open(ENGINE, encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         calls = [c for c in ast.walk(tree)
                  if isinstance(c, ast.Call)

@@ -115,13 +115,14 @@ class TestNothingReachesDisk:
 
 class TestCallersDoNotAskForPersistence:
 
-    @pytest.mark.parametrize("client", ["otrv4plus_xmpp.py", "otrv4+.py"])
+    @pytest.mark.parametrize("client", ["client/otrv4plus_xmpp.py", "client/otrv4+.py",
+                                        "client/otrv4plus_irc.py"])
     def test_no_client_passes_persistent(self, client):
         src = _src(os.path.join(ROOT, client))
         assert "persistent=True" not in src
         assert "_ChannelLogManager(persistent" not in src
 
-    @pytest.mark.parametrize("client", ["otrv4plus_xmpp.py", "otrv4+.py"])
+    @pytest.mark.parametrize("client", ["client/otrv4plus_xmpp.py", "client/otrv4plus_irc.py"])
     def test_clients_still_construct_one(self, client):
         """Deleting the persistence must not have deleted the scrollback."""
         assert "_ChannelLogManager()" in _src(os.path.join(ROOT, client))

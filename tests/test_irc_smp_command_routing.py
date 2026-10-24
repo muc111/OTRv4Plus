@@ -29,14 +29,16 @@ the command and got the old behaviour", the test has to start at the typing.
 Enforces INV-06 and INV-11 for the IRC client's command surface.
 """
 
+from source_of import open_irc_and_engine  # noqa: E402
 import threading
 
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 
-CLIENT = otr.EnhancedOTRv4IRCClient
+CLIENT = irc.EnhancedOTRv4IRCClient
 PEER = "IronFenrir"
 
 
@@ -301,7 +303,7 @@ class TestOnlyOneDispatcherOwnsTheCommand:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         base = next(n for n in tree.body
                     if isinstance(n, ast.ClassDef) and n.name == "OTRv4IRCClient")
@@ -318,7 +320,7 @@ class TestOnlyOneDispatcherOwnsTheCommand:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         sub = next(n for n in tree.body
                    if isinstance(n, ast.ClassDef)

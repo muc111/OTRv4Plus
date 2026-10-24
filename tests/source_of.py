@@ -30,3 +30,19 @@ def client_files() -> list:
 def client_source() -> str:
     """All of the XMPP client's source, one file after another."""
     return "\n".join(open(p, encoding="utf-8").read() for p in client_files())
+
+
+def irc_and_engine_source() -> str:
+    """What otrv4+.py held before the IRC client moved out: the engine
+    (otrv4+.py) and the IRC client (otrv4plus_irc.py). For the IRC tests
+    that scan the whole program rather than one method."""
+    import os
+    client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
+    return "\n".join(open(os.path.join(client, name), encoding="utf-8").read()
+                     for name in ("otrv4+.py", "otrv4plus_irc.py"))
+
+
+def open_irc_and_engine(*_args, **_kwargs):
+    """`open()` stand-in returning irc_and_engine_source() as a file."""
+    import io
+    return io.StringIO(irc_and_engine_source())

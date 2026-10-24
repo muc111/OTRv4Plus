@@ -12,6 +12,7 @@ and it had also stopped working -- it treated the ratchet's
 weaker route into the ratchet. It is removed; this holds that.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import base64
 import os
 
@@ -25,7 +26,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def test_the_legacy_parser_is_gone():
-    src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+    src = irc_and_engine_source()
     assert "_enh_dec_legacy" not in src
 
 

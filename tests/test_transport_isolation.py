@@ -16,6 +16,7 @@ exactly the kind of thing that gets "unified" by a well-meaning refactor.
 These tests make that unification fail loudly.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
 import sys
 import tempfile
@@ -146,8 +147,7 @@ class TestIrcDoesNotImportTheIdentityModule:
         every IRC run.  The engine imports it inside the opted-in branch
         instead, which makes the separation checkable rather than a promise."""
         import ast
-        tree = ast.parse(open(os.path.join(ROOT, "client", "otrv4+.py"),
-                              encoding="utf-8").read())
+        tree = ast.parse(irc_and_engine_source())
         for node in tree.body:                      # top level only
             if isinstance(node, ast.ImportFrom) and node.module:
                 assert "otrv4plus_identity" not in node.module, (
@@ -160,8 +160,7 @@ class TestIrcDoesNotImportTheIdentityModule:
 
     def test_every_identity_import_is_guarded_by_persist_identity(self):
         import ast
-        tree = ast.parse(open(os.path.join(ROOT, "client", "otrv4+.py"),
-                              encoding="utf-8").read())
+        tree = ast.parse(irc_and_engine_source())
         found = 0
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -173,7 +172,7 @@ class TestIrcDoesNotImportTheIdentityModule:
                 continue
             found += len(imports)
             body = ast.get_source_segment(
-                open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read(),
+                irc_and_engine_source(),
                 fn)
             guard = body.index("persist_identity")
             assert guard < body.index("otrv4plus_identity"), (

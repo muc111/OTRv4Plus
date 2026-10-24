@@ -34,11 +34,13 @@ be destroyed lives in Rust behind `zeroize()`, never in a chat panel.
 Enforces INV-24.
 """
 
+from source_of import open_irc_and_engine  # noqa: E402
 import time
 
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 
 
 @pytest.fixture
@@ -124,7 +126,7 @@ class TestTheReconnectBackoffOutlivesTheGhost:
     """A reconnect that beats the server's ping timeout is what caused the
     collision in the first place."""
 
-    backoff = staticmethod(otr.OTRv4IRCClient._reconnect_backoff)
+    backoff = staticmethod(irc.OTRv4IRCClient._reconnect_backoff)
 
     def test_the_first_attempt_already_waits_long_enough(self):
         assert self.backoff(1) >= 30, (
@@ -153,7 +155,7 @@ class TestNickCollisionRecovery:
     """433 must not cost the user their identity permanently."""
 
     def test_the_original_nick_is_remembered_at_startup(self):
-        assert "_original_nick" in otr.OTRv4IRCClient.__init__.__code__.co_names, (
+        assert "_original_nick" in irc.OTRv4IRCClient.__init__.__code__.co_names, (
             "nothing records the nick we want, so there is nothing to reclaim"
         )
 
@@ -164,7 +166,7 @@ class TestNickCollisionRecovery:
         client.auth_complete = True
         client.nick = "HollowNexus"
         client._original_nick = "AngryMouse"
-        otr.OTRv4IRCClient._on_nick_collision(client)
+        irc.OTRv4IRCClient._on_nick_collision(client)
         assert client.nick == "HollowNexus"
         assert client.sent == [], "it tried to rename an established session"
         assert client.scheduled, "it gave up on the original nick"
@@ -175,7 +177,7 @@ class TestNickCollisionRecovery:
         client = _StubClient()
         client.auth_complete = False
         client.nick = "AngryMouse"
-        otr.OTRv4IRCClient._on_nick_collision(client)
+        irc.OTRv4IRCClient._on_nick_collision(client)
         assert client.nick != "AngryMouse"
         assert client._original_nick == "AngryMouse"
         assert any(m.startswith("NICK ") for m in client.sent)
@@ -187,8 +189,8 @@ class TestNickCollisionRecovery:
         client = _StubClient()
         client.nick = "Temporary"
         client._original_nick = "AngryMouse"
-        client._nick_reclaim_tries = otr.OTRv4IRCClient.NICK_RECLAIM_ATTEMPTS
-        otr.OTRv4IRCClient._schedule_nick_reclaim(client)
+        client._nick_reclaim_tries = irc.OTRv4IRCClient.NICK_RECLAIM_ATTEMPTS
+        irc.OTRv4IRCClient._schedule_nick_reclaim(client)
         assert timers == [], "it is still asking for a nick someone else holds"
 
     def test_it_does_keep_trying_below_the_limit(self, timers):
@@ -198,7 +200,7 @@ class TestNickCollisionRecovery:
         client.nick = "Temporary"
         client._original_nick = "AngryMouse"
         client._nick_reclaim_tries = 0
-        otr.OTRv4IRCClient._schedule_nick_reclaim(client)
+        irc.OTRv4IRCClient._schedule_nick_reclaim(client)
         assert len(timers) == 1
         assert timers[0].delay >= 30
 
@@ -206,7 +208,7 @@ class TestNickCollisionRecovery:
         client = _StubClient()
         client.nick = "Temporary"
         client._original_nick = "AngryMouse"
-        otr.OTRv4IRCClient._schedule_nick_reclaim(client)
+        irc.OTRv4IRCClient._schedule_nick_reclaim(client)
         timers[0].fn()
         assert client.sent == ["NICK AngryMouse"]
 
@@ -214,7 +216,7 @@ class TestNickCollisionRecovery:
         client = _StubClient()
         client.nick = "Temporary"
         client._original_nick = "AngryMouse"
-        otr.OTRv4IRCClient._schedule_nick_reclaim(client)
+        irc.OTRv4IRCClient._schedule_nick_reclaim(client)
         client.shutdown_flag = True
         timers[0].fn()
         assert client.sent == [], "a timer outlived the session and still sent"
@@ -223,12 +225,12 @@ class TestNickCollisionRecovery:
         client = _StubClient()
         client.nick = "AngryMouse"
         client._original_nick = "AngryMouse"
-        otr.OTRv4IRCClient._schedule_nick_reclaim(client)
+        irc.OTRv4IRCClient._schedule_nick_reclaim(client)
         assert timers == []
         assert client._nick_reclaim_tries == 0
 
     def test_the_reclaim_delay_is_long_enough_to_outlive_a_ghost(self):
-        assert otr.OTRv4IRCClient.NICK_RECLAIM_DELAY >= 30
+        assert irc.OTRv4IRCClient.NICK_RECLAIM_DELAY >= 30
 
 
 class TestThePurgeReachesEveryPanel:
@@ -243,7 +245,7 @@ class TestThePurgeReachesEveryPanel:
                 panel.add_message("m%d" % i)
             panel.unread_count = 10
 
-        purged = otr.OTRv4IRCClient._purge_scrollback(client, "test", announce=False)
+        purged = irc.OTRv4IRCClient._purge_scrollback(client, "test", announce=False)
 
         assert purged == 30
         for name, panel in client.panel_manager.panels.items():
@@ -266,7 +268,7 @@ class TestThePurgeReachesEveryPanel:
         for name in ("system", "#i2p-chat"):
             client.panel_manager.panels[name].add_message("secret")
 
-        otr.OTRv4IRCClient._purge_scrollback(client, "test", announce=False)
+        irc.OTRv4IRCClient._purge_scrollback(client, "test", announce=False)
 
         for name in ("system", "#i2p-chat"):
             assert client.panel_manager.panels[name].history == []
@@ -274,13 +276,13 @@ class TestThePurgeReachesEveryPanel:
     def test_purging_nothing_is_not_an_error(self):
         client = _StubClient()
         client.panel_manager = _StubPanelManager(["system"])
-        assert otr.OTRv4IRCClient._purge_scrollback(client, "test", announce=False) == 0
+        assert irc.OTRv4IRCClient._purge_scrollback(client, "test", announce=False) == 0
 
     def test_the_terminal_is_wiped_when_the_user_is_leaving_or_asked(self, capsys):
         client = _StubClient()
         client.panel_manager = _StubPanelManager(["system"])
         client.panel_manager.panels["system"].add_message("m")
-        otr.OTRv4IRCClient._purge_scrollback(
+        irc.OTRv4IRCClient._purge_scrollback(
             client, "/clear", announce=False, wipe_terminal=True)
         # Only when stdout is a tty, which it is not under pytest -- so what
         # is asserted here is that the call is reachable and does not raise.
@@ -294,7 +296,7 @@ class TestThePurgeReachesEveryPanel:
         client = _StubClient()
         client.panel_manager = _StubPanelManager(["system"])
         client.panel_manager.panels["system"].add_message("m")
-        otr.OTRv4IRCClient._purge_scrollback(
+        irc.OTRv4IRCClient._purge_scrollback(
             client, "connection lost", announce=False, wipe_terminal=False)
         assert "\033[3J" not in capsys.readouterr().out
         assert client.panel_manager.panels["system"].history == []
@@ -303,12 +305,12 @@ class TestThePurgeReachesEveryPanel:
         client = _StubClient()
         client.panel_manager = _StubPanelManager(["system"])
         client.panel_manager.panels["system"].add_message("m")
-        otr.OTRv4IRCClient._purge_scrollback(client, "/clear", announce=True)
+        irc.OTRv4IRCClient._purge_scrollback(client, "/clear", announce=True)
         assert client.messages, "a user-typed /clear should say what it did"
 
         client.messages.clear()
         client.panel_manager.panels["system"].add_message("m")
-        otr.OTRv4IRCClient._purge_scrollback(client, "shutdown", announce=False)
+        irc.OTRv4IRCClient._purge_scrollback(client, "shutdown", announce=False)
         assert client.messages == [], (
             "the shutdown path wrote into a panel it had just emptied"
         )
@@ -327,7 +329,7 @@ class TestThePurgeIsWiredIntoTheLifecycle:
     def source():
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), "r", encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             return fh.read()
 
     def _body(self, source, marker):
@@ -374,7 +376,7 @@ class TestTimestampsCarryTheDate:
         is worse than either alone."""
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), "r", encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             source = fh.read()
         assert 'time.strftime("%H:%M:%S' not in source, (
             "a hard-coded clock-only timestamp is back; use TIMESTAMP_FORMAT"
@@ -389,8 +391,8 @@ class _StubClient:
     makes it obvious which four attributes it actually reads.
     """
 
-    NICK_RECLAIM_DELAY = otr.OTRv4IRCClient.NICK_RECLAIM_DELAY
-    NICK_RECLAIM_ATTEMPTS = otr.OTRv4IRCClient.NICK_RECLAIM_ATTEMPTS
+    NICK_RECLAIM_DELAY = irc.OTRv4IRCClient.NICK_RECLAIM_DELAY
+    NICK_RECLAIM_ATTEMPTS = irc.OTRv4IRCClient.NICK_RECLAIM_ATTEMPTS
 
     def __init__(self):
         self.nick = "nobody"
@@ -411,7 +413,7 @@ class _StubClient:
 
     def _schedule_nick_reclaim(self):
         self.scheduled = True
-        otr.OTRv4IRCClient._schedule_nick_reclaim(self)
+        irc.OTRv4IRCClient._schedule_nick_reclaim(self)
 
 
 class _FakeTimer:

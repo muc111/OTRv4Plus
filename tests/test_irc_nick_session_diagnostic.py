@@ -32,13 +32,15 @@ Enforces INV-11: an OTR session is never re-keyed onto a new IRC nick, so a
 name the server just reassigned can never inherit keys pinned to someone else.
 """
 
+from source_of import open_irc_and_engine  # noqa: E402
 import re
 
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 
-CLIENT = otr.EnhancedOTRv4IRCClient
+CLIENT = irc.EnhancedOTRv4IRCClient
 OLD = "IronFenrir"
 NEW = "SwiftOmega"
 
@@ -217,7 +219,7 @@ class TestTheHooksAreWired:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             return ast.parse(fh.read())
 
     def test_the_data_path_no_longer_drops_silently(self, tree):

@@ -31,6 +31,7 @@ behaviour (a real exchange with DH steps and brace rotations works through
 the handles alone).
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import ast
 import os
 import secrets
@@ -105,7 +106,7 @@ ALLOWED = {
     ("android_bridge/diagnostics.py", "*"),
 }
 
-PRODUCTION = ["client/otrv4+.py", "client/otrv4plus_voice.py", "client/otrv4plus_xmpp.py",
+PRODUCTION = ["client/otrv4+.py", "client/otrv4plus_irc.py", "client/otrv4plus_voice.py", "client/otrv4plus_xmpp.py",
               "client/otrv4plus_filetransfer.py", "client/otrv4plus_identity.py"] + [
     "android_bridge/" + f for f in sorted(os.listdir(os.path.join(ROOT, "android_bridge")))
     if f.endswith(".py")]
@@ -143,7 +144,7 @@ class TestProductionDoesNotHoldRawSecrets:
         assert not bad, "%s calls a raw-secret primitive: %r" % (relpath, bad)
 
     def test_the_ratchet_never_builds_a_python_held_kem_key(self):
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         tree = ast.parse(src)
         made = [n.lineno for n in ast.walk(tree)
                 if isinstance(n, ast.Call)
@@ -170,7 +171,7 @@ class TestProductionDoesNotHoldRawSecrets:
     def test_the_pseudo_extra_symmetric_key_is_gone(self):
         # It was SHA3 over the SSID and the peer's TLV value -- public inputs
         # -- kept on the session and read by nothing.
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         assert "_last_extra_sym_key" not in src
         assert "OTRv4-EXTRA-SYM" not in src
 
@@ -279,7 +280,7 @@ class TestTheRatchetIsBuiltOnlyFromTheDake:
         assert not made, "%s builds a ratchet from raw keys at %r" % (relpath, made)
 
     def test_the_legacy_paths_are_gone(self):
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         for gone in ("def _unpack_session_keys", "def _kdf_ck",
                      "use_output_api", "legacy v10.6.2 path"):
             assert gone not in src, gone

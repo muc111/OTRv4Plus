@@ -20,13 +20,15 @@ Fragment counts are not deleted, they are moved: `detail` goes to
 the XMPP client makes with `_dbg`.
 """
 
+from source_of import open_irc_and_engine  # noqa: E402
 import re
 
 import pytest
 
 otr = pytest.importorskip("otrv4plus")
+irc = pytest.importorskip("otrv4plus_irc")
 
-CLIENT = otr.EnhancedOTRv4IRCClient
+CLIENT = irc.EnhancedOTRv4IRCClient
 PEER = "IronFenrir"
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -151,7 +153,7 @@ class TestFragmentCountsMoveToDebug:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -200,7 +202,7 @@ class TestTheHandlersUseIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
+        with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
         out = {}
         cls = next(n for n in tree.body

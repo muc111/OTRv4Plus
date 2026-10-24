@@ -22,6 +22,7 @@ recorded itself. These tests pin three things:
   * NO PYTHON DAKE3 CRYPTO in production source.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import base64
 import os
 import re
@@ -129,7 +130,7 @@ class TestRustDecides:
 
 class TestNoPythonDake3Crypto:
     def _adapter_source(self):
-        with open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8") as f:
+        with open_irc_and_engine() as f:
             src = f.read()
         start = src.index("class RustDAKEAdapter")
         end = src.index("\ndef ", start)
@@ -143,7 +144,8 @@ class TestNoPythonDake3Crypto:
             assert forbidden not in src, forbidden
 
     def test_no_production_module_signs_a_ring_signature(self):
-        for rel in ("client/otrv4+.py", "client/otrv4plus_xmpp.py", "client/otrv4plus_voice.py"):
+        for rel in ("client/otrv4+.py", "client/otrv4plus_irc.py", "client/otrv4plus_xmpp.py",
+                    "client/otrv4plus_voice.py"):
             with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
                 src = f.read()
             calls = [m.start() for m in re.finditer(r"RingSignature\.sign\(", src)]

@@ -24,10 +24,13 @@ OTRv4+ has two layers:
    Private key material is held in Rust-owned `SecretBytes` / `SecretVec` with
    `ZeroizeOnDrop` and is never exposed to Python as `bytes`.
 
-2. **Python orchestration (`client/otrv4+.py` and `client/otrv4plus_*.py`)** — ~13,000 lines handling IRC
-   connectivity, IRCv3 capability negotiation, fragment reassembly, the terminal
-   UI, command parsing, and the OTR/SMP state-machine driving. It holds no
-   private key material; every crypto operation is delegated to the Rust core.
+2. **Python orchestration (`client/`)** — the engine, `otrv4+.py` (OTR
+   sessions, the DAKE and SMP state machines, fragment reassembly, the
+   terminal UI widgets), and the two terminal clients built on it:
+   `otrv4plus_irc.py` (IRC; `python otrv4+.py` starts it) and
+   `otrv4plus_xmpp.py` with the `otrv4plus_xmpp_*.py` modules its class is
+   mixed from. None of it holds private key material; every crypto operation
+   is delegated to the Rust core.
 
 The Rust crate is roughly 3,500–4,000 lines across:
 

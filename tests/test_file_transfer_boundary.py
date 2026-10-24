@@ -12,6 +12,7 @@ changes, and it is the reason this file exists rather than the assertions
 living in the other two.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import ast
 import hashlib
 import inspect
@@ -462,7 +463,7 @@ class TestTheFeatureIsXmppOnly:
     """
 
     def _engine_source(self):
-        return open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        return irc_and_engine_source()
 
     def test_the_irc_engine_does_not_import_the_module(self):
         tree = ast.parse(self._engine_source())

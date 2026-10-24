@@ -17,6 +17,7 @@ session id and both fingerprints.  The guards below were written to fire on
 exactly that change, and they did; they now pin the new shape instead.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
 import re
 import sys
@@ -130,7 +131,7 @@ class TestTheDocumentationSaysSo:
 class TestWhereTheKdfsReallyAre:
 
     def test_at_rest_key_handling_is_in_rust(self):
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         for gone in ("def _derive_key(", "hashlib.scrypt", "import argon2",
                      "hash_secret_raw", "class SecureKeyStorage"):
             assert gone not in src, gone
@@ -181,7 +182,7 @@ class TestThereIsNoDowngrade:
     replaces the warning is that an unreadable store is never dropped."""
 
     def test_no_python_kdf_or_scrypt(self):
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         assert "hashlib.scrypt" not in src
         assert "_warn_kdf_downgrade" not in src
         assert "def kdf_backend(" not in src
@@ -201,7 +202,7 @@ class TestThereIsNoDowngrade:
         assert not os.path.exists(path)
 
     def test_the_engine_says_so(self):
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         assert "were moved aside to" in src
 
 

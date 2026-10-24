@@ -8,6 +8,7 @@ wrappers have not grown an accessor that would let material escape, and that
 the Python side is not holding what Rust should.
 """
 
+from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
 import re
 import sys
@@ -123,7 +124,7 @@ class TestPythonDoesNotHoldWhatRustShould:
 
     def test_the_engine_has_no_ratchet_key_bytes(self):
         """Ratchet material moves Rust-to-Rust through an opaque handle."""
-        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+        src = irc_and_engine_source()
         assert "get_session_keys" not in src or "legacy" in src.lower()
 
     def test_voice_derives_no_key_in_python(self):
