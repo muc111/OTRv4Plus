@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.168 — 2026-10-24 — documentation audit; Wipe & Exit says what it leaves (core 0.13.1)
+
+- **Wipe & Exit's confirmation says what it does not touch:** files you saved
+  outside the app with Save to device (rc.165). It said it erased "received
+  files from this device", which is true of the app's own copies only.
+- **Documentation audit before public testing.** The release page listed every
+  per-build check since rc.125 under "Verified on a real device"; none had
+  been confirmed on a phone, and they are now in the "NOT verified" table. It
+  also said the built-in router relays transit traffic (it does not, since
+  rc.118), that a `.i2p` name alone proves the server (the destination is
+  pinned, X1), and that an older build still chats with rc.158. README,
+  SECURITY.md, TECHNICAL.md, FEATURES.md and DEVELOPMENT.md now describe
+  protocol v2 as it is: required of both peers, ML-KEM secrets folded into
+  the ratchet from its first DH step (after 100 messages or 24 hours), and
+  ML-DSA-87 signatures that make taking part provable; voice no longer needs
+  the Python `cryptography` package; group calls were confirmed on phones in
+  rc.89. Guards in `tests/test_release_notes.py`.
+
 ## Android 0.7.0-experimental.rc.167 — 2026-10-24 — no cryptography in the viewer's Kotlin (core 0.13.1)
 
 - The Metadata tab no longer shows a SHA-256: rc.166 computed it in Kotlin,
@@ -149,9 +167,11 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   new encapsulation key, or a ciphertext answering the peer's — on every
   message, bound into AES-GCM, so it cannot be altered or stripped and losing
   a chain's first message loses nothing. A key is spent only after the message
-  carrying its answer has authenticated. In a conversation a fresh ML-KEM
-  secret enters the root about every round trip; messages grow by about
-  1.6 KB.
+  carrying its answer has authenticated. From the ratchet's first DH step
+  on (after 100 messages in one direction, or 24 hours) a fresh ML-KEM secret
+  enters the root about every round trip, and messages grow by about 1.6 KB.
+  (Corrected 2026-10-24: this said "about every round trip" without the
+  first-step condition.)
 - **Negotiated, not forced.** v2 runs when both signed profiles list
   `PQ_RATCHET_VERSION` (0x50). An older peer gets the previous ratchet,
   unchanged, and still talks. The byte is in the signed profile and the DAKE

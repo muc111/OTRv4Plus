@@ -452,8 +452,11 @@ is attributable and therefore not deniable (§10.1).
 
 ## 5. Double Ratchet
 
-OTRv4+ uses the OTRv4 Double Ratchet (OTRv4 §) with one extension: an ML-KEM-1024
-brace-key contribution folded in at every DH ratchet step.
+OTRv4+ uses the OTRv4 Double Ratchet (OTRv4 §) with one extension: in ratchet v2
+(§5.1), an ML-KEM-1024 brace-key contribution folded into every DH ratchet step.
+The reference engine forces the first DH step at its rekey boundary (100 messages
+in one direction, or 24 hours); until then both parties use the chains the DAKE
+derived, whose root already includes the DAKE's ML-KEM secret.
 
 The ratchet combines two mechanisms. The **symmetric-key ratchet** governs
 individual messages: each direction has a 32-byte chain key, and sending or

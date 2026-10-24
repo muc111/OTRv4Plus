@@ -282,7 +282,8 @@ object WipeAndExit {
     const val CONFIRM_BODY =
         "This ends every conversation and call, destroys all encryption " +
         "keys and verification, and erases your saved account, contacts, " +
-        "message history and received files from this device. It cannot be " +
+        "message history and received files from this device. Files you saved " +
+        "outside the app with Save to device are not touched. It cannot be " +
         "undone. The app will close. Next time it starts with a new identity: " +
         "contacts will need to verify you again."
 

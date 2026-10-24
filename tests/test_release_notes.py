@@ -227,3 +227,38 @@ class TestNothingClaimsMoreThanWasDone:
                 assert 'Text("%s")' % label in shell, (
                     "the notes name a control called '%s' that the Debug "
                     "screen does not have" % label)
+
+
+class TestNothingUnverifiedReadsAsVerified:
+    """Owner, 2026-10-24, before asking for testers in public: no leftover
+    or false claim. Every per-build row from rc.125 to rc.167 had been added
+    to the "Verified on a real device" table though none was confirmed on a
+    phone; the router was said to relay transit traffic it does not carry."""
+
+    @staticmethod
+    def _table(notes, heading, nxt):
+        return notes[notes.index(heading):notes.index(nxt)]
+
+    def test_the_verified_table_has_no_per_build_rows(self, notes):
+        verified = self._table(notes, "## Verified on a real device", "## NOT verified")
+        assert not re.search(r"^\| [^|\n]+ \| [^|\n]+ \| rc\.\d+ \|$", verified, re.M), \
+            "a 'what to test | since' row belongs in the NOT verified table"
+
+    def test_new_rows_go_to_the_not_verified_table(self, notes):
+        unverified = self._table(notes, "## NOT verified", "## ⚠️ Known limits")
+        assert "| Viewer tabs |" in unverified and "| Calls over the built-in router |" in unverified
+
+    def test_the_router_is_described_as_it_is_configured(self, notes):
+        conf = _read(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
+                                  "otrv4plus", "android", "connection", "RouterChoice.kt"))
+        assert "notransit = true" in conf
+        assert "transit tunnels)" not in notes and "relays a\nlittle traffic" not in notes
+        assert "relays no\ntraffic for others" in notes
+
+    def test_a_name_is_not_said_to_prove_the_server(self, notes):
+        assert "already proves the" not in notes
+        assert "pins the\n  destination" in notes and "SCRAM only" in notes
+
+    def test_the_v2_requirement_is_stated(self, notes):
+        assert "Both phones need rc.159 or newer." in notes
+        assert "still chats with this one, using the previous ratchet" not in notes

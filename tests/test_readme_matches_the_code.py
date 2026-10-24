@@ -237,12 +237,17 @@ class TestTheCryptoChainDiagram:
         assert "SHAKE-256 key schedule" in readme
 
     def test_the_kem_really_re_runs_per_ratchet_step(self, readme):
-        """The brace key is rotated by a KEM shared secret at each DH step.
-        Lose that and the diagram's central claim is wrong."""
+        """Ratchet v2 rotates the brace key with KEM shared secrets and folds
+        it into the root step. Lose either and the diagram's central claim is
+        wrong. (It said "EVERY DH ratchet step" until 2026-10-24: before v2 the
+        rotated key fed nothing, audit A1, and the first step only comes at
+        the rekey boundary.)"""
         ratchet = _read(os.path.join("Rust", "src", "ratchet.rs"))
         assert "kdf_brace_rotate" in ratchet, (
             "nothing rotates the brace key any more")
-        assert "EVERY DH ratchet step" in readme
+        assert "fn fold_input" in ratchet and "input.extend_from_slice(brace)" in ratchet, (
+            "the brace key is no longer folded into the root step")
+        assert "secrets folded into" in readme and "from the first DH step" in readme
 
     def test_it_does_not_put_aes_in_the_agreement_layer(self, readme):
         """AES-256-GCM is the last step, not part of the key agreement."""

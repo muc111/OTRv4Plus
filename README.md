@@ -39,11 +39,12 @@ newest Android build is kept there, so the one you see is the one to test.
    update, uninstall the old build first (builds use a CI signing key).
 
 **No separate I2P app is needed.** The app has an I2P router built in
-(i2pd, SAM bridge on loopback only). With "I2P router: Automatic" it uses an
-I2P app already running on the phone, and its own router otherwise. The first
+(i2pd, SAM bridge on loopback only, relaying nothing for others). It uses an
+I2P app already running on the phone when one answers, and its own router
+otherwise. The first
 start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+.
 
-**What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms, OTRv4+ encryption, SMP identity verification, encrypted file transfer with a Termux peer, two-way voice calls (app to app, and app to Termux), end-to-end encrypted group chat (four accounts on two phones: two in the app, two in Termux, all sending and receiving), and account creation and login on an ordinary clearnet server (yax.im, over TLS with the certificate verified).
+**What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms, OTRv4+ encryption, SMP identity verification, encrypted file transfer with a Termux peer, two-way voice calls (app to app, and app to Termux, with the phone's own I2P app; over the built-in router calls only connect since rc.162, still to be re-tested), group voice calls, end-to-end encrypted group chat (four accounts on two phones: two in the app, two in Termux, all sending and receiving), and account creation and login on an ordinary clearnet server (yax.im, over TLS with the certificate verified).
 **Not yet tested on a phone:** the newest additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list is [docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md](docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 
 ## Project status
@@ -56,7 +57,7 @@ start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+
 | File transfer | Working (XMPP) |
 | Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
-| Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls are implemented but **not yet tested on a phone**. Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
+| Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls tested on phones (rc.89). Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
 | Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [docs/CRYPTO_AUDIT_2026-09.md](docs/CRYPTO_AUDIT_2026-09.md) and [docs/SECURITY_AUDIT_2026-10-11.md](docs/SECURITY_AUDIT_2026-10-11.md) |
 
 ## Server capacity (stress test)
@@ -82,25 +83,25 @@ on Android. Findings were fixed, each with a regression test.
 
 It has **not** had a paid independent third-party audit or a formal external
 cryptographic assessment, and that work is not equivalent to one. Known limitations:
-[docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) (some, A1 and A2, need a future protocol
-version). The evidence, layer by layer: [SECURITY.md](SECURITY.md#security-assessment-and-audit-status).
+[docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) (A1 and A2 are addressed by protocol v2,
+which both peers must run; L1, the formal deniability claim, stays open). The evidence, layer by layer: [SECURITY.md](SECURITY.md#security-assessment-and-audit-status).
 
 ## Cryptography
 
 Hybrid classical + post-quantum cryptography: X448 with ML-KEM-1024 for key
 agreement, Ed448 with ML-DSA-87 for authentication, keying established
-AES-256-GCM for the message itself. OTR's Ed448 ring-signature deniability is
-kept.
+AES-256-GCM for the message itself. Unlike the Ed448 ring signature, the
+handshake's ML-DSA-87 signatures are attributable: taking part can be proven ([SPEC §10.1](docs/SPEC.md)).
 
 What actually encrypts a message, top to bottom:
 
 ```
         X448  +  ML-KEM-1024              key agreement (DAKE)
-  Ed448 ring signature  +  ML-DSA-87      authentication: deniable, then hybrid PQ
+  Ed448 ring signature  +  ML-DSA-87      authentication (ML-DSA-87 both ways)
                   |
                   v
-      OTRv4+ double ratchet               a fresh ML-KEM-1024 exchange at
-      SHAKE-256 key schedule              EVERY DH ratchet step, not just once
+      OTRv4+ double ratchet (v2)          fresh ML-KEM-1024 secrets folded into
+      SHAKE-256 key schedule              the root key, from the first DH step
                   |
                   v
              AES-256-GCM

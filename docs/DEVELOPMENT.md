@@ -7,11 +7,10 @@ Everything is built from source with `cargo`. (Earlier versions used three C
 extensions; they were retired at v10.7.4–v10.7.5 and are mentioned below only
 for historical context.)
 
-The **chat** path is Rust-core-only: the Python `cryptography` library was
-removed from it at v10.7. The **voice** path is not — `otrv4plus_voice.py` uses
-that library for the media AES-256-GCM, the HKDF-SHA512 key schedule and the
-voice X448, so `pip install cryptography` is required to build or test voice.
-See [SECURITY.md](../SECURITY.md) caveat 11.
+Chat and voice are both Rust-core-only: the Python `cryptography` library was
+removed from chat at v10.7, and voice's AES-256-GCM, HKDF-SHA512 key schedule
+and X448 moved into the core at v10.13.2. Nothing needs `pip install
+cryptography`. See [SECURITY.md](../SECURITY.md) caveat 11.
 
 ---
 

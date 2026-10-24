@@ -32,14 +32,14 @@ exists in this repository today; planned work lives in [ROADMAP.md](ROADMAP.md).
 
 As of **v10.7.5 (Phase 5.3k)** the **chat** path is Rust-core-only, and as of **v10.9.0** the SMP is hybrid post-quantum: every cryptographic primitive behind messaging runs inside the Rust `otrv4_core` PyO3 module.  All three C extensions (`otr4_crypto_ext`, `otr4_ed448_ct`, `otr4_mldsa_ext`) and `setup_otr4.py` have been removed from the repository.
 
-**Voice is the exception, and this document previously did not say so.**  `otrv4plus_voice.py` uses the Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 voice key schedule, and the X448 half of the voice key exchange.  Voice ML-KEM-1024 does go through `otrv4_core`.  So on a build with voice there are two AES-256-GCM implementations in the tree and `cryptography` is a real runtime dependency.  Consolidating the voice path onto the Rust core is open work (see [ROADMAP.md](ROADMAP.md)); until then, "no second cryptographic implementation surface" is true of chat and false of voice.
+**Voice was the exception until v10.13.2**: `otrv4plus_voice.py` used the Python `cryptography` library for the media AES-256-GCM, the HKDF-SHA512 key schedule and the X448 half of the voice exchange. Since v10.13.2 all of it runs in the Rust core (the voice rows above), nothing in the clients or the app imports `cryptography`, and the APK is checked in CI not to carry it.
 
 ### Higher-level protocols
 
 | Protocol | Implementation | Notes |
 |---|---|---|
 | OTRv4 DAKE | Rust (`src/dake.rs`) | Three-message handshake. Pure Rust state machine. The pure-Python `OTRv4DAKE` fallback was deleted in v10.7. |
-| OTRv4 double ratchet | Rust (`src/ratchet.rs`) | DH ratchet at 100-message or 24-hour boundary. X448 DH and ML-KEM-1024 rekey at every DH step, both in Rust. |
+| OTRv4 double ratchet | Rust (`src/ratchet.rs`) | First DH step forced at the 100-message or 24-hour boundary, then a step with every reply under a new key. Protocol v2: an ML-KEM-1024 item on every message of a chain, bound into the AEAD, each new secret folded into the root ([SPEC.md §5.1–5.2](SPEC.md)). X448 and ML-KEM both in Rust. |
 | OTRv4 ring signature | Rust (`src/ring_sig.rs`) | Schnorr ring sig over three Ed448 keys. Pure Rust port of the C reference. |
 | OTRv4 SMP (hybrid PQC) | Rust (`src/smp.rs`, `src/smp_vault.rs`) | Four-step Schnorr ZKP over the 3072-bit MODP group (OTRv4 §5.3) wrapped in an ML-KEM-1024 + ML-DSA-87 binding layer as of v10.9.0. Wire-versioned 0x01/0x02/0x03, no silent downgrade. Version 0x03 stretches the passphrase with Argon2id (64 MiB, t=3, p=4) under a salt bound to the session id and both fingerprints, replacing the iterated SHAKE-256 of 0x01/0x02; see [SPEC.md §6.4](SPEC.md). ZeroizeOnDrop on every exponent and PQ key. Constant-time modular exponentiation via `crypto-bigint` `DynResidue` (v10.7.6). Forging "verified" requires breaking the discrete log, ML-KEM-1024, and ML-DSA-87 simultaneously. |
 | Ed448 / X448 long-term keys | Rust (`src/key_handles.rs`) | Opaque PyO3 handles. Private bytes never leave Rust. Includes `verify_ed448_sig` for ClientProfile verification. |
@@ -138,15 +138,11 @@ recovered authenticated media in 51 s.
 | SMP ML-KEM-1024 secret key (hybrid) | Rust heap. Wiped after decapsulation. |
 | SMP ML-DSA-87 signing key (hybrid) | Rust heap. ZeroizeOnDrop. |
 | SMP `pq_binding_key` (hybrid) | Rust `SecretBytes<32>`. ZeroizeOnDrop, wiped per step. |
+| Ratchet ML-KEM-1024 keys and secrets (v2) | Rust, inside the ratchet; a decapsulation key is spent only after the message carrying its answer authenticates. |
+| Long-term ML-DSA-87 identity (v2) | Rust `MlDsa87KeyHandle`; sealed inside Rust under the identity key beside the Ed448 identity. Public bytes only exposed. |
+| Voice root, media keys and exchange secrets | Rust `RustVoiceKex` / `RustVoiceAgreement` / `RustVoiceCipher` (v10.13.2): `SecretBytes`, no getters. |
 
-No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation, and no **chat** key material transits an OpenSSL-backed Python object.
-
-Voice is weaker here and the table above does not cover it:
-
-* The voice root, the directional media keys, the ML-KEM decapsulation key and every shared secret are Python `bytearray`s, overwritten in place by an explicit `zeroize()` / `_wipe()` on teardown rather than by Rust `ZeroizeOnDrop`. Explicit wiping is best-effort in CPython: a `bytearray` can be copied by the allocator before it is wiped.
-* The ephemeral voice X448 **private** key is an OpenSSL-backed `cryptography` object. It is released as soon as the shared secret exists — the reference is dropped inside a `finally` — but its bytes are owned by OpenSSL and cannot be wiped from Python.
-
-All of this material is per-call and short-lived. It is still not Rust-owned, which is the same gap as the `cryptography`-library dependency noted above and has the same fix.
+No long-term private key material appears on the Python heap as `bytes` or `bytearray` during normal session operation, and no key material transits an OpenSSL-backed Python object. Voice used to be the exception (its keys were Python `bytearray`s and its X448 key an OpenSSL object); since v10.13.2 its exchange and media keys are Rust handles as in the table, and [SECURITY_INVARIANTS.md](SECURITY_INVARIANTS.md) lists what crossed the boundary and when it stopped.
 
 ## Build target
 
@@ -154,7 +150,7 @@ All of this material is per-call and short-lived. It is still not Rust-owned, wh
 - **Rust 1.85 or newer.** `Cargo.toml` declares `rust-version = "1.85"`. The 1.80 in older documentation was the *language* floor; the dependency graph (edition-2024 crates, `cargo::rustc-check-cfg`) needs 1.85 and cannot even be resolved by 1.75.
 - **Python 3.12 or newer.** `otrv4+.py` uses PEP 701 f-string syntax that does not parse on 3.11, so an older interpreter fails with a `SyntaxError` inside an import. `Rust/pyproject.toml` declares `requires-python = ">=3.12"`.
 - No OpenSSL dependency for the Rust core — the C extensions that linked `libssl`/`libcrypto` were retired at v10.7.5 (Phase 5.3k)
-- **Chat needs no Python `cryptography` package. Voice does** — see the note under *Primitives*.
+- **No Python `cryptography` package** is needed, for chat or voice (since v10.13.2; see the note under *Primitives*).
 - Voice additionally needs `libopus`, and Termux:API for the incoming-call notification and ringer
 
 Desktop Linux works the same way. macOS not tested. Windows not supported.

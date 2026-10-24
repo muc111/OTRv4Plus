@@ -233,6 +233,11 @@ new identity and fingerprint. Peers will see the new key and must verify again
 with SMP. The theme is back to its default. Notification channel settings and
 granted permissions remain: they are the system's, not app storage.
 
+**A file saved with Save to device is not touched.** The viewer's Save to
+device (rc.165) writes a decrypted copy to a place the user picks through
+Android's save dialog, outside the app's storage; that is its purpose, and both
+its warning and the wipe confirmation say Wipe & Exit does not delete it.
+
 **Signing in to the same account again brings back the server's roster, not
 the history.** The conversation list shows every roster contact so a
 conversation can be started with them, and the roster is held by the XMPP

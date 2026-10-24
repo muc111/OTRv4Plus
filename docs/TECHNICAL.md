@@ -328,8 +328,10 @@ Architecture:
 - **A DAKE** (Deniable Authenticated Key Exchange) establishes the session,
   hybrid from the start: X448 with ML-KEM-1024 for agreement, Ed448 ring
   signatures with ML-DSA-87 for authentication.
-- **A double ratchet** rotates keys per message, and re-runs a **fresh
-  ML-KEM-1024 exchange at every DH ratchet step** — not only at the handshake.
+- **A double ratchet** rotates keys per message, and (protocol v2) folds
+  **fresh ML-KEM-1024 secrets** into its root key across the DH ratchet steps —
+  not only at the handshake. The first DH step comes after 100 messages in one
+  direction or 24 hours; from then on, about every round trip.
 - **SMP** (Socialist Millionaire Protocol) verifies identity against a secret
   agreed out of band, with the classical zero-knowledge proof wrapped in an
   ML-KEM-1024 + ML-DSA-87 binding layer. The passphrase never goes on the wire.
@@ -467,18 +469,22 @@ orchestration layer. A native Android app is under construction alongside them
 
 Hybrid classical + post-quantum cryptography: X448 with ML-KEM-1024 for key
 agreement, Ed448 with ML-DSA-87 for authentication, keying established
-AES-256-GCM for the message itself. OTR's Ed448 ring-signature deniability is
-retained rather than traded away for the post-quantum half.
+AES-256-GCM for the message itself. The Ed448 ring signature is kept; the
+ML-DSA-87 signatures added for post-quantum authentication are attributable,
+so with protocol v2 taking part in a handshake can be proven (SPEC §10.1).
 
 What actually encrypts a message, top to bottom:
 
 ```
         X448  +  ML-KEM-1024              key agreement (DAKE)
-  Ed448 ring signature  +  ML-DSA-87      authentication: deniable, then hybrid PQ
+  Ed448 ring signature  +  ML-DSA-87      authentication: ring signature, plus
+                                          long-term ML-DSA-87 both ways (v2)
                   |
                   v
-      OTRv4+ double ratchet               a fresh ML-KEM-1024 exchange at
-      SHAKE-256 key schedule              EVERY DH ratchet step, not just once
+      OTRv4+ double ratchet (v2)          fresh ML-KEM-1024 secrets folded into
+      SHAKE-256 key schedule              the root key: about every round trip,
+                                          once the first DH step (after 100
+                                          messages or 24 h) has happened
                   |
                   v
              AES-256-GCM
@@ -488,11 +494,16 @@ What actually encrypts a message, top to bottom:
 ```
 
 Two things that chain is easy to draw wrong. **Ed448 ring signatures are not
-optional decoration** — they are what makes the authentication deniable, which
-is the property OTR exists for; ML-DSA-87 is added alongside them, not instead
-of them. And **the KEM is not a one-time handshake step**: OTRv4+ re-runs a
-fresh ML-KEM-1024 exchange at every DH ratchet step, rotating the brace key
-that feeds the SHAKE-256 schedule. That placement is the difference from
+optional decoration** — they are OTR's deniable authentication; ML-DSA-87 is
+added alongside them, not instead of them, and since protocol v2 both sides
+sign with a long-term ML-DSA-87 key, which is attributable (SPEC §10.1). And
+**the KEM is not a one-time handshake step**: in protocol v2 every sending
+chain carries an ML-KEM-1024 encapsulation key or the answer to the peer's,
+and each new secret is folded into the root key — about once per round trip,
+from the first DH ratchet step on. This engine takes that first step after 100
+messages in one direction or 24 hours; until then a conversation runs on the
+handshake's keys, which already include an ML-KEM-1024 secret (SPEC §5.1–5.2;
+before v2 the rotated key fed nothing, audit A1). That placement is the difference from
 PQXDH, which applies the KEM to the initial agreement; it is not a claim to be
 "more post-quantum" than Signal.
 
@@ -517,15 +528,15 @@ OTRv4+ occupies a narrow niche. Here is roughly where it sits relative to other 
 |---|---|---|---|---|
 | Identifier required | None (IRC nick / XMPP JID) | Phone number | None | Email/phone |
 | Transport | IRC or XMPP over I2P / Tor / TLS | Centralised servers | IRC/XMPP | Centralised homeservers |
-| Post-quantum KEM | ML-KEM-1024, every DH ratchet step | ML-KEM-1024, initial handshake (PQXDH) | None | None |
+| Post-quantum KEM | ML-KEM-1024, in the handshake and folded into the ratchet (about every round trip after the first DH step) | ML-KEM-1024, initial handshake (PQXDH) | None | None |
 | Post-quantum signatures | ML-DSA-87 | No | No | No |
 | Post-quantum SMP | Yes (hybrid) | N/A (no SMP) | No | No |
-| Deniable auth | Ed448 ring signatures | Yes (X3DH/PQXDH) | Yes | No |
+| Deniable auth | Ed448 ring signatures; but the v2 ML-DSA-87 signatures make taking part provable | Yes (X3DH/PQXDH) | Yes | No |
 | Network-layer anonymity | I2P (new destination per session) | No | Depends | No |
 
 **The niche:** synchronous, pseudonymous, end-to-end encrypted conversation — chat and voice — where both parties are online, no phone number or account exists, the network layer hides your IP, and Category-5 post-quantum parameters are used throughout, including the SMP identity check and the voice media key. Whether that hardening holds depends on the construction being correct, which has not been reviewed.
 
-On the KEM row, since it is easy to get wrong: Signal's PQXDH also uses ML-KEM-1024, so both are at the same parameter level. The difference is *placement* — PQXDH applies the KEM to the initial key agreement; OTRv4+ re-runs a fresh ML-KEM-1024 exchange at every DH ratchet step, in SMP, and per voice call and rekey. That is the distinction; it is not a claim to be "more post-quantum" than Signal.
+On the KEM row, since it is easy to get wrong: Signal's PQXDH also uses ML-KEM-1024, so both are at the same parameter level. The difference is *placement* — PQXDH applies the KEM to the initial key agreement; OTRv4+ also folds fresh ML-KEM-1024 secrets into the ratchet (about every round trip, once the first DH step has happened), and uses ML-KEM in SMP and per voice call and rekey. That is the distinction; it is not a claim to be "more post-quantum" than Signal.
 
 Signal is faster, asynchronous, and the right choice for almost everyone. OTRv4+ is for sessions where you want a pseudonymous, account-free channel over an anonymising network with a shared-secret identity check, and will pay the latency: a full hybrid-PQC handshake takes ~15 minutes over IRC/I2P, or about a minute over XMPP. See [WHY.md](WHY.md).
 
@@ -1089,7 +1100,7 @@ How a group works:
 - **Never plaintext.** A secure room refuses to send anything unencrypted,
   and never shows anything it could not decrypt.
 - **Group voice calls** derive their keys from the group's current epoch
-  (implemented; not yet tested on a phone).
+  (tested on phones, rc.89).
 
 What the group does **not** hide: the server still sees the room's name,
 who is in it, and when and how much is sent. Caveats: 0xF0A1 is a private
@@ -1653,7 +1664,7 @@ When the handle is garbage-collected, Rust's `ZeroizeOnDrop` runs and wipes the 
 
 ## Double ratchet
 
-Chain keys advance per message via SHAKE-256 KDF. DH ratchet at rekey boundaries (100 messages or 24 hours). Fresh ML-KEM-1024 keypair generated and exchanged at every DH ratchet step. Brace key rotated with each KEM shared secret. Skipped message keys cached for out-of-order delivery (max 1000 skip).
+Chain keys advance per message via SHAKE-256 KDF. The first DH ratchet step is forced at the rekey boundary (100 messages in one direction or 24 hours); after it, every reply under a new DH key is a step. Protocol v2 (SPEC §5.1–5.2): each sending chain carries an ML-KEM-1024 encapsulation key or the answer to the peer's, bound into the AEAD, and each new shared secret rotates the brace key, which is folded into every root step. Skipped message keys cached for out-of-order delivery (max 1000 skip).
 
 As of v10.7, the ratchet's X448 Diffie-Hellman runs entirely in the Rust core via `X448KeyHandle`. The `x448` crate clamps the scalar per RFC 7748 and rejects low-order points; an RFC 7748 §5.2 known-answer test gates the build.
 

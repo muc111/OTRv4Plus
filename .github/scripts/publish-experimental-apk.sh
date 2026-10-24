@@ -116,8 +116,8 @@ ${SHOTS_MD}
 
 Reported from a handset: two Android 15 phones (arm64-v8a, a Pixel and a
 Xiaomi) by the project owner, against the project's server
-\`otrv4plus.i2p\`, over the **built-in I2P router** (no other I2P app
-installed), and with the Termux client.
+\`otrv4plus.i2p\`, and with the Termux client. Only what is in this table
+has been confirmed on a phone; everything built since is in the next table.
 
 | Area | What was confirmed |
 |---|---|
@@ -127,7 +127,7 @@ installed), and with the Termux client.
 | Identity check | SMP verification, app ↔ app and app ↔ Termux |
 | Files | Encrypted file transfer, hashes checked on arrival |
 | Group files | Sending files to a secure group (confirmed rc.89) |
-| 1:1 calls | Two-way voice calls between two handsets running this app, and between this app and the Termux client |
+| 1:1 calls | Two-way voice calls between two handsets running this app, and between this app and the Termux client. **Not over the built-in router:** there, calls did not connect before rc.162 (\`call_tunnel\`); fixed, and still to be re-tested (next table) |
 | Secure groups | Post-quantum MLS groups, group messages both ways — **tested with four members** (two phones, each with the app and Termux); about 100 is the measured ceiling (see Known limits) |
 | Group check | Group verification with a shared passphrase |
 | Group calls | Two-way group voice calls (re-confirmed rc.89) |
@@ -135,51 +135,6 @@ installed), and with the Termux client.
 | Profile picture | Setting a profile picture from a phone photo; contacts receive it (rc.89 — the server log shows both the picture and its announcement stored and delivered) |
 | Moderation | Signed in as the server admin, Delete shows on every room (rc.88); an ordinary member sees Leave only (rc.83) |
 | Voice notes | Voice notes in **My voice** and **Synthetic** (rc.81: no whistle, a random voice per note; Disguised removed) |
-| Voice note ends | Record a note and press Stop straight after your last word: it takes about two seconds longer to prepare, and when played (sent and received bubbles, phone and desktop) the last word is there in full | rc.125 |
-| Calls in the report | Make or answer a call, then Diagnostics → report: the call's steps are listed (component `call`: ringing, keys_confirmed, active or the failure and its reason), with no names or addresses | rc.126 |
-| Voice note waveform | A voice-note bubble (sent and received, phone and desktop) shows the note's waveform between Play and the length; pressing Play fills the bars in from the left as it plays, the time counts up, and the bubble goes back to Play at the end | rc.127 |
-| Clean teardown | Sign in, chat with a contact so the conversation is encrypted, then Profile → Wipe & Exit (or sign out): it completes, and opening the app again shows no old session with that contact | rc.128 |
-| Group member to 1:1 | In a secure group, open ⋯ on someone else's message: **Add to contacts** (when they are not one yet) sends them a contact request; **Message privately** opens a 1:1 chat with them. Neither appears on your own messages or in an ordinary room | rc.129 |
-| Room people | In the Welcome room tap **People**: a sheet lists everyone under Moderators / Participants / Visitors with counts, a search box when there are 8 or more, and each person's address. **Add** sends a contact request, **Message** opens a 1:1 chat; someone the room hides the address of shows "This room does not show their address" and no buttons. Same on the desktop (People panel beside the room) | rc.130 |
-| Chat kinds | Chats list: 1:1 chats tinted blue, encrypted groups green, public rooms (Welcome) amber, each with a stripe on the left and its kind in words under the name. With more than one kind there are chips at the top (All · People (n) · Groups (n) · Public (n)); a chip shows only that kind. Check light and dark theme: names stay readable | rc.131 |
-| Security update | Nothing to see: the ctutils crate updated for RUSTSEC-2026-0385 (a constant-time fix). Check that 1:1 chats, a group message and a call still work as on rc.131 | rc.132 |
-| Bundled router | Nothing to see: the bundled I2P router is rebuilt from the same pinned sources. With no I2P app on the phone, sign in over I2P: the app starts its own router and connects | rc.133 |
-| Repository layout | Nothing to see: the Python sources moved into a folder of their own. Sign in, send a message, make a call and send a voice note as on the previous build | rc.134 |
-| Code split, step 1 | Nothing to see: the terminal client's output code moved to its own module. On the phone, sign in, chat and call as on the previous build | rc.135 |
-| Code split, step 2 | Nothing to see on the phone: the terminal client's SMP, TUI and admin code moved to modules of their own. Sign in, verify a contact with SMP and call as on the previous build | rc.136 |
-| Code split, step 3 | Nothing to see on the phone: more of the terminal client moved to modules of their own (tunnels, connection, presence, files, trades). Sign in over I2P, send a file and a voice note as on the previous build | rc.137 |
-| Code split, step 4 | Nothing to see on the phone: the terminal client's Termux setup moved to its own module. Make a call and record a voice note as on the previous build | rc.138 |
-| Engine without the IRC client | The APK is a little smaller: it no longer carries the IRC client, which the app never used. Sign in, open a chat with a contact, verify with SMP and call as on the previous build | rc.139 |
-| Transport split | Nothing to see: the app's server code is now in several modules. Sign in, create an account on a test server, join a room, change your picture and see the Welcome room as on the previous build | rc.140 |
-| App core split | Nothing to see: the app's Python core is now in several modules. Chat, verify with SMP, call, send a file and a voice note, use a secure group, then Wipe & Exit on a test account, as on the previous build | rc.141 |
-| Controller split | Nothing to see: the connection controller is now in several modules. Join a room, create and leave a secure group, start a group call and change your picture as on the previous build | rc.142 |
-| Call failures shown | Call a verified contact. If the call cannot go out, a line now says why (for example that its I2P tunnels could not be built) instead of nothing happening. Report the exact line | rc.143 |
-| Ban tools for admins | Sign in as an account that is NOT a server admin and open a contact's profile: there are no ban buttons. As an admin they are there | rc.143 |
-| Open a received picture | Receive a photo, close and reopen the app, open the chat: the "File received" line has Open. Open shows the picture and, under it, a Metadata line ("none" for a stripped photo) | rc.144 |
-| Failures say something | Call a contact whose phone is offline or not verified, send to a group while signed out: each says what went wrong instead of nothing | rc.145 |
-| Failure codes in the report | Make a call fail (contact offline), then Profile → Diagnostics → export: the report starts with "Failures seen" listing the code (for example call_tunnel), how often and when | rc.146 |
-| Your own I2P router first | With i2pd or the I2P app running (SAM on), sign in: the connection screen says it is using the I2P router already on this phone. Stop it and sign in again: the built-in router starts | rc.147 |
-| PDFs in a sealed box | Receive a PDF and open it: the pages show as before. A PDF with links or scripts lists them under the page and in the "Open with another app" warning | rc.148 |
-| Code split, step 5 | Nothing to see on the phone: the terminal clients' longest functions are split up. Sign in, chat, verify and call as on the previous build | rc.149 |
-| Code split, step 6 | Nothing to see: sign-in code is split into named steps. Sign in over I2P, then with a wrong password, and check each says what happened as on the previous build | rc.150 |
-| Code split, step 7 | Nothing to see: the conversation screen's code is in four files. Open a chat, a room and a secure group; verify, call, send a file and a voice note as on the previous build | rc.151 |
-| Zoom in the viewer | Open a received photo or PDF: pinch, drag, double-tap and the − / 100% / + buttons zoom it; the Metadata line under it scrolls when long | rc.152 |
-| Chats that need you | Ask this phone to verify from another one: that chat pulses yellow in the list with "⚑ Verification requested", and so does the Chats tab, until you answer | rc.152 |
-| Code split, step 8 | Nothing to see: the Rooms screen is in parts. Open Rooms, create and delete an encrypted group, join a plain room, as on the previous build | rc.153 |
-| Any-year birthdays | Profile → edit, Birthday -450000-01-01, save: it is kept and shown. 2023-02-29 is refused | rc.154 |
-| Code split, step 10 | Nothing to see: the chat list and the conversation screen are in parts. Open a chat, use ⋮ (profile, block), accept an invitation, change the theme, as on the previous build | rc.155 |
-| Code split, step 11 | Nothing to see: the app's navigation is in parts. Move between Chats, People, Rooms and Profile; open a contact's profile from People and press Back (returns to People), as on the previous build | rc.156 |
-| Security fixes G1, G2, X1 | Nothing new to see on the phone: this build repairs the previous one and closes three tracked issues (see docs/SECURITY_ISSUES.md). Sign in, chat, verify and call as before | rc.157 |
-| Post-quantum ratchet (v2) | Both phones on this build: chat for a while in both directions; every message arrives. Messages are larger (about 2.5 KB) once the conversation is under way. A phone on an older build still chats with this one, using the previous ratchet | rc.158 |
-| Post-quantum sign-in to a chat (v2) | Both phones on this build: open a chat; it becomes encrypted as before (the first handshake is a little larger). Contact's profile → Reset trust asks first and then forgets their keys; the next chat pins them again. A phone on an older build is now refused with a sentence saying both need this version | rc.159 |
-| Inviting people online | In a secure group → Invite people online, tick someone who is NOT your contact: the group says a contact request was sent; once they accept, the invitation arrives on their phone. Ticking a contact still sends at once. Signing in to a clearnet or .onion server (with Orbot) starts no I2P router | rc.160 |
-| Sign in again after Sign out | Sign out, then sign in again at once (also after the account was taken over by another phone): it connects, over I2P too, without restarting the app | rc.161 |
-| Calls over the built-in router | Both phones on this build, no separate I2P app: call, answer on the other phone; you hear each other within a minute or two. A retry right after a failed call is not refused | rc.162 |
-| Deleted groups | Phone A creates a group with B and C, then deletes it: on B and C it disappears from the list within seconds, with its messages; reconnecting does not bring it back. Same for a plain room A owns | rc.163 |
-| Viewer buttons | Open a received photo and a PDF: Open with another app, − / 100% / + and Previous / Next are all above the navigation bar and can be tapped | rc.164 |
-| Save to device | Open a received photo or PDF → Save to device…: read the warning, choose Downloads, save. Open it in Files. Wipe & Exit, reinstall: the saved copy is still in Downloads | rc.165 |
-| Viewer tabs | Open a photo taken with location on: Metadata lists GPS position, camera and time, and scrolls to the end. Hidden content says nothing follows the picture; a photo with a ZIP appended (cat photo.jpg x.zip > y.jpg) shows its size and says ZIP. A PDF lists its findings | rc.166 |
-| Viewer tabs (fix) | As rc.166; the Metadata tab no longer lists a SHA-256 | rc.167 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
@@ -222,6 +177,52 @@ installed), and with the Termux client.
 | Photos | The "hidden information" question strips a camera photo's location | — |
 | Network change | Reconnecting by itself after switching between Wi-Fi and mobile data | — |
 | Desktop app | The desktop (Linux/Qubes) client against the same server | — |
+| Voice note ends | Record a note and press Stop straight after your last word: it takes about two seconds longer to prepare, and when played (sent and received bubbles, phone and desktop) the last word is there in full | rc.125 |
+| Calls in the report | Make or answer a call, then Diagnostics → report: the call's steps are listed (component `call`: ringing, keys_confirmed, active or the failure and its reason), with no names or addresses | rc.126 |
+| Voice note waveform | A voice-note bubble (sent and received, phone and desktop) shows the note's waveform between Play and the length; pressing Play fills the bars in from the left as it plays, the time counts up, and the bubble goes back to Play at the end | rc.127 |
+| Clean teardown | Sign in, chat with a contact so the conversation is encrypted, then Profile → Wipe & Exit (or sign out): it completes, and opening the app again shows no old session with that contact | rc.128 |
+| Group member to 1:1 | In a secure group, open ⋯ on someone else's message: **Add to contacts** (when they are not one yet) sends them a contact request; **Message privately** opens a 1:1 chat with them. Neither appears on your own messages or in an ordinary room | rc.129 |
+| Room people | In the Welcome room tap **People**: a sheet lists everyone under Moderators / Participants / Visitors with counts, a search box when there are 8 or more, and each person's address. **Add** sends a contact request, **Message** opens a 1:1 chat; someone the room hides the address of shows "This room does not show their address" and no buttons. Same on the desktop (People panel beside the room) | rc.130 |
+| Chat kinds | Chats list: 1:1 chats tinted blue, encrypted groups green, public rooms (Welcome) amber, each with a stripe on the left and its kind in words under the name. With more than one kind there are chips at the top (All · People (n) · Groups (n) · Public (n)); a chip shows only that kind. Check light and dark theme: names stay readable | rc.131 |
+| Security update | Nothing to see: the ctutils crate updated for RUSTSEC-2026-0385 (a constant-time fix). Check that 1:1 chats, a group message and a call still work as on rc.131 | rc.132 |
+| Bundled router | Nothing to see: the bundled I2P router is rebuilt from the same pinned sources. With no I2P app on the phone, sign in over I2P: the app starts its own router and connects | rc.133 |
+| Repository layout | Nothing to see: the Python sources moved into a folder of their own. Sign in, send a message, make a call and send a voice note as on the previous build | rc.134 |
+| Code split, step 1 | Nothing to see: the terminal client's output code moved to its own module. On the phone, sign in, chat and call as on the previous build | rc.135 |
+| Code split, step 2 | Nothing to see on the phone: the terminal client's SMP, TUI and admin code moved to modules of their own. Sign in, verify a contact with SMP and call as on the previous build | rc.136 |
+| Code split, step 3 | Nothing to see on the phone: more of the terminal client moved to modules of their own (tunnels, connection, presence, files, trades). Sign in over I2P, send a file and a voice note as on the previous build | rc.137 |
+| Code split, step 4 | Nothing to see on the phone: the terminal client's Termux setup moved to its own module. Make a call and record a voice note as on the previous build | rc.138 |
+| Engine without the IRC client | The APK is a little smaller: it no longer carries the IRC client, which the app never used. Sign in, open a chat with a contact, verify with SMP and call as on the previous build | rc.139 |
+| Transport split | Nothing to see: the app's server code is now in several modules. Sign in, create an account on a test server, join a room, change your picture and see the Welcome room as on the previous build | rc.140 |
+| App core split | Nothing to see: the app's Python core is now in several modules. Chat, verify with SMP, call, send a file and a voice note, use a secure group, then Wipe & Exit on a test account, as on the previous build | rc.141 |
+| Controller split | Nothing to see: the connection controller is now in several modules. Join a room, create and leave a secure group, start a group call and change your picture as on the previous build | rc.142 |
+| Call failures shown | Call a verified contact. If the call cannot go out, a line now says why (for example that its I2P tunnels could not be built) instead of nothing happening. Report the exact line | rc.143 |
+| Ban tools for admins | Sign in as an account that is NOT a server admin and open a contact's profile: there are no ban buttons. As an admin they are there | rc.143 |
+| Open a received picture | Receive a photo, close and reopen the app, open the chat: the "File received" line has Open. Open shows the picture; its Metadata tab says "none" for a stripped photo (tabs since rc.166) | rc.144 |
+| Failures say something | Call a contact whose phone is offline or not verified, send to a group while signed out: each says what went wrong instead of nothing | rc.145 |
+| Failure codes in the report | Make a call fail (contact offline), then Profile → Diagnostics → export: the report starts with "Failures seen" listing the code (for example call_tunnel), how often and when | rc.146 |
+| Your own I2P router first | With i2pd or the I2P app running (SAM on), sign in: the connection screen says it is using the I2P router already on this phone. Stop it and sign in again: the built-in router starts | rc.147 |
+| PDFs in a sealed box | Receive a PDF and open it: the pages show as before. A PDF with links or scripts lists them in the Metadata and Hidden content tabs and in the "Open with another app" warning | rc.148 |
+| Code split, step 5 | Nothing to see on the phone: the terminal clients' longest functions are split up. Sign in, chat, verify and call as on the previous build | rc.149 |
+| Code split, step 6 | Nothing to see: sign-in code is split into named steps. Sign in over I2P, then with a wrong password, and check each says what happened as on the previous build | rc.150 |
+| Code split, step 7 | Nothing to see: the conversation screen's code is in four files. Open a chat, a room and a secure group; verify, call, send a file and a voice note as on the previous build | rc.151 |
+| Zoom in the viewer | Open a received photo or PDF: pinch, drag, double-tap and the − / 100% / + buttons zoom it | rc.152 |
+| Chats that need you | Ask this phone to verify from another one: that chat pulses yellow in the list with "⚑ Verification requested", and so does the Chats tab, until you answer | rc.152 |
+| Code split, step 8 | Nothing to see: the Rooms screen is in parts. Open Rooms, create and delete an encrypted group, join a plain room, as on the previous build | rc.153 |
+| Any-year birthdays | Profile → edit, Birthday -450000-01-01, save: it is kept and shown. 2023-02-29 is refused | rc.154 |
+| Code split, step 10 | Nothing to see: the chat list and the conversation screen are in parts. Open a chat, use ⋮ (profile, block), accept an invitation, change the theme, as on the previous build | rc.155 |
+| Code split, step 11 | Nothing to see: the app's navigation is in parts. Move between Chats, People, Rooms and Profile; open a contact's profile from People and press Back (returns to People), as on the previous build | rc.156 |
+| Security fixes G1, G2, X1 | Nothing new to see on the phone: this build repairs the previous one and closes three tracked issues (see docs/SECURITY_ISSUES.md). Sign in, chat, verify and call as before | rc.157 |
+| Post-quantum ratchet (v2) | Both phones on this build or newer: chat for a while in both directions; every message arrives. Messages grow to about 2.5 KB once the ratchet has taken its first step, after 100 messages in one direction or a day; keep chatting past that | rc.158 |
+| Post-quantum sign-in to a chat (v2) | Both phones on this build: open a chat; it becomes encrypted as before (the first handshake is a little larger). Contact's profile → Reset trust asks first and then forgets their keys; the next chat pins them again. A phone on an older build is now refused with a sentence saying both need this version | rc.159 |
+| Inviting people online | In a secure group → Invite people online, tick someone who is NOT your contact: the group says a contact request was sent; once they accept, the invitation arrives on their phone. Ticking a contact still sends at once. Signing in to a clearnet or .onion server (with Orbot) starts no I2P router | rc.160 |
+| Sign in again after Sign out | Sign out, then sign in again at once (also after the account was taken over by another phone): it connects, over I2P too, without restarting the app | rc.161 |
+| Calls over the built-in router | Both phones on this build, no separate I2P app: call, answer on the other phone; you hear each other within a minute or two. A retry right after a failed call is not refused | rc.162 |
+| Deleted groups | Phone A creates a group with B and C, then deletes it: on B and C it disappears from the list within seconds, with its messages; reconnecting does not bring it back. Same for a plain room A owns | rc.163 |
+| Viewer buttons | Open a received photo and a PDF: Open with another app, − / 100% / + and Previous / Next are all above the navigation bar and can be tapped | rc.164 |
+| Save to device | Open a received photo or PDF → Save to device…: read the warning, choose Downloads, save. Open it in Files. Wipe & Exit, reinstall: the saved copy is still in Downloads | rc.165 |
+| Viewer tabs | Open a photo taken with location on: Metadata lists GPS position, camera and time, and scrolls to the end. Hidden content says nothing follows the picture; a photo with a ZIP appended (cat photo.jpg x.zip > y.jpg) shows its size and says ZIP. A PDF lists its findings | rc.166 |
+| Viewer tabs (fix) | As rc.166; the Metadata tab no longer lists a SHA-256 | rc.167 |
+| Wipe & Exit text | Profile → Wipe & Exit: the confirmation says files saved with Save to device are not touched; cancel | rc.168 |
 
 ## ⚠️ Known limits
 
@@ -242,6 +243,14 @@ installed), and with the Termux client.
   audio to every other phone directly over I2P, so a larger group has no
   call button and stays text only (rc.84).
 - Secure groups made before rc.27 must be re-created to add members.
+- **Both phones need rc.159 or newer.** Since protocol v2 (post-quantum
+  ratchet and authentication) an older build is refused, with a sentence
+  saying so; there is no fallback to the old protocol.
+- **A file saved to the device is outside the app.** Save to device writes a
+  decrypted copy where you choose; Wipe & Exit does not delete it.
+- **Not independently audited.** The cryptography has been tested and reviewed
+  by the developer with AI assistance; see \`docs/SECURITY_ISSUES.md\` for what
+  is open.
 
 The full gate list is \`docs/ANDROID_XMPP_MILESTONE.md\` §7; the device-test
 procedures are \`docs/ANDROID_MESSAGING_DEVICE_TEST.md\` and
@@ -293,9 +302,12 @@ these where it can, but the server settings decide how well:
 - **A TLS certificate for every host**, \`<host>\` and \`conference.<host>\`,
   named \`<host>.crt\`/\`.key\` in Prosody's \`certs\` folder, readable by the
   prosody user (\`prosodyctl check certs\`). Without one Prosody refuses the
-  TLS handshake and the app reports \`tls_failed\`. The app accepts any
-  certificate over I2P, because the .b32.i2p address already proves the
-  server.
+  TLS handshake and the app reports \`tls_failed\`. Over I2P and Tor the
+  certificate is not checked: a \`.b32.i2p\` or \`.onion\` address is itself
+  the server's key, and for a name like \`otrv4plus.i2p\` the app pins the
+  destination it first reached and refuses a different one (X1). Wherever
+  the certificate is not checked, the app signs in with SCRAM only, never a
+  plain password.
 - **Accounts live on the host name.** \`aliases\` is not a Prosody option:
   an account must be \`user@otrv4plus.i2p\`, not \`user@<b32>.b32.i2p\` (the
   app maps the latter for the built-in server).
@@ -304,11 +316,11 @@ these where it can, but the server settings decide how well:
   Pictures (XEP-0084, PEP) are contacts-only.
 
 **An I2P router is built in** (new in rc.45): i2pd, with only its SAM
-bridge listening, on loopback. With "I2P router: Automatic" (the default) the
-app uses an I2P app already running on the phone when its SAM bridge answers,
-and starts its own otherwise, so no separate I2P app is needed. It relays a
-little traffic for others (bandwidth class L, at most 50 transit tunnels),
-is never a floodfill, opens no ports on your home router (no UPnP), and is
+bridge listening, on loopback, on a random port. The app uses an I2P app
+already running on the phone when its SAM bridge answers on the usual port,
+and starts its own otherwise, so no separate I2P app is needed. It relays no
+traffic for others (no transit tunnels, since rc.118), is never a floodfill,
+opens no ports on your home router (no UPnP), and is
 kept running between connections (a router started cold cannot be reached
 for minutes) and stopped on Sign out, Wipe & Exit and when the app is closed. The icon is a
 **placeholder** (AI-generated, no licence asserted -- see \`docs/ASSETS.md\`).

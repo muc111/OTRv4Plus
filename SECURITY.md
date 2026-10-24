@@ -59,10 +59,12 @@ as proof of security.
 ### Protocol security
 
 OTRv4+ is a protocol implementation under active development with a hybrid
-post-quantum design. Some documented limitations need a future protocol
-version rather than an in-place, compatibility-breaking change: A1 (the
-ratchet brace key is not yet folded into the root key) and A2 (the DAKE's
-post-quantum authentication is initiator-only). See
+post-quantum design. Protocol v2 (Android rc.159, required of both peers;
+an older peer is refused) addresses the two design findings that needed a
+protocol change: A1 (fresh ML-KEM secrets are now folded into the ratchet's
+root key) and A2 (both sides now authenticate with a long-term ML-DSA-87 key,
+pinned per contact). Its cost: the ML-DSA-87 signatures are attributable, so
+taking part in a conversation can be proven (SPEC §10.1). See
 [docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) and [docs/SPEC.md](docs/SPEC.md).
 
 **Security status: extensively tested and hardened through developer-led and
