@@ -84,6 +84,7 @@ on:
       - "client/otrv4plus_host.py"
       - "client/otrv4plus_tunnels.py"
       - "client/otrv4plus_xmpp_presence.py"
+      - "client/otrv4plus_termux.py"
       - "client/otrv4plus_xmpp_connection.py"
       - "client/otrv4plus_voicenote.py"
       - "client/otrv4plus_roomsync.py"

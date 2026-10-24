@@ -441,6 +441,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_host.py",
             "otrv4plus_tunnels.py",
             "otrv4plus_xmpp_presence.py",
+            "otrv4plus_termux.py",
             "otrv4plus_xmpp_connection.py",
             "otrv4plus_voicenote.py",
             "otrv4plus_roomsync.py",

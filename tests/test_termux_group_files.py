@@ -246,9 +246,9 @@ class TestAudiotestOnLinux:
         monkeypatch.setattr(X._host, "IS_TERMUX", False)
         monkeypatch.setattr(A, "open_playback", lambda **k: (Out(), []))
         monkeypatch.setattr(A, "open_capture", lambda **k: (In(), []))
-        monkeypatch.setattr(X, "_capture_selftest",
+        monkeypatch.setattr(X._termux, "_capture_selftest",
                             lambda seconds=3.0: (True, 8, 300, "pulseaudio"))
-        asyncio.run(X._audio_selftest_async())
+        asyncio.run(X._termux._audio_selftest_async(X.voice_available))
         out = capsys.readouterr().out
         assert "Termux-only" not in out
         assert "speaker: tone sent via pulseaudio" in out

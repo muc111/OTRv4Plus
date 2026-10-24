@@ -23,7 +23,7 @@ walls of base64 in the conversation.
 
 ONE GATE, ONE DEFINITION OF VERIFIED
 ====================================
-`otrv4plus_xmpp._file_peer_verified` reads the VOICE manager's
+`otrv4plus_xmpp_files._file_peer_verified` reads the VOICE manager's
 `_smp_verified` and says why: "Reads the voice manager's `_smp_verified`,
 which consults only the engine's published predicates -- not display state,
 not a trust pin, not the blue OTRv4+ marker. One gate, one definition of
@@ -222,7 +222,7 @@ class FileBridge:
     def _verified(self, peer: str) -> bool:
         """The gate, read from the ONE place Android defines it.
 
-        `otrv4plus_xmpp._file_peer_verified` reads the voice manager's
+        `otrv4plus_xmpp_files._file_peer_verified` reads the voice manager's
         `_smp_verified` for exactly this reason -- "One gate, one definition
         of verified" -- and this does the same through `CallBridge`. A second
         predicate here could drift from the one voice uses, and then a peer
@@ -650,7 +650,7 @@ class FileBridge:
 
         The transfer key is derived from it INSIDE Rust; Python passes the
         handle along and never sees anything derived from it. Copied in shape
-        from `otrv4plus_xmpp._file_transfer_ratchet` because it is the same
+        from `otrv4plus_xmpp_files._file_transfer_ratchet` because it is the same
         question with the same answer.
         """
         try:

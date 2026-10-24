@@ -32,6 +32,7 @@ from xmpp_double import bare_client
 
 ft = pytest.importorskip("otrv4plus_filetransfer")
 xmpp = pytest.importorskip("otrv4plus_xmpp")
+import otrv4plus_xmpp_files as _files  # noqa: E402
 
 
 class _Transport:
@@ -205,9 +206,9 @@ class TestTheRateLimiterKnowsAboutTransfers:
         fragments = (340 * 1024 // ft.WIRE_CHUNK_PLAIN + 1) * 5
         chat_capacity = xmpp._RATE_MAX / xmpp._RATE_WINDOW
         bulk_capacity = xmpp._RATE_MAX_BULK / xmpp._RATE_WINDOW
-        assert xmpp._files._FILE_FRAGMENTS_PER_SEC > chat_capacity, (
+        assert _files._FILE_FRAGMENTS_PER_SEC > chat_capacity, (
             "pacing is at or below the chat rate, so the fix is moot")
-        assert xmpp._files._FILE_FRAGMENTS_PER_SEC < bulk_capacity, (
+        assert _files._FILE_FRAGMENTS_PER_SEC < bulk_capacity, (
             "the sender fills the whole budget, starving chat and keepalives")
         assert fragments > xmpp._RATE_MAX, (
             "the test file no longer exceeds one window; pick a bigger one")
@@ -318,7 +319,7 @@ class TestThePacingIsReal:
         asyncio.run(_drive())
         assert t.chunks == [0, 1, 2, 3], "the pump did not finish"
         assert len(slept) == 4, "one pause per chunk sent"
-        expected = 5 / xmpp._files._FILE_FRAGMENTS_PER_SEC
+        expected = 5 / _files._FILE_FRAGMENTS_PER_SEC
         assert all(abs(s - expected) < 1e-9 for s in slept), (
             "the pause does not follow the stanzas actually sent: %s" % slept)
 
@@ -355,8 +356,8 @@ class TestThePacingIsReal:
                 asyncio.sleep = orig
 
         asyncio.run(_drive())
-        assert slept == [1 / xmpp._files._FILE_FRAGMENTS_PER_SEC,
-                         7 / xmpp._files._FILE_FRAGMENTS_PER_SEC]
+        assert slept == [1 / _files._FILE_FRAGMENTS_PER_SEC,
+                         7 / _files._FILE_FRAGMENTS_PER_SEC]
 
 
 class TestAnAcceptedTransferIsNotRateLimitedAtAll:
