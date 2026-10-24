@@ -174,6 +174,7 @@ installed), and with the Termux client.
 | Post-quantum sign-in to a chat (v2) | Both phones on this build: open a chat; it becomes encrypted as before (the first handshake is a little larger). Contact's profile → Reset trust asks first and then forgets their keys; the next chat pins them again. A phone on an older build is now refused with a sentence saying both need this version | rc.159 |
 | Inviting people online | In a secure group → Invite people online, tick someone who is NOT your contact: the group says a contact request was sent; once they accept, the invitation arrives on their phone. Ticking a contact still sends at once. Signing in to a clearnet or .onion server (with Orbot) starts no I2P router | rc.160 |
 | Sign in again after Sign out | Sign out, then sign in again at once (also after the account was taken over by another phone): it connects, over I2P too, without restarting the app | rc.161 |
+| Calls over the built-in router | Both phones on this build, no separate I2P app: call, answer on the other phone; you hear each other within a minute or two. A retry right after a failed call is not refused | rc.162 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

@@ -214,6 +214,7 @@ class CallBridge:
         """
         with self._lock:
             if self._manager is not None:
+                self._sync_sam(self._manager)
                 return self._manager
             try:
                 # Inside the function on purpose -- see the module docstring.
@@ -242,7 +243,26 @@ class CallBridge:
                                                        loop)
             except Exception:
                 return None
+            self._sync_sam(self._manager)
             return self._manager
+
+    def _sync_sam(self, manager) -> None:
+        """Point the manager's call tunnels at the connection's SAM bridge.
+
+        Device report, 2026-10-24 (`call_tunnel`, `peers=0`): the manager was
+        built with its default, 127.0.0.1:7656, while the app's built-in
+        router listens on a random port (`app.sam_endpoint`, set by the
+        controller at each sign-in). Every call tunnel dialled a port with
+        nothing behind it, and the ready-made call path -- built on the right
+        port and looked up by address -- was never used. Calls only worked
+        when an I2P app happened to listen on 7656. Synced on every entry,
+        since the port changes between sign-ins.
+        """
+        try:
+            host, port = self._app.sam_endpoint
+            manager.sam_host, manager.sam_port = str(host), int(port)
+        except Exception:
+            pass
 
     # -- availability ---------------------------------------------------------
 

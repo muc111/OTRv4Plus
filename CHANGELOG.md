@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.162 — 2026-10-24 — calls connect over the built-in router (core 0.13.1)
+
+- **Answered calls never connected** (Pixel 7 report: `call_tunnel x2`,
+  `call_rate_limited x3`, audio running with `peers=0`). The call manager
+  dialled the I2P router at its default address, 127.0.0.1:7656, while the
+  app's built-in router listens on a random port: every call tunnel went to a
+  port with nothing behind it, and the ready-made call path (built on the right
+  port, looked up by address) was never used. Calls only worked when an I2P app
+  happened to listen on 7656. The manager now follows the connection's router,
+  re-read at every call, answer and incoming signal.
+- A call whose tunnel failed before its invitation went out no longer counts
+  against the "one attempt every few seconds" limit, so a retry is not refused.
+- `tests/test_call_sam_endpoint.py`: the real call manager against a stand-in
+  SAM port.
+
 ## Android 0.7.0-experimental.rc.161 — 2026-10-24 — signing in again after Sign out works (core 0.13.1)
 
 - **Device report:** the same account was signed in on a second phone, so

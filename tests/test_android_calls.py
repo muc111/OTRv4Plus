@@ -541,7 +541,10 @@ def _cleared_the_gate(app, peer):
         self._last_invite[peer] = now
 
     So its presence is a precise, deterministic marker of "the gate let this
-    through", and its absence of "it did not".
+    through". Since 2026-10-24 a call whose tunnel fails before its INVITE
+    goes out removes it again (no INVITE, so no rate-limit charge), and in a
+    container the tunnel always fails -- so a `last_refusal` of "tunnel" or
+    "key_exchange", both decided after the gate, counts too.
 
     A COARSER TEST WOULD PASS FOR THE WRONG REASON. Asserting merely that no
     error was reported does not work: past the gate, `start_call` goes on to
@@ -553,7 +556,8 @@ def _cleared_the_gate(app, peer):
     manager = app.calls._ensure_manager()
     if manager is None:
         return False
-    return peer in getattr(manager, "_last_invite", {})
+    return (peer in getattr(manager, "_last_invite", {})
+            or getattr(manager, "last_refusal", "") in ("tunnel", "key_exchange"))
 
 
 # -- the Kotlin side ---------------------------------------------------------

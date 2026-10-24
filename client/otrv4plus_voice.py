@@ -3184,6 +3184,7 @@ class VoiceCallManager:
         except Exception as exc:
             _print("[voice] could not start the key exchange: %s"
                    % _san(str(exc), 200))
+            self._last_invite.pop(peer, None)   # nothing was sent: retry freely
             self.last_refusal = "key_exchange"
             return False
         session.on_stream_lost = self._handle_stream_lost
@@ -3202,6 +3203,10 @@ class VoiceCallManager:
             _print("[voice] could not create SAM session: %s"
                    % _san(str(exc), 200))
             await self.end_call(peer, notify_peer=False)
+            # No INVITE went out, so the attempt does not count against the
+            # retry interval: it used to turn one tunnel failure into a
+            # string of `call_rate_limited` on the retries.
+            self._last_invite.pop(peer, None)
             self.last_refusal = "tunnel"
             return False
 
