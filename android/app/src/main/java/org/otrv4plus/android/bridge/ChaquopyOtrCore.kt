@@ -245,6 +245,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     private fun requireApp(): PyObject =
         app ?: throw OtrBridgeException("not_initialized")
 
+    /** Whether the engine is up: false before [initialize] and after
+     *  [shutdown], which Sign out runs. */
+    val isInitialized: Boolean get() = app != null
+
     // ── Connection control ────────────────────────────────────────────────
     //
     // Deliberately NOT on the OtrCore interface. OtrCore is about an

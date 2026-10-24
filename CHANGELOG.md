@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.161 — 2026-10-24 — signing in again after Sign out works (core 0.13.1)
+
+- **Device report:** the same account was signed in on a second phone, so
+  the server replaced the first phone's session (one session per account,
+  newest wins — by design). On the first phone, Sign out and sign in again
+  never connected.
+- **Cause 1:** Sign out's teardown runs in the background (disconnect, then
+  the built-in router). A sign-in in that window used the old router; the
+  teardown then stopped it under the new attempt and marked the link stopped.
+  A new connection now waits for the teardown to finish.
+- **Cause 2:** Sign out shuts the engine down, but the service (still bound
+  to the screen) kept believing it was initialised, so every later attempt
+  failed `not_initialized`. The engine's own state is checked now.
+- `tests/test_android_signout_relogin.py`.
+
 ## Android 0.7.0-experimental.rc.160 — 2026-10-24 — inviting people online works; routing parity (core 0.13.1)
 
 - **"Invite people online" sent nothing to non-contacts** (device report).

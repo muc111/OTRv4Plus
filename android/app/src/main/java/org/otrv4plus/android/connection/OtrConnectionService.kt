@@ -315,11 +315,14 @@ class OtrConnectionService : Service() {
                 // `teardown` outlives the service for exactly this window.
                 // `shutdown()` is idempotent, so a teardown that overlaps
                 // another is harmless.
-                teardown.launch {
+                val stopping = pendingTeardown
+                pendingTeardown = teardown.launch {
+                    stopping?.join()
                     withContext(Dispatchers.IO) {
                         runCatching { core.shutdown() }
                     }
                 }
+                initialised = false
                 // And take the notification down with them. A count of unread
                 // messages left in the shade after a sign-out is a statement
                 // about an account that is no longer on this device.
@@ -550,7 +553,7 @@ class OtrConnectionService : Service() {
                 }
             },
         ))
-        teardown.launch {
+        pendingTeardown = teardown.launch {
             withContext(Dispatchers.IO) { runner.run() }
         }
     }
@@ -660,7 +663,7 @@ class OtrConnectionService : Service() {
         // I2P lease belonging to an app the user has closed, which is the
         // exact failure `ChaquopyOtrCore.shutdown` documents and orders its
         // own calls to avoid.
-        teardown.launch {
+        pendingTeardown = teardown.launch {
             withContext(Dispatchers.IO) {
                 runCatching { core.cancelConnect() }
                 runCatching { core.disconnect() }.getOrNull()?.let {
@@ -698,6 +701,11 @@ class OtrConnectionService : Service() {
     }
 
     private suspend fun connectLoop() {
+        // A Stop or Sign out still tearing down (disconnect, then the
+        // router) finishes first. Device report, 2026-10-24: signing in again
+        // during that window used the old router, which the teardown then
+        // stopped underneath the new attempt, and marked the link STOPPED.
+        pendingTeardown?.join()
         while (scope.isActive) {
             if (!reconnect.beginAttempt()) return
             enter(if (reconnect.attempts == 0) LinkPhase.CONNECTING
@@ -714,7 +722,11 @@ class OtrConnectionService : Service() {
             // one, and building it is cheap next to a tunnel.
             val result = withContext(Dispatchers.IO) {
                 runCatching {
-                    if (!initialised) {
+                    // The engine's own state, not only our flag: Sign out
+                    // shuts the engine down, and a service the UI keeps
+                    // bound survives that with `initialised` still true --
+                    // every later sign-in then failed `not_initialized`.
+                    if (!initialised || !core.isInitialized) {
                         val init = core.initialize()
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
@@ -1365,6 +1377,11 @@ class OtrConnectionService : Service() {
          */
         private val teardown =
             CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+        /** The latest teardown on [teardown], which a new connection waits
+         *  for (connectLoop). In the companion: it outlives the instance. */
+        @Volatile
+        private var pendingTeardown: Job? = null
 
         private const val CHANNEL_ID = "otrv4plus.connection"
         private const val NOTIFICATION_ID = 1
