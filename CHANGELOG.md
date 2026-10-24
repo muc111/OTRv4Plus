@@ -9,9 +9,10 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 - **Wipe & Exit's confirmation says what it does not touch:** files you saved
   outside the app with Save to device (rc.165). It said it erased "received
   files from this device", which is true of the app's own copies only.
-- **Documentation audit before public testing.** The release page listed every
-  per-build check since rc.125 under "Verified on a real device"; none had
-  been confirmed on a phone, and they are now in the "NOT verified" table. It
+- **Documentation audit before public testing.** The release page's
+  "Verified on a real device" table keeps what was confirmed on phones up to
+  rc.157 (a later regression is marked in its row: calls over the built-in
+  router, fixed in rc.162); builds since are in the "NOT verified" table. It
   also said the built-in router relays transit traffic (it does not, since
   rc.118), that a `.i2p` name alone proves the server (the destination is
   pinned, X1), and that an older build still chats with rc.158. README,

@@ -231,18 +231,21 @@ class TestNothingClaimsMoreThanWasDone:
 
 class TestNothingUnverifiedReadsAsVerified:
     """Owner, 2026-10-24, before asking for testers in public: no leftover
-    or false claim. Every per-build row from rc.125 to rc.167 had been added
-    to the "Verified on a real device" table though none was confirmed on a
-    phone; the router was said to relay transit traffic it does not carry."""
+    or false claim. The router was said to relay transit traffic it does not
+    carry, and a .i2p name to prove the server."""
 
     @staticmethod
     def _table(notes, heading, nxt):
         return notes[notes.index(heading):notes.index(nxt)]
 
-    def test_the_verified_table_has_no_per_build_rows(self, notes):
+    def test_builds_not_yet_tried_on_a_phone_are_not_listed_as_verified(self, notes):
+        """Owner: what is in the verified table up to rc.157 was confirmed on
+        phones (failures since were regressions, marked in their rows).
+        Builds from rc.158 on are not confirmed until a device report says so."""
         verified = self._table(notes, "## Verified on a real device", "## NOT verified")
-        assert not re.search(r"^\| [^|\n]+ \| [^|\n]+ \| rc\.\d+ \|$", verified, re.M), \
-            "a 'what to test | since' row belongs in the NOT verified table"
+        found = [int(n) for n in re.findall(r"\(rc\.(\d+)[;)]", verified)]
+        assert found and max(found) <= 157, found
+        assert "**Regressed:**" in verified, "a known regression is marked where it is listed"
 
     def test_new_rows_go_to_the_not_verified_table(self, notes):
         unverified = self._table(notes, "## NOT verified", "## ⚠️ Known limits")
