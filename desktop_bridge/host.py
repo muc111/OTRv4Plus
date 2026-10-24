@@ -100,8 +100,9 @@ CONTROLLER_OPS: Dict[str, tuple] = {
     "remove_group_member": ("room", "member"),
     "delete_secure_group": ("room",),
     # Avatars arrive as PIXELS (RGBA, base64 text) decoded by the bounded
-    # decoder in android_bridge/avatar.py: no image decoder in the GUI ever
-    # reads a file a peer sent. Our own picture goes the other way as PNG
+    # decoder in android_bridge/avatar.py: no image decoder in the GUI reads
+    # a peer's avatar (a received FILE is decoded only in the viewer, on an
+    # explicit Open). Our own picture goes the other way as PNG
     # the GUI made from the user's own file, checked like anybody's.
     "avatar_index": (),
     "avatar_pixels": ("jid",),
@@ -168,6 +169,7 @@ APP_OPS: Dict[str, tuple] = {
     "transfers": (),
     "received_file_dir": (),
     "save_received": ("path", "destination"),
+    "open_received_to": ("path", "directory"),
 }
 
 #: How often queued engine events are pushed to the GUI.

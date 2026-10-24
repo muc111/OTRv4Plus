@@ -13,7 +13,7 @@ group = "org.otrv4plus"
 // The desktop app's own version (docs/VERSIONING.md). Not the Rust core's: it
 // started at the core's 0.13.1 only so packages already installed upgrade.
 // The README badge is tested against this line.
-version = "0.13.1"
+version = "0.14.0"
 
 dependencies {
     implementation(compose.desktop.currentOs)
@@ -86,7 +86,11 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/crypto/EncryptionLauncher.kt",
     "org/otrv4plus/android/crypto/EncryptionProvider.kt",
     "org/otrv4plus/android/crypto/EncryptionSelector.kt",
+    "org/otrv4plus/android/crypto/ExifReader.kt",
+    "org/otrv4plus/android/crypto/FileExport.kt",
+    "org/otrv4plus/android/crypto/FileFacts.kt",
     "org/otrv4plus/android/crypto/HandshakeUi.kt",
+    "org/otrv4plus/android/crypto/HiddenData.kt",
     "org/otrv4plus/android/crypto/MetadataChoice.kt",
     "org/otrv4plus/android/crypto/MicPermission.kt",
     "org/otrv4plus/android/crypto/MlsProvider.kt",
@@ -94,6 +98,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/crypto/Omemo2Provider.kt",
     "org/otrv4plus/android/crypto/OtrAvailability.kt",
     "org/otrv4plus/android/crypto/OtrV4PlusProvider.kt",
+    "org/otrv4plus/android/crypto/PdfScan.kt",
     "org/otrv4plus/android/crypto/SafeView.kt",
     "org/otrv4plus/android/crypto/SecurityLevel.kt",
     "org/otrv4plus/android/crypto/TransferUi.kt",

@@ -61,7 +61,11 @@ Working now:
   * **Call**, behind the engine's gate, which gives its reason when it
     refuses; answer and hang up;
   * **Files**: a picker, a choice to strip hidden information, and
-    accept or decline with progress.
+    accept or decline with progress;
+  * **Open** on a received file: the in-app viewer, with the Android
+    viewer's three tabs (File, Metadata, Hidden content) and Save to….
+    Pictures and text are shown; other kinds are not opened, and their
+    Metadata and Hidden content tabs still work.
 * **Profiles**: click a contact's picture or name to see their XMPP
   profile (read-only). Settings has your own picture and profile:
   * your picture is cut to a square, scaled to 96 px and re-encoded
@@ -69,8 +73,9 @@ Working now:
   * the profile fields are the ones `android_bridge/profile.py` defines;
   * the screen says that a profile is public.
 * **Pictures**: contacts' avatars are built here from pixels that the
-  engine's bounded decoder has already decoded. No image decoder in this
-  process ever reads a file someone else sent.
+  engine's bounded decoder has already decoded. A received picture is
+  decoded by Skia only when you click **Open** on it (never on arrival),
+  from a transient decrypted copy that is deleted when the viewer closes.
 * **Encrypted groups**, working the same way as the Android app:
   * **Verify group**, using the shared passphrase, with progress and a
     time estimate;

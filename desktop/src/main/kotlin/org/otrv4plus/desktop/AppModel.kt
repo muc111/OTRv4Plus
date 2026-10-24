@@ -579,6 +579,67 @@ class AppModel(
         }
     }
 
+    // -- the in-app viewer (same tabs and checks as the Android app's) ------------------
+
+    /** A received file open in the viewer: its sealed container and its name. */
+    data class ViewedFile(val path: String, val filename: String)
+
+    var viewedFile by mutableStateOf<ViewedFile?>(null)
+        private set
+
+    private var receivedDir: String? = null
+
+    private fun receivedDirOrNull(): String? = receivedDir
+        ?: core.receivedFileDir().ifBlank { null }?.also { receivedDir = it }
+
+    /**
+     * Whether a conversation line can open its file: one we received and the
+     * engine verified ([Message.filePath]), still in the private received
+     * directory (deleted chats and Wipe remove it).
+     */
+    fun canOpenLine(m: Message): Boolean {
+        if (m.filePath.isEmpty()) return false
+        val dir = receivedDirOrNull() ?: return false
+        return org.otrv4plus.android.crypto.SafeView.openable(m.filePath, dir) &&
+            java.io.File(m.filePath).isFile
+    }
+
+    /** Open a line's file in the viewer. Explicit click only; nothing opens on arrival. */
+    fun openLine(m: Message) {
+        if (canOpenLine(m)) viewedFile = ViewedFile(m.filePath, java.io.File(m.filePath).name.removeSuffix(".otrv"))
+    }
+
+    fun closeViewer() { viewedFile = null }
+
+    /**
+     * Decrypt the open file into [directory] for the viewer. BLOCKING: the
+     * viewer calls it on Dispatchers.IO. Null when it does not open.
+     */
+    fun openReceivedTo(container: String, directory: String): String? {
+        val file = viewedFile ?: return null
+        val dir = receivedDirOrNull() ?: return null
+        if (file.path != container || !org.otrv4plus.android.crypto.SafeView.openable(container, dir)) return null
+        return core.openReceivedTo(container, directory)
+    }
+
+    /** What metadata the viewer's decrypted copy carries (pictures). BLOCKING. */
+    fun inspectViewed(plainPath: String): org.otrv4plus.android.bridge.MetadataFinding =
+        core.inspectFile(plainPath)
+
+    /**
+     * Save to…: the engine decrypts the container straight to [destination].
+     * BLOCKING. Bytes written, or null when nothing was saved.
+     */
+    fun saveViewedTo(container: String, destination: String): Long? {
+        val file = viewedFile ?: return null
+        if (file.path != container) return null
+        if (core.saveReceived(container, destination) != "ok") {
+            runCatching { java.io.File(destination).delete() }
+            return null
+        }
+        return java.io.File(destination).length()
+    }
+
     // -- voice notes (the recording stays in the Python host; see VoiceNotes) -----------
 
     var voiceSheet by mutableStateOf<org.otrv4plus.android.chat.VoiceSheet?>(null)
@@ -1180,8 +1241,13 @@ class AppModel(
 
     fun wipeAndExit(onDone: () -> Unit) {
         val deleteAccount = wipeDeletesAccount
+        viewedFile = null
         ui.launch {
-            withContext(Dispatchers.IO) { runCatching { core.wipe(deleteAccount) } }
+            withContext(Dispatchers.IO) {
+                // The viewer's transient plaintext goes first.
+                runCatching { org.otrv4plus.desktop.ui.viewDirectory().deleteRecursively() }
+                runCatching { core.wipe(deleteAccount) }
+            }
             chat.bindAccount(AccountScope.NONE)
             screen = Screen.WIPED
             changed()

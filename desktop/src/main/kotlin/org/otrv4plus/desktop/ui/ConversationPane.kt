@@ -150,6 +150,13 @@ fun ConversationPane(model: AppModel, jid: String) {
     if (!isRoom) model.verificationPrompt(jid)?.let { prompt -> SmpDialog(model, jid, prompt) }
     model.voiceSheet?.let { VoiceNoteDialog(model, jid, it) }
     if (locationOpen) LocationDialog(model, jid, onClose = { locationOpen = false })
+    model.viewedFile?.let { file ->
+        FileViewerDialog(container = file.path, name = file.filename,
+                         materialize = { dir -> model.openReceivedTo(file.path, dir) },
+                         inspect = { plain -> model.inspectViewed(plain) },
+                         save = { destination -> model.saveViewedTo(file.path, destination) },
+                         onClose = { model.closeViewer() })
+    }
     pendingFile?.let { path ->
         MetadataDialog(path, onChoice = { strip ->
             pendingFile = null
@@ -525,9 +532,16 @@ private fun Bubble(m: Message, isRoom: Boolean, model: AppModel) {
                 val pin = if (m.body.startsWith(Location.MARKER)) Location.parse(m.body) else null
                 if (m.voicePath.isNotEmpty()) VoiceNoteRow(m, model)
                 else if (pin != null) LocationCard(pin)
-                else SelectionContainer {
-                    Text(m.body, color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer
-                                         else MaterialTheme.colorScheme.onSurface)
+                else {
+                    SelectionContainer {
+                        Text(m.body, color = if (mine) MaterialTheme.colorScheme.onPrimaryContainer
+                                             else MaterialTheme.colorScheme.onSurface)
+                    }
+                    // A received, verified file opens from its line, here and
+                    // after a restart, in the in-app viewer (as on Android).
+                    if (model.canOpenLine(m)) {
+                        TextButton(onClick = { model.openLine(m) }) { Text("Open") }
+                    }
                 }
             }
             if (m.reactions.isNotEmpty()) {

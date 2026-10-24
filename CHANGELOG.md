@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.172 — 2026-10-24 — Desktop viewer with the Android tabs; shared EXIF reader (core 0.13.1)
+
+- Desktop 0.14.0: received files open inside the desktop app. A received
+  file's line has **Open**; the viewer has the Android viewer's three tabs
+  (File, Metadata, Hidden content), the same facts and checks (shared from
+  the Android tree, not copied) and **Save to…** with the same warning.
+  Pictures (fit, or 1×–8× with scrolling) and text are shown; PDF, audio
+  and video are not opened on desktop yet, and their Metadata and Hidden
+  content tabs still apply. The decrypted copy is transient (0700, deleted
+  when the viewer closes, and first on Wipe & Exit).
+- New shared `ExifReader`: reads EXIF (IFD0, Exif, GPS) from JPEG, PNG and
+  WebP bytes, bounds-checked, so the desktop shows the same metadata fields
+  as the phone. Checked against Pillow-written files and crafted/truncated
+  input (ExifReaderTest).
+- The desktop window title now reads 0.14.0, so a fresh build is visible.
+
 ## Android 0.7.0-experimental.rc.171 — 2026-10-24 — Notification tap asks before opening a conversation (core 0.13.1)
 
 - Tapping the message notification no longer drops you straight into a

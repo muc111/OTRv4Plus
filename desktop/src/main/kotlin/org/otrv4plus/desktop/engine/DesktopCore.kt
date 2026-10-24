@@ -288,6 +288,19 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun cancelFile(id: String): String = runCatching { call("cancel_file", "transfer_id" to id).asStr() }.getOrDefault("failed")
     fun saveReceived(path: String, destination: String): String =
         runCatching { call("save_received", "path" to path, "destination" to destination).asStr() }.getOrDefault("")
+    /** The engine's private directory for finished files ("" when unknown). */
+    fun receivedFileDir(): String = runCatching { call("received_file_dir").asStr() }.getOrDefault("")
+    /** Decrypt a received container into [directory] for the viewer; null when it does not open. */
+    fun openReceivedTo(container: String, directory: String): String? = runCatching {
+        call("open_received_to", "path" to container, "directory" to directory).asStr()
+    }.getOrNull()?.ifBlank { null }
+    /** What metadata [path] carries (the viewer's decrypted copy); UNKNOWN when it cannot be asked. */
+    fun inspectFile(path: String): org.otrv4plus.android.bridge.MetadataFinding = runCatching {
+        val d = call("inspect_file", "path" to path) as JsonObject
+        org.otrv4plus.android.bridge.MetadataFinding(
+            kind = d.str("kind").ifBlank { "unknown" }, carriesMetadata = d["carries_metadata"].asBool(),
+            metadataBytes = d["metadata_bytes"].asInt(), canScrub = d["can_scrub"].asBool())
+    }.getOrDefault(org.otrv4plus.android.bridge.MetadataFinding.UNKNOWN)
 
     fun transfers(): List<FileTransferView> = runCatching {
         (call("transfers") as JsonArray).mapNotNull { it as? JsonObject }.map { r ->
