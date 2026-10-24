@@ -41,6 +41,27 @@ object Attention {
         else -> null
     }
 
+    /**
+     * What [conversation] needs from the user, for its row in the chat list,
+     * or null. The verification request is the peer's, waiting on our
+     * passphrase; [invitedRooms] and [entryRooms] are rooms with an
+     * invitation or a join request pending. Read from state the list
+     * already holds: no call into the engine per row.
+     */
+    fun forChat(conversation: Conversation, invitedRooms: Set<String>,
+                entryRooms: Set<String>): Kind? = when {
+        conversation.smp == SmpState.SECRET_REQUIRED -> Kind.VERIFICATION
+        conversation.jid in invitedRooms -> Kind.GROUP_INVITE
+        conversation.jid in entryRooms -> Kind.ENTRY_REQUEST
+        else -> null
+    }
+
+    /** The row's and the Chats tab's pulse: yellow, between these alphas. */
+    const val TINT = 0xFFFFD54F
+    const val TINT_LOW = 0.12f
+    const val TINT_HIGH = 0.5f
+    const val PULSE_MS = 900
+
     /** The notification's text for what is pending: kinds only, oldest first. */
     fun text(pending: List<Kind>): String = when {
         pending.isEmpty() -> ""

@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.152 — 2026-10-24 — zoom in the file viewer; chats that need you pulse yellow (core 0.13.1)
+
+- **Zoom in the file viewer.** Pictures and PDF pages can be pinched,
+  dragged and double-tapped, and zoomed with − / 100% / + buttons under the
+  picture (100% to 500%). A zoomed picture is dragged only as far as its
+  edge, never off the screen. A new PDF page opens at 100%.
+- **The metadata line can always be read.** It sits in its own panel under
+  the picture, with a scroll bar when it is longer than the panel, so a
+  large picture cannot push it out of sight.
+- **A chat that needs you pulses yellow.** When someone asks you to verify
+  (their request is waiting on your passphrase), invites you to a group, or
+  asks to join one of yours, that chat's row in the list pulses yellow and
+  says what it needs ("⚑ Verification requested"), and the Chats tab pulses
+  while any chat does. It stops once the request is answered. The words are
+  there so colour is never the only signal.
+- **Guards:** `ZoomTest` and new `AttentionTest` cases (JVM);
+  `tests/test_viewer_zoom_and_attention.py` holds the wiring.
+
 ## Android 0.7.0-experimental.rc.151 — 2026-10-24 — code split, step 7: the conversation screen (core 0.13.1)
 
 Nothing changes on the phone. `ConversationScreen.kt` (1,986 lines) becomes

@@ -11,13 +11,24 @@ import android.media.MediaPlayer
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -126,8 +137,16 @@ fun FileViewerDialog(
                     }
                 }
                 metadataLine?.let {
-                    Text(it, style = MaterialTheme.typography.bodySmall,
-                         modifier = Modifier.padding(vertical = 6.dp))
+                    // Its own scrolling panel, so a long finding is never
+                    // pushed off the screen by the picture above it.
+                    val details = rememberScrollState()
+                    Column(Modifier.fillMaxWidth().heightIn(max = 160.dp)
+                               .padding(vertical = 6.dp)
+                               .verticalScrollbar(details)
+                               .verticalScroll(details)) {
+                        Text(it, style = MaterialTheme.typography.bodySmall,
+                             modifier = Modifier.padding(end = 8.dp))
+                    }
                 }
                 OutlinedButton(enabled = path != null, onClick = { confirmHandoff = true },
                                modifier = Modifier.fillMaxWidth()) {
@@ -175,8 +194,7 @@ private fun ImageBody(path: String) {
         failed = bitmap == null
     }
     when {
-        bitmap != null -> Image(bitmap!!.asImageBitmap(), contentDescription = "Received image",
-                                modifier = Modifier.fillMaxSize())
+        bitmap != null -> ZoomableImage(bitmap!!.asImageBitmap(), "Received image")
         failed -> Text("The image could not be decoded.")
         else -> Text("Decoding…")
     }
@@ -233,9 +251,9 @@ private fun PdfBody(path: String) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 failed -> Text("This PDF could not be shown. Nothing in it was run.")
-                bitmap != null -> Image(bitmap!!.asImageBitmap(),
-                                        contentDescription = "PDF page ${page + 1}",
-                                        modifier = Modifier.fillMaxSize())
+                bitmap != null -> key(page) {
+                    ZoomableImage(bitmap!!.asImageBitmap(), "PDF page ${page + 1}")
+                }
                 else -> Text("Rendering…")
             }
         }
@@ -321,3 +339,64 @@ const val HANDOFF_DIRECTORY = "handoff"
 
 /** Where the viewer's transient decrypted copy lives while it is open. */
 const val VIEW_DIRECTORY = "view"
+
+/**
+ * A picture that can be pinched, dragged, double-tapped and zoomed with
+ * buttons. The rules (limits, steps, how far it may be dragged) are [Zoom].
+ */
+@Composable
+private fun ZoomableImage(image: ImageBitmap, description: String) {
+    var scale by remember { mutableStateOf(Zoom.MIN) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    var view by remember { mutableStateOf(Size.Zero) }
+    fun settle(next: Float, by: Offset = Offset.Zero) {
+        scale = Zoom.clamp(next)
+        pan = Offset(Zoom.clampPan(pan.x + by.x, scale, view.width),
+                     Zoom.clampPan(pan.y + by.y, scale, view.height))
+    }
+    Column(Modifier.fillMaxSize()) {
+        Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()
+                .onSizeChanged { view = Size(it.width.toFloat(), it.height.toFloat()) }
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, drag, zoom, _ -> settle(scale * zoom, drag) }
+                }
+                .pointerInput(Unit) {
+                    detectTapGestures(onDoubleTap = { settle(Zoom.doubleTap(scale)) })
+                }) {
+            Image(image, contentDescription = description,
+                  modifier = Modifier.fillMaxSize().graphicsLayer {
+                      scaleX = scale
+                      scaleY = scale
+                      translationX = pan.x
+                      translationY = pan.y
+                  })
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            TextButton(enabled = scale > Zoom.MIN, onClick = { settle(Zoom.zoomOut(scale)) }) {
+                Text("−", style = MaterialTheme.typography.titleLarge)
+            }
+            TextButton(enabled = scale > Zoom.MIN, onClick = { settle(Zoom.MIN) }) {
+                Text(Zoom.label(scale))
+            }
+            TextButton(enabled = scale < Zoom.MAX, onClick = { settle(Zoom.zoomIn(scale)) }) {
+                Text("+", style = MaterialTheme.typography.titleLarge)
+            }
+        }
+    }
+}
+
+/** A thin bar on the right showing where [state] is, when there is more to scroll. */
+private fun Modifier.verticalScrollbar(state: ScrollState): Modifier = drawWithContent {
+    drawContent()
+    val total = state.maxValue
+    if (total <= 0 || total == Int.MAX_VALUE) return@drawWithContent
+    val visible = size.height
+    val thumb = (visible * visible / (visible + total)).coerceAtLeast(24.dp.toPx())
+    val top = (visible - thumb) * state.value / total
+    drawRoundRect(
+        color = androidx.compose.ui.graphics.Color.Gray.copy(alpha = 0.6f),
+        topLeft = Offset(size.width - 4.dp.toPx(), top),
+        size = Size(4.dp.toPx(), thumb),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(2.dp.toPx()),
+    )
+}

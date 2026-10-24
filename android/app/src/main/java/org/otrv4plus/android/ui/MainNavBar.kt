@@ -16,6 +16,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.text.style.TextOverflow
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.OnlineUsers
@@ -61,9 +62,18 @@ fun MainNavBar(current: MainTab, model: ChatViewModel, onSelect: (MainTab) -> Un
             selected = current == MainTab.CHATS, onClick = { onSelect(MainTab.CHATS) },
             icon = {
                 val unread = model.conversations().sumOf { it.unread }
+                // A chat that needs the user (verification, invitation, join
+                // request) pulses the tab yellow until it is dealt with.
+                val pulse = attentionAlpha(model.attentionByChat().isNotEmpty())
+                val glyph = @Composable {
+                    Text("💬", modifier = Modifier.drawBehind {
+                        if (pulse > 0f) drawCircle(AttentionYellow.copy(alpha = pulse),
+                                                   radius = size.maxDimension)
+                    })
+                }
                 if (unread > 0) BadgedBox(badge = { Badge { Text(if (unread > 99) "99+" else "$unread") } }) {
-                    Text("💬")
-                } else Text("💬")
+                    glyph()
+                } else glyph()
             },
             label = { Text("Chats") },
         )

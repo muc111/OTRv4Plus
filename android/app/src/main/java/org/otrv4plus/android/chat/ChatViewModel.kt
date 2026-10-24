@@ -357,6 +357,15 @@ class ChatViewModel : ViewModel() {
         groupCall("Declining") { it.declineGroupInvite(room) }
     }
 
+    /** Each chat that needs the user, and what for (Attention.forChat). */
+    fun attentionByChat(): Map<String, Attention.Kind> {
+        val invited = groupInvites().mapTo(HashSet()) { it.room }
+        val entries = entryRequests().mapTo(HashSet()) { it.room }
+        return conversations().mapNotNull { c ->
+            Attention.forChat(c, invited, entries)?.let { c.jid to it }
+        }.toMap()
+    }
+
     /** Somebody asked to join one of our groups ("X asks to join"). */
     fun entryRequests(): List<OtrEvent.GroupEntryRequested> {
         observe()

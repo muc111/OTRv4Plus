@@ -40,4 +40,27 @@ class AttentionTest {
         assertEquals("2 things need your attention",
                      Attention.text(listOf(Attention.Kind.VERIFICATION, Attention.Kind.GROUP_INVITE)))
     }
+
+    // -- the chat list: which row pulses --------------------------------------
+
+    private fun chat(jid: String, smp: SmpState = SmpState.NOT_VERIFIED) = Conversation(
+        jid = jid, displayName = jid, presence = Presence.UNKNOWN,
+        security = org.otrv4plus.android.bridge.SecurityState.ENCRYPTED,
+        lastMessage = null, unread = 0, smp = smp)
+
+    @Test fun aChatWhoseVerificationWaitsOnUsPulses() {
+        assertEquals(Attention.Kind.VERIFICATION,
+                     Attention.forChat(chat(bob, SmpState.SECRET_REQUIRED), emptySet(), emptySet()))
+    }
+
+    @Test fun aRoomWithAnInvitationOrAJoinRequestPulses() {
+        assertEquals(Attention.Kind.GROUP_INVITE, Attention.forChat(chat(room), setOf(room), emptySet()))
+        assertEquals(Attention.Kind.ENTRY_REQUEST, Attention.forChat(chat(room), emptySet(), setOf(room)))
+    }
+
+    @Test fun anOrdinaryChatDoesNot() {
+        for (state in listOf(SmpState.NOT_VERIFIED, SmpState.IN_PROGRESS, SmpState.VERIFIED, SmpState.FAILED)) {
+            assertNull(state.name, Attention.forChat(chat(bob, state), setOf(room), setOf(room)))
+        }
+    }
 }

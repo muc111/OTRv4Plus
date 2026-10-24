@@ -338,11 +338,13 @@ fun ConversationsScreen(
                         }
                     }
                 }
+                val needs = model.attentionByChat()
                 LazyColumn(Modifier.weight(1f)) {
                     items(conversations, key = { it.jid }) { conversation ->
                         ConversationRow(
                             conversation,
                             kind = kindOf.getValue(conversation.jid),
+                            attention = needs[conversation.jid],
                             avatar = model.avatar(conversation.jid),
                             group = model.groupBadge(conversation.jid),
                             onClick = { onOpen(conversation.jid) },
@@ -575,8 +577,11 @@ private fun ConversationRow(
     onLongClick: () -> Unit,
     /** The picture opens the person's profile (null for a room). */
     onAvatarClick: (() -> Unit)? = null,
+    /** What this chat needs from the user: the row pulses yellow and says so. */
+    attention: org.otrv4plus.android.chat.Attention.Kind? = null,
 ) {
     val hue = Color(kind.hue)
+    val pulse = attentionAlpha(attention != null)
     Row(
         Modifier.fillMaxWidth()
             // The kind's colour at 50% behind the row, and a solid stripe
@@ -584,6 +589,7 @@ private fun ConversationRow(
             // same in words.
             .drawBehind {
                 drawRect(hue.copy(alpha = ChatKinds.TINT))
+                if (pulse > 0f) drawRect(AttentionYellow.copy(alpha = pulse))
                 drawRect(hue, size = size.copy(width = 4.dp.toPx()))
             }
             .combinedClickable(
@@ -646,6 +652,11 @@ private fun ConversationRow(
             }
             Text(kind.label, style = MaterialTheme.typography.labelSmall,
                  color = MaterialTheme.colorScheme.onSurface)
+            attention?.let {
+                Text("⚑ ${it.text}", style = MaterialTheme.typography.labelSmall,
+                     fontWeight = FontWeight.Bold,
+                     color = MaterialTheme.colorScheme.onSurface)
+            }
             SecurityBadge(conversation, group)
         }
     }
