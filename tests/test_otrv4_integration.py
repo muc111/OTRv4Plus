@@ -329,25 +329,9 @@ class TestOTRv4PlusMLKEM(unittest.TestCase):
         
         self.__class__.passed += 1
     
-    @unittest.expectedFailure  # tracked gap -- see docs/ANDROID_PHASE2_REPORT.md
     def test_08_dake_timeout(self):
-        """Test DAKE timeout mechanism.
-
-        TRACKED GAP (not test rot): RustDAKEAdapter.is_expired() is a stub that
-        unconditionally returns False, and the `timeout` attribute this test sets
-        is never read.  UIConstants.DAKE_TIMEOUT (120.0) is defined but
-        referenced nowhere.  The handshake-timeout mechanism the pure-Python
-        OTRv4DAKE had was not carried over at v10.7.
-
-        Impact today is nil -- is_expired() has no production callers, and the
-        separate is_session_expired() (established-session age) IS implemented
-        and IS called.  It is a latent hazard rather than a live defect: a future
-        caller would silently get "never expired".
-
-        Left as an expected failure deliberately, so the gap stays visible rather
-        than being deleted or papered over.  Implementing it is a behaviour change
-        and needs sign-off -- it is NOT being done as part of a test repair.
-        """
+        """A handshake left half-open expires after its timeout (G1, resolved:
+        docs/SECURITY_ISSUES.md; tests/test_dake_timeout.py has the edge cases)."""
         print("\n🔬 Test 8: DAKE Timeout")
         
         # Set short timeout

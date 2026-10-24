@@ -15,8 +15,8 @@ Status vocabulary:
 |----|-------|----------|--------|
 | L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **OPEN (claim only)** -- the all-zeros mechanism is fixed and proven end to end (`tests/test_mac_revelation_end_to_end.py`: the published key re-MACs a forgery of the real message). What stays open is the *formal* deniability claim, which needs expert review; do not claim it. Re-checked 2026-09-28. |
 | M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
-| G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **OPEN** |
-| G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **OPEN** |
+| G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **RESOLVED** (2026-10-24) -- `tests/test_dake_timeout.py`; `test_08_dake_timeout` no longer an expected failure |
+| G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **RESOLVED** (2026-10-24) -- one copy, `tests/otrv4_testlib.py`; `tests/test_dake_timeout.py::test_there_is_one_test_library` |
 | B1-seed | Persisting an identity requires the seed to exist in Python | Design | **RESOLVED** |
 | A1 | Ratchet brace key is never folded into root/chain keys (SPEC §5.2 not implemented): no post-quantum post-compromise recovery | Design / High (spec divergence) | **OPEN** -- pinned by `ratchet::audit_brace_folding`; needs a versioned protocol change. See CRYPTO_AUDIT_2026-09.md |
 | A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **OPEN** -- documented, SPEC §4.3; needs a protocol version |
@@ -24,7 +24,7 @@ Status vocabulary:
 | A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
-| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED (Android), with stated residuals** -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`. Residuals and the terminal client: see the X1 section. NOT yet confirmed by a handset login |
+| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED (Android and the terminal client), with stated residuals** -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: see the X1 section. NOT yet confirmed by a handset login |
 
 ---
 
@@ -199,7 +199,15 @@ unilaterally. It is a small, self-contained change once approved.
 
 ## G1 — DAKE handshake timeout is a stub
 
-**Status: OPEN. Latent, not live.**
+**Status: RESOLVED (2026-10-24).** `is_expired()` now counts from the
+handshake's first move out of IDLE (DAKE1 sent or received), on the monotonic
+clock, against `timeout` (default `UIConstants.DAKE_TIMEOUT`, 120 s). IDLE,
+ESTABLISHED and FAILED never expire: an established session's age remains
+`is_session_expired()`'s question. Tests: `tests/test_dake_timeout.py` (in
+flight, not started, over, wall clock ignored); `test_08_dake_timeout` passes
+and is no longer marked as an expected failure. Removing the check fails both.
+
+The original analysis, retained for the record:
 
 `RustDAKEAdapter.is_expired()` unconditionally returns `False`. The `timeout`
 attribute callers may set is never read, and `UIConstants.DAKE_TIMEOUT = 120.0`
@@ -227,7 +235,13 @@ not done as part of a test repair.
 
 ## G2 — Two divergent copies of `otrv4_testlib.py`
 
-**Status: OPEN. Test-harness integrity.**
+**Status: RESOLVED (2026-10-24).** When the root-level tests moved into
+`tests/` (code tidy-up, phase 2), the root copy went with them: there is one
+`otrv4_testlib.py`, in `tests/`, and
+`tests/test_dake_timeout.py::test_there_is_one_test_library` fails if a
+second appears anywhere in the tree.
+
+The original analysis, retained for the record:
 
 `otrv4_testlib.py` exists in both the project root and `tests/`, with
 substantially different implementations (~286 differing lines; the root version
@@ -384,8 +398,14 @@ negotiated (`tls_required`).
    password inside the XEP-0077 form over TLS to an unpinned destination.
    After the first success the destination is pinned and later
    registrations are protected.
-4. **The terminal client** (`otrv4plus_xmpp.py`) still accepts whatever the
-   server offers. It is outside this fix; use a `.b32.i2p` address there.
+4. ~~The terminal client accepts whatever the server offers.~~ Resolved
+   2026-10-24: `otrv4plus_xmpp.py` restricts SASL to SCRAM wherever certificate
+   checks are off (I2P, .onion, `--insecure-tls`), and checks every resolved
+   I2P destination with the same rule as the app
+   (`android_bridge.server_pins.check_destination`), on start-up and on every
+   reconnect. A changed destination is shown with both addresses; only typing
+   the new address in full approves it, and a reconnect never retries one.
+   Residuals 1-3 apply to it as to the app.
 
 ### Tests
 
@@ -399,4 +419,12 @@ way; approval is only for the refused destination and does not re-pin until
 a successful connect; the SCRAM restriction is checked on the real slixmpp
 plugin. Disabling either layer fails 15 of those tests (checked by mutation
 on 2026-09-28). `ReconnectPolicyTest` pins that the refusal is not retried.
+
+`tests/test_x1_terminal_client.py` covers the terminal client: SCRAM-only on
+the real slixmpp plugin for I2P, .onion and `--insecure-tls` (and not for a
+verified clearnet server); the shared rule agreeing with the app's own check
+in every case; first use pinned only after sign-in, a change refused, and
+approval only by typing the new address; reconnects using the same check.
+Removing the SCRAM restriction or the change check each fails 3 of them
+(checked by mutation on 2026-10-24).
 

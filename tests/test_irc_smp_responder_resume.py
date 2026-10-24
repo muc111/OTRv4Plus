@@ -136,7 +136,7 @@ class Client:
     """Real methods, minimal collaborators. Entry is `handle_chat_message`."""
 
     METHODS = (
-        "handle_chat_message", "handle_command", "_consume_secret_line",
+        "handle_chat_message", "handle_command", "_smp_command", "_consume_secret_line",
         "_dispatch_pending_response", "_get_pending", "_set_pending",
         "_clear_pending", "_check_smp_secret_required",
         "_announce_secret_required", "_handle_smp_consent", "_resume_smp",

@@ -22,8 +22,6 @@ CEILING = {
     ("client/otrv4+.py", "EnhancedOTRSession._enh_handle_smp_tlv"): 386,
     # The server load test: one async run whose callbacks share its state.
     ("client/otrv4plus_stresstest.py", "run"): 313,
-    ("client/otrv4plus_irc.py", "EnhancedOTRv4IRCClient.handle_command"): 223,
-    ("client/otrv4plus_irc.py", "_run_input_loop"): 202,
 }
 
 

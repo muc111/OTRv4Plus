@@ -46,7 +46,7 @@ import threading
 import time
 from typing import Dict, Optional
 
-__all__ = ["b32_of_destination", "ServerPins", "DestinationChanged",
+__all__ = ["check_destination", "b32_of_destination", "ServerPins", "DestinationChanged",
            "MATCH", "NEW", "CHANGED", "default_store"]
 
 MATCH, NEW, CHANGED = "match", "new", "changed"
@@ -74,6 +74,36 @@ class DestinationChanged(Exception):
     def __init__(self, name: str, pinned: str, seen: str):
         super().__init__("%s: destination changed" % name)
         self.name, self.pinned, self.seen = name, pinned, seen
+
+
+def check_destination(host: str, seen: str, store: "ServerPins", *,
+                      shipped: Optional[str], self_authenticating: bool) -> str:
+    """X1's rule for one resolved destination, for a client without the
+    bridge's transport (the terminal client). Raises DestinationChanged, or
+    returns why `seen` may be used: "shipped address", "b32 address",
+    "pinned" or "first use".
+
+    The same order as XmppTransport._verify_destination, and
+    tests/test_x1_terminal_client.py runs both over the same cases:
+      * a name this version ships an address for is checked against that
+        address, and no pin is consulted;
+      * a typed .b32.i2p is its key hash, so the router must return the
+        destination that hashes to it;
+      * any other name is pinned on first use and refused if it changes.
+    """
+    host, seen = (host or "").strip().lower(), (seen or "").strip().lower()
+    if shipped:
+        if seen != shipped.lower():
+            raise DestinationChanged(host, shipped.lower(), seen)
+        return "shipped address"
+    if self_authenticating:
+        if seen != host:
+            raise DestinationChanged(host, host, seen)
+        return "b32 address"
+    verdict = store.check(host, seen)
+    if verdict == CHANGED:
+        raise DestinationChanged(host, store.pinned(host) or "", seen)
+    return "pinned" if verdict == MATCH else "first use"
 
 
 class ServerPins:

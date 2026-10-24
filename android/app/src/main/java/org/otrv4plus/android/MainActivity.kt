@@ -15,6 +15,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -431,8 +432,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun ChatsRoute(chat: ChatViewModel, selectTab: (MainTab) -> Unit, openChat: (String) -> Unit,
                            go: (Screen) -> Unit, openProfile: (String, Screen) -> Unit,
-                           theme: org.otrv4plus.android.ui.ThemeTokens.Mode,
-                           onTheme: (org.otrv4plus.android.ui.ThemeTokens.Mode) -> Unit) {
+                           theme: org.otrv4plus.android.theme.ThemeTokens.Mode,
+                           onTheme: (org.otrv4plus.android.theme.ThemeTokens.Mode) -> Unit) {
         // Back from the list goes to the connection screen
         // WITHOUT disconnecting: the core and its socket
         // belong to the ViewModel and outlive this.

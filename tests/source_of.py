@@ -114,15 +114,17 @@ def main_source(module) -> str:
     what start-up does reads the steps too."""
     import ast
     import textwrap
-    src = textwrap.dedent(inspect.getsource(module.main))
-    parts, seen = [src], set()
-    for node in ast.walk(ast.parse(src)):
-        name = getattr(getattr(node, "func", None), "id", None)
-        fn = getattr(module, name, None) if isinstance(node, ast.Call) and name else None
-        if (inspect.isfunction(fn) and fn.__module__ == module.__name__
-                and name != "main" and name not in seen):
-            seen.add(name)
-            parts.append(textwrap.dedent(inspect.getsource(fn)))
+    parts, seen, queue = [], {"main"}, [module.main]
+    while queue:                     # the steps, and the steps they call
+        src = textwrap.dedent(inspect.getsource(queue.pop(0)))
+        parts.append(src)
+        for node in ast.walk(ast.parse(src)):
+            name = getattr(getattr(node, "func", None), "id", None)
+            fn = getattr(module, name, None) if isinstance(node, ast.Call) and name else None
+            if (inspect.isfunction(fn) and fn.__module__ == module.__name__
+                    and name not in seen):
+                seen.add(name)
+                queue.append(fn)
     return "\n".join(parts)
 
 

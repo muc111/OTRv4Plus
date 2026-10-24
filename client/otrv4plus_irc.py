@@ -5867,142 +5867,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self.add_message("system", colorize("No active session to trust", "red"))
 
         elif cmd in ("smp", "verify"):
-            # Bare /smp is the normal verb, and it has to be handled HERE.
-            # v10.23.0 added it to OTRv4IRCClient.handle_command, but this
-            # override claims "smp" before the `else` that delegates to the
-            # base class, so what a user actually got on a handset was
-            # "Usage: /smp <command> [args]" -- the guided flow existed and
-            # was unreachable.  The tests that shipped with it bound the flow
-            # methods onto a stub and never drove the dispatcher, so nothing
-            # failed.  tests/test_irc_smp_command_routing.py drives it.
-            if len(parts) < 2:
-                peer = self._active_peer()
-                if not peer:
-                    self.add_message("system", colorize(
-                        "⚠ Switch to a peer panel first, then type /smp", "yellow"))
-                    return
-                if not self._smp_session_ready(peer):
-                    return
-                self._smp_verify(peer)
-                return
-
-            subcmd = parts[1].lower()
-
-            if subcmd == "start":
-                peer = parts[2] if len(parts) > 2 else self._active_peer()
-
-                if not peer:
-                    self.add_message(
-                        "system",
-                        colorize("Usage: /smp start [peer]  (or switch to peer panel)", "red"),
-                    )
-                    return
-
-                if not self.session_manager.has_session(peer):
-                    self.add_message("system", f"{colorize ('❌ No session with','red')} {peer }")
-                    return
-
-                if (
-                    self.session_manager.get_security_level(peer)
-                    == UIConstants.SecurityLevel.PLAINTEXT
-                ):
-                    self.add_message(
-                        "system", f"{colorize ('❌ No encrypted session with','red')} {peer }"
-                    )
-                    return
-
-                # Same as bare /smp.  This used to refuse with "use
-                # /smp <peer> <secret> first" when nothing was stored, which
-                # sent the user to the one form that puts a shared secret in
-                # their own scrollback.  _smp_verify starts immediately when
-                # a passphrase is stored and asks for it, hidden, when it is
-                # not -- so the two spellings do the same thing, as they do
-                # in the XMPP client.
-                self.debug("Starting SMP")
-                self._smp_verify(peer)
-
-            elif subcmd == "abort":
-                peer = parts[2] if len(parts) > 2 else self._active_peer()
-
-                if not peer:
-                    self.add_message("system", colorize("Usage: /smp abort [peer]", "red"))
-                    return
-
-                self.clear_pending_smp(peer)
-                if hasattr(self.session_manager, "abort_smp"):
-                    self.session_manager.abort_smp(peer)
-                self.add_message("system", f"🛑 SMP aborted for {colorize_username (peer )}")
-
-            elif subcmd == "status":
-                peer = parts[2] if len(parts) > 2 else self._active_peer()
-
-                if not peer:
-                    self.add_message("system", colorize("Usage: /smp status [peer]", "red"))
-                    return
-
-                self._show_smp_status(peer)
-
-            else:
-                peer = self._active_peer()
-
-                if not peer and len(parts) > 2:
-                    peer = parts[1]
-                    secret = " ".join(parts[2:])
-                elif peer:
-                    secret = " ".join(parts[1:])
-                else:
-                    self.add_message(
-                        "system",
-                        colorize(
-                            "Usage: /smp <peer> <secret>  or  /smp <secret> (in peer panel)", "red"
-                        ),
-                    )
-                    return
-
-                if secret:
-                    if len(secret) < 8:
-                        self.add_message(
-                            "system",
-                            colorize(
-                                f"⚠ SMP secret rejected - only {len (secret )} chars. "
-                                "Minimum 8 required to resist brute-force attacks.",
-                                "red",
-                            ),
-                        )
-                        return
-                    try:
-                        if hasattr(self.session_manager, "set_smp_secret"):
-                            self.session_manager.set_smp_secret(peer, secret)
-                        elif hasattr(self.session_manager, "smp_storage"):
-                            self.session_manager.smp_storage.set_secret(peer, secret)
-
-                        sec_level = self.session_manager.get_security_level(peer)
-                        self.add_message(
-                            self._otr_panel(peer),
-                            colorize("✅ SMP secret stored (🦀 Rust vault)", "green"),
-                            sec_level,
-                        )
-                        self._warn_inline_secret(peer)
-                        # Verify now.  Storing and then telling the user to
-                        # type a second command was a step with no decision
-                        # in it: nobody types /smp <secret> meaning "store
-                        # this but do not verify" -- that is /smp-secret.
-                        #
-                        # Through _smp_verify rather than straight into
-                        # _start_smp, so this spelling cannot start a second
-                        # run while the engine is holding a peer's SMP1: it
-                        # reads the passphrase just stored, and in every
-                        # other flow state it says what is already pending
-                        # instead of talking over it.
-                        self._smp_verify(peer)
-                    except Exception as exc:
-                        self.add_message("system", f"{colorize ('❌','red')} {exc }")
-                    finally:
-                        secret = None
-                else:
-                    self.add_message(
-                        "system", colorize("Usage: /smp <secret>  or  /smp start [peer]", "red")
-                    )
+            self._smp_command(parts)
 
         elif cmd == "smp-secret" and len(parts) > 2:
             peer = parts[1]
@@ -6054,6 +5919,145 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
         else:
             OTRv4IRCClient.handle_command(self, command)
+
+    def _smp_command(self, parts):
+        """/smp and /verify: start, answer or report a verification for a nick."""
+        # Bare /smp is the normal verb, and it has to be handled HERE.
+        # v10.23.0 added it to OTRv4IRCClient.handle_command, but this
+        # override claims "smp" before the `else` that delegates to the
+        # base class, so what a user actually got on a handset was
+        # "Usage: /smp <command> [args]" -- the guided flow existed and
+        # was unreachable.  The tests that shipped with it bound the flow
+        # methods onto a stub and never drove the dispatcher, so nothing
+        # failed.  tests/test_irc_smp_command_routing.py drives it.
+        if len(parts) < 2:
+            peer = self._active_peer()
+            if not peer:
+                self.add_message("system", colorize(
+                    "⚠ Switch to a peer panel first, then type /smp", "yellow"))
+                return
+            if not self._smp_session_ready(peer):
+                return
+            self._smp_verify(peer)
+            return
+
+        subcmd = parts[1].lower()
+
+        if subcmd == "start":
+            peer = parts[2] if len(parts) > 2 else self._active_peer()
+
+            if not peer:
+                self.add_message(
+                    "system",
+                    colorize("Usage: /smp start [peer]  (or switch to peer panel)", "red"),
+                )
+                return
+
+            if not self.session_manager.has_session(peer):
+                self.add_message("system", f"{colorize ('❌ No session with','red')} {peer }")
+                return
+
+            if (
+                self.session_manager.get_security_level(peer)
+                == UIConstants.SecurityLevel.PLAINTEXT
+            ):
+                self.add_message(
+                    "system", f"{colorize ('❌ No encrypted session with','red')} {peer }"
+                )
+                return
+
+            # Same as bare /smp.  This used to refuse with "use
+            # /smp <peer> <secret> first" when nothing was stored, which
+            # sent the user to the one form that puts a shared secret in
+            # their own scrollback.  _smp_verify starts immediately when
+            # a passphrase is stored and asks for it, hidden, when it is
+            # not -- so the two spellings do the same thing, as they do
+            # in the XMPP client.
+            self.debug("Starting SMP")
+            self._smp_verify(peer)
+
+        elif subcmd == "abort":
+            peer = parts[2] if len(parts) > 2 else self._active_peer()
+
+            if not peer:
+                self.add_message("system", colorize("Usage: /smp abort [peer]", "red"))
+                return
+
+            self.clear_pending_smp(peer)
+            if hasattr(self.session_manager, "abort_smp"):
+                self.session_manager.abort_smp(peer)
+            self.add_message("system", f"🛑 SMP aborted for {colorize_username (peer )}")
+
+        elif subcmd == "status":
+            peer = parts[2] if len(parts) > 2 else self._active_peer()
+
+            if not peer:
+                self.add_message("system", colorize("Usage: /smp status [peer]", "red"))
+                return
+
+            self._show_smp_status(peer)
+
+        else:
+            peer = self._active_peer()
+
+            if not peer and len(parts) > 2:
+                peer = parts[1]
+                secret = " ".join(parts[2:])
+            elif peer:
+                secret = " ".join(parts[1:])
+            else:
+                self.add_message(
+                    "system",
+                    colorize(
+                        "Usage: /smp <peer> <secret>  or  /smp <secret> (in peer panel)", "red"
+                    ),
+                )
+                return
+
+            if secret:
+                if len(secret) < 8:
+                    self.add_message(
+                        "system",
+                        colorize(
+                            f"⚠ SMP secret rejected - only {len (secret )} chars. "
+                            "Minimum 8 required to resist brute-force attacks.",
+                            "red",
+                        ),
+                    )
+                    return
+                try:
+                    if hasattr(self.session_manager, "set_smp_secret"):
+                        self.session_manager.set_smp_secret(peer, secret)
+                    elif hasattr(self.session_manager, "smp_storage"):
+                        self.session_manager.smp_storage.set_secret(peer, secret)
+
+                    sec_level = self.session_manager.get_security_level(peer)
+                    self.add_message(
+                        self._otr_panel(peer),
+                        colorize("✅ SMP secret stored (🦀 Rust vault)", "green"),
+                        sec_level,
+                    )
+                    self._warn_inline_secret(peer)
+                    # Verify now.  Storing and then telling the user to
+                    # type a second command was a step with no decision
+                    # in it: nobody types /smp <secret> meaning "store
+                    # this but do not verify" -- that is /smp-secret.
+                    #
+                    # Through _smp_verify rather than straight into
+                    # _start_smp, so this spelling cannot start a second
+                    # run while the engine is holding a peer's SMP1: it
+                    # reads the passphrase just stored, and in every
+                    # other flow state it says what is already pending
+                    # instead of talking over it.
+                    self._smp_verify(peer)
+                except Exception as exc:
+                    self.add_message("system", f"{colorize ('❌','red')} {exc }")
+                finally:
+                    secret = None
+            else:
+                self.add_message(
+                    "system", colorize("Usage: /smp <secret>  or  /smp start [peer]", "red")
+                )
 
     def _start_smp(self, peer: str, secret: str, question: str = ""):
         """Kick off SMP verification with immediate step-1 feedback.
@@ -6698,60 +6702,62 @@ def _print_banner(config):
     return None
 
 
+def _print_prompt(client):
+    """Print the input prompt - called once per input cycle.
+
+    Format:  [active-panel]  notif-badges  smp-bar
+    Example: [#otr]  user201+3 sys+1  ⬤⬤◯◯
+
+    The notification badges after the panel bracket show unread counts
+    for every background panel so the user knows what's waiting without
+    having to run /tabs.
+    """
+    active = client.panel_manager.get_active_panel()
+    if not active:
+        _set_prompt(colorize("> ", "green"))
+        return
+    sec_lvl = active.security_level
+    if active.type in ("private", "secure"):
+        icon = UIConstants.SECURITY_ICONS.get(sec_lvl, "🔴")
+    else:
+        icon = ""
+
+    if active.type in ("private", "secure"):
+        type_sym = ""
+    elif active.type == "channel":
+        type_sym = ""
+    elif active.type == "system":
+        type_sym = "⚙"
+    elif active.type == "debug":
+        type_sym = "🐛"
+    else:
+        type_sym = ""
+
+    smp_inset = ""
+    step, total = active.smp_progress
+    if 0 < step < total:
+        bar = "⬤" * step + "◯" * (total - step)
+        smp_inset = colorize(f" {bar } ", "yellow")
+
+    nick = getattr(client, "nick", "")
+    bracket = f"{type_sym }{icon }{active .name }"
+    prompt = (
+        colorize(nick, "cyan")
+        + colorize(" | ", "dim")
+        + colorize(f"[{bracket }]", "green")
+        + smp_inset
+        + " "
+    )
+    _set_prompt(prompt)
+
+
 def _run_input_loop(client, _select):
     """Read the keyboard until the user quits, then hand back to main."""
-    def _print_prompt():
-        """Print the input prompt - called once per input cycle.
 
-        Format:  [active-panel]  notif-badges  smp-bar
-        Example: [#otr]  user201+3 sys+1  ⬤⬤◯◯
-
-        The notification badges after the panel bracket show unread counts
-        for every background panel so the user knows what's waiting without
-        having to run /tabs.
-        """
-        active = client.panel_manager.get_active_panel()
-        if not active:
-            _set_prompt(colorize("> ", "green"))
-            return
-        sec_lvl = active.security_level
-        if active.type in ("private", "secure"):
-            icon = UIConstants.SECURITY_ICONS.get(sec_lvl, "🔴")
-        else:
-            icon = ""
-
-        if active.type in ("private", "secure"):
-            type_sym = ""
-        elif active.type == "channel":
-            type_sym = ""
-        elif active.type == "system":
-            type_sym = "⚙"
-        elif active.type == "debug":
-            type_sym = "🐛"
-        else:
-            type_sym = ""
-
-        smp_inset = ""
-        step, total = active.smp_progress
-        if 0 < step < total:
-            bar = "⬤" * step + "◯" * (total - step)
-            smp_inset = colorize(f" {bar } ", "yellow")
-
-        nick = getattr(client, "nick", "")
-        bracket = f"{type_sym }{icon }{active .name }"
-        prompt = (
-            colorize(nick, "cyan")
-            + colorize(" | ", "dim")
-            + colorize(f"[{bracket }]", "green")
-            + smp_inset
-            + " "
-        )
-        _set_prompt(prompt)
-
-    client._prompt_refresh_cb = _print_prompt
+    client._prompt_refresh_cb = lambda: _print_prompt(client)
 
     try:
-        _print_prompt()
+        _print_prompt(client)
         _use_raw = _setup_raw_mode()
         if _use_raw:
             atexit.register(_restore_terminal)
@@ -6817,10 +6823,10 @@ def _run_input_loop(client, _select):
                                     safe_print(
                                         colorize("Not connected - use /reconnect first.", "yellow")
                                     )
-                                _print_prompt()
+                                _print_prompt(client)
                             except KeyboardInterrupt:
                                 safe_print(colorize("\nCtrl-C - type /quit to exit", "yellow"))
-                                _print_prompt()
+                                _print_prompt(client)
                             except Exception:
                                 pass
                         continue
@@ -6836,7 +6842,7 @@ def _run_input_loop(client, _select):
                 line = result
 
                 if not line:
-                    _print_prompt()
+                    _print_prompt(client)
                     continue
 
                 try:
@@ -6854,11 +6860,11 @@ def _run_input_loop(client, _select):
                 if getattr(client, "_tui_enabled", False) and client._screen is not None:
                     client._screen.redraw_full()
                 else:
-                    _print_prompt()
+                    _print_prompt(client)
 
             except KeyboardInterrupt:
                 safe_print(colorize("\nCtrl-C - type /quit to exit", "yellow"))
-                _print_prompt()
+                _print_prompt(client)
             except Exception as exc:
                 try:
                     client.debug(f"main loop error: {exc }")
@@ -6868,7 +6874,7 @@ def _run_input_loop(client, _select):
                     )
                 except Exception:
                     pass
-                _print_prompt()
+                _print_prompt(client)
 
     except Exception as exc:
         try:

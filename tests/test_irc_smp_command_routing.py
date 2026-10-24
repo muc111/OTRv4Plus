@@ -90,7 +90,7 @@ class Client:
 
     #: Everything reached from the /smp command path.
     METHODS = (
-        "handle_command", "_smp_verify", "_active_peer", "_smp_session_ready",
+        "handle_command", "_smp_command", "_smp_verify", "_active_peer", "_smp_session_ready",
         "_warn_inline_secret", "_arm_secret_prompt", "_disarm_secret_prompt",
         "_consume_secret_line", "_panel_sec", "_otr_panel", "_set_pending",
         "_get_pending", "_clear_pending", "_handle_smp_consent",
@@ -325,9 +325,10 @@ class TestOnlyOneDispatcherOwnsTheCommand:
         sub = next(n for n in tree.body
                    if isinstance(n, ast.ClassDef)
                    and n.name == "EnhancedOTRv4IRCClient")
-        fn = next(n for n in sub.body
-                  if isinstance(n, ast.FunctionDef) and n.name == "handle_command")
-        assert "_smp_verify" in ast.unparse(fn)
+        fns = {n.name: n for n in sub.body if isinstance(n, ast.FunctionDef)}
+        # handle_command routes /smp and /verify to _smp_command, which runs them.
+        assert "self._smp_command(parts)" in ast.unparse(fns["handle_command"])
+        assert "_smp_verify" in ast.unparse(fns["_smp_command"])
 
 
 class TestTheInlineFormCannotTalkOverAHeldRequest:

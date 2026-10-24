@@ -49,7 +49,7 @@ def _run(coro, timeout=5.0):
 
 
 def _patch_sam(monkeypatch, works=True, calls=None):
-    async def _forwarder(server_b32, dest_port, sam_host=None, sam_port=None):
+    async def _forwarder(server_b32, dest_port, sam_host=None, sam_port=None, verify=None):
         if calls is not None:
             calls.append(server_b32)
         if not works:

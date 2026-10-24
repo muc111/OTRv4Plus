@@ -4,6 +4,30 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.157 and Desktop — 2026-10-24 — three tracked security issues closed; rc.156 builds again (core 0.13.1)
+
+- **rc.156 did not build** (`MainActivity.kt` used `@Composable` without
+  importing it, and named `ThemeTokens` in the wrong package). Fixed, and
+  `tests/test_kotlin_imports.py` now catches both kinds of mistake before CI.
+- **G1 resolved: a half-open handshake expires.** `is_expired()` was a stub
+  that always said no; it now counts from the first DAKE message, on the
+  monotonic clock, against the documented 120 s. Established and failed
+  handshakes never count as expired. `tests/test_dake_timeout.py`.
+- **G2 resolved: one test library.** Only `tests/otrv4_testlib.py` exists,
+  and a test fails if a second copy appears.
+- **X1 resolved in the terminal client too.** Over I2P, .onion or
+  `--insecure-tls` it now signs in with SCRAM only, never sending the
+  password itself, and checks every I2P server destination with the same
+  rule as the app: first use is pinned after sign-in; a changed destination
+  is refused before any byte reaches it, shown with both addresses, and
+  trusted only if you type the new one in full; a reconnect never retries
+  it. `tests/test_x1_terminal_client.py`.
+- `docs/SECURITY_ISSUES.md` updated: G1, G2 and X1 (terminal) resolved, with
+  their tests. A1, A2 and L1 stay open; see that file.
+- IRC client: the subclass's `/smp` and `/verify` handling is its own
+  method; no Python function outside the two documented exceptions passes
+  200 lines.
+
 ## Android 0.7.0-experimental.rc.156 — 2026-10-24 — code split, step 11: no Kotlin function over 200 lines (core 0.13.1)
 
 Nothing changes on the phone.

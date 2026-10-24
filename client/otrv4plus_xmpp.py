@@ -157,6 +157,7 @@ import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import otrv4plus_address as _address
 import otrv4plus_host as _host
 import otrv4plus_tunnels as _tunnels
@@ -1052,6 +1053,13 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
     # -------------------------------------------------------------------------
 
     async def _on_start(self, event):
+        # Signed in: the I2P destination that answered becomes the pin (X1).
+        confirm = getattr(self, "_confirm_server", None)
+        if confirm is not None:
+            try:
+                confirm()
+            except Exception:
+                print("[i2p] could not record the server's address")
         # Advertise OTRv4Plus (XEP-0030 feature, XEP-0115 caps) BEFORE the
         # first presence, so an OTRv4Plus peer -- the Android app -- can
         # confirm this resource speaks the protocol before it sends a DAKE.
@@ -3629,6 +3637,7 @@ def _configure_tls(client, args, server_b32, use_i2p, use_tor):
 
     relax_tls = bool(endpoint_authenticated_by) or args.insecure_tls
     if relax_tls:
+        _restrict_to_scram(client)
         import ssl as _ssl
         ctx = _ssl.create_default_context()
         ctx.check_hostname = False
@@ -3692,6 +3701,89 @@ def _store_reconnect(client, args, server_b32, use_i2p, use_tor):
     # because the standard case is TLS-verified servers that handle their own reconnect).
 
 
+def _restrict_to_scram(client):
+    """Never send the password itself where the certificate is not checked
+    (docs/SECURITY_ISSUES.md X1): SCRAM only, PLAIN off, as the app does
+    (android_bridge.transport._restrict_to_scram, the same list)."""
+    mech = client.plugin["feature_mechanisms"]
+    mech.use_mechs = set(SCRAM_ONLY)
+    mech.encrypted_plain = False      # PLAIN without TLS is off by default
+
+
+#: Must equal android_bridge.transport.SCRAM_ONLY (tests/test_x1_terminal_client.py).
+SCRAM_ONLY = frozenset({
+    "SCRAM-SHA-512-PLUS", "SCRAM-SHA-512",
+    "SCRAM-SHA-256-PLUS", "SCRAM-SHA-256",
+    "SCRAM-SHA-1-PLUS", "SCRAM-SHA-1",
+})
+
+
+def _server_identity(name):
+    """X1 for this client: (verify, confirm, pins) for the I2P server `name`.
+
+    `verify(dest_b64)` runs between NAMING LOOKUP and STREAM CONNECT and
+    raises DestinationChanged before any byte reaches a destination the
+    rule refuses (android_bridge.server_pins.check_destination). `confirm()`
+    pins a first-use or approved destination once sign-in succeeded.
+    """
+    from android_bridge import server_pins as pins_mod
+    pins = pins_mod.default_store()
+    name = name.strip().lower()
+    shipped = _address.shipped_server_address(name)
+    typed_b32 = name.endswith(".b32.i2p")
+
+    def verify(dest_b64):
+        seen = pins_mod.b32_of_destination(dest_b64)
+        pins_mod.check_destination(name, seen, pins, shipped=shipped,
+                                   self_authenticating=typed_b32)
+
+    def confirm():
+        if not shipped and not typed_b32:
+            pins.confirm(name)
+
+    return verify, confirm, pins
+
+
+def _ask_to_trust(changed, pins):
+    """A pinned server name now resolves elsewhere: say so, and approve the
+    new destination only if the user types it in full. True if approved."""
+    print("\n[i2p] SECURITY: %s now resolves to a DIFFERENT I2P destination."
+          % changed.name, file=sys.stderr)
+    print("[i2p]   pinned : %s" % (changed.pinned or "-"), file=sys.stderr)
+    print("[i2p]   now    : %s" % changed.seen, file=sys.stderr)
+    print("[i2p] Nothing was sent to it. If the server's operator told you its "
+          "address changed,", file=sys.stderr)
+    if changed.name.endswith(".b32.i2p") or _address.shipped_server_address(changed.name):
+        print("[i2p] this address cannot be approved here: it is fixed by the "
+              "address you typed or by this version.", file=sys.stderr)
+        return False
+    try:
+        typed = input("[i2p] type the new address in full to trust it "
+                      "(anything else stops): ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    if typed != changed.seen:
+        return False
+    pins.approve(changed.name, changed.seen)
+    return True
+
+
+def _sam_failed(e, args):
+    """The SAM bridge did not give us a stream: say why, and stop."""
+    print(f"[i2p] SAM bridge failed: {e}", file=sys.stderr)
+    # Only suggest checking the router when the router is what did
+    # not answer.  A failure that came back FROM the router has
+    # already been explained by _explain_stream_failure, and
+    # repeating "is the b32 correct?" after it contradicts it.
+    if "SAM stream connect failed" not in str(e):
+        print(
+            "[i2p] Is i2pd running with SAM enabled on "
+            f"{args.sam_host}:{args.sam_port}?",
+            file=sys.stderr,
+        )
+    sys.exit(1)
+
+
 def _open_connection(client, args, server_b32, use_i2p, use_tor):
     """Open the tunnel the transport needs and connect through it. Fails closed."""
     loop = client.loop
@@ -3703,28 +3795,26 @@ def _open_connection(client, args, server_b32, use_i2p, use_tor):
         # needs no local note.
         if server_b32.endswith(".b32.i2p"):
             client._i2p_server_dest = server_b32
-        try:
-            host, port = loop.run_until_complete(
-                _tunnels.start_i2p_sam_forwarder(
-                    server_b32,
-                    args.port,
-                    sam_host=args.sam_host,
-                    sam_port=args.sam_port,
+        from android_bridge.server_pins import DestinationChanged
+        verify, client._confirm_server, pins = _server_identity(server_b32)
+        client._server_check = verify
+        for attempt in (1, 2):
+            try:
+                host, port = loop.run_until_complete(
+                    _tunnels.start_i2p_sam_forwarder(
+                        server_b32,
+                        args.port,
+                        sam_host=args.sam_host,
+                        sam_port=args.sam_port,
+                        verify=verify,
+                    )
                 )
-            )
-        except Exception as e:
-            print(f"[i2p] SAM bridge failed: {e}", file=sys.stderr)
-            # Only suggest checking the router when the router is what did
-            # not answer.  A failure that came back FROM the router has
-            # already been explained by _explain_stream_failure, and
-            # repeating "is the b32 correct?" after it contradicts it.
-            if "SAM stream connect failed" not in str(e):
-                print(
-                    "[i2p] Is i2pd running with SAM enabled on "
-                    f"{args.sam_host}:{args.sam_port}?",
-                    file=sys.stderr,
-                )
-            sys.exit(1)
+                break
+            except DestinationChanged as changed:
+                if attempt == 2 or not _ask_to_trust(changed, pins):
+                    sys.exit(1)
+            except Exception as e:
+                _sam_failed(e, args)
         client.connect(host, port)
     elif use_tor:
         try:

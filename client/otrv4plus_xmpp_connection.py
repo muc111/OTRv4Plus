@@ -541,8 +541,17 @@ class ConnectionMixin:
                             p["dest_port"],
                             sam_host=p["sam_host"],
                             sam_port=p["sam_port"],
+                            verify=getattr(self, "_server_check", None),
                         )
                     except Exception as e:
+                        if type(e).__name__ == "DestinationChanged":
+                            # Never retried in the background (X1): the user
+                            # decides, at the next start.
+                            print("[reconnect] REFUSING: %s now resolves to a "
+                                  "different I2P destination (%s, pinned %s). "
+                                  "Nothing was sent to it. Restart to review it."
+                                  % (e.name, e.seen, e.pinned or "-"))
+                            return
                         print(f"[reconnect] SAM bridge failed: {e}")
                         self._reconnect_delay = min(
                             self._reconnect_delay * 2, _RECONNECT_MAX

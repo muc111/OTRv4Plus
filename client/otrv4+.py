@@ -4808,6 +4808,10 @@ class RustDAKEAdapter:
         self._state: DAKEState = DAKEState.IDLE
         self._session_created_at: float = 0.0
         self._session_max_age: float = 86400.0
+        #: Seconds a handshake may stay half-open (is_expired). Monotonic
+        #: clock: a wall-clock change cannot age or rejuvenate a handshake.
+        self.timeout: float = UIConstants.DAKE_TIMEOUT
+        self._handshake_started_at: float = 0.0
 
         self.remote_identity_pub_bytes: Optional[bytes] = None
         self.remote_identity_key = None
@@ -4887,7 +4891,17 @@ class RustDAKEAdapter:
         return (time.time() - self._session_created_at) > self._session_max_age
 
     def is_expired(self) -> bool:
-        return False
+        """Whether this handshake has been half-open longer than [timeout].
+
+        Only a handshake in flight can expire: IDLE has not started, and an
+        ESTABLISHED session's age is is_session_expired's question. FAILED is
+        already over. tests/test_dake_timeout.py.
+        """
+        if self._state in (DAKEState.IDLE, DAKEState.ESTABLISHED, DAKEState.FAILED):
+            return False
+        if self._handshake_started_at == 0.0:
+            return False
+        return (time.monotonic() - self._handshake_started_at) > self.timeout
 
     def get_state(self) -> DAKEState:
         return self.state
@@ -4930,6 +4944,7 @@ class RustDAKEAdapter:
             )
             self._raw_dake1_bytes = raw
             self._state = DAKEState.SENT_DAKE1
+            self._handshake_started_at = time.monotonic()
             self._trace("DAKE", "STATE", "IDLE", "SENT_DAKE1", "generated DAKE1 (Identity)")
             encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
             return f"?OTRv4 {encoded }"
@@ -4986,6 +5001,7 @@ class RustDAKEAdapter:
                 )
 
             self._state = DAKEState.RECEIVED_DAKE1
+            self._handshake_started_at = time.monotonic()
             self._trace("DAKE", "STATE", "IDLE", "RECEIVED_DAKE1", "received DAKE1 (Identity)")
             self._log_debug("DAKE1 (Identity) processed successfully")
             return True
