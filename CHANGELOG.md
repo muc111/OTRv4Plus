@@ -4,6 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.148 — 2026-10-24 — received PDFs are opened in an isolated process (core 0.13.1)
+
+- **A received PDF is parsed only in an isolated process.** A bug in a PDF
+  parser is reached by whoever sent the file (CVE-2026-86950, Apple's
+  CoreGraphics font bug, was exploited that way; OTRv4+ has no Apple build).
+  The in-app viewer now hands the page to `PdfRenderService`, a process with
+  no permissions, no access to the app's files and no network. It sends back
+  plain pixels, which the app checks for size; no image is decoded from it.
+  Python and the keys never start there. Closing the viewer ends that
+  process, so a file that hangs the renderer cannot stay running.
+- **The viewer says what a PDF would do in another app.** Scripts, actions
+  that run on opening, launch commands, attached files, outbound links and
+  forms, embedded media or XFA: listed under the page, and repeated in the
+  "Open with another app" warning. None of it runs inside OTRv4+. A file
+  with compressed parts the check cannot see into says so, never "clean".
+- SECURITY.md: what is done, and what is not (the file is not rewritten, and
+  "Open with another app" hands over the file as received).
+- **Guards:** `tests/test_pdf_isolation.py` fails if anything outside the
+  isolated service parses a PDF, if the service loses `isolatedProcess`, or
+  if Python could start there; `PdfScanTest` covers the scan, including
+  `#xx`-escaped names.
+
 ## Android 0.7.0-experimental.rc.147 and Desktop — 2026-10-24 — the I2P router on the phone is found by asking it (core 0.13.1)
 
 - **An I2P router already on the phone is used only when its SAM bridge

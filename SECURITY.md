@@ -460,6 +460,43 @@ whatever was typed. Both clients now read `SMP_MIN_LEN`/`SMP_MAX_LEN` from
 `otrv4+.py`, because two clients disagreeing about how long a shared secret may
 be is a way for one side to store something the other refuses.
 
+## Received PDFs are parsed in an isolated process (Android 0.7.0-experimental.rc.148)
+
+A PDF is parsed by native code: fonts, images, compressed streams. A memory
+bug there is reached by whoever sent the file. CVE-2026-86950, an integer
+overflow in the font glyph rasteriser of Apple's CoreGraphics (fixed in iOS,
+iPadOS and macOS 26.7.1), was exploited through PDFs sent over messengers.
+OTRv4+ has no Apple build and does not use CoreGraphics, so that bug cannot
+reach it. Android's `PdfRenderer` is the same kind of parser, though, so on
+Android:
+
+- **The in-app viewer parses PDFs only in `PdfRenderService`**, declared
+  `isolatedProcess` (`AndroidManifest.xml`). That process has no permissions,
+  cannot read the app's files and has no network. It receives a read-only
+  descriptor for the one transient decrypted copy being viewed, and returns
+  raw pixels with a fixed header. The app checks every size and decodes no
+  image format from it. Python, and with it the engine and its keys, never
+  starts in that process.
+- **Pages are pictures.** Nothing in a PDF is run in the app: no scripts, no
+  actions, no links, no forms, no attachments. This was already true of
+  `PdfRenderer`; the isolation is about parser bugs, not active content.
+- **The kind comes from the bytes**, never the file name (`SafeView.kindOf`),
+  so `invoice.pdf` that is really HTML is not a PDF and is not rendered.
+- **Active content is reported, not stripped.** `PdfScan` lists what a PDF
+  asks a viewer to do (scripts, open-actions, launch commands, attached
+  files, outbound links and forms, embedded media or XFA). The viewer shows
+  that list, and "Open with another app" repeats it in its warning, because a
+  full PDF app may act on it. The scan reads names in the bytes and does not
+  parse the file. Names inside compressed object streams are invisible to
+  it, so such a file is reported as having parts it cannot see into, never
+  as clean.
+- **Not done:** the original file is not rewritten or sanitised. "Open with
+  another app" hands that app the file as received, after the warning. Keep
+  the OS and your PDF apps updated.
+
+Tests: `tests/test_pdf_isolation.py` (isolation and wiring), `PdfScanTest`
+(the scan).
+
 ## Known issues and limitations
 
 1. **Rust crypto crates are not audited.** `ed448-goldilocks-plus` 0.16 is the only viable pure-Rust Ed448, and `x448` 0.6 the X448, but neither has had a formal review. `pqcrypto-mlkem 0.1.1` (FIPS 203 ML-KEM-1024) and `pqcrypto-mldsa 0.1.2` (ML-DSA-87) are PQClean-derived reference implementations.

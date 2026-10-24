@@ -107,6 +107,8 @@ waiting for a phone to find it.
 - `RouterChoiceTest` and `tests/test_android_bundled_router.py`: an I2P
   router on the phone counts only when its SAM bridge answers our HELLO,
   and it is asked before the built-in router starts.
+- `tests/test_pdf_isolation.py`: received PDFs are parsed only in the
+  isolated `PdfRenderService`, and Python never starts there.
 - `tests/test_client_finds_the_bridge.py`: a terminal client started from
   `client/` can import `android_bridge`.
 - `tests/test_ci_watches_what_it_tests.py`: the desktop install job runs

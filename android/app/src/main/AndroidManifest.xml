@@ -114,6 +114,19 @@
             android:foregroundServiceType="dataSync" />
 
         <!--
+          Renders received PDFs (ui/PdfRenderService.kt). isolatedProcess:
+          its own process with no permissions, no access to this app's files
+          and no network, so a bug in the PDF parser, reached by whoever sent
+          the file, lands nowhere near the messages and keys. exported=false:
+          only this app binds it.
+        -->
+        <service
+            android:name=".ui.PdfRenderService"
+            android:process=":pdf"
+            android:isolatedProcess="true"
+            android:exported="false" />
+
+        <!--
           Lets the user hand a diagnostic report to an app of their choosing.
 
           exported=false and grantUriPermissions=true is the pair that matters:

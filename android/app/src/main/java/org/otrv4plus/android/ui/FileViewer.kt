@@ -7,9 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.pdf.PdfRenderer
 import android.media.MediaPlayer
-import android.os.ParcelFileDescriptor
 import android.widget.MediaController
 import android.widget.VideoView
 import androidx.compose.foundation.Image
@@ -31,6 +29,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.otrv4plus.android.bridge.MetadataFinding
 import org.otrv4plus.android.crypto.MetadataChoice
+import org.otrv4plus.android.crypto.PdfScan
 import org.otrv4plus.android.crypto.SafeView
 import java.io.File
 
@@ -42,7 +41,8 @@ import java.io.File
  * (`SafeView.kindOf`). Everything is rendered by the platform's local
  * decoders — no WebView, no network, no scripting: an image is decoded to a
  * bitmap, text is shown as characters, a PDF page is rasterised by
- * PdfRenderer, audio and video play from the private path.
+ * PdfRenderer in an isolated process (PdfRenderService), audio and video
+ * play from the private path.
  *
  * Leaving the app is a separate, explicit step ("Open with another app…")
  * with a warning first; see [handOff].
@@ -66,6 +66,7 @@ fun FileViewerDialog(
     var kind by remember(container) { mutableStateOf<SafeView.Kind?>(null) }
     var confirmHandoff by remember { mutableStateOf(false) }
     var metadataLine by remember(container) { mutableStateOf<String?>(null) }
+    var pdfFindings by remember(container) { mutableStateOf<Set<PdfScan.Finding>>(emptySet()) }
     DisposableEffect(container) {
         onDispose { viewDir.listFiles()?.forEach { it.delete() } }
     }
@@ -85,6 +86,14 @@ fun FileViewerDialog(
         if (plain != null && kind == SafeView.Kind.IMAGE) {
             metadataLine = MetadataChoice.receivedSummary(
                 withContext(Dispatchers.IO) { runCatching { inspect(plain) }.getOrNull() })
+        }
+        if (plain != null && kind == SafeView.Kind.PDF) {
+            // A scan of the bytes, not a parse: unreadable counts as hidden.
+            pdfFindings = withContext(Dispatchers.IO) {
+                runCatching { PdfScan.scan(File(plain)) }
+                    .getOrDefault(setOf(PdfScan.Finding.HIDDEN))
+            }
+            metadataLine = PdfScan.summary(pdfFindings)
         }
     }
     Dialog(onDismissRequest = onClose,
@@ -131,7 +140,8 @@ fun FileViewerDialog(
         AlertDialog(
             onDismissRequest = { confirmHandoff = false },
             title = { Text("Leave OTRv4Plus?") },
-            text = { Text(SafeView.handoffWarning(name)) },
+            text = { Text(listOfNotNull(SafeView.handoffWarning(name),
+                                        PdfScan.handoffNote(pdfFindings)).joinToString(" ")) },
             confirmButton = {
                 TextButton(onClick = {
                     confirmHandoff = false
@@ -203,36 +213,26 @@ private fun TextBody(path: String) {
 
 @Composable
 private fun PdfBody(path: String) {
+    val context = LocalContext.current
+    // Rendered in PdfRenderService's isolated process, never in this one.
+    val pdf = remember(path) { IsolatedPdf(context.applicationContext) }
+    DisposableEffect(pdf) { onDispose { pdf.close() } }
     var page by remember(path) { mutableIntStateOf(0) }
     var count by remember(path) { mutableIntStateOf(0) }
     var bitmap by remember(path) { mutableStateOf<Bitmap?>(null) }
     var failed by remember(path) { mutableStateOf(false) }
     LaunchedEffect(path, page) {
-        withContext(Dispatchers.IO) {
-            runCatching {
-                ParcelFileDescriptor.open(File(path), ParcelFileDescriptor.MODE_READ_ONLY).use { fd ->
-                    PdfRenderer(fd).use { renderer ->
-                        count = renderer.pageCount
-                        renderer.openPage(page.coerceIn(0, count - 1)).use { p ->
-                            val scale = SafeView.IMAGE_MAX_SIDE.toFloat() /
-                                maxOf(p.width, p.height).coerceAtLeast(1)
-                            val bmp = Bitmap.createBitmap(
-                                (p.width * scale).toInt().coerceAtLeast(1),
-                                (p.height * scale).toInt().coerceAtLeast(1),
-                                Bitmap.Config.ARGB_8888)
-                            bmp.eraseColor(android.graphics.Color.WHITE)
-                            p.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            bitmap = bmp
-                        }
-                    }
-                }
-            }.onFailure { failed = true }
+        val shown = withContext(Dispatchers.IO) { pdf.render(File(path), page) }
+        if (shown == null) failed = true
+        else {
+            count = shown.pages
+            bitmap = shown.bitmap
         }
     }
     Column(Modifier.fillMaxSize()) {
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
-                failed -> Text("This PDF could not be rendered.")
+                failed -> Text("This PDF could not be shown. Nothing in it was run.")
                 bitmap != null -> Image(bitmap!!.asImageBitmap(),
                                         contentDescription = "PDF page ${page + 1}",
                                         modifier = Modifier.fillMaxSize())
