@@ -4,6 +4,31 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.145 and Desktop — 2026-10-24 — no failure is silent; guards against regressions (core 0.13.1)
+
+- **Every failure the app is told about now says something.** The call
+  that "did nothing" was one of twenty-odd failure codes the app dropped:
+  a group message that did not send, an invitation that did not go, a
+  verification answer that failed, a message that could not be decrypted.
+  `FailureText` gives each a sentence; an unknown code is shown by name
+  ("Something did not work (code). Profile → Diagnostics has the details");
+  only failures handling a PEER's malformed control message stay off the
+  screen, so nobody can write to yours. Phone and desktop.
+- **Guards so regressions fail CI instead of reaching a phone** (owner: "you
+  should have protections in place"), listed in CONTRIBUTING.md: no function
+  may read a global its module lacks (the check that found the two old
+  NameErrors in rc.143); every failure code needs a sentence or a reason to
+  be quiet; the terminal client must import the bridge from `client/`; the
+  desktop install job now also runs when the client, the bridge or the Rust
+  core change (it watched only desktop files, which is how rc.134 broke the
+  installer unnoticed for eight builds).
+- **Voice split** (no change in behaviour): `otrv4plus_voice.py` 7,380 →
+  4,700 lines; parameters, crypto protocol and playout timing are their own
+  modules. All 181 moved definitions are unchanged.
+- **The Rust core is unchanged** through the whole tidy-up: its only edits
+  were comment lines naming moved documents, and the `ctutils` 0.4.4
+  security update (rc.132).
+
 ## Android 0.7.0-experimental.rc.144 and Desktop — 2026-10-24 — open a received picture from the chat and see its metadata; terminal secure groups back (core 0.13.1)
 
 - **A received file opens from its line in the conversation**, now and after

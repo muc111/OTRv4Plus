@@ -52,8 +52,11 @@ class SmpCarrierTest {
         s.handle(OtrEvent.Failed(bob, "smp_cooldown"))
         assertTrue(s.notice!!.contains("30 seconds"), s.notice)
         s.dismissNotice()
+        // Another code gets its own line (FailureText), not the SMP one. It
+        // used to get none at all, which is how failures went unseen.
         s.handle(OtrEvent.Failed(bob, "decrypt_failed"))
-        assertNull(s.notice, "unrelated failures are not reworded here")
+        assertTrue(s.notice!!.contains("could not be decrypted"), s.notice)
+        assertTrue("30 seconds" !in s.notice!!)
     }
 
     @Test

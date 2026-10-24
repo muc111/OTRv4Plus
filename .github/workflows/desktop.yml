@@ -18,6 +18,15 @@ on:
       - "android/app/src/main/java/org/otrv4plus/android/crypto/**"
       - "android/app/src/main/java/org/otrv4plus/android/security/**"
       - "android/app/src/main/java/org/otrv4plus/android/theme/**"
+      # What desktop/install.sh builds and its engine process runs. Watched
+      # since 2026-10-24: rc.134 moved the Python modules into client/,
+      # install.sh's final check then failed on a clean Ubuntu, and nothing
+      # ran this workflow for eight builds because no desktop file changed.
+      - "client/**"
+      - "android_bridge/**"
+      - "Rust/**"
+      - "otrv4+.py"
+      - "otrv4plus_xmpp.py"
       - ".github/workflows/desktop.yml"
   workflow_dispatch:
     inputs:

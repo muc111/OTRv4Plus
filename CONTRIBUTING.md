@@ -87,6 +87,25 @@ policy applies going forward without rewriting what is already here.
 Module names are flat (`import otrv4plus_voice`): `client/` is put on the import
 path, not imported as a package.
 
+## Regression guards
+
+Checks added after something slipped through; each fails CI rather than
+waiting for a phone to find it.
+
+- `tests/test_no_unresolved_globals.py`: no function reads a global its
+  module lacks (Python finds those only when the line runs; two were in
+  error branches no test reached).
+- `tests/test_failures_reach_the_screen.py`: every failure code the bridge
+  emits has a sentence in the app (`FailureText`) or a `QUIET` entry saying
+  why not; an unknown code is shown by name, never dropped.
+- `tests/test_client_finds_the_bridge.py`: a terminal client started from
+  `client/` can import `android_bridge`.
+- `tests/test_ci_watches_what_it_tests.py`: the desktop install job runs
+  when anything it installs changes.
+- `tests/source_of.py`: when a class or file is split, tests that scan
+  "the whole client" read all of its parts, so a "this must never happen"
+  check cannot go quiet because the code moved.
+
 ## Before you write code
 
 Open an issue first to discuss. The single-file Python design is intentional —

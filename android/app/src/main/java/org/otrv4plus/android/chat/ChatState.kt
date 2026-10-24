@@ -2,7 +2,6 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.chat
 
-import org.otrv4plus.android.crypto.CallUi
 import org.otrv4plus.android.crypto.Verification
 import org.otrv4plus.android.crypto.TransferUi
 
@@ -546,13 +545,10 @@ class ChatState(
                 promoteQueued(bare(event.peer), event.count, event.encrypted)
                 true
             }
-            // A verification refusal says WHY, so "wait and try again" is
-            // not reported as "could not be started". Other codes are left
-            // to the call site that caused them.
+            // Every failure says something, or is deliberately quiet
+            // (FailureText).
             is OtrEvent.Failed -> {
-                (Verification.refusal(event.code)
-                    ?: CallUi.failure(event.code)
-                    ?: GroupText.failure(event.code, event.peer))?.let { note(it) }
+                FailureText.text(event.code, event.peer)?.let { note(it) }
                 false
             }
             else -> false
