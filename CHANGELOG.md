@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.164 — 2026-10-24 — the file viewer's buttons are on screen (core 0.13.1)
+
+- **Buttons under pictures and PDFs were cut off** (Pixel 7 / Android 17).
+  From Android 15 a full-screen dialog is drawn edge to edge, under the status
+  and navigation bars, so the row under the file — Open with another app, the
+  zoom buttons, Previous/Next page — sat behind the navigation bar. The viewer
+  now keeps itself clear of the system bars.
+- `tests/test_viewer_zoom_and_attention.py`.
+
 ## Android 0.7.0-experimental.rc.163 — 2026-10-24 — a deleted group leaves every member's phone (core 0.13.1)
 
 - **A deleted group left its members in it** (device report). When the

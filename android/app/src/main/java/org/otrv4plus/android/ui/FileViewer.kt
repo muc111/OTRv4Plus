@@ -107,10 +107,18 @@ fun FileViewerDialog(
             metadataLine = PdfScan.summary(pdfFindings)
         }
     }
+    // Edge to edge: from Android 15 a full-screen dialog is drawn under the
+    // status and navigation bars whatever `decorFitsSystemWindows` says, so
+    // the bars' space is taken here (safeDrawing). Without it the row under
+    // the picture or PDF -- Open with, zoom, page -- sat behind the
+    // navigation bar (device report, Pixel 7 / Android 17).
     Dialog(onDismissRequest = onClose,
-           properties = DialogProperties(usePlatformDefaultWidth = false)) {
+           properties = DialogProperties(usePlatformDefaultWidth = false,
+                                         decorFitsSystemWindows = false)) {
         Surface(Modifier.fillMaxSize()) {
-            Column(Modifier.fillMaxSize().padding(12.dp)) {
+            Column(Modifier.fillMaxSize()
+                       .windowInsetsPadding(WindowInsets.safeDrawing)
+                       .padding(12.dp)) {
                 Row(Modifier.fillMaxWidth()) {
                     Column(Modifier.weight(1f)) {
                         Text(name.ifBlank { "Received file" },

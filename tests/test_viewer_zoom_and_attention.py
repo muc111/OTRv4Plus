@@ -47,3 +47,15 @@ def test_a_chat_that_needs_the_user_pulses_and_says_so():
 def test_the_chats_tab_pulses_while_any_chat_needs_the_user():
     bar = _read("MainNavBar.kt")
     assert "attentionAlpha(model.attentionByChat().isNotEmpty())" in bar
+
+
+def test_the_viewer_keeps_its_buttons_clear_of_the_system_bars():
+    """Device report (Pixel 7 / Android 17): the buttons under pictures and
+    PDFs were cut off. From Android 15 a full-screen dialog is drawn edge to
+    edge, so the viewer takes the bars' space itself."""
+    viewer = _read("FileViewer.kt")
+    dialog = viewer[viewer.index("Dialog(onDismissRequest = onClose"):]
+    dialog = dialog[:dialog.index("if (confirmHandoff)")]
+    assert "decorFitsSystemWindows = false" in dialog
+    assert dialog.index(".windowInsetsPadding(WindowInsets.safeDrawing)") < dialog.index(
+        "Open with another app"), "the padding wraps the whole column, buttons included"

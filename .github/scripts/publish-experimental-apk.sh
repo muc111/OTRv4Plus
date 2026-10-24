@@ -176,6 +176,7 @@ installed), and with the Termux client.
 | Sign in again after Sign out | Sign out, then sign in again at once (also after the account was taken over by another phone): it connects, over I2P too, without restarting the app | rc.161 |
 | Calls over the built-in router | Both phones on this build, no separate I2P app: call, answer on the other phone; you hear each other within a minute or two. A retry right after a failed call is not refused | rc.162 |
 | Deleted groups | Phone A creates a group with B and C, then deletes it: on B and C it disappears from the list within seconds, with its messages; reconnecting does not bring it back. Same for a plain room A owns | rc.163 |
+| Viewer buttons | Open a received photo and a PDF: Open with another app, − / 100% / + and Previous / Next are all above the navigation bar and can be tapped | rc.164 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
