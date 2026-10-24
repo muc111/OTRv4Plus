@@ -198,10 +198,11 @@ class TestTheRequestIsSingleUse:
 
     def test_dispatch_takes_it_unconditionally(self):
         methods = _methods(_tree())
-        body = ast.get_source_segment(_src(), methods["dispatch_line"][0])
-        assert "take_secret_request()" in body
+        pending = ast.get_source_segment(_src(), methods["_dispatch_pending"][0])
+        assert "take_secret_request()" in pending
         # Taken before any command matching: a passphrase may start with "/".
-        assert body.index("take_secret_request()") < body.index("lstrip =")
+        body = ast.get_source_segment(_src(), methods["dispatch_line"][0])
+        assert body.index("_dispatch_pending(line)") < body.index("lstrip =")
 
     def test_take_always_clears(self):
         methods = _methods(_tree())
@@ -221,6 +222,8 @@ class TestTheRequestIsSingleUse:
         body = ast.get_source_segment(_src(), methods["dispatch_line"][0])
         head = body[:body.index("lstrip =")]
         assert "/quit" not in head
+        assert "/quit" not in ast.get_source_segment(
+            _src(), methods["_dispatch_pending"][0])
 
     def test_ending_a_session_drops_a_request_for_that_peer(self):
         src = _src()

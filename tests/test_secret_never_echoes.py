@@ -272,13 +272,13 @@ class TestItNeverPromisesWhatItCannotDo:
 class TestTheInlineFormIsDiscouraged:
 
     def test_a_bare_command_prompts_instead_of_storing(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.dispatch_line)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_smp)
         i = src.index('"/smp-secret", "/smpsecret"')
         assert "_request_smp_secret" in src[i:i + 400], (
             "/smp-secret with no argument does not offer the hidden prompt")
 
     def test_the_inline_form_warns_that_it_was_echoed(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.dispatch_line)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_smp)
         assert src.count("_warn_inline_secret") >= 2, (
             "not every inline passphrase path warns")
 

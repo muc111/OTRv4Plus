@@ -31,6 +31,7 @@ import sys
 import textwrap
 
 import pytest
+from source_of import main_source  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -39,7 +40,7 @@ xmpp = pytest.importorskip("otrv4plus_xmpp")
 
 
 def _main_src():
-    return textwrap.dedent(inspect.getsource(xmpp.main))
+    return main_source(xmpp)
 
 
 def _main_tree():
@@ -142,7 +143,7 @@ class TestTheFlagIsNoLongerNeeded:
             assert "--insecure-tls" not in doc[i:i + 400]
 
     def test_the_help_says_it_is_not_needed_for_i2p_or_onion(self):
-        src = inspect.getsource(xmpp.main)
+        src = main_source(xmpp)
         i = src.index('"--insecure-tls"')
         window = src[i:i + 500]
         assert "Not needed" in window

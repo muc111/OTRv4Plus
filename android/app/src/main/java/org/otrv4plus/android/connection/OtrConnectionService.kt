@@ -864,13 +864,15 @@ class OtrConnectionService : Service() {
             routerState = RouterChoice.State.NOT_USED
             return 0
         }
-        // Automatic, always: an I2P app already running on the phone is
-        // used, otherwise ours starts (RouterChoice.decide).
-        val external = BundledRouter.samAnswers(RouterChoice.EXTERNAL_SAM_PORT)
+        // Automatic, always: an I2P app already running on the phone whose
+        // SAM bridge answers a HELLO is used, otherwise ours starts
+        // (RouterChoice.decide). Asked first, on every attempt.
+        val probe = RouterChoice.findExternalSam()
+        val external = probe == RouterChoice.Probe.SAM
         val use = RouterChoice.decide(external, router.available)
         runCatching {
             core.note("service", "i2p_router", "info",
-                      "external=$external bundled=${router.available} use=$use")
+                      "external=${probe.name.lowercase()} bundled=${router.available} use=$use")
         }
         if (use == RouterChoice.Use.EXTERNAL) {
             // Ours is not needed while the phone's own router answers.

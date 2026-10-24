@@ -19,7 +19,7 @@ leaves nothing behind and says accurately what happened.
 The engine is real (`otrv4_core`); the transport and the terminal are not.
 """
 
-from source_of import irc_and_engine_source, open_irc_and_engine, class_source  # noqa: E402
+from source_of import irc_and_engine_source, open_irc_and_engine, class_source, main_source  # noqa: E402
 import ast
 import inspect
 import os
@@ -312,7 +312,9 @@ class _Client:
                      "_handle_smp_consent", "_decline_smp_request",
                      "_arm_secret_prompt", "_request_smp_secret",
                      "_handle_smp_secret_answer", "take_secret_request",
-                     "_pending_consent_peer", "dispatch_line",
+                     "_pending_consent_peer", "dispatch_line", "_dispatch_pending",
+                     "_dispatch_session", "_dispatch_smp", "_dispatch_contacts",
+                     "_dispatch_media", "_dispatch_calls", "_dispatch_display",
                      "take_admin_field", "_admin_reset",
                      "_expire_stale_smp_consent", "has_pending",
                      "_check_smp_secret_required", "_forget_otr"):
@@ -719,7 +721,7 @@ class TestTheCoreApiContract:
             assert line in coreapi.REBUILD_HINT
 
     def test_the_client_checks_before_it_needs_it(self):
-        src = inspect.getsource(xmpp.main)
+        src = main_source(xmpp)
         assert "verify_core_api" in src, (
             "the version check does not run at startup, so a mismatch is "
             "found later, inside SMP, worded as a protocol failure")

@@ -168,4 +168,77 @@ class RouterChoiceTest {
         assertFalse(RouterChoice.shouldRestart("auth_failed",
             routerUpMs = 40 * min, failuresInARow = 6, sinceLastRestartMs = Long.MAX_VALUE))
     }
+
+    // -- is there a router on the phone? A real SAM HELLO, on real sockets --
+
+    private fun serve(reply: String?): java.net.ServerSocket {
+        val server = java.net.ServerSocket(0, 1, java.net.InetAddress.getByName("127.0.0.1"))
+        Thread {
+            runCatching {
+                server.accept().use { c ->
+                    val hello = c.getInputStream().bufferedReader().readLine()
+                    if (reply != null && hello == RouterChoice.SAM_HELLO.trim())
+                        c.getOutputStream().apply { write(reply.toByteArray()); flush() }
+                    else Thread.sleep(3_000)
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        return server
+    }
+
+    @Test
+    fun `a SAM bridge that answers HELLO is a router on the phone`() {
+        serve("HELLO REPLY RESULT=OK VERSION=3.1\n").use {
+            assertEquals(RouterChoice.Probe.SAM, RouterChoice.probeSam(it.localPort))
+        }
+    }
+
+    @Test
+    fun `an open port that is not SAM is not a router`() {
+        serve("HTTP/1.1 400 Bad Request\n").use {
+            assertEquals(RouterChoice.Probe.NOT_SAM, RouterChoice.probeSam(it.localPort))
+        }
+        serve(null).use {          // accepts, says nothing
+            assertEquals(RouterChoice.Probe.NOT_SAM, RouterChoice.probeSam(it.localPort, 300))
+        }
+        serve("HELLO REPLY RESULT=NOVERSION\n").use {
+            assertEquals(RouterChoice.Probe.NOT_SAM, RouterChoice.probeSam(it.localPort))
+        }
+    }
+
+    @Test
+    fun `a closed port is no answer`() {
+        val port = java.net.ServerSocket(0).use { it.localPort }
+        assertEquals(RouterChoice.Probe.NO_ANSWER, RouterChoice.probeSam(port, 300))
+    }
+
+    @Test
+    fun `only SAM keeps the built-in router from starting`() {
+        for (p in RouterChoice.Probe.values()) {
+            val use = RouterChoice.decide(p == RouterChoice.Probe.SAM, bundled = true)
+            assertEquals(if (p == RouterChoice.Probe.SAM) Use.EXTERNAL else Use.BUILT_IN, use, p.name)
+        }
+    }
+
+    @Test
+    fun `the phone's router is asked again before giving up on it`() {
+        val answers = ArrayDeque(listOf(RouterChoice.Probe.NO_ANSWER, RouterChoice.Probe.SAM))
+        val slept = mutableListOf<Long>()
+        assertEquals(RouterChoice.Probe.SAM,
+            RouterChoice.findExternalSam(probe = { answers.removeFirst() }, sleep = { slept += it }))
+        assertEquals(1, slept.size)
+        var asked = 0
+        assertEquals(RouterChoice.Probe.NO_ANSWER,
+            RouterChoice.findExternalSam(tries = 3, probe = { asked++; RouterChoice.Probe.NO_ANSWER },
+                                         sleep = {}))
+        assertEquals(3, asked)
+    }
+
+    @Test
+    fun `the HELLO reply is read strictly`() {
+        assertTrue(RouterChoice.isSamHello("HELLO REPLY RESULT=OK VERSION=3.1"))
+        assertFalse(RouterChoice.isSamHello("HELLO REPLY RESULT=I2P_ERROR"))
+        assertFalse(RouterChoice.isSamHello("SSH-2.0-OpenSSH RESULT=OK"))
+        assertFalse(RouterChoice.isSamHello(null))
+    }
 }

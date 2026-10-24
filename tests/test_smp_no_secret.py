@@ -187,7 +187,7 @@ class TestRemoteInputCannotBecomeASecret:
             if _calls_named(node, "_request_smp_secret"):
                 callers.append(node.name)
         assert callers, "nothing prompts for the secret any more"
-        assert set(callers) == {"dispatch_line"}, (
+        assert set(callers) == {"_dispatch_smp"}, (
             "the secret prompt is armed from %s; only the user's own typed "
             "command may arm it" % sorted(callers))
 
@@ -199,15 +199,16 @@ class TestRemoteInputCannotBecomeASecret:
         xmpp = pytest.importorskip("otrv4plus_xmpp")
         src = inspect.getsource(xmpp.OTRv4PlusXMPP.dispatch_line)
         head = src.split("lstrip = line.strip()")[0]
-        assert "take_secret_request()" in head, (
+        pending = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_pending)
+        assert "_dispatch_pending(line)" in head and "take_secret_request()" in pending, (
             "the secret request must be taken before command parsing, "
             "because a passphrase may legitimately begin with '/'")
-        assert "/quit" not in head, (
+        assert "/quit" not in head + pending, (
             "a /quit escape hatch means the prompt is sticky again")
 
     def test_the_explicit_command_still_exists(self):
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.dispatch_line)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_smp)
         assert "/smp-secret " in src
         assert hasattr(xmpp.OTRv4PlusXMPP, "store_smp_secret")
 

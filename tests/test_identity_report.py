@@ -144,7 +144,7 @@ class TestItIsReachable:
 
     def test_the_command_is_dispatched(self):
         import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.dispatch_line)
+        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_session)
         assert '"/identity"' in src and "show_identity" in src
 
     def test_it_is_in_the_help(self):

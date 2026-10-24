@@ -131,7 +131,7 @@ class TestTofuDoesNotAuthorise:
         """Two independent gates, in that order, and neither replaces the
         other: TOFU refuses a changed fingerprint, SMP authorises."""
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        src = _src(xmpp.OTRv4PlusXMPP.dispatch_line)
+        src = _src(xmpp.OTRv4PlusXMPP._dispatch_calls)
         i = src.index('lstrip == "/call"')
         window = src[i:i + 400]
         assert "_voice_blocked_by_tofu" in window

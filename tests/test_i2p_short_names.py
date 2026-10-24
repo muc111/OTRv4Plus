@@ -28,6 +28,7 @@ import sys
 import tempfile
 
 import pytest
+from source_of import main_source  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -437,7 +438,7 @@ class TestStreamFailuresAreClassified:
         """A failure that came back FROM the router has been explained
         already; repeating "is i2pd running?" after it contradicts it."""
         import inspect
-        src = inspect.getsource(xmpp.main)
+        src = main_source(xmpp)
         i = src.index("SAM bridge failed")
         window = src[i:i + 700]
         assert "SAM stream connect failed" in window, (

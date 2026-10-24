@@ -2665,13 +2665,94 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
 
         Returns True to keep running, False to quit. Single source of truth
         for command behaviour; both the plain stdin loop and the TUI call this
-        so both front-ends behave identically."""
+        so both front-ends behave identically. Each `_dispatch_*` method
+        handles one family of commands and answers whether the line was one
+        of its own; no two families match the same line."""
+        # A prompt or question on screen answers before any command parsing:
+        # a passphrase or a form field may legitimately begin with "/".
+        if self._dispatch_pending(line):
+            return True
+        if not line:
+            return True
+
+        # Invisible characters a copy from a chat window brings along (zero-
+        # width spaces, a byte-order mark, a non-breaking space) made
+        # "/otr alice@..." fail to match and go out as a chat message instead
+        # (device test, 2026-10-02).
+        line = (line.replace("\u200b", "").replace("\u200c", "")
+                .replace("\u200d", "").replace("\u2060", "")
+                .replace("\ufeff", "").replace("\u00a0", " "))
+        lstrip = line.strip()
+
+        # --- TUI toggle ---
+        ts_command = getattr(self, "_ts_command", None)
+        if ts_command is not None and ts_command(lstrip, peer):
+            return True
+        if lstrip in ("/sound", "/sound on", "/sound off"):
+            if lstrip != "/sound":
+                self._alerts().enabled = lstrip == "/sound on"
+            print("[sound] message and group-call sounds are %s (/sound on|off; "
+                  "a 1:1 call always rings)"
+                  % ("on" if self._alerts().enabled else "off"))
+            return True
+        if lstrip == "/tui":
+            if getattr(self, "_tui_enabled", False):
+                print("[tui] switching to plain scrollback mode")
+                self._tui_quit_to_plain()
+            else:
+                try:
+                    loop = asyncio.get_event_loop()
+                    ok = self._start_tui(loop, debug=self._probe)
+                    if ok:
+                        print("[tui] switched to tabbed panel mode (/tui again to go back)")
+                    else:
+                        print("[tui] could not start TUI (not a tty?)")
+                except Exception as e:
+                    print(f"[tui] error: {e}")
+            return True
+
+        # --- Quit ---
+        if lstrip == "/quit":
+            self._clear_trades("/quit")
+            return False
+
+        # --- Wipe: /quit that destroys EVERYTHING, secure groups included ---
+        if lstrip == "/wipe":
+            self._clear_trades("/wipe")
+            self._wipe_on_exit = True
+            print("[wipe] destroying all local state, secure groups included, "
+                  "and exiting")
+            return False
+
+        for family in (self._dispatch_session, self._dispatch_smp,
+                       self._dispatch_contacts,
+                       self._dispatch_media, self._dispatch_calls,
+                       self._dispatch_display):
+            if family(peer, lstrip):
+                return True
+
+        # --- Outbound chat ---
+        if lstrip.startswith("/"):
+            # A command this client does not have. Never sent as a chat
+            # message: a mistyped "/otr" went to the peer as text, and with
+            # no --peer it was answered with a message about --peer.
+            print("unknown command: %s  (type /help for the list)"
+                  % _sanitise(lstrip.split()[0], 40))
+        else:
+            if peer:
+                self.send_user_text(peer, line)
+            else:
+                print("not talking to anyone yet: /to <name> picks a contact "
+                      "or a secure group (e.g. /to alice, /to mls3)")
+
+        return True
+
+    def _dispatch_pending(self, line):
+        """True if *line* answered a prompt or question on screen."""
         # A secret prompt that THIS USER armed with /smp-secret consumes the
         # next line.  Taken unconditionally so it can never persist past one
-        # line, and checked before command parsing because a passphrase may
-        # legitimately begin with "/".
-        #
-        # Nothing a remote peer sends can set this; see _request_smp_secret.
+        # line. Nothing a remote peer sends can set this; see
+        # _request_smp_secret.
         secret_for = self.take_secret_request()
         if secret_for is not None:
             self._mask_next_input(False)
@@ -2728,59 +2809,10 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                 return True
         if line.strip() and getattr(self, "_alerts", None) is not None:
             self._alerts().seen()
+        return False
 
-        if not line:
-            return True
-
-        # Invisible characters a copy from a chat window brings along (zero-
-        # width spaces, a byte-order mark, a non-breaking space) made
-        # "/otr alice@..." fail to match and go out as a chat message instead
-        # (device test, 2026-10-02).
-        line = (line.replace("\u200b", "").replace("\u200c", "")
-                .replace("\u200d", "").replace("\u2060", "")
-                .replace("\ufeff", "").replace("\u00a0", " "))
-        lstrip = line.strip()
-
-        # --- TUI toggle ---
-        ts_command = getattr(self, "_ts_command", None)
-        if ts_command is not None and ts_command(lstrip, peer):
-            return True
-        if lstrip in ("/sound", "/sound on", "/sound off"):
-            if lstrip != "/sound":
-                self._alerts().enabled = lstrip == "/sound on"
-            print("[sound] message and group-call sounds are %s (/sound on|off; "
-                  "a 1:1 call always rings)"
-                  % ("on" if self._alerts().enabled else "off"))
-            return True
-        if lstrip == "/tui":
-            if getattr(self, "_tui_enabled", False):
-                print("[tui] switching to plain scrollback mode")
-                self._tui_quit_to_plain()
-            else:
-                try:
-                    loop = asyncio.get_event_loop()
-                    ok = self._start_tui(loop, debug=self._probe)
-                    if ok:
-                        print("[tui] switched to tabbed panel mode (/tui again to go back)")
-                    else:
-                        print("[tui] could not start TUI (not a tty?)")
-                except Exception as e:
-                    print(f"[tui] error: {e}")
-            return True
-
-        # --- Quit ---
-        if lstrip == "/quit":
-            self._clear_trades("/quit")
-            return False
-
-        # --- Wipe: /quit that destroys EVERYTHING, secure groups included ---
-        if lstrip == "/wipe":
-            self._clear_trades("/wipe")
-            self._wipe_on_exit = True
-            print("[wipe] destroying all local state, secure groups included, "
-                  "and exiting")
-            return False
-
+    def _dispatch_session(self, peer, lstrip):
+        """Secure groups, OTR, the conversation, trust, /msg, /status, /identity."""
         # --- Secure groups (MLS) ---
         if lstrip == "/group" or lstrip.startswith("/group "):
             groups = getattr(self, "_groups", None)
@@ -2802,12 +2834,73 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         # --- The conversation what is typed goes to ---
         elif lstrip in ("/to", "/talk") or lstrip.startswith(("/to ", "/talk ")):
             self._cmd_to(lstrip.split(None, 1)[1] if " " in lstrip else "")
+        # --- Trust ---
+        elif lstrip == "/trust":
+            if peer:
+                self.reshow_trust(peer)
 
+        # --- Plain message ---
+        elif lstrip.startswith("/msg "):
+            rest = lstrip[5:].strip()
+            if " " in rest:
+                t, txt = rest.split(" ", 1)
+                groups = getattr(self, "_groups", None)
+                if groups is not None and groups.owns_room(t):
+                    # A room this client is in for a secure group. /msg is
+                    # PLAINTEXT to one address: it went to the room's JID
+                    # unencrypted (device test, 2026-10-02; the server
+                    # refused it). Group text is MLS or nothing.
+                    print("[group] %s is a secure group room; /msg would "
+                          "send plaintext. Use  /group say %s <text>"
+                          % (_sanitise(t, 80), _sanitise(t, 80)))
+                    return True
+                if t in getattr(self, "_otr_capable", ()) or t in self._encrypted:
+                    print("[otr] %s uses OTRv4+: /msg would send plaintext. "
+                          "Type to them normally; it goes encrypted."
+                          % _sanitise(t, 80))
+                    return True
+                self.send_plain(t, txt)
+                print(f"[sent plain] -> {t}")
+            else:
+                print("usage: /msg <jid> <text>")
+
+        # --- Status ---
+        elif lstrip == "/status":
+            if peer:
+                self.show_status(peer)
+            # Ticks are whitespace writes and prove only that the local
+            # socket accepts bytes. The round trip is what proves the server
+            # is still there, so both are reported and never conflated.
+            if self._keepalive_last_ok is not None:
+                print("[keepalive] %d ticks, %d round trips, %d timeouts "
+                      "(lifetime), %d consecutive, last reply %.0fs ago%s"
+                      % (self._keepalive_ticks, self._keepalive_pings,
+                         self._keepalive_timeouts,
+                         self._keepalive_ping_fails,
+                         time.monotonic() - self._keepalive_last_ok,
+                         "  DEGRADED" if self._keepalive_degraded else ""))
+                print("[reconnect] %d started, %d completed"
+                      % (self._reconnects_started,
+                         self._reconnects_completed))
+            elif self._keepalive_pings:
+                print("[keepalive] %d ticks, %d round trips, NO reply yet"
+                      % (self._keepalive_ticks, self._keepalive_pings))
+            elif self._keepalive_ticks:
+                print("[keepalive] %d ticks, first round trip not due yet"
+                      % self._keepalive_ticks)
+        elif lstrip in ("/identity", "/whoami"):
+            self.show_identity()
+        else:
+            return False
+        return True
+
+    def _dispatch_smp(self, peer, lstrip):
+        """SMP verification and its passphrase, /trust-reset, /smpstate."""
         # --- SMP ---
         # `/smp` is the normal verb: verify this session, asking for whatever
         # is missing.  `/smp start` still works and is documented as the
         # explicit form for anyone who already has a passphrase stored.
-        elif lstrip == "/smp":
+        if lstrip == "/smp":
             groups = getattr(self, "_groups", None)
             if peer and groups is not None and groups.owns_room(peer):
                 # In a secure group: verify the whole group with its passphrase.
@@ -2864,90 +2957,32 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                     self.smp_start(peer, rest)
                 else:
                     print("usage: /smp <jid> <secret>")
-
-        # --- Trust ---
-        elif lstrip == "/trust":
-            if peer:
-                self.reshow_trust(peer)
-
-        # --- Plain message ---
-        elif lstrip.startswith("/msg "):
-            rest = lstrip[5:].strip()
-            if " " in rest:
-                t, txt = rest.split(" ", 1)
-                groups = getattr(self, "_groups", None)
-                if groups is not None and groups.owns_room(t):
-                    # A room this client is in for a secure group. /msg is
-                    # PLAINTEXT to one address: it went to the room's JID
-                    # unencrypted (device test, 2026-10-02; the server
-                    # refused it). Group text is MLS or nothing.
-                    print("[group] %s is a secure group room; /msg would "
-                          "send plaintext. Use  /group say %s <text>"
-                          % (_sanitise(t, 80), _sanitise(t, 80)))
-                    return True
-                if t in getattr(self, "_otr_capable", ()) or t in self._encrypted:
-                    print("[otr] %s uses OTRv4+: /msg would send plaintext. "
-                          "Type to them normally; it goes encrypted."
-                          % _sanitise(t, 80))
-                    return True
-                self.send_plain(t, txt)
-                print(f"[sent plain] -> {t}")
+        elif lstrip in ("/smpstate", "/smpstatus"):
+            if not peer:
+                print(_SMP + " no active peer")
             else:
-                print("usage: /msg <jid> <text>")
+                vm = self._voice_manager
+                name = vm._smp_state_name(peer) if vm else "?"
+                reported = ((peer, "SUCCEEDED") in self._smp_reported
+                            or (peer, "SUCCEEDED") in self._smp_display_hints)
+                ok = vm._smp_verified(peer) if vm else False
+                print(_SMP + " peer            : %s" % _sanitise(peer, 64))
+                print(_SMP + " engine state    : %s" % _sanitise(name or "-", 60))
+                print(_SMP + " client recorded : %s" % reported)
+                print(_SMP + " call permitted  : %s" % ok)
+        else:
+            return False
+        return True
 
-        # --- Status ---
-        elif lstrip == "/status":
-            if peer:
-                self.show_status(peer)
-            # Ticks are whitespace writes and prove only that the local
-            # socket accepts bytes. The round trip is what proves the server
-            # is still there, so both are reported and never conflated.
-            if self._keepalive_last_ok is not None:
-                print("[keepalive] %d ticks, %d round trips, %d timeouts "
-                      "(lifetime), %d consecutive, last reply %.0fs ago%s"
-                      % (self._keepalive_ticks, self._keepalive_pings,
-                         self._keepalive_timeouts,
-                         self._keepalive_ping_fails,
-                         time.monotonic() - self._keepalive_last_ok,
-                         "  DEGRADED" if self._keepalive_degraded else ""))
-                print("[reconnect] %d started, %d completed"
-                      % (self._reconnects_started,
-                         self._reconnects_completed))
-            elif self._keepalive_pings:
-                print("[keepalive] %d ticks, %d round trips, NO reply yet"
-                      % (self._keepalive_ticks, self._keepalive_pings))
-            elif self._keepalive_ticks:
-                print("[keepalive] %d ticks, first round trip not due yet"
-                      % self._keepalive_ticks)
-
+    def _dispatch_contacts(self, peer, lstrip):
+        """Roster, subscriptions, the block list, /ping and /admin."""
         # --- Roster ---
-        elif lstrip in ("/roster", "/roster list"):
+        if lstrip in ("/roster", "/roster list"):
             self.roster_list()
         elif lstrip.startswith("/add "):
             self.roster_add(lstrip[5:].strip())
         elif lstrip.startswith("/remove "):
             self.roster_remove(lstrip[8:].strip())
-
-        # --- File transfer (XMPP only) ---
-        elif lstrip.startswith("/sendfile"):
-            self._cmd_sendfile(peer, lstrip[9:].strip())
-        elif lstrip == "/voice" or lstrip.startswith("/voice "):
-            self._cmd_voice(peer, lstrip[6:].strip())
-        elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
-            self._cmd_transfer(lstrip[9:].strip())
-
-        # --- Trade courier (XMPP only, same as file transfer) ---
-        elif lstrip == "/trade" or lstrip.startswith("/trade "):
-            self._cmd_trade(peer, lstrip[6:].strip())
-
-        # --- Tip: relay a Monero address, nothing more ---
-        elif lstrip == "/setxmr" or lstrip.startswith("/setxmr "):
-            self._cmd_setxmr(lstrip[7:].strip())
-        elif lstrip == "/tipreply":
-            self._cmd_tipreply(peer)
-        elif lstrip == "/tip" or lstrip.startswith("/tip "):
-            self._cmd_tip(peer, lstrip[4:].strip())
-
         # --- Subscriptions ---
         elif lstrip == "/pending":
             if self._pending_subscriptions:
@@ -2983,9 +3018,43 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                 self.ping_peer(jid)
             else:
                 print("usage: /ping <jid>")
+        elif lstrip == "/admin" or lstrip.startswith("/admin "):
+            parts = lstrip.split(None, 1)
+            arg = parts[1].strip() if len(parts) > 1 else ""
+            asyncio.ensure_future(self._cmd_admin(arg))
+        else:
+            return False
+        return True
 
+    def _dispatch_media(self, peer, lstrip):
+        """Files, voice notes, trades and tips."""
+        # --- File transfer (XMPP only) ---
+        if lstrip.startswith("/sendfile"):
+            self._cmd_sendfile(peer, lstrip[9:].strip())
+        elif lstrip == "/voice" or lstrip.startswith("/voice "):
+            self._cmd_voice(peer, lstrip[6:].strip())
+        elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
+            self._cmd_transfer(lstrip[9:].strip())
+
+        # --- Trade courier (XMPP only, same as file transfer) ---
+        elif lstrip == "/trade" or lstrip.startswith("/trade "):
+            self._cmd_trade(peer, lstrip[6:].strip())
+
+        # --- Tip: relay a Monero address, nothing more ---
+        elif lstrip == "/setxmr" or lstrip.startswith("/setxmr "):
+            self._cmd_setxmr(lstrip[7:].strip())
+        elif lstrip == "/tipreply":
+            self._cmd_tipreply(peer)
+        elif lstrip == "/tip" or lstrip.startswith("/tip "):
+            self._cmd_tip(peer, lstrip[4:].strip())
+        else:
+            return False
+        return True
+
+    def _dispatch_calls(self, peer, lstrip):
+        """One-to-one and group calls, and the audio diagnostics."""
         # --- Voice calls ---
-        elif lstrip == "/call":
+        if lstrip == "/call":
             if peer and self._voice_manager:
                 if self._voice_blocked_by_tofu(peer):
                     return True
@@ -3057,27 +3126,6 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                         self._voice_manager._start_stats(p_)
             else:
                 print("[voice] not initialised")
-        elif lstrip == "/admin" or lstrip.startswith("/admin "):
-            parts = lstrip.split(None, 1)
-            arg = parts[1].strip() if len(parts) > 1 else ""
-            asyncio.ensure_future(self._cmd_admin(arg))
-
-        elif lstrip in ("/identity", "/whoami"):
-            self.show_identity()
-
-        elif lstrip in ("/smpstate", "/smpstatus"):
-            if not peer:
-                print(_SMP + " no active peer")
-            else:
-                vm = self._voice_manager
-                name = vm._smp_state_name(peer) if vm else "?"
-                reported = ((peer, "SUCCEEDED") in self._smp_reported
-                            or (peer, "SUCCEEDED") in self._smp_display_hints)
-                ok = vm._smp_verified(peer) if vm else False
-                print(_SMP + " peer            : %s" % _sanitise(peer, 64))
-                print(_SMP + " engine state    : %s" % _sanitise(name or "-", 60))
-                print(_SMP + " client recorded : %s" % reported)
-                print(_SMP + " call permitted  : %s" % ok)
         elif lstrip in ("/audioprobe", "/audiobackend"):
             # Determines empirically which backend works on THIS device.
             def _probe():
@@ -3092,9 +3140,14 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                              daemon=True).start()
         elif lstrip == "/audiotest":
             asyncio.ensure_future(_termux._audio_selftest_async(voice_available))
+        else:
+            return False
+        return True
 
+    def _dispatch_display(self, peer, lstrip):
+        """Scrolling, the log and help."""
         # --- Scroll (Termux software keyboard fallback) ---
-        elif lstrip in ("/up", "/pgup", "/b"):
+        if lstrip in ("/up", "/pgup", "/b"):
             scr = getattr(self, "_screen", None)
             if scr:
                 scr.scroll_up(max(1, scr.rows - 3))
@@ -3146,21 +3199,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         # --- Help ---
         elif lstrip in ("/help", "/?"):
             self.show_help()
-
-        # --- Outbound chat ---
-        elif lstrip.startswith("/"):
-            # A command this client does not have. Never sent as a chat
-            # message: a mistyped "/otr" went to the peer as text, and with
-            # no --peer it was answered with a message about --peer.
-            print("unknown command: %s  (type /help for the list)"
-                  % _sanitise(lstrip.split()[0], 40))
         else:
-            if peer:
-                self.send_user_text(peer, line)
-            else:
-                print("not talking to anyone yet: /to <name> picks a contact "
-                      "or a secure group (e.g. /to alice, /to mls3)")
-
+            return False
         return True
 
     def cleanup(self) -> None:
@@ -3348,34 +3388,8 @@ async def _input_loop(client):
 # Entry point
 # =============================================================================
 
-def main():
-    # Not in --help on purpose: a server load test, for that server's admins
-    # (the server enforces it -- see otrv4plus_stresstest).
-    # Loaded by name so the APK, which ships this file, need not carry it.
-    if "--stresstest" in sys.argv[1:]:
-        import importlib
-        stress = importlib.import_module("otrv4plus_stresstest")
-        sys.exit(stress.main([a for a in sys.argv[1:] if a != "--stresstest"]))
-    # Device provisioning deliberately runs AFTER argument parsing, so that
-    # --skip-setup, --force-setup and --sam-host/--sam-port are honoured.
-    # Running it before argparse would make those flags unreachable.
-
-    # Suppress the slixmpp "Task was destroyed but it is pending" warning that
-    # fires when the event loop closes before XMLStream filter tasks finish.
-    # This is a cosmetic asyncio cleanup race in slixmpp, not an application bug.
-    import warnings
-    warnings.filterwarnings(
-        "ignore",
-        message="Task was destroyed but it is pending",
-        category=RuntimeWarning,
-    )
-
-    # The compiled core is versioned separately from this file, and `git pull`
-    # updates only one of them.  A mismatch used to surface as an AttributeError
-    # inside an executor thread at the first /smp, worded as though SMP had
-    # failed.  Say it here instead, once, in terms of what to rebuild.
-    _coreapi.verify_core_api()
-
+def _parser():
+    """The command line. Kept apart so `main` reads as the steps it takes."""
     ap = argparse.ArgumentParser(
         description=f"OTRv4+ XMPP {XMPP_VERSION} - full OTR + SMP over I2P SAM"
     )
@@ -3479,25 +3493,11 @@ def main():
              "(also toggleable at runtime with /voicedebug)",
     )
     ap.add_argument("--debug", action="store_true")
-    args = ap.parse_args()
+    return ap
 
-    # ---- Device provisioning (Termux only; a no-op elsewhere) ----
-    _setup_issues = _termux._bootstrap_termux(
-        skip=args.skip_setup,
-        force=args.force_setup,
-        sam_host=args.sam_host,
-        sam_port=args.sam_port,
-        load_opus=_load_opus,
-        voice_available=voice_available,
-    )
-    if args.setup_only:
-        sys.exit(1 if _setup_issues else 0)
 
-    logging.basicConfig(
-        level=logging.DEBUG if args.debug else logging.WARNING,
-        format="%(levelname)-8s %(message)s",
-    )
-
+def _open_session_log(args):
+    """Open the --debug session transcript, unless --no-log."""
     if args.debug and not args.no_log:
         log_path = args.log_file or os.path.expanduser(
             "~/.otrv4plus/logs/session-%s.log" % time.strftime("%Y%m%d-%H%M%S")
@@ -3517,88 +3517,56 @@ def main():
     elif args.log_file and not args.debug:
         builtins.print("[log] --log-file has no effect without --debug")
 
-    # Validate the addresses BEFORE prompting for a password. A malformed JID
-    # otherwise surfaces as a slixmpp stringprep traceback after the user has
-    # already typed their password — unreadable, and it discards the input.
-    def _warn_if_domains_differ(jid, peer):
-        """A --peer on a different server than --jid is almost always a typo.
 
-        `_check_jid` accepts `bob@otrv4plus` -- one `@`, a non-empty local
-        part, a non-empty domain, no doubled dots. Nothing about it is
-        malformed. It is simply the wrong server, and a device run lost
-        `.i2p` off the end of `--peer` and spent the whole session looking
-        like a protocol bug: the outgoing DAKE was bounced by the server
-        ("Communication with remote domains is not enabled"), the peer's own
-        DAKE arrived and established a session under their REAL jid, and
-        every command that acts on --peer then reported "no encrypted
-        session ... Run /otr first" about a peer that was never reachable.
+def _warn_if_domains_differ(jid, peer):
+    """A --peer on a different server than --jid is almost always a typo.
 
-        Not fatal: federated XMPP across domains is perfectly ordinary, and
-        this client should not refuse it. But both ends of an OTRv4+ pair are
-        normally on the same server, and the servers this is used with reject
-        remote domains outright, so a mismatch is worth stopping to read.
-        """
-        if not jid or not peer:
-            return
-        jid_domain = jid.partition("@")[2].lower()
-        peer_domain = peer.partition("@")[2].lower()
-        if jid_domain == peer_domain:
-            return
-        print("\n[peer] --jid and --peer are on DIFFERENT servers:")
-        print("[peer]   --jid  %s   (server: %s)" % (jid, jid_domain))
-        print("[peer]   --peer %s   (server: %s)" % (peer, peer_domain))
-        if peer_domain and jid_domain.startswith(peer_domain):
-            missing = jid_domain[len(peer_domain):]
-            print("[peer] The peer's server looks like it is missing %r."
-                  % missing)
-            print("[peer] Did you mean  --peer %s%s ?" % (peer, missing))
-        print("[peer] Continuing, because federated XMPP is legitimate -- but "
-              "if this")
-        print("[peer] server does not allow remote domains, nothing you send "
-              "will arrive.\n")
+    `_check_jid` accepts `bob@otrv4plus` -- one `@`, a non-empty local
+    part, a non-empty domain, no doubled dots. Nothing about it is
+    malformed. It is simply the wrong server, and a device run lost
+    `.i2p` off the end of `--peer` and spent the whole session looking
+    like a protocol bug: the outgoing DAKE was bounced by the server
+    ("Communication with remote domains is not enabled"), the peer's own
+    DAKE arrived and established a session under their REAL jid, and
+    every command that acts on --peer then reported "no encrypted
+    session ... Run /otr first" about a peer that was never reachable.
 
-    def _check_jid(value, label):
-        # The rules live in otrv4plus_address so the Android settings screen
-        # can apply the same ones without exiting a process it does not own.
-        # The wording is unchanged; only who chooses to call sys.exit is.
-        err = _address.jid_error(value, label)
-        if err is not None:
-            sys.exit(err)
+    Not fatal: federated XMPP across domains is perfectly ordinary, and
+    this client should not refuse it. But both ends of an OTRv4+ pair are
+    normally on the same server, and the servers this is used with reject
+    remote domains outright, so a mismatch is worth stopping to read.
+    """
+    if not jid or not peer:
+        return
+    jid_domain = jid.partition("@")[2].lower()
+    peer_domain = peer.partition("@")[2].lower()
+    if jid_domain == peer_domain:
+        return
+    print("\n[peer] --jid and --peer are on DIFFERENT servers:")
+    print("[peer]   --jid  %s   (server: %s)" % (jid, jid_domain))
+    print("[peer]   --peer %s   (server: %s)" % (peer, peer_domain))
+    if peer_domain and jid_domain.startswith(peer_domain):
+        missing = jid_domain[len(peer_domain):]
+        print("[peer] The peer's server looks like it is missing %r."
+              % missing)
+        print("[peer] Did you mean  --peer %s%s ?" % (peer, missing))
+    print("[peer] Continuing, because federated XMPP is legitimate -- but "
+          "if this")
+    print("[peer] server does not allow remote domains, nothing you send "
+          "will arrive.\n")
 
-    _check_jid(args.jid, "--jid")
-    _check_jid(args.peer, "--peer")
-    _warn_if_domains_differ(args.jid, args.peer)
 
-    # An account on the project server's b32 is an account on its NAME: the
-    # server hosts otrv4plus.i2p and answers host-unknown to a stream
-    # addressed to the b32. Same rule as the Android app
-    # (android_bridge.settings.ConnectionProfile).
-    _canonical = _address.canonical_jid(args.jid)
-    if _canonical != args.jid:
-        args.jid = _canonical
-        print(f"[i2p] signing in as {args.jid} (the server's accounts live "
-              "on its name, not on its .b32.i2p address)")
+def _check_jid(value, label):
+    # The rules live in otrv4plus_address so the Android settings screen
+    # can apply the same ones without exiting a process it does not own.
+    # The wording is unchanged; only who chooses to call sys.exit is.
+    err = _address.jid_error(value, label)
+    if err is not None:
+        sys.exit(err)
 
-    password = getpass.getpass(f"Password for {args.jid}: ")
-    try:
-        client = OTRv4PlusXMPP(args.jid, password, peer=args.peer,
-                               debug=args.debug)
-    except Exception as exc:
-        sys.exit("Could not use that address: %s\n"
-                 "  Check --jid and --peer are full user@server.b32.i2p "
-                 "addresses." % exc)
 
-    # Voice media uses its own SAM sessions, independent of the XMPP tunnel,
-    # so it needs the bridge coordinates explicitly.
-    client._voice_sam_host = args.sam_host
-    client._voice_sam_port = args.sam_port
-    client._voice_debug = bool(args.voice_debug)
-
-    if hasattr(client, "enable_direct_tls"):
-        client.enable_direct_tls = False
-    if hasattr(client, "enable_starttls"):
-        client.enable_starttls = True
-
+def _choose_transport(args):
+    """(server, use_i2p, use_tor) from the address and flags; exits on a contradiction."""
     domain = args.jid.split("@", 1)[-1]
     server_b32 = args.server or domain
     use_i2p = (not args.no_i2p) and server_b32.endswith(".i2p")
@@ -3622,7 +3590,11 @@ def main():
               "connection, but the exit sees a normal TLS session to a "
               "clearnet host, so the server still learns it is being reached "
               "over Tor rather than by you directly." % server_b32)
+    return server_b32, use_i2p, use_tor
 
+
+def _configure_tls(client, args, server_b32, use_i2p, use_tor):
+    """Certificate checks: decided by the transport, not by a flag."""
     # ── TLS: decided by the transport, not by a flag ─────────────────────
     #
     # Over I2P and over Tor-to-.onion the ADDRESS is a public key: a .b32.i2p
@@ -3680,6 +3652,9 @@ def main():
         print("[tls] --insecure-tls was passed and is not needed here; "
               "%s already authenticates the endpoint." % endpoint_authenticated_by)
 
+
+def _store_reconnect(client, args, server_b32, use_i2p, use_tor):
+    """What the client needs to reconnect the same way it first connected."""
     # Store reconnect parameters on the client before first connect.
     client._is_i2p = use_i2p
     client._is_tor = use_tor
@@ -3705,6 +3680,9 @@ def main():
     # only when _sam_params is set for I2P; for clearnet reconnect is not implemented
     # because the standard case is TLS-verified servers that handle their own reconnect).
 
+
+def _open_connection(client, args, server_b32, use_i2p, use_tor):
+    """Open the tunnel the transport needs and connect through it. Fails closed."""
     loop = client.loop
 
     if use_i2p:
@@ -3762,6 +3740,10 @@ def main():
     else:
         client.connect()
 
+
+def _run_until_disconnected(client, args):
+    """Run until disconnected, then clean up and deal with the transcript."""
+    loop = client.loop
     _clean_exit = True
     use_tui = getattr(args, "tui", False) and not getattr(args, "no_tui", False)
     try:
@@ -3808,6 +3790,99 @@ def main():
                         pass
                 else:
                     builtins.print(f"[log] transcript kept -> {log_path}")
+
+
+def main():
+    # Not in --help on purpose: a server load test, for that server's admins
+    # (the server enforces it -- see otrv4plus_stresstest).
+    # Loaded by name so the APK, which ships this file, need not carry it.
+    if "--stresstest" in sys.argv[1:]:
+        import importlib
+        stress = importlib.import_module("otrv4plus_stresstest")
+        sys.exit(stress.main([a for a in sys.argv[1:] if a != "--stresstest"]))
+    # Device provisioning deliberately runs AFTER argument parsing, so that
+    # --skip-setup, --force-setup and --sam-host/--sam-port are honoured.
+    # Running it before argparse would make those flags unreachable.
+
+    # Suppress the slixmpp "Task was destroyed but it is pending" warning that
+    # fires when the event loop closes before XMLStream filter tasks finish.
+    # This is a cosmetic asyncio cleanup race in slixmpp, not an application bug.
+    import warnings
+    warnings.filterwarnings(
+        "ignore",
+        message="Task was destroyed but it is pending",
+        category=RuntimeWarning,
+    )
+
+    # The compiled core is versioned separately from this file, and `git pull`
+    # updates only one of them.  A mismatch used to surface as an AttributeError
+    # inside an executor thread at the first /smp, worded as though SMP had
+    # failed.  Say it here instead, once, in terms of what to rebuild.
+    _coreapi.verify_core_api()
+
+    args = _parser().parse_args()
+
+    # ---- Device provisioning (Termux only; a no-op elsewhere) ----
+    _setup_issues = _termux._bootstrap_termux(
+        skip=args.skip_setup,
+        force=args.force_setup,
+        sam_host=args.sam_host,
+        sam_port=args.sam_port,
+        load_opus=_load_opus,
+        voice_available=voice_available,
+    )
+    if args.setup_only:
+        sys.exit(1 if _setup_issues else 0)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.WARNING,
+        format="%(levelname)-8s %(message)s",
+    )
+
+    _open_session_log(args)
+
+    # Validate the addresses BEFORE prompting for a password. A malformed JID
+    # otherwise surfaces as a slixmpp stringprep traceback after the user has
+    # already typed their password — unreadable, and it discards the input.
+    _check_jid(args.jid, "--jid")
+    _check_jid(args.peer, "--peer")
+    _warn_if_domains_differ(args.jid, args.peer)
+
+    # An account on the project server's b32 is an account on its NAME: the
+    # server hosts otrv4plus.i2p and answers host-unknown to a stream
+    # addressed to the b32. Same rule as the Android app
+    # (android_bridge.settings.ConnectionProfile).
+    _canonical = _address.canonical_jid(args.jid)
+    if _canonical != args.jid:
+        args.jid = _canonical
+        print(f"[i2p] signing in as {args.jid} (the server's accounts live "
+              "on its name, not on its .b32.i2p address)")
+
+    password = getpass.getpass(f"Password for {args.jid}: ")
+    try:
+        client = OTRv4PlusXMPP(args.jid, password, peer=args.peer,
+                               debug=args.debug)
+    except Exception as exc:
+        sys.exit("Could not use that address: %s\n"
+                 "  Check --jid and --peer are full user@server.b32.i2p "
+                 "addresses." % exc)
+
+    # Voice media uses its own SAM sessions, independent of the XMPP tunnel,
+    # so it needs the bridge coordinates explicitly.
+    client._voice_sam_host = args.sam_host
+    client._voice_sam_port = args.sam_port
+    client._voice_debug = bool(args.voice_debug)
+
+    if hasattr(client, "enable_direct_tls"):
+        client.enable_direct_tls = False
+    if hasattr(client, "enable_starttls"):
+        client.enable_starttls = True
+
+    server_b32, use_i2p, use_tor = _choose_transport(args)
+    _configure_tls(client, args, server_b32, use_i2p, use_tor)
+    _store_reconnect(client, args, server_b32, use_i2p, use_tor)
+    _open_connection(client, args, server_b32, use_i2p, use_tor)
+    _run_until_disconnected(client, args)
 
 
 if __name__ == "__main__":

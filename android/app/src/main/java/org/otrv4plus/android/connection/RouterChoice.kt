@@ -81,6 +81,62 @@ object RouterChoice {
     fun decide(externalAnswers: Boolean, bundled: Boolean): Use =
         if (externalAnswers || !bundled) Use.EXTERNAL else Use.BUILT_IN
 
+    /** What is on [EXTERNAL_SAM_PORT]. Only [SAM] counts as a router on the phone. */
+    enum class Probe { SAM, NOT_SAM, NO_ANSWER }
+
+    /** The HELLO the probe sends: the one our tunnels send (otrv4plus_tunnels). */
+    const val SAM_HELLO = "HELLO VERSION MIN=3.1 MAX=3.1\n"
+
+    /** Whether [reply] is a SAM bridge agreeing to talk. */
+    fun isSamHello(reply: String?): Boolean =
+        reply != null && reply.startsWith("HELLO REPLY") && " RESULT=OK" in reply
+
+    /**
+     * Ask whatever listens on loopback [port] for a SAM HELLO. An open port
+     * is not enough: an I2P app still starting, or another program on 7656,
+     * accepts the connection and then fails every sign-in, and the built-in
+     * router -- which would have worked -- never got a turn.
+     */
+    fun probeSam(port: Int, timeoutMs: Int = 1_500): Probe {
+        var connected = false
+        return try {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", port), timeoutMs)
+                connected = true
+                s.soTimeout = timeoutMs
+                s.getOutputStream().apply {
+                    write(SAM_HELLO.toByteArray(Charsets.US_ASCII)); flush()
+                }
+                val input = s.getInputStream()
+                val line = StringBuilder()
+                while (line.length < 256) {
+                    val b = input.read()
+                    if (b < 0 || b == '\n'.code) break
+                    line.append(b.toChar())
+                }
+                if (isSamHello(line.toString())) Probe.SAM else Probe.NOT_SAM
+            }
+        } catch (_: Exception) {
+            if (connected) Probe.NOT_SAM else Probe.NO_ANSWER
+        }
+    }
+
+    /**
+     * [probeSam], asked [tries] times [gapMs] apart until a router answers:
+     * an I2P app opened a moment ago may take a second to open its bridge.
+     */
+    fun findExternalSam(port: Int = EXTERNAL_SAM_PORT, tries: Int = 3, gapMs: Long = 400,
+                        probe: (Int) -> Probe = { probeSam(it) },
+                        sleep: (Long) -> Unit = { Thread.sleep(it) }): Probe {
+        var last = Probe.NO_ANSWER
+        repeat(tries) { i ->
+            last = probe(port)
+            if (last == Probe.SAM) return last
+            if (i < tries - 1) sleep(gapMs)
+        }
+        return last
+    }
+
     /**
      * Whether a sign-in goes over I2P at all. Clearnet (TLS) and Tor accounts
      * need no router, and starting one for them would be traffic the user did
@@ -217,7 +273,7 @@ object RouterChoice {
             else
                 "Built-in I2P router: building tunnels ($clock, usually under a minute)."
             State.UNAVAILABLE -> "No I2P router answered. Start your I2P app with " +
-                "its SAM bridge on, or set the I2P router to Automatic."
+                "its SAM bridge on (port 7656)."
             State.FAILED -> "The built-in I2P router stopped" +
                 (reason?.let { ": $it" } ?: ".")
         }

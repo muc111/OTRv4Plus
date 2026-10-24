@@ -319,6 +319,13 @@ class Client:
 
     # -- enough of the surrounding client to drive the real dispatch_line --
     dispatch_line = xmpp.OTRv4PlusXMPP.dispatch_line
+    _dispatch_pending = xmpp.OTRv4PlusXMPP._dispatch_pending
+    _dispatch_session = xmpp.OTRv4PlusXMPP._dispatch_session
+    _dispatch_smp = xmpp.OTRv4PlusXMPP._dispatch_smp
+    _dispatch_contacts = xmpp.OTRv4PlusXMPP._dispatch_contacts
+    _dispatch_media = xmpp.OTRv4PlusXMPP._dispatch_media
+    _dispatch_calls = xmpp.OTRv4PlusXMPP._dispatch_calls
+    _dispatch_display = xmpp.OTRv4PlusXMPP._dispatch_display
     _cmd_admin = xmpp.OTRv4PlusXMPP._cmd_admin
 
     def take_secret_request(self):

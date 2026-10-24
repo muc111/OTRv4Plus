@@ -153,8 +153,13 @@ def test_the_client_answers_calls_and_files_with_y_n_and_sounds_messages():
     assert "self._alerts().message()" in src
     assert '"/sound on"' in src
     # The y/n check sits before group questions and before command parsing.
-    assert src.index("quick().answer(line)") < src.index(
-        "groups.answer_prompt(line)") < src.index('if lstrip == "/tui":')
+    import inspect
+    import otrv4plus_xmpp
+    cls = otrv4plus_xmpp.OTRv4PlusXMPP
+    pending = inspect.getsource(cls._dispatch_pending)
+    assert pending.index("quick().answer(line)") < pending.index("groups.answer_prompt(line)")
+    dispatch = inspect.getsource(cls.dispatch_line)
+    assert dispatch.index("_dispatch_pending(line)") < dispatch.index('if lstrip == "/tui":')
     voice = voice_source()
     assert 'getattr(self.client, "ask_answer_call", None)' in voice
     assert "Answer? [y/n]" in voice

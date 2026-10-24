@@ -19,7 +19,6 @@ None of these were wrong individually. Together they told the user everything
 except the one thing that mattered.
 """
 
-import io
 import os
 import re
 import sys
@@ -46,15 +45,8 @@ class TestTheStartupWarning:
     """Caught before a single stanza goes out, which is the cheapest place."""
 
     def _warn(self, jid, peer, capsys):
-        src = io.open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
-                      encoding="utf-8").read()
-        # The checker lives inside main(); lift it out rather than run main().
-        start = src.index("    def _warn_if_domains_differ(jid, peer):")
-        end = src.index("    def _check_jid(value, label):")
-        body = src[start:end].replace("\n    ", "\n").lstrip()
-        namespace = {}
-        exec(body, namespace)
-        namespace["_warn_if_domains_differ"](jid, peer)
+        import otrv4plus_xmpp
+        otrv4plus_xmpp._warn_if_domains_differ(jid, peer)
         return capsys.readouterr().out
 
     def test_matching_domains_say_nothing(self, capsys):

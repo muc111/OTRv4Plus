@@ -106,3 +106,21 @@ def voice_files() -> list:
 def voice_source() -> str:
     """All of the voice subsystem's source, one file after another."""
     return "\n".join(open(p, encoding="utf-8").read() for p in voice_files())
+
+
+def main_source(module) -> str:
+    """`module.main` followed by each of the module's own functions it calls,
+    in the order it first calls them. `main` is a list of steps; a test about
+    what start-up does reads the steps too."""
+    import ast
+    import textwrap
+    src = textwrap.dedent(inspect.getsource(module.main))
+    parts, seen = [src], set()
+    for node in ast.walk(ast.parse(src)):
+        name = getattr(getattr(node, "func", None), "id", None)
+        fn = getattr(module, name, None) if isinstance(node, ast.Call) and name else None
+        if (inspect.isfunction(fn) and fn.__module__ == module.__name__
+                and name != "main" and name not in seen):
+            seen.add(name)
+            parts.append(textwrap.dedent(inspect.getsource(fn)))
+    return "\n".join(parts)

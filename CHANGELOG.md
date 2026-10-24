@@ -4,6 +4,29 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.147 and Desktop — 2026-10-24 — the I2P router on the phone is found by asking it (core 0.13.1)
+
+- **An I2P router already on the phone is used only when its SAM bridge
+  answers.** The app looks for one first, on every sign-in, before starting
+  its own. It used to count any program accepting a connection on port 7656
+  as a router: an I2P app still starting up, or something else on that port,
+  was chosen, every sign-in failed, and the built-in router never got a turn.
+  The app now sends the SAM HELLO its tunnels send and needs `RESULT=OK`,
+  asking three times over about a second, so an I2P app opened a moment ago
+  is still found. Anything else and the built-in router starts.
+- The debug log says what was found (`i2p_router external=sam`, `not_sam`
+  or `no_answer`) and which router was used.
+- The "no I2P router answered" line no longer points to a router setting
+  that no longer exists.
+- Terminal client: `dispatch_line` (502 lines) is split into one method per
+  command family, and `main` (460 lines) into its steps. No behaviour change.
+- **Guards:** `RouterChoiceTest` probes real loopback sockets (a SAM bridge,
+  a port that is not SAM, a closed port);
+  `tests/test_android_bundled_router.py` requires the phone's router to be
+  asked before ours launches, with the HELLO the tunnels send;
+  `tests/test_dispatch_families.py` requires every terminal command to
+  belong to exactly one family.
+
 ## Android 0.7.0-experimental.rc.146 and Desktop — 2026-10-24 — every failure has a code in the debug log (core 0.13.1)
 
 - **One list of failure codes, each with what it means.**

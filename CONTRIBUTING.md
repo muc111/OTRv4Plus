@@ -102,6 +102,11 @@ waiting for a phone to find it.
   can produce is listed in `android_bridge/codes.py` with its meaning, and
   is written to the debug log when it happens; the diagnostic report opens
   with a tally of codes seen.
+- `tests/test_dispatch_families.py`: every terminal command belongs to
+  exactly one `_dispatch_*` family of `dispatch_line`.
+- `RouterChoiceTest` and `tests/test_android_bundled_router.py`: an I2P
+  router on the phone counts only when its SAM bridge answers our HELLO,
+  and it is asked before the built-in router starts.
 - `tests/test_client_finds_the_bridge.py`: a terminal client started from
   `client/` can import `android_bridge`.
 - `tests/test_ci_watches_what_it_tests.py`: the desktop install job runs

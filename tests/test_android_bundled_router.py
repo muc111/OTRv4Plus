@@ -104,3 +104,33 @@ class TestLicences:
         for name in ("i2pd", "OpenSSL", "Boost"):
             assert name in notice, name
         assert "i2pd" in _read("LICENSING.md")
+
+
+class TestTheRouterOnThePhoneIsAskedFirst:
+    """Owner, 2026-10-24: the app must look for an I2P router already on the
+    phone before starting its own. An open port used to be enough to count;
+    now it must answer the SAM HELLO our tunnels send. RouterChoiceTest runs
+    the probe against real sockets; these hold the wiring."""
+    SVC = "android/app/src/main/java/org/otrv4plus/android/connection/OtrConnectionService.kt"
+    KT = TestConfig.KT
+
+    def _choose(self):
+        src = _read(self.SVC)
+        return src[src.index("private suspend fun chooseRouter"):][:3000]
+
+    def test_the_phone_is_asked_before_ours_launches(self):
+        fn = self._choose()
+        assert "RouterChoice.findExternalSam()" in fn
+        assert fn.index("findExternalSam") < fn.index("router.launch()")
+        assert "samAnswers(RouterChoice.EXTERNAL_SAM_PORT)" not in fn, (
+            "an open port is not a router: probe with a SAM HELLO")
+
+    def test_the_probe_says_what_the_tunnels_say(self):
+        import otrv4plus_tunnels
+        import inspect
+        sent = re.search(r'b"(HELLO VERSION [^"]+)\\n"', inspect.getsource(otrv4plus_tunnels))
+        kt = re.search(r'const val SAM_HELLO = "([^"]+)\\n"', _read(self.KT))
+        assert sent and kt and sent.group(1) == kt.group(1), (sent, kt)
+
+    def test_the_choice_is_in_the_debug_log(self):
+        assert "external=${probe.name.lowercase()}" in self._choose()
