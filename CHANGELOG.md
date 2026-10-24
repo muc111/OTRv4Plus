@@ -4,6 +4,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.165 — 2026-10-24 — save received files to the device (core 0.13.1)
+
+- **Save to device.** Received files stayed inside the app, where Wipe & Exit
+  destroys them. The viewer has a **Save to device…** button: it says first
+  that the copy will be decrypted and outside the app (Wipe & Exit does not
+  delete it, other apps allowed to read your files can read it), then opens
+  Android's own save dialog. The app asks for no storage permission and can
+  write only the one document you create; a failed copy leaves nothing behind.
+- `FileExportTest` (the copy and naming), `tests/test_file_export.py`.
+
 ## Android 0.7.0-experimental.rc.164 — 2026-10-24 — the file viewer's buttons are on screen (core 0.13.1)
 
 - **Buttons under pictures and PDFs were cut off** (Pixel 7 / Android 17).

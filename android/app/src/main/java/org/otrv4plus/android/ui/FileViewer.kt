@@ -10,6 +10,8 @@ import android.graphics.BitmapFactory
 import android.media.MediaPlayer
 import android.widget.MediaController
 import android.widget.VideoView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -37,8 +39,10 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.otrv4plus.android.bridge.MetadataFinding
+import org.otrv4plus.android.crypto.FileExport
 import org.otrv4plus.android.crypto.MetadataChoice
 import org.otrv4plus.android.crypto.PdfScan
 import org.otrv4plus.android.crypto.SafeView
@@ -76,6 +80,20 @@ fun FileViewerDialog(
     var path by remember(container) { mutableStateOf<String?>(null) }
     var kind by remember(container) { mutableStateOf<SafeView.Kind?>(null) }
     var confirmHandoff by remember { mutableStateOf(false) }
+    var confirmSave by remember { mutableStateOf(false) }
+    var saveNote by remember(container) { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    // Android's own save dialog: the user picks the place, the app gets
+    // write access to that one new document and nothing else.
+    val saver = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(FileExport.MIME)) { uri ->
+        val source = path
+        if (uri == null || source == null) return@rememberLauncherForActivityResult
+        scope.launch {
+            val bytes = withContext(Dispatchers.IO) { saveTo(context, uri, source) }
+            saveNote = FileExport.result(bytes)
+        }
+    }
     var metadataLine by remember(container) { mutableStateOf<String?>(null) }
     var pdfFindings by remember(container) { mutableStateOf<Set<PdfScan.Finding>>(emptySet()) }
     DisposableEffect(container) {
@@ -156,12 +174,31 @@ fun FileViewerDialog(
                              modifier = Modifier.padding(end = 8.dp))
                     }
                 }
+                saveNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                OutlinedButton(enabled = path != null, onClick = { confirmSave = true },
+                               modifier = Modifier.fillMaxWidth()) {
+                    Text(FileExport.BUTTON)
+                }
                 OutlinedButton(enabled = path != null, onClick = { confirmHandoff = true },
                                modifier = Modifier.fillMaxWidth()) {
                     Text("Open with another app…")
                 }
             }
         }
+    }
+    if (confirmSave) {
+        AlertDialog(
+            onDismissRequest = { confirmSave = false },
+            title = { Text(FileExport.TITLE) },
+            text = { Text(FileExport.warning(name)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmSave = false
+                    saver.launch(FileExport.safeName(name))
+                }) { Text("Choose where") }
+            },
+            dismissButton = { TextButton(onClick = { confirmSave = false }) { Text("Cancel") } },
+        )
     }
     if (confirmHandoff) {
         AlertDialog(
@@ -319,7 +356,7 @@ private fun handOff(context: Context, path: String, name: String, kind: SafeView
     runCatching {
         val dir = File(context.cacheDir, HANDOFF_DIRECTORY).apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
-        val safeName = name.replace(Regex("[^A-Za-z0-9._ -]"), "_").ifBlank { "file" }
+        val safeName = FileExport.safeName(name)
         val copy = File(dir, safeName)
         File(path).copyTo(copy, overwrite = true)
         val uri = FileProvider.getUriForFile(
@@ -340,6 +377,24 @@ private fun handOff(context: Context, path: String, name: String, kind: SafeView
         context.startActivity(Intent.createChooser(view, "Open with")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
     }
+}
+
+/**
+ * Write the decrypted file at [source] to the document the user just created.
+ * Bytes copied, or null; a failed copy deletes the half-written document so
+ * nothing partial is left where the user will look for the file.
+ */
+private fun saveTo(context: Context, uri: android.net.Uri, source: String): Long? {
+    val resolver = context.contentResolver
+    val copied = runCatching {
+        resolver.openOutputStream(uri, "w")!!.use { out ->
+            File(source).inputStream().use { FileExport.copy(it, out) }
+        }
+    }.getOrNull()
+    if (copied == null) {
+        runCatching { android.provider.DocumentsContract.deleteDocument(resolver, uri) }
+    }
+    return copied
 }
 
 /** The cache subdirectory an explicit handoff copy is placed in. */
