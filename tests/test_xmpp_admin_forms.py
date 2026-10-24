@@ -16,6 +16,7 @@ Most of what follows is about the three properties that are not incidental:
     redacted from the session transcript.
 """
 
+from source_of import class_source  # noqa: E402
 import pytest
 
 adm = pytest.importorskip("otrv4plus_admin")
@@ -524,7 +525,7 @@ class TestTheInvariants:
         """
         import inspect
         import re
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         setters = re.findall(r"^\s*(?:self\.)?_admin_awaiting\s*=\s*(\S+)",
                              src, re.M)
         assert setters, "the flag is gone; this test needs rewriting"
@@ -583,12 +584,12 @@ class TestTheInvariants:
 
     def test_the_data_form_and_adhoc_plugins_are_registered(self):
         import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert 'register_plugin("xep_0004")' in src
         assert 'register_plugin("xep_0050")' in src
 
     def test_the_unused_wrapper_plugin_is_not_registered(self):
         # xep_0133 is thirty-two thin wrappers this client does not call.
         import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert 'register_plugin("xep_0133")' not in src

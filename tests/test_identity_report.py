@@ -8,6 +8,7 @@ previously meant locating and reading a JSON file on both handsets, which is
 enough friction that it did not happen.
 """
 
+from source_of import class_source  # noqa: E402
 import os
 import sys
 import tempfile
@@ -148,5 +149,5 @@ class TestItIsReachable:
 
     def test_it_is_in_the_help(self):
         import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert "/identity            your identity" in src

@@ -209,8 +209,9 @@ class TestItDoesNotBreakTheTranscript:
         # a comment or a docstring that merely mentions the tag, and the
         # claim being checked is that something PRINTS it.  Both plain and
         # f-string forms are used in this client.
-        src = (open("client/otrv4plus_xmpp.py").read()
-               + open("client/otrv4plus_voice.py").read())
+        import glob
+        src = "".join(open(p).read()
+                      for p in sorted(glob.glob("client/otrv4plus_*.py")))
         for tag in mod["_TAG_COLOURS"]:
             assert ('"[%s]' % tag) in src, (
                 "[%s] is coloured but nothing prints it" % tag)
@@ -242,5 +243,5 @@ class TestItDoesNotBreakPanelRouting:
         assert "_tui_route_output(shown)" not in body
 
     def test_routing_still_matches_a_plain_tag(self):
-        src = open("client/otrv4plus_xmpp.py").read()
+        src = open("client/otrv4plus_xmpp_tui.py").read()
         assert '"[keepalive]",' in src        # still a bare-prefix match

@@ -19,6 +19,7 @@ leaves nothing behind and says accurately what happened.
 The engine is real (`otrv4_core`); the transport and the terminal are not.
 """
 
+from source_of import class_source  # noqa: E402
 import ast
 import inspect
 import os
@@ -1053,7 +1054,7 @@ class TestAnAbortIsNotAMismatch:
 
     def test_the_mitm_line_is_gated_on_a_real_failure(self):
         """Read the reporter: an ABORT must not reach the mismatch branch."""
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         # rindex, not index: the comment above the branch quotes the old
         # message verbatim, and matching that instead of the live print is
         # how this test first passed against unfixed code.
@@ -1064,7 +1065,7 @@ class TestAnAbortIsNotAMismatch:
             "peer with no passphrase is reported as a possible MITM")
 
     def test_an_abort_gets_its_own_wording(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert "stopped before verifying" in src
         i = src.index("stopped before verifying")
         window = src[i:i + 400]
@@ -1072,7 +1073,7 @@ class TestAnAbortIsNotAMismatch:
         assert "MITM" not in window
 
     def test_abort_and_failure_are_different_branches(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert src.count("_smp_reported.add(key_fail)") == 2, (
             "abort and failure share one branch again")
 

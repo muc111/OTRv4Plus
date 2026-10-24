@@ -12,6 +12,7 @@ does NOT vanish from a `script` capture, which records the keystrokes as they
 were echoed, before the erase. Masking the echo is the only thing that helps.
 """
 
+from source_of import class_source  # noqa: E402
 import inspect
 import os
 import re
@@ -289,7 +290,7 @@ class TestTheInlineFormIsDiscouraged:
             "bit")
 
     def test_the_help_marks_the_inline_form_as_echoed(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert "ECHOED" in src
 
 

@@ -76,6 +76,8 @@ on:
       - "client/otrv4plus_actions.py"
       - "client/otrv4plus_termsync.py"
       - "client/otrv4plus_term.py"
+      - "client/otrv4plus_xmpp_admin.py"
+      - "client/otrv4plus_xmpp_tui.py"
       - "client/otrv4plus_voicenote.py"
       - "client/otrv4plus_roomsync.py"
       - "client/otrv4plus_mediapath.py"

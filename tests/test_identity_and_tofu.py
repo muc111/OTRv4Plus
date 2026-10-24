@@ -13,6 +13,7 @@ differs, so every reconnect with a previously trusted peer printed "This may
 indicate a MITM attack". The tests below pin the behaviour that replaced it.
 """
 
+from source_of import class_source  # noqa: E402
 import os
 import sys
 import tempfile
@@ -401,7 +402,7 @@ class TestTheClientRefusesAChangedFingerprint:
         """
         import inspect
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert '_pending[peer] = "trust"' not in src
         assert "_handle_trust_answer" not in src
         feed = inspect.getsource(xmpp.OTRv4PlusXMPP.take_secret_request)

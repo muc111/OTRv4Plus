@@ -26,6 +26,7 @@ processing two messages for one peer concurrently races the ratchet, the
 skipped-key handling and the SMP state machine.
 """
 
+from source_of import class_source  # noqa: E402
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -110,7 +111,7 @@ class TestEveryOtrEntryPointUsesThatExecutor:
 
     def test_smp_start_goes_through_the_executor(self):
         import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP)
+        src = class_source(xmpp.OTRv4PlusXMPP)
         assert "run_in_executor(self._otr_executor, _do_start)" in src
 
     def test_there_is_no_synchronous_otr_engine_fallback(self):
