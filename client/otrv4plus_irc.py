@@ -743,169 +743,10 @@ class OTRv4IRCClient:
             self._sam_connection = None
 
             if net_type == NetworkConstants.NET_I2P:
-                sam_host, sam_port = self.config.i2p_sam
-                if I2PSAMConnection.is_available(sam_host, sam_port):
-                    try:
-                        self.add_message(
-                            "system",
-                            f"Connecting to {colorize (self .server ,'cyan')} via "
-                            f"{colorize ('SAM bridge','green')} (unique destination)…",
-                        )
-                        self.debug(
-                            "connect",
-                            {
-                                "server": self.server,
-                                "port": port,
-                                "net": "i2p-sam",
-                                "tls": False,
-                                "timeout": timeout,
-                            },
-                        )
-
-                        sam = I2PSAMConnection(sam_host, sam_port)
-                        sock = sam.connect(self.server, port)
-                        self._sam_connection = sam
-
-                        self.add_message(
-                            "system",
-                            colorize("🧅 I2P SAM: unique destination per session", "green"),
-                        )
-                    except Exception as e:
-                        self.debug("sam_failed")
-                        self.add_message(
-                            "system",
-                            colorize(f"SAM failed ({e }), falling back to SOCKS5…", "yellow"),
-                        )
-                        sock = None
+                sock = self._sam_socket(net_type, port, timeout)
 
             if sock is None:
-
-                if net_type == NetworkConstants.NET_TOR:
-
-                    _tor_SOCKS5_ERRORS = {
-                        0x01: "general SOCKS server failure (Tor may not be bootstrapped)",
-                        0x02: "connection not allowed by ruleset",
-                        0x03: "network unreachable",
-                        0x04: "host unreachable (hidden service may be down)",
-                        0x05: "connection refused by destination",
-                        0x06: "TTL expired",
-                        0x07: "command not supported",
-                        0x08: "address type not supported",
-                    }
-
-                    proxy_host, _cfg_port = self.config.tor_proxy
-                    _candidates = [_cfg_port]
-                    for _alt in (9050, 9150):
-                        if _alt not in _candidates:
-                            _candidates.append(_alt)
-
-                    proxy_port = None
-                    for _p in _candidates:
-                        if _probe_socks5(proxy_host, _p, timeout=2.0):
-                            proxy_port = _p
-                            break
-
-                    if proxy_port is None:
-                        tried = ", ".join(str(p) for p in _candidates)
-                        raise ConnectionError(
-                            f"Tor SOCKS5 not reachable on {proxy_host } "
-                            f"(tried ports: {tried })\n"
-                            "  → Is tor running?  Check: systemctl status tor"
-                        )
-
-                    self.config.tor_proxy = (proxy_host, proxy_port)
-
-                    self.add_message(
-                        "system",
-                        f"Connecting to {colorize (self .server ,'cyan')}:{port } via "
-                        f"{colorize ('Tor SOCKS5','dark_magenta')} ({proxy_host }:{proxy_port })…",
-                    )
-
-                    def _recvexact(s, n):
-                        """Read exactly n bytes, raising on short read."""
-                        buf = b""
-                        while len(buf) < n:
-                            chunk = s.recv(n - len(buf))
-                            if not chunk:
-                                raise ConnectionError(
-                                    f"SOCKS5: connection closed (got {len (buf )}/{n } bytes)"
-                                )
-                            buf += chunk
-                        return buf
-
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(float(timeout))
-                    sock.connect((proxy_host, proxy_port))
-
-                    sock.send(b"\x05\x01\x00")
-                    auth_resp = _recvexact(sock, 2)
-                    if auth_resp[0] != 5:
-                        raise ConnectionError(
-                            f"SOCKS5 greeting: unexpected version byte {auth_resp [0 ]:#04x}"
-                        )
-                    if auth_resp[1] == 0xFF:
-                        raise ConnectionError(
-                            "SOCKS5 greeting: proxy requires authentication "
-                            "(add 'SocksPolicy accept 127.0.0.1' to torrc)"
-                        )
-                    if auth_resp[1] != 0x00:
-                        raise ConnectionError(
-                            f"SOCKS5 greeting: unsupported auth method {auth_resp [1 ]:#04x}"
-                        )
-
-                    domain = self.server.encode("ascii")
-                    req = (
-                        b"\x05\x01\x00\x03"
-                        + bytes([len(domain)])
-                        + domain
-                        + struct.pack("!H", port)
-                    )
-                    sock.send(req)
-
-                    hdr = _recvexact(sock, 4)
-                    if hdr[0] != 5:
-                        raise ConnectionError(
-                            f"SOCKS5 response: unexpected version byte {hdr [0 ]:#04x}"
-                        )
-                    rep = hdr[1]
-                    if rep != 0x00:
-                        err_desc = _tor_SOCKS5_ERRORS.get(rep, f"unknown error code {rep :#04x}")
-                        raise ConnectionError(f"SOCKS5 CONNECT rejected: {err_desc }")
-
-                    atyp = hdr[3]
-                    if atyp == 0x01:
-                        _recvexact(sock, 4)
-                    elif atyp == 0x03:
-                        _recvexact(sock, ord(_recvexact(sock, 1)))
-                    elif atyp == 0x04:
-                        _recvexact(sock, 16)
-                    _recvexact(sock, 2)
-
-                    self.add_message("system", colorize("🧅 Tor circuit established", "green"))
-
-                else:
-
-                    net_type_actual = self.setup_proxy(net_type)
-                    tls_label = " TLS" if use_tls else ""
-                    self.add_message(
-                        "system",
-                        f"Connecting to {colorize (self .server ,'cyan')}:{port }"
-                        f" ({colorize (net_label +tls_label ,'bold_cyan')}, up to {timeout }s)…",
-                    )
-                    self.debug(
-                        "connect",
-                        {
-                            "server": self.server,
-                            "port": port,
-                            "net": net_type,
-                            "tls": use_tls,
-                            "timeout": timeout,
-                        },
-                    )
-
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(float(timeout))
-                    sock.connect((self.server, port))
+                sock = self._proxy_or_direct_socket(net_type, port, timeout, use_tls, net_label)
 
             if use_tls:
                 import ssl as _ssl
@@ -949,6 +790,178 @@ class OTRv4IRCClient:
             self.debug("connect failed", {"error": str(exc)})
             self.connected = False
             return False
+
+    def _sam_socket(self, net_type, port, timeout):
+        """A socket through the I2P SAM bridge, or None to fall back to SOCKS."""
+        sock = None
+        sam_host, sam_port = self.config.i2p_sam
+        if I2PSAMConnection.is_available(sam_host, sam_port):
+            try:
+                self.add_message(
+                    "system",
+                    f"Connecting to {colorize (self .server ,'cyan')} via "
+                    f"{colorize ('SAM bridge','green')} (unique destination)…",
+                )
+                self.debug(
+                    "connect",
+                    {
+                        "server": self.server,
+                        "port": port,
+                        "net": "i2p-sam",
+                        "tls": False,
+                        "timeout": timeout,
+                    },
+                )
+
+                sam = I2PSAMConnection(sam_host, sam_port)
+                sock = sam.connect(self.server, port)
+                self._sam_connection = sam
+
+                self.add_message(
+                    "system",
+                    colorize("🧅 I2P SAM: unique destination per session", "green"),
+                )
+            except Exception as e:
+                self.debug("sam_failed")
+                self.add_message(
+                    "system",
+                    colorize(f"SAM failed ({e }), falling back to SOCKS5…", "yellow"),
+                )
+                sock = None
+        return sock
+
+    def _proxy_or_direct_socket(self, net_type, port, timeout, use_tls, net_label):
+        """A socket through Tor or I2P SOCKS, or straight to a clearnet server.
+        Raises on failure; connect() reports it."""
+        sock = None
+
+        if net_type == NetworkConstants.NET_TOR:
+
+            _tor_SOCKS5_ERRORS = {
+                0x01: "general SOCKS server failure (Tor may not be bootstrapped)",
+                0x02: "connection not allowed by ruleset",
+                0x03: "network unreachable",
+                0x04: "host unreachable (hidden service may be down)",
+                0x05: "connection refused by destination",
+                0x06: "TTL expired",
+                0x07: "command not supported",
+                0x08: "address type not supported",
+            }
+
+            proxy_host, _cfg_port = self.config.tor_proxy
+            _candidates = [_cfg_port]
+            for _alt in (9050, 9150):
+                if _alt not in _candidates:
+                    _candidates.append(_alt)
+
+            proxy_port = None
+            for _p in _candidates:
+                if _probe_socks5(proxy_host, _p, timeout=2.0):
+                    proxy_port = _p
+                    break
+
+            if proxy_port is None:
+                tried = ", ".join(str(p) for p in _candidates)
+                raise ConnectionError(
+                    f"Tor SOCKS5 not reachable on {proxy_host } "
+                    f"(tried ports: {tried })\n"
+                    "  → Is tor running?  Check: systemctl status tor"
+                )
+
+            self.config.tor_proxy = (proxy_host, proxy_port)
+
+            self.add_message(
+                "system",
+                f"Connecting to {colorize (self .server ,'cyan')}:{port } via "
+                f"{colorize ('Tor SOCKS5','dark_magenta')} ({proxy_host }:{proxy_port })…",
+            )
+
+            def _recvexact(s, n):
+                """Read exactly n bytes, raising on short read."""
+                buf = b""
+                while len(buf) < n:
+                    chunk = s.recv(n - len(buf))
+                    if not chunk:
+                        raise ConnectionError(
+                            f"SOCKS5: connection closed (got {len (buf )}/{n } bytes)"
+                        )
+                    buf += chunk
+                return buf
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(float(timeout))
+            sock.connect((proxy_host, proxy_port))
+
+            sock.send(b"\x05\x01\x00")
+            auth_resp = _recvexact(sock, 2)
+            if auth_resp[0] != 5:
+                raise ConnectionError(
+                    f"SOCKS5 greeting: unexpected version byte {auth_resp [0 ]:#04x}"
+                )
+            if auth_resp[1] == 0xFF:
+                raise ConnectionError(
+                    "SOCKS5 greeting: proxy requires authentication "
+                    "(add 'SocksPolicy accept 127.0.0.1' to torrc)"
+                )
+            if auth_resp[1] != 0x00:
+                raise ConnectionError(
+                    f"SOCKS5 greeting: unsupported auth method {auth_resp [1 ]:#04x}"
+                )
+
+            domain = self.server.encode("ascii")
+            req = (
+                b"\x05\x01\x00\x03"
+                + bytes([len(domain)])
+                + domain
+                + struct.pack("!H", port)
+            )
+            sock.send(req)
+
+            hdr = _recvexact(sock, 4)
+            if hdr[0] != 5:
+                raise ConnectionError(
+                    f"SOCKS5 response: unexpected version byte {hdr [0 ]:#04x}"
+                )
+            rep = hdr[1]
+            if rep != 0x00:
+                err_desc = _tor_SOCKS5_ERRORS.get(rep, f"unknown error code {rep :#04x}")
+                raise ConnectionError(f"SOCKS5 CONNECT rejected: {err_desc }")
+
+            atyp = hdr[3]
+            if atyp == 0x01:
+                _recvexact(sock, 4)
+            elif atyp == 0x03:
+                _recvexact(sock, ord(_recvexact(sock, 1)))
+            elif atyp == 0x04:
+                _recvexact(sock, 16)
+            _recvexact(sock, 2)
+
+            self.add_message("system", colorize("🧅 Tor circuit established", "green"))
+
+        else:
+
+            net_type_actual = self.setup_proxy(net_type)
+            tls_label = " TLS" if use_tls else ""
+            self.add_message(
+                "system",
+                f"Connecting to {colorize (self .server ,'cyan')}:{port }"
+                f" ({colorize (net_label +tls_label ,'bold_cyan')}, up to {timeout }s)…",
+            )
+            self.debug(
+                "connect",
+                {
+                    "server": self.server,
+                    "port": port,
+                    "net": net_type,
+                    "tls": use_tls,
+                    "timeout": timeout,
+                },
+            )
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(float(timeout))
+            sock.connect((self.server, port))
+        return sock
 
     def _recv_loop(self):
         """
@@ -2390,253 +2403,266 @@ class OTRv4IRCClient:
             if sender in self.ignored_users:
                 return
 
-            if command == "PRIVMSG":
-                target = params[0] if params else ""
-                message = trailing or ""
-                if self.is_ctcp_message(message) and "?OTRv4" not in message:
+            for family in (self._on_chat, self._on_membership, self._on_identity):
+                if family(command, sender, prefix, params, trailing, _tags):
                     return
-                if len(message) > 4096:
-                    self.debug("oversized PRIVMSG dropped")
-                    return
-                self.check_auto_reply(sender, target, message)
-                if "?OTRv4" in message:
-                    self._dispatch_otr_fragment(sender, message)
-                else:
-                    _now = time.time()
-                    if not hasattr(self, "_msg_rate"):
-                        self._msg_rate: dict = {}
-                    _bucket = self._msg_rate.get(sender, (0, 0.0))
-                    _count, _window_start = _bucket
-                    if _now - _window_start > 10.4:
-                        _count, _window_start = 0, _now
-                    _count += 1
-                    self._msg_rate[sender] = (_count, _window_start)
-                    if _count > 50:
-                        self.debug(
-                            f"plaintext flood from {sender } - dropping ({_count } msgs/10s)"
-                        )
-                    else:
-                        self._display_plaintext(sender, target, message)
-                return
-
-            if command == "TAGMSG":
-                _tv = _tags.get("+typing", "")
-                _tgt = params[0] if params else ""
-                if _tgt == self.nick and _tv in ("active", "paused", "done"):
-                    _pnl = self.panel_manager.panels.get(sender)
-                    if _pnl is not None:
-                        if _tv in ("active", "paused"):
-                            _tmsg = colorize(
-                                (
-                                    f"✍ {sender } is typing…"
-                                    if _tv == "active"
-                                    else f"✍ {sender } paused…"
-                                ),
-                                "yellow",
-                            )
-                            _last = _pnl.history[-1]["message"] if _pnl.history else ""
-                            if "✍" in _last:
-                                _pnl.history[-1]["message"] = _tmsg
-                            else:
-                                self.add_message(sender, _tmsg)
-                        elif _tv == "done":
-                            if _pnl.history and "✍" in _pnl.history[-1]["message"]:
-                                _pnl.history.pop()
-                return
-
-            if command == "JOIN":
-                channel = trailing or (params[0] if params else "")
-                if not channel or len(channel) > 64 or "\r" in channel or "\n" in channel:
-                    return
-                if sender == self.nick:
-                    # The server echoes our JOIN back with our full prefix.
-                    # That is the only place we learn it, and knowing it is
-                    # worth about a tenth of every fragment -- see
-                    # _fragment_size.  "!" and "@" both required: a bare nick
-                    # would under-count the overhead and truncate lines.
-                    if prefix and "!" in prefix and "@" in prefix:
-                        self._own_prefix = prefix
-                        self.debug("own prefix", {"len": len(prefix)})
-                    if channel not in self.panel_manager.panels:
-                        self.panel_manager.add_panel(channel, "channel")
-                    self._switch_panel(channel)
-                    self.channels[channel] = {"users": set(), "topic": ""}
-                    self.add_message(
-                        channel, colorize(f"✅ Joined {_sanitise (channel ,64 )}", "green")
-                    )
-                else:
-                    if channel in self.channels:
-                        self.channels[channel]["users"].add(sender)
-                return
-
-            if command == "PART":
-                channel = params[0] if params else ""
-                reason = trailing or ""
-                if sender == self.nick:
-                    self.add_message("system", f"Left {_sanitise (channel ,64 )}")
-                    self.channels.pop(channel, None)
-                    if channel in self.panel_manager.panels:
-                        _was = self.panel_manager.active_panel == channel
-                        del self.panel_manager.panels[channel]
-                        if channel in self.panel_manager.panel_order:
-                            self.panel_manager.panel_order.remove(channel)
-                        if _was:
-                            self._switch_panel("system")
-                        elif getattr(self, "_tui_enabled", False) and self._screen:
-                            self._screen.redraw_full()
-                        self.panel_manager._render_ui()
-                else:
-                    if channel in self.channels:
-                        self.channels[channel]["users"].discard(sender)
-                return
-
-            if command == "QUIT":
-                reason = trailing or ""
-                for ch, info in self.channels.items():
-                    if sender in info["users"]:
-                        info["users"].discard(sender)
-                # Someone else may take the nick; a stale entry would mark
-                # them as an OTRv4+ client on no evidence at all.
-                getattr(self, "_otrv4_users", {}).pop(sender, None)
-
-                if self.session_manager.has_session(sender):
-                    self._on_peer_disconnected(sender, reason)
-                return
-
-            if command == "NICK":
-                new_nick = trailing or (params[0] if params else "")
-                if not new_nick or len(new_nick) > 64 or "\r" in new_nick or "\n" in new_nick:
-                    return
-                for ch_info in self.channels.values():
-                    if sender in ch_info["users"]:
-                        ch_info["users"].discard(sender)
-                        ch_info["users"].add(new_nick)
-                # The OTRv4+ map is keyed by nick, so a rename would
-                # otherwise leave the marker on a nick nobody is using and
-                # strip it from the person who still has the same client.
-                _o = getattr(self, "_otrv4_users", None)
-                if _o is not None and sender in _o:
-                    _o[new_nick] = _o.pop(sender)
-                # A peer we are encrypted with just changed name.  The keys do
-                # not follow, and the user has to be told rather than left
-                # wondering why the new nick is a plaintext tab.
-                if sender != self.nick:
-                    try:
-                        if self.session_manager.has_session(sender):
-                            self._warn_nick_change_keeps_session(sender, new_nick)
-                            _w = getattr(self, "_no_session_warned", None)
-                            if _w is not None:
-                                _w.discard(new_nick)
-                    except Exception:
-                        self.debug("nick-change session notice failed")
-                if sender == self.nick:
-                    self.nick = new_nick
-                    self.add_message(
-                        "system", f"Nick → {colorize_username (_sanitise (new_nick ,64 ))}"
-                    )
-                    if new_nick == getattr(self, "_original_nick", None):
-                        # Reclaim succeeded: stop asking.
-                        self._nick_reclaim_tries = 0
-                        self.realname = TwentySevenClubNick.real_name(new_nick)
-                return
-
-            if command == "KICK":
-                channel = params[0] if params else ""
-                kicked = params[1] if len(params) > 1 else ""
-                reason = trailing or ""
-                if kicked == self.nick:
-                    self.add_message(
-                        "system",
-                        f"❌ Kicked from {_sanitise (channel ,64 )}: {_sanitise (reason ,256 )}",
-                    )
-                    self.channels.pop(channel, None)
-                    if channel in self.panel_manager.panels:
-                        was_active = self.panel_manager.active_panel == channel
-                        del self.panel_manager.panels[channel]
-                        if channel in self.panel_manager.panel_order:
-                            self.panel_manager.panel_order.remove(channel)
-                        if was_active:
-                            self._switch_panel("system")
-                        elif getattr(self, "_tui_enabled", False) and self._screen is not None:
-                            self._screen.redraw_full()
-                        self.panel_manager._render_ui()
-                else:
-                    self.add_message(
-                        channel,
-                        f"⚡ {colorize_username (_sanitise (kicked ,64 ))} kicked: {_sanitise (reason ,256 )}",
-                    )
-                return
-
-            if command == "MODE":
-                ch = params[0] if params else ""
-                if ch.startswith("#"):
-                    self.add_message(ch, f"Mode: {_sanitise (' '.join (params [1 :]),128 )}")
-                return
-            if command == "NOTICE":
-                target = params[0] if params else ""
-                message = trailing or ""
-                sender_lower = sender.lower() if sender else ""
-                if sender_lower == "nickserv":
-                    self.add_message(
-                        "system",
-                        colorize("NickServ", "bold_cyan")
-                        + colorize(": ", "dim")
-                        + colorize(_sanitise(message, 512), "white"),
-                    )
-                    msg_lower = message.lower()
-                    if (
-                        ("you are now" in msg_lower and "identified" in msg_lower)
-                        or "password accepted" in msg_lower
-                        or "you are successfully identified" in msg_lower
-                    ):
-                        self.nickserv_identified = True
-                        self.add_message(
-                            "system", colorize("✅ NickServ: identified successfully", "green")
-                        )
-                    elif "registered" in msg_lower and (
-                        "successfully" in msg_lower or "is now" in msg_lower
-                    ):
-                        self.nickserv_identified = True
-                        self.add_message(
-                            "system", colorize("✅ NickServ: nick registered successfully", "green")
-                        )
-                    elif (
-                        "invalid" in msg_lower
-                        or "denied" in msg_lower
-                        or "incorrect" in msg_lower
-                        or "wrong" in msg_lower
-                    ):
-                        self.add_message(
-                            "system", colorize("❌ NickServ: authentication failed", "red")
-                        )
-                elif sender_lower in ("chanserv", "memoserv", "operserv"):
-                    self.add_message(
-                        "system",
-                        colorize(_sanitise(sender, 64), "dim")
-                        + colorize(": ", "dim")
-                        + colorize(_sanitise(message, 512), "dim"),
-                    )
-                else:
-                    if message and not message.startswith("***"):
-                        self.add_message(
-                            "system",
-                            colorize(
-                                f"[notice] {_sanitise (sender ,64 )}: {_sanitise (message ,512 )}",
-                                "dim",
-                            ),
-                        )
-                return
-
-            if command == "TOPIC":
-                ch = params[0] if params else ""
-                topic = trailing or ""
-                if ch in self.channels:
-                    self.channels[ch]["topic"] = topic
-                self.add_message(ch, f"Topic: {_sanitise (topic ,390 )}")
-                return
 
         except Exception as exc:
             self.debug("handle_message error")
+
+    def _on_chat(self, command, sender, prefix, params, trailing, _tags):
+        """PRIVMSG, TAGMSG and NOTICE. True if *command* was one of them."""
+        if command == "PRIVMSG":
+            target = params[0] if params else ""
+            message = trailing or ""
+            if self.is_ctcp_message(message) and "?OTRv4" not in message:
+                return True
+            if len(message) > 4096:
+                self.debug("oversized PRIVMSG dropped")
+                return True
+            self.check_auto_reply(sender, target, message)
+            if "?OTRv4" in message:
+                self._dispatch_otr_fragment(sender, message)
+            else:
+                _now = time.time()
+                if not hasattr(self, "_msg_rate"):
+                    self._msg_rate: dict = {}
+                _bucket = self._msg_rate.get(sender, (0, 0.0))
+                _count, _window_start = _bucket
+                if _now - _window_start > 10.4:
+                    _count, _window_start = 0, _now
+                _count += 1
+                self._msg_rate[sender] = (_count, _window_start)
+                if _count > 50:
+                    self.debug(
+                        f"plaintext flood from {sender } - dropping ({_count } msgs/10s)"
+                    )
+                else:
+                    self._display_plaintext(sender, target, message)
+            return True
+
+        if command == "TAGMSG":
+            _tv = _tags.get("+typing", "")
+            _tgt = params[0] if params else ""
+            if _tgt == self.nick and _tv in ("active", "paused", "done"):
+                _pnl = self.panel_manager.panels.get(sender)
+                if _pnl is not None:
+                    if _tv in ("active", "paused"):
+                        _tmsg = colorize(
+                            (
+                                f"✍ {sender } is typing…"
+                                if _tv == "active"
+                                else f"✍ {sender } paused…"
+                            ),
+                            "yellow",
+                        )
+                        _last = _pnl.history[-1]["message"] if _pnl.history else ""
+                        if "✍" in _last:
+                            _pnl.history[-1]["message"] = _tmsg
+                        else:
+                            self.add_message(sender, _tmsg)
+                    elif _tv == "done":
+                        if _pnl.history and "✍" in _pnl.history[-1]["message"]:
+                            _pnl.history.pop()
+            return True
+        if command == "NOTICE":
+            target = params[0] if params else ""
+            message = trailing or ""
+            sender_lower = sender.lower() if sender else ""
+            if sender_lower == "nickserv":
+                self.add_message(
+                    "system",
+                    colorize("NickServ", "bold_cyan")
+                    + colorize(": ", "dim")
+                    + colorize(_sanitise(message, 512), "white"),
+                )
+                msg_lower = message.lower()
+                if (
+                    ("you are now" in msg_lower and "identified" in msg_lower)
+                    or "password accepted" in msg_lower
+                    or "you are successfully identified" in msg_lower
+                ):
+                    self.nickserv_identified = True
+                    self.add_message(
+                        "system", colorize("✅ NickServ: identified successfully", "green")
+                    )
+                elif "registered" in msg_lower and (
+                    "successfully" in msg_lower or "is now" in msg_lower
+                ):
+                    self.nickserv_identified = True
+                    self.add_message(
+                        "system", colorize("✅ NickServ: nick registered successfully", "green")
+                    )
+                elif (
+                    "invalid" in msg_lower
+                    or "denied" in msg_lower
+                    or "incorrect" in msg_lower
+                    or "wrong" in msg_lower
+                ):
+                    self.add_message(
+                        "system", colorize("❌ NickServ: authentication failed", "red")
+                    )
+            elif sender_lower in ("chanserv", "memoserv", "operserv"):
+                self.add_message(
+                    "system",
+                    colorize(_sanitise(sender, 64), "dim")
+                    + colorize(": ", "dim")
+                    + colorize(_sanitise(message, 512), "dim"),
+                )
+            else:
+                if message and not message.startswith("***"):
+                    self.add_message(
+                        "system",
+                        colorize(
+                            f"[notice] {_sanitise (sender ,64 )}: {_sanitise (message ,512 )}",
+                            "dim",
+                        ),
+                    )
+            return True
+        return False
+
+    def _on_membership(self, command, sender, prefix, params, trailing, _tags):
+        """JOIN, PART, QUIT and KICK. True if *command* was one of them."""
+        if command == "JOIN":
+            channel = trailing or (params[0] if params else "")
+            if not channel or len(channel) > 64 or "\r" in channel or "\n" in channel:
+                return True
+            if sender == self.nick:
+                # The server echoes our JOIN back with our full prefix.
+                # That is the only place we learn it, and knowing it is
+                # worth about a tenth of every fragment -- see
+                # _fragment_size.  "!" and "@" both required: a bare nick
+                # would under-count the overhead and truncate lines.
+                if prefix and "!" in prefix and "@" in prefix:
+                    self._own_prefix = prefix
+                    self.debug("own prefix", {"len": len(prefix)})
+                if channel not in self.panel_manager.panels:
+                    self.panel_manager.add_panel(channel, "channel")
+                self._switch_panel(channel)
+                self.channels[channel] = {"users": set(), "topic": ""}
+                self.add_message(
+                    channel, colorize(f"✅ Joined {_sanitise (channel ,64 )}", "green")
+                )
+            else:
+                if channel in self.channels:
+                    self.channels[channel]["users"].add(sender)
+            return True
+
+        if command == "PART":
+            channel = params[0] if params else ""
+            reason = trailing or ""
+            if sender == self.nick:
+                self.add_message("system", f"Left {_sanitise (channel ,64 )}")
+                self.channels.pop(channel, None)
+                if channel in self.panel_manager.panels:
+                    _was = self.panel_manager.active_panel == channel
+                    del self.panel_manager.panels[channel]
+                    if channel in self.panel_manager.panel_order:
+                        self.panel_manager.panel_order.remove(channel)
+                    if _was:
+                        self._switch_panel("system")
+                    elif getattr(self, "_tui_enabled", False) and self._screen:
+                        self._screen.redraw_full()
+                    self.panel_manager._render_ui()
+            else:
+                if channel in self.channels:
+                    self.channels[channel]["users"].discard(sender)
+            return True
+
+        if command == "QUIT":
+            reason = trailing or ""
+            for ch, info in self.channels.items():
+                if sender in info["users"]:
+                    info["users"].discard(sender)
+            # Someone else may take the nick; a stale entry would mark
+            # them as an OTRv4+ client on no evidence at all.
+            getattr(self, "_otrv4_users", {}).pop(sender, None)
+
+            if self.session_manager.has_session(sender):
+                self._on_peer_disconnected(sender, reason)
+            return True
+
+        if command == "KICK":
+            channel = params[0] if params else ""
+            kicked = params[1] if len(params) > 1 else ""
+            reason = trailing or ""
+            if kicked == self.nick:
+                self.add_message(
+                    "system",
+                    f"❌ Kicked from {_sanitise (channel ,64 )}: {_sanitise (reason ,256 )}",
+                )
+                self.channels.pop(channel, None)
+                if channel in self.panel_manager.panels:
+                    was_active = self.panel_manager.active_panel == channel
+                    del self.panel_manager.panels[channel]
+                    if channel in self.panel_manager.panel_order:
+                        self.panel_manager.panel_order.remove(channel)
+                    if was_active:
+                        self._switch_panel("system")
+                    elif getattr(self, "_tui_enabled", False) and self._screen is not None:
+                        self._screen.redraw_full()
+                    self.panel_manager._render_ui()
+            else:
+                self.add_message(
+                    channel,
+                    f"⚡ {colorize_username (_sanitise (kicked ,64 ))} kicked: {_sanitise (reason ,256 )}",
+                )
+            return True
+        return False
+
+    def _on_identity(self, command, sender, prefix, params, trailing, _tags):
+        """NICK, MODE and TOPIC. True if *command* was one of them."""
+        if command == "NICK":
+            new_nick = trailing or (params[0] if params else "")
+            if not new_nick or len(new_nick) > 64 or "\r" in new_nick or "\n" in new_nick:
+                return True
+            for ch_info in self.channels.values():
+                if sender in ch_info["users"]:
+                    ch_info["users"].discard(sender)
+                    ch_info["users"].add(new_nick)
+            # The OTRv4+ map is keyed by nick, so a rename would
+            # otherwise leave the marker on a nick nobody is using and
+            # strip it from the person who still has the same client.
+            _o = getattr(self, "_otrv4_users", None)
+            if _o is not None and sender in _o:
+                _o[new_nick] = _o.pop(sender)
+            # A peer we are encrypted with just changed name.  The keys do
+            # not follow, and the user has to be told rather than left
+            # wondering why the new nick is a plaintext tab.
+            if sender != self.nick:
+                try:
+                    if self.session_manager.has_session(sender):
+                        self._warn_nick_change_keeps_session(sender, new_nick)
+                        _w = getattr(self, "_no_session_warned", None)
+                        if _w is not None:
+                            _w.discard(new_nick)
+                except Exception:
+                    self.debug("nick-change session notice failed")
+            if sender == self.nick:
+                self.nick = new_nick
+                self.add_message(
+                    "system", f"Nick → {colorize_username (_sanitise (new_nick ,64 ))}"
+                )
+                if new_nick == getattr(self, "_original_nick", None):
+                    # Reclaim succeeded: stop asking.
+                    self._nick_reclaim_tries = 0
+                    self.realname = TwentySevenClubNick.real_name(new_nick)
+            return True
+
+        if command == "MODE":
+            ch = params[0] if params else ""
+            if ch.startswith("#"):
+                self.add_message(ch, f"Mode: {_sanitise (' '.join (params [1 :]),128 )}")
+            return True
+
+        if command == "TOPIC":
+            ch = params[0] if params else ""
+            topic = trailing or ""
+            if ch in self.channels:
+                self.channels[ch]["topic"] = topic
+            self.add_message(ch, f"Topic: {_sanitise (topic ,390 )}")
+            return True
+        return False
 
     def _handle_unknown_command(self, command: str, params, trailing) -> None:
         """No-op handler for unrecognised IRC commands - avoids super() AttributeError."""
@@ -6556,26 +6582,9 @@ Type /help mode for IRC user modes (+g, +i, etc).
     return config
 
 
-def main():
-    import select as _select
-
-
-
-    config = parse_args()
-
-    config.trust_db_path = os.path.expanduser("~/.otrv4plus/trust.json")
-    config.smp_secrets_path = os.path.expanduser("~/.otrv4plus/smp_secrets.json")
-    config.key_storage_path = os.path.expanduser("~/.otrv4plus/keys")
-    config.log_file_path = os.path.expanduser("~/.otrv4plus/logs/otrv4plus.log")
-    config.test_mode = TEST_MODE
-    config.i2p_proxy = (NetworkConstants.I2P_PROXY_HOST, NetworkConstants.I2P_PROXY_PORT)
-    config.tor_proxy = (NetworkConstants.TOR_PROXY_HOST, NetworkConstants.TOR_PROXY_PORT)
-    config.log_level = "DEBUG" if _engine.DEBUG_MODE else "INFO"
-    config.dake_timeout = 120.0
-    config.fragment_timeout = 120.0
-    config.heartbeat_interval = 60
-    config.rekey_interval = 100
-
+def _remove_legacy_files():
+    """Overwrite and remove the vault, SMP-secrets file and key directory that
+    older versions kept under ~/.otrv4*."""
     _legacy_orphan_paths = [
         os.path.expanduser("~/.otrv4_vault"),
         os.path.expanduser("~/.otrv4_smp_secrets.json"),
@@ -6611,6 +6620,10 @@ def main():
         if _engine.DEBUG_MODE:
             print(f"[startup] could not remove legacy keys dir: {_e }")
 
+
+def _print_banner(config):
+    """The start-up summary. Returns an exit code when the client must not
+    start (no Rust core; the old self-test flag), otherwise None."""
     _net = NetworkConstants.detect(config.server)
     _net_icon = {"i2p": "🧅 I2P", "tor": "🧅 Tor", "clearnet": "🌐 Clearnet"}.get(_net, _net)
     _net_col = {"i2p": "dark_cyan", "tor": "dark_magenta", "clearnet": "grey"}.get(_net, "white")
@@ -6682,35 +6695,11 @@ def main():
         safe_print(colorize("  pytest -v -k 'not 300k'", "green"))
         safe_print(colorize("  (207 tests across 9 test files)", "dim"))
         return 0
+    return None
 
-    client = EnhancedOTRv4IRCClient(config)
-    import builtins as _b
 
-    _b._active_client = client
-
-    if not client.connect():
-        _fail_net = NetworkConstants.detect(config.server)
-        _fail_hints = {
-            NetworkConstants.NET_TOR: (
-                "Failed to connect via Tor.\n"
-                "  • Desktop: ensure tor is running  (systemctl start tor)\n"
-                "  • Android: start Orbot and tap 'Start'\n"
-                "  • Tor Browser: make sure it is open (SOCKS5 on 9150)\n"
-                "  Probed ports: 9050, 9150."
-            ),
-            NetworkConstants.NET_I2P: (
-                "Failed to connect via I2P - is i2pd running?\n"
-                "  Check: i2pd SOCKS5 port 4447, SAM port 7656."
-            ),
-            NetworkConstants.NET_CLEARNET: (
-                "Failed to connect - check server address and network."
-            ),
-        }
-        safe_print(colorize(_fail_hints.get(_fail_net, "Failed to connect."), "red"))
-        return 1
-
-    client.start_auto_smp_monitor()
-
+def _run_input_loop(client, _select):
+    """Read the keyboard until the user quits, then hand back to main."""
     def _print_prompt():
         """Print the input prompt - called once per input cycle.
 
@@ -6911,6 +6900,62 @@ def main():
                     break
         except Exception:
             pass
+
+
+def main():
+    import select as _select
+
+
+
+    config = parse_args()
+
+    config.trust_db_path = os.path.expanduser("~/.otrv4plus/trust.json")
+    config.smp_secrets_path = os.path.expanduser("~/.otrv4plus/smp_secrets.json")
+    config.key_storage_path = os.path.expanduser("~/.otrv4plus/keys")
+    config.log_file_path = os.path.expanduser("~/.otrv4plus/logs/otrv4plus.log")
+    config.test_mode = TEST_MODE
+    config.i2p_proxy = (NetworkConstants.I2P_PROXY_HOST, NetworkConstants.I2P_PROXY_PORT)
+    config.tor_proxy = (NetworkConstants.TOR_PROXY_HOST, NetworkConstants.TOR_PROXY_PORT)
+    config.log_level = "DEBUG" if _engine.DEBUG_MODE else "INFO"
+    config.dake_timeout = 120.0
+    config.fragment_timeout = 120.0
+    config.heartbeat_interval = 60
+    config.rekey_interval = 100
+    _remove_legacy_files()
+
+    code = _print_banner(config)
+    if code is not None:
+        return code
+
+    client = EnhancedOTRv4IRCClient(config)
+    import builtins as _b
+
+    _b._active_client = client
+
+    if not client.connect():
+        _fail_net = NetworkConstants.detect(config.server)
+        _fail_hints = {
+            NetworkConstants.NET_TOR: (
+                "Failed to connect via Tor.\n"
+                "  • Desktop: ensure tor is running  (systemctl start tor)\n"
+                "  • Android: start Orbot and tap 'Start'\n"
+                "  • Tor Browser: make sure it is open (SOCKS5 on 9150)\n"
+                "  Probed ports: 9050, 9150."
+            ),
+            NetworkConstants.NET_I2P: (
+                "Failed to connect via I2P - is i2pd running?\n"
+                "  Check: i2pd SOCKS5 port 4447, SAM port 7656."
+            ),
+            NetworkConstants.NET_CLEARNET: (
+                "Failed to connect - check server address and network."
+            ),
+        }
+        safe_print(colorize(_fail_hints.get(_fail_net, "Failed to connect."), "red"))
+        return 1
+
+    client.start_auto_smp_monitor()
+
+    _run_input_loop(client, _select)
 
     _restore_terminal()
     client.shutdown()

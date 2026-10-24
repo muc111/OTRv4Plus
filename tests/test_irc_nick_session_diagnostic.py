@@ -236,7 +236,7 @@ class TestTheHooksAreWired:
         import ast
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
-                  and n.name == "handle_message"
+                  and n.name == "_on_identity"
                   and "_warn_nick_change_keeps_session" in ast.unparse(n))
         assert fn is not None
 

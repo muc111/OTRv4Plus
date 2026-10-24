@@ -109,6 +109,8 @@ waiting for a phone to find it.
   and it is asked before the built-in router starts.
 - `tests/test_pdf_isolation.py`: received PDFs are parsed only in the
   isolated `PdfRenderService`, and Python never starts there.
+- `tests/test_function_length.py`: no Python function in the clients or
+  the bridge passes 200 lines; the few still longer have a ceiling.
 - `tests/test_client_finds_the_bridge.py`: a terminal client started from
   `client/` can import `android_bridge`.
 - `tests/test_ci_watches_what_it_tests.py`: the desktop install job runs

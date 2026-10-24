@@ -559,7 +559,7 @@ class TestItIsWiredIn:
         assert any("_own_prefix = prefix" in ast.unparse(n)
                    for n in ast.walk(tree)
                    if isinstance(n, ast.FunctionDef)
-                   and n.name == "handle_message")
+                   and n.name == "_on_membership")
 
 
 class TestTheFragmentCountStillLeaksWhichMessageItIs:

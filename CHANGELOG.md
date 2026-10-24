@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.150 and Desktop — 2026-10-24 — code split, step 6, and a length limit (core 0.13.1)
+
+Nothing changes on the phone.
+
+- The app's sign-in (`_connect_inner`, 201 lines) is split into building
+  the client, turning every way sign-in can end into one result, and
+  connecting, in the same order.
+- IRC client: `handle_message` becomes three families of messages,
+  `connect` keeps its flow with the SAM and SOCKS/direct sockets in their
+  own functions, and `main` becomes its steps. Termux setup becomes four
+  steps. Each moved piece was checked identical to the old code (AST, or
+  old against new on 480 inbound lines).
+- **Guard:** `tests/test_function_length.py` fails when a Python function
+  in the clients or the bridge is longer than 200 lines. The four still
+  over (the engine's SMP handler, the stress test, the IRC subclass's
+  commands, the IRC keyboard loop) are listed with their length as a
+  ceiling, so they can only shrink.
+
 ## Android 0.7.0-experimental.rc.149 and Desktop — 2026-10-24 — code split, step 5: the longest functions (core 0.13.1)
 
 Nothing changes on the phone. The longest functions in the terminal clients

@@ -419,25 +419,8 @@ def _probe_sam(host="127.0.0.1", port=7656, timeout=3.0):
         return False
 
 
-def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
-                      sam_port=7656, *, load_opus, voice_available):
-    """Provision an Android/Termux device end to end.
-
-    No-op on non-Termux systems. Returns a list of unresolved issues; an empty
-    list means the device is ready for encrypted voice calls. `load_opus` and
-    `voice_available` are the client's own (otrv4plus_xmpp.py).
-    """
-    if not _host.IS_TERMUX or skip:
-        load_opus()
-        return []
-
-    issues = []
-    first_run = force or not os.path.exists(BOOTSTRAP_MARKER)
-
-    builtins.print("=" * 62)
-    builtins.print(" OTRv4+ XMPP — device provisioning")
-    builtins.print("=" * 62)
-
+def _provision_packages(issues, load_opus):
+    """Install missing packages and Python modules; find the Opus library. Appends to *issues*."""
     # -- 1. Native packages ---------------------------------------------------
     missing_apt = _apt_missing()
     if missing_apt:
@@ -490,6 +473,9 @@ def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
         os.environ["LD_LIBRARY_PATH"] = (
             libdir + os.pathsep + os.environ.get("LD_LIBRARY_PATH", ""))
 
+
+def _check_audio(issues, first_run):
+    """Termux:API, the audio backend and a microphone test. Appends to *issues*."""
     # -- 4. Termux:API bridge and microphone permission -----------------------
     api_ok, api_note = _termux_api_present()
     if not api_ok:
@@ -575,6 +561,9 @@ def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
             "per-backend detail." % detail)
         builtins.print("  microphone test    NO AUDIO")
 
+
+def _check_router_and_core(issues, sam_host, sam_port):
+    """The I2P SAM bridge, the client files, the Rust core, the shell profile and the marker. Appends to *issues*."""
     # -- 7. I2P router --------------------------------------------------------
     if _probe_sam(sam_host, sam_port):
         builtins.print("  I2P SAM bridge     OK (%s:%d)" % (sam_host, sam_port))
@@ -614,6 +603,9 @@ def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
     except Exception:
         pass
 
+
+def _print_summary(issues, voice_available):
+    """What needs attention, and whether voice is available."""
     # -- Summary --------------------------------------------------------------
     builtins.print("-" * 62)
     voice_ok, voice_reason = voice_available()
@@ -630,6 +622,34 @@ def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
         builtins.print(" Voice disabled: %s" % voice_reason)
     builtins.print("=" * 62)
     builtins.print("")
+
+
+def _bootstrap_termux(skip=False, force=False, sam_host="127.0.0.1",
+                      sam_port=7656, *, load_opus, voice_available):
+    """Provision an Android/Termux device end to end.
+
+    No-op on non-Termux systems. Returns a list of unresolved issues; an empty
+    list means the device is ready for encrypted voice calls. `load_opus` and
+    `voice_available` are the client's own (otrv4plus_xmpp.py).
+    """
+    if not _host.IS_TERMUX or skip:
+        load_opus()
+        return []
+
+    issues = []
+    first_run = force or not os.path.exists(BOOTSTRAP_MARKER)
+
+    builtins.print("=" * 62)
+    builtins.print(" OTRv4+ XMPP — device provisioning")
+    builtins.print("=" * 62)
+
+    _provision_packages(issues, load_opus)
+
+    _check_audio(issues, first_run)
+
+    _check_router_and_core(issues, sam_host, sam_port)
+
+    _print_summary(issues, voice_available)
     return issues
 
 

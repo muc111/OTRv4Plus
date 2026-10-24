@@ -161,6 +161,7 @@ installed), and with the Termux client.
 | Your own I2P router first | With i2pd or the I2P app running (SAM on), sign in: the connection screen says it is using the I2P router already on this phone. Stop it and sign in again: the built-in router starts | rc.147 |
 | PDFs in a sealed box | Receive a PDF and open it: the pages show as before. A PDF with links or scripts lists them under the page and in the "Open with another app" warning | rc.148 |
 | Code split, step 5 | Nothing to see on the phone: the terminal clients' longest functions are split up. Sign in, chat, verify and call as on the previous build | rc.149 |
+| Code split, step 6 | Nothing to see: sign-in code is split into named steps. Sign in over I2P, then with a wrong password, and check each says what happened as on the previous build | rc.150 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

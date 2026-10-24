@@ -301,7 +301,8 @@ class _Harness:
 
     handle_numeric_reply = irc.OTRv4IRCClient.handle_numeric_reply
     locals().update({n: f for n, f in vars(irc.OTRv4IRCClient).items()
-                     if n.startswith("_rpl_")})
+                     if n.startswith(("_rpl_", "_on_chat", "_on_membership",
+                                      "_on_identity"))})
     handle_message = irc.OTRv4IRCClient.handle_message
     parse_irc_message = irc.OTRv4IRCClient.parse_irc_message
     _handle_unknown_command = irc.OTRv4IRCClient._handle_unknown_command
@@ -763,9 +764,10 @@ class TestIdentificationIsNotAuthentication:
                             or "_o[new_nick]" in seg:
                         writers.add(fn.name)
         assert writers, "found no writer at all; this test is reading the wrong code"
-        assert writers <= {"_rpl_who", "_rpl_whois", "handle_message",
+        assert writers <= {"_rpl_who", "_rpl_whois", "_on_membership", "_on_identity",
                            "dispatch_command", "handle_command"}, (
             "the OTRv4+ map is written in %s" % sorted(writers))
+        assert "_on_chat" not in writers, "a chat message must never set the marker"
 
     def test_the_numeric_families_are_reached_only_from_numeric_replies(self):
         """`_rpl_who` and `_rpl_whois` may write the map because they only

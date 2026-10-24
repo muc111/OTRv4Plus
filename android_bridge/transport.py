@@ -865,6 +865,39 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             # The tunnel is up; what is left is the XMPP handshake over it.
             self._reached("tunnel_open")
             self._emit_state("connecting")
+        client = self._build_client()
+        started = asyncio.get_event_loop().create_future()
+        watch = self._watch_sign_in(client, started, host)
+
+        # host= and port= point slixmpp at the local end of the tunnel rather
+        # than at a DNS lookup of the JID's domain: getaddrinfo is never called
+        # on a .i2p name (docs/TRANSPORT_POLICY.md). slixmpp skips its SRV
+        # lookup only when BOTH are given, so they stay together. 1.17's
+        # signature is connect(host, port); tests/test_android_transport.py
+        # binds this call against the real one.
+        client.connect(host=host, port=port)
+        try:
+            await started
+        finally:
+            if watch is not None:
+                watch.finish()
+        self._connected.set()
+        _TRACE.record("auth", "allowed", "info", route=self._route.kind)
+        self._confirm_destination()
+
+        # Signed in is not present: RFC 6121 4.2, a client becomes an available
+        # resource by SENDING initial presence, and until then the server
+        # neither broadcasts it nor delivers its contacts'. The terminal
+        # client's `_on_start` does the same three things in the same order.
+        self._announce()
+
+        _TRACE.record("transport", "session_started", "info",
+                      jid=self._profile.jid,
+                      server=self._profile.effective_server)
+        self._emit_state("connected")
+
+    def _build_client(self):
+        """The slixmpp client for this attempt, wired and recorded."""
         # Separately coded for the same reason as the forwarder above: a
         # slixmpp that will not import is a packaging fault, and reporting it
         # as a generic connect failure sends someone to look at their router.
@@ -878,8 +911,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
                 % type(exc).__name__)
         self._wire(client)
         self._client = client
-        started = asyncio.get_event_loop().create_future()
+        return client
 
+    def _watch_sign_in(self, client, started, host):
+        """Turn every way sign-in can end into *started*: a result on
+        session_start, a TransportError naming the cause otherwise. Returns
+        the clearnet stream watch to finish afterwards, or None."""
         def on_session(_event):
             if not started.done():
                 started.set_result(True)
@@ -1014,51 +1051,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             client.add_event_handler("ssl_invalid_chain", on_tls_error)
             client.add_event_handler("disconnected", on_early_disconnect)
             self._watch_stages(client)
+        return watch
 
-        # host= and port= point slixmpp at the local end of the SAM tunnel
-        # rather than at a DNS lookup of the JID's domain. getaddrinfo is never
-        # called on a .i2p name -- docs/TRANSPORT_POLICY.md is emphatic about that,
-        # and this is the line that keeps it true. slixmpp only skips its SRV
-        # lookup when BOTH are given, so they must stay together.
-        #
-        # This said `address=(host, port)` until the first handset test, which
-        # is an older slixmpp API that no longer exists: 1.17's signature is
-        # connect(host, port). It raised TypeError before a socket was opened,
-        # and the unit tests passed anyway because the fake client accepted
-        # `address=` -- the fake encoded the same wrong assumption as the code
-        # it was standing in for. tests/test_android_transport.py now binds
-        # this call against the real slixmpp signature so a fake cannot agree
-        # with a mistake again.
-        client.connect(host=host, port=port)
-        try:
-            await started
-        finally:
-            if watch is not None:
-                watch.finish()
-        self._connected.set()
-        _TRACE.record("auth", "allowed", "info", route=self._route.kind)
-        self._confirm_destination()
-
-        # WHAT A CLIENT OWES THE SERVER ONCE THE SESSION IS UP.
-        #
-        # None of this was here, and the symptom was reported from a handset:
-        # a Termux user logged in as alice saw "bob went offline" over and
-        # over while bob was sitting in the app, connected and authenticated.
-        #
-        # Authenticating is not the same as being present. RFC 6121 §4.2: a
-        # client becomes an available resource by SENDING initial presence,
-        # and until it does the server neither broadcasts it to contacts nor
-        # delivers theirs. So the app was logged in and invisible -- to
-        # everyone, permanently, with nothing on either side saying why.
-        #
-        # The terminal client has always done these three in `_on_start`.
-        # This is the same three, in the same order.
-        self._announce()
-
-        _TRACE.record("transport", "session_started", "info",
-                      jid=self._profile.jid,
-                      server=self._profile.effective_server)
-        self._emit_state("connected")
 
     def _announce(self) -> None:
         """Initial presence, the roster, and the keepalive.
