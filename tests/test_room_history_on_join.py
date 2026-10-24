@@ -172,9 +172,8 @@ def test_after_the_join_messages_flow_directly(wired):
 
 
 def test_the_connection_wires_the_joined_handler_for_every_room():
-    src = open(os.path.join(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))), "android_bridge", "connection.py"),
-        encoding="utf-8").read()
+    from source_of import connection_source
+    src = connection_source()
     assert 'getattr(self._transport, "set_room_joined_handler", None)' in src
 
 

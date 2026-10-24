@@ -339,8 +339,10 @@ class TestNoShippedDestination:
     def test_no_production_source_hard_codes_a_b32_destination(self):
         import re
         pat = re.compile(r"\b[a-z2-7]{52}\.b32\.i2p\b")
-        for rel in ("android_bridge/settings.py", "android_bridge/connection.py",
-                    "android_bridge/transport.py", "client/i2p_hosts.defaults"):
+        import glob
+        bridge = sorted(os.path.relpath(p, ROOT) for p in
+                        glob.glob(os.path.join(ROOT, "android_bridge", "*.py")))
+        for rel in bridge + ["client/i2p_hosts.defaults"]:
             with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
                 assert not pat.search(f.read()), rel
 

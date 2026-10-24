@@ -4,6 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.142 and Desktop — 2026-10-24 — the connection controller, split (core 0.13.1)
+
+Nothing changes in the app. `android_bridge/connection.py` -- the
+`ConnectionController` both apps drive -- goes from 2,380 lines to 1,573.
+It keeps connecting, signing up, Wipe, events and the diagnostics; three
+groups of its calls become mixins:
+
+- **`connection_rooms.py`**: discovering, joining and creating rooms, entry
+  requests, destroying (as owner or server admin), bookmarks and rejoining.
+- **`connection_groups.py`**: secure groups (MLS+) and group calls.
+- **`connection_profile.py`**: profile pictures and the profile.
+
+The check that no production file hard-codes an I2P b32 address now reads
+every `android_bridge` module, not four named ones.
+
 ## Android 0.7.0-experimental.rc.141 and Desktop — 2026-10-24 — OtrApp, split (core 0.13.1)
 
 Nothing changes in the app. `android_bridge/app.py` -- `OtrApp`, the one

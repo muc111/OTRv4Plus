@@ -152,6 +152,7 @@ installed), and with the Termux client.
 | Engine without the IRC client | The APK is a little smaller: it no longer carries the IRC client, which the app never used. Sign in, open a chat with a contact, verify with SMP and call as on the previous build | rc.139 |
 | Transport split | Nothing to see: the app's server code is now in several modules. Sign in, create an account on a test server, join a room, change your picture and see the Welcome room as on the previous build | rc.140 |
 | App core split | Nothing to see: the app's Python core is now in several modules. Chat, verify with SMP, call, send a file and a voice note, use a secure group, then Wipe & Exit on a test account, as on the previous build | rc.141 |
+| Controller split | Nothing to see: the connection controller is now in several modules. Join a room, create and leave a secure group, start a group call and change your picture as on the previous build | rc.142 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

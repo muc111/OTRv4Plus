@@ -76,3 +76,18 @@ def app_files() -> list:
 def app_source() -> str:
     """All of OtrApp's source, one file after another."""
     return "\n".join(open(p, encoding="utf-8").read() for p in app_files())
+
+
+def connection_files() -> list:
+    """ConnectionController's source: android_bridge/connection.py and the
+    connection_*.py modules it is built from."""
+    import glob
+    import os
+    bridge = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "android_bridge")
+    return ([os.path.join(bridge, "connection.py")]
+            + sorted(glob.glob(os.path.join(bridge, "connection_*.py"))))
+
+
+def connection_source() -> str:
+    """All of the controller's source, one file after another."""
+    return "\n".join(open(p, encoding="utf-8").read() for p in connection_files())
