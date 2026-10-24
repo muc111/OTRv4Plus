@@ -33,6 +33,7 @@ verified. `otrv4plus_xmpp._file_peer_verified` reads the VOICE manager's
 marker" -- and the Android bridge reads the same one.
 """
 
+from source_of import app_source  # noqa: E402
 import os
 import sys
 import tempfile
@@ -699,8 +700,7 @@ class TestTheThirdControlPrefix:
                                     text, re.M))
         assert found, "no control prefixes were found at all"
 
-        handled = _io.open(os.path.join(root, "android_bridge", "app.py"),
-                           encoding="utf-8").read()
+        handled = app_source()
         for prefix in sorted(found):
             assert prefix in handled or any(
                 prefix in _io.open(os.path.join(root, "android_bridge", mod),

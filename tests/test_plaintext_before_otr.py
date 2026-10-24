@@ -23,6 +23,7 @@ The second half is the one that matters. A policy that only got the first half
 right would be a downgrade attack implemented on purpose.
 """
 
+from source_of import app_source, client_source  # noqa: E402
 import re
 
 import pytest
@@ -179,9 +180,8 @@ class TestBothClientsShareOneRule:
     def test_neither_client_reimplements_the_rule(self):
         """Two copies of this rule would drift, and one direction of the drift
         sends plaintext where the user expected encryption."""
-        for path in ("otrv4plus_xmpp.py", "android_bridge/app.py"):
-            with open(path, encoding="utf-8") as fh:
-                source = fh.read()
+        for path, source in (("the XMPP client", client_source()),
+                             ("OtrApp", app_source())):
             assert "may_send_plaintext" in source, path
             # The decision is the module's; a client that recomputes it from
             # its own set has forked the policy.

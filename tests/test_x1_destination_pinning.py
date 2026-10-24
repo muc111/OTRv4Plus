@@ -27,6 +27,7 @@ a scripted SAM bridge on loopback, and the REAL slixmpp SASL plugin.
 """
 from __future__ import annotations
 
+from source_of import app_source  # noqa: E402
 import base64
 import os
 import socket
@@ -420,7 +421,7 @@ class TestPersistence:
         assert SP.ServerPins(path).pinned(NAME) is None
 
     def test_wipe_forgets_the_pins(self):
-        src = open(os.path.join(ROOT, "android_bridge", "app.py")).read()
+        src = app_source()
         assert "_pins.default_store().forget()" in src
 
     def test_b32_of_destination_is_the_i2p_hash(self):

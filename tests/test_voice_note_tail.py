@@ -10,6 +10,7 @@ extension").
   speaker: pacat takes audio faster than it plays it, and stopping it as soon
   as the last frame was written threw away over a second.
 """
+from source_of import app_source  # noqa: E402
 import os
 import sys
 import threading
@@ -55,7 +56,7 @@ def test_stop_keeps_recording_for_the_tail():
 
 def test_the_app_stops_with_the_two_second_tail(monkeypatch):
     assert vn.TAIL_SECONDS == 2.0
-    src = open(os.path.join(ROOT, "android_bridge", "app.py"), encoding="utf-8").read()
+    src = app_source()
     assert "rec.stop(vn.TAIL_SECONDS)" in src
 
 

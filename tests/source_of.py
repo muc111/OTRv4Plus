@@ -61,3 +61,18 @@ def transport_files() -> list:
 def transport_source() -> str:
     """All of the transport's source, one file after another."""
     return "\n".join(open(p, encoding="utf-8").read() for p in transport_files())
+
+
+def app_files() -> list:
+    """OtrApp's source: android_bridge/app.py and the app_*.py modules it is
+    built from."""
+    import glob
+    import os
+    bridge = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "android_bridge")
+    return ([os.path.join(bridge, "app.py")]
+            + sorted(glob.glob(os.path.join(bridge, "app_*.py"))))
+
+
+def app_source() -> str:
+    """All of OtrApp's source, one file after another."""
+    return "\n".join(open(p, encoding="utf-8").read() for p in app_files())

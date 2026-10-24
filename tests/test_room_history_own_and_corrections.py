@@ -10,6 +10,7 @@ what we had just sent, and dropped -- so after Sign out, or on another
 phone, our own earlier lines and corrections in the Welcome room were gone.
 """
 
+from source_of import app_source  # noqa: E402
 import os
 import sys
 
@@ -79,7 +80,7 @@ def test_our_correction_in_the_history_reaches_the_app_as_ours():
 
 
 def test_the_app_shows_and_applies_our_history_but_not_our_live_echo():
-    src = open(os.path.join(ROOT, "android_bridge", "app.py")).read()
+    src = app_source()
     assert 'if own and item.source == "live":' in src
 
 

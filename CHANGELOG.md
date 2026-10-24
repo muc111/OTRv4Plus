@@ -4,10 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.141 and Desktop — 2026-10-24 — OtrApp, split (core 0.13.1)
+
+Nothing changes in the app. `android_bridge/app.py` -- `OtrApp`, the one
+Python surface the phone and desktop apps call -- goes from 2,950 lines to
+1,600. What stays is its core: sessions, sending and receiving. The rest
+becomes mixins:
+
+- **`app_rooms.py`**: joined rooms, their messages and entry requests, and
+  the secure groups on them. 360 lines.
+- **`app_files.py`**: files and voice notes. 300 lines.
+- **`app_wipe.py`**: Wipe & Exit, including deleting the server account.
+- **`app_smp.py`**: SMP and changed fingerprints.
+- **`app_calls.py`**: voice calls and the warm call path.
+- **`app_base.py`**: what they share -- `BridgeError`, the redacting log,
+  message ids (re-exported by `app.py`).
+
+Tests that read `app.py` as the whole app now read it with its parts.
+
 ## Android 0.7.0-experimental.rc.140 and Desktop — 2026-10-24 — the app's XMPP transport, split (core 0.13.1)
 
 Nothing changes in the app. `android_bridge/transport.py`, which both apps
-use to talk to the server, goes from 4,840 lines to about 2,700: the
+use to talk to the server, goes from 4,840 lines to 2,620: the
 `XmppTransport` class is built from mixins, as it already was from three
 sync mixins.
 
@@ -17,7 +35,7 @@ sync mixins.
   archive support, admin, moderation and bans, its other sessions, the
   password, room standing. 450 lines.
 - **`transport_registration.py`**: creating an account and probing a
-  server. 590 lines with its helpers.
+  server. 550 lines with its helpers.
 - **`transport_avatar.py`** and **`transport_welcome.py`**: profile pictures
   and the profile; the Welcome room.
 - **`transport_stream.py`** and **`transport_base.py`**: what the sign-in
