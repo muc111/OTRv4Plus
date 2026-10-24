@@ -206,6 +206,8 @@ object GroupText {
         "waiting_for_otr" -> "No encrypted OTRv4+ session with them yet, so one is " +
             "being started; the invitation goes as soon as it is ready " +
             "(usually one to two minutes over I2P)."
+        "waiting_for_contact" -> "They are not a contact yet, so a contact request " +
+            "was sent; the invitation goes over OTRv4+ once they accept."
         "otrv4plus_unavailable" -> "This contact's app does not support OTRv4+, " +
             "so they cannot be invited to a secure group."
         "legacy_group" -> "This group was made before the hybrid (X448 + ML-KEM-1024) " +

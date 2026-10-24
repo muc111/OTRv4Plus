@@ -413,9 +413,12 @@ class ChatViewModel : ViewModel() {
                 val outcome = withContext(Dispatchers.IO) {
                     runCatching { c.inviteToGroup(room, jid) }.getOrNull()
                 }
-                if (outcome?.ok == true) sent++
-                else GroupText.outcome(outcome?.code ?: "group_failed")
-                    ?.let { state?.note("Inviting $jid: $it") }
+                // Only "ok" was sent. "waiting_for_otr" / "waiting_for_contact"
+                // are ok too, but nothing has gone yet: they used to be
+                // counted as sent, so a stuck invitation read as delivered.
+                val code = outcome?.code ?: "group_failed"
+                if (outcome?.ok == true && code == "ok") sent++
+                else GroupText.outcome(code)?.let { state?.note("Inviting $jid: $it") }
             }
             if (sent > 0) state?.note(GroupInvitePicker.sent(sent))
             revision++

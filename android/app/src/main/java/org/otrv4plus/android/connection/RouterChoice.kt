@@ -144,7 +144,15 @@ object RouterChoice {
      * account's own domain -- the same rule the bridge's router applies.
      */
     fun needsI2p(jid: String, server: String): Boolean {
-        val host = server.trim().ifBlank { jid.substringAfter('@', "").substringBefore('/') }
+        val typed = server.trim().ifBlank { jid.substringAfter('@', "").substringBefore('/') }
+        // The port is not part of the name (route.py's _split_port): without
+        // this, "chat.i2p:5222" started no router while the bridge sent the
+        // connection to I2P. tests/test_route_parity.py holds the two together.
+        val host = when {
+            typed.startsWith("[") -> typed.substringAfter('[').substringBefore(']')
+            typed.count { it == ':' } == 1 -> typed.substringBefore(':')
+            else -> typed
+        }
         return host.lowercase().trimEnd('.').endsWith(".i2p")
     }
 

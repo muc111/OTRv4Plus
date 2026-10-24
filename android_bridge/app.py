@@ -747,6 +747,21 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
         if room not in rooms:
             rooms.append(room)
         state = self.ensure_otr(peer)
+        if state in ("offline", "unknown") and not self._sees_presence_of(peer):
+            # Device report, 2026-10-24: "Invite people online" lists people
+            # the server says are online, contacts or not. A non-contact
+            # sends us no presence, so their OTRv4+ support is never learnt,
+            # no session ever starts, and the invitation waited forever. Ask
+            # to add them: once they accept, presence and the session follow
+            # and the invitation goes (`_flush_outbox`).
+            try:
+                self._transport.add_contact(peer)
+            except Exception:
+                self._invite_after_otr.pop(peer, None)
+                raise BridgeError("group_invite_failed",
+                                  "the contact request could not be sent")
+            _TRACE.record("groups", "invite_needs_contact", "info", jid=peer)
+            return "waiting_for_contact"
         if state in ("offline", "checking", "unknown"):
             return "waiting_for_otr"
         if state == "unavailable":
@@ -754,6 +769,17 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
             raise BridgeError("otrv4plus_unavailable",
                               "this contact's app does not support OTRv4+")
         return "waiting_for_otr"
+
+    def _sees_presence_of(self, peer: str) -> bool:
+        """Whether the roster lets us see *peer*'s presence (subscription
+        to or both), so their capability can be learnt."""
+        try:
+            for entry in self._transport.roster():
+                if self.canonical_peer(entry.get("jid", "")) == peer:
+                    return entry.get("subscription") in ("to", "both")
+        except Exception:
+            return True     # cannot tell: do not send a request on a guess
+        return False
 
     def _report_pq_refusal(self, peer: str) -> None:
         """A2: the engine refused a handshake because the contact's

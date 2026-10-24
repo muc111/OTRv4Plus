@@ -37,6 +37,11 @@ class RouterChoiceTest {
         assertFalse(RouterChoice.needsI2p("alice@yax.im", ""))
         assertFalse(RouterChoice.needsI2p("alice@x.onion", ""))
         assertFalse(RouterChoice.needsI2p("alice@otrv4plus.i2p", "chat.example.org"))
+        assertTrue(RouterChoice.needsI2p("alice@example.org", "chat.i2p:5222"))
+        assertTrue(RouterChoice.needsI2p("alice@chat.i2p.", ""))
+        assertFalse(RouterChoice.needsI2p("alice@example.org", "chat.example.org:5223"))
+        assertFalse(RouterChoice.needsI2p("alice@example.org", "[2001:db8::1]:5222"))
+        assertFalse(RouterChoice.needsI2p("alice@jabber.de", ""))
     }
 
     @Test

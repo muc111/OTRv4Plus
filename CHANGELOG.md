@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.160 — 2026-10-24 — inviting people online works; routing parity (core 0.13.1)
+
+- **"Invite people online" sent nothing to non-contacts** (device report).
+  The list shows everyone the server says is online, but a non-contact sends
+  no presence, so their OTRv4+ support was never learnt, no encrypted session
+  started, and the invitation waited forever, while the dialog said
+  "invitation sent". Now a non-contact is sent a contact request, the group
+  says so, and the invitation goes once they accept. The dialog counts only
+  invitations actually sent. `tests/test_group_invite_online.py`.
+- **Routing:** the server address alone decides the route: `.i2p` goes
+  through I2P, `.onion` through Tor (Orbot's SOCKS port), anything else
+  directly over TLS with the certificate checked. The service's "start the
+  I2P router?" check now ignores a port the same way the bridge does
+  (`chat.i2p:5222` started no router before), and
+  `tests/test_route_parity.py` runs every Kotlin case against the bridge.
+
 ## Android 0.7.0-experimental.rc.159 and Desktop — 2026-10-24 — protocol v2: post-quantum authentication both ways (A2) (core 0.13.1)
 
 - **A2 resolved for v2 sessions with known contacts.** Only the initiator

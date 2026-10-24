@@ -146,8 +146,9 @@ class GroupsControlMixin:
         """Invite over OTRv4+; if there is no session with them yet, one is
         started and the invite goes when it is up (value "waiting_for_otr")."""
         result = self._group_call(self._app.invite_when_ready, room, peer)
-        if result.get("ok") and result.get("value") == "waiting_for_otr":
-            result["code"] = "waiting_for_otr"
+        if result.get("ok") and result.get("value") in ("waiting_for_otr",
+                                                        "waiting_for_contact"):
+            result["code"] = result["value"]
         return result
 
     def accept_group_invite(self, room: str, password: str = "") -> Dict[str, Any]:

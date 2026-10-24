@@ -172,6 +172,7 @@ installed), and with the Termux client.
 | Security fixes G1, G2, X1 | Nothing new to see on the phone: this build repairs the previous one and closes three tracked issues (see docs/SECURITY_ISSUES.md). Sign in, chat, verify and call as before | rc.157 |
 | Post-quantum ratchet (v2) | Both phones on this build: chat for a while in both directions; every message arrives. Messages are larger (about 2.5 KB) once the conversation is under way. A phone on an older build still chats with this one, using the previous ratchet | rc.158 |
 | Post-quantum sign-in to a chat (v2) | Both phones on this build: open a chat; it becomes encrypted as before (the first handshake is a little larger). Contact's profile → Reset trust asks first and then forgets their keys; the next chat pins them again. A phone on an older build is now refused with a sentence saying both need this version | rc.159 |
+| Inviting people online | In a secure group → Invite people online, tick someone who is NOT your contact: the group says a contact request was sent; once they accept, the invitation arrives on their phone. Ticking a contact still sends at once. Signing in to a clearnet or .onion server (with Orbot) starts no I2P router | rc.160 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
