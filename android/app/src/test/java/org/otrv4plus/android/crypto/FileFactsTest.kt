@@ -2,7 +2,6 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.crypto
 
-import java.io.ByteArrayInputStream
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -12,18 +11,12 @@ import kotlin.test.assertTrue
 class FileFactsTest {
 
     @Test
-    fun `the hash is SHA-256`() {
-        assertEquals("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
-                     FileFacts.sha256(ByteArrayInputStream("abc".toByteArray())))
-    }
-
-    @Test
     fun `basic facts describe the file`() {
         val f = File.createTempFile("facts", ".bin").apply { writeBytes(ByteArray(2048)); deleteOnExit() }
         val facts = FileFacts.basic("photo.jpg", "Image", f, 4032, 3024).associate { it.label to it.value }
         assertEquals("2.0 KB (2048 bytes)", facts["Size"])
         assertEquals("4032 × 3024 pixels", facts["Dimensions"])
-        assertEquals(64, facts["SHA-256"]!!.length)
+        assertNull(facts["SHA-256"], "Kotlin does no cryptography of its own")
     }
 
     @Test

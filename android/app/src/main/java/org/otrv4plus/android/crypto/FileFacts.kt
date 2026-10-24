@@ -3,8 +3,6 @@
 package org.otrv4plus.android.crypto
 
 import java.io.File
-import java.io.InputStream
-import java.security.MessageDigest
 import java.util.Locale
 
 /**
@@ -51,18 +49,6 @@ object FileFacts {
         else -> "$bytes bytes"
     }
 
-    /** SHA-256 of a stream, as lower-case hex. */
-    fun sha256(input: InputStream): String {
-        val md = MessageDigest.getInstance("SHA-256")
-        val buffer = ByteArray(64 * 1024)
-        while (true) {
-            val n = input.read(buffer)
-            if (n < 0) break
-            md.update(buffer, 0, n)
-        }
-        return md.digest().joinToString("") { String.format(Locale.ROOT, "%02x", it) }
-    }
-
     /** A sender-chosen value made safe to show: control and direction
      *  characters replaced, shortened. */
     fun clean(value: String): String {
@@ -73,14 +59,14 @@ object FileFacts {
         return if (shown.length > MAX_VALUE) shown.take(MAX_VALUE) + "…" else shown
     }
 
-    /** The file itself: name, kind, size, hash, dimensions. */
+    /** The file itself: name, kind, size, dimensions. No hash here: Kotlin
+     *  does no cryptography of its own (tests/test_crypto_source_of_truth),
+     *  and the transfer already verified the file's hash in the engine. */
     fun basic(name: String, kind: String, file: File, width: Int?, height: Int?): List<Fact> =
         buildList {
             add(Fact("Name", clean(name.ifBlank { "(none)" })))
             add(Fact("Kind", kind))
             add(Fact("Size", size(file.length())))
-            add(Fact("SHA-256", runCatching { file.inputStream().use(::sha256) }
-                .getOrDefault("could not be read")))
             if (width != null && height != null && width > 0 && height > 0)
                 add(Fact("Dimensions", "$width × $height pixels"))
         }

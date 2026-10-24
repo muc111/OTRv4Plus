@@ -4,13 +4,21 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.167 — 2026-10-24 — no cryptography in the viewer's Kotlin (core 0.13.1)
+
+- The Metadata tab no longer shows a SHA-256: rc.166 computed it in Kotlin,
+  and the app keeps its cryptography in the Rust core (Kotlin's only
+  cryptography is the Keystore vault; `tests/test_crypto_source_of_truth.py`
+  failed on rc.166). The transfer already verifies the file's hash in the
+  engine, as the viewer's header says.
+
 ## Android 0.7.0-experimental.rc.166 — 2026-10-24 — a tabbed viewer: File, Metadata, Hidden content (core 0.13.1)
 
 - **The file viewer has three tabs: File, Metadata, Hidden content.**
   - **File:** the picture, PDF, text, audio or video, with zoom and the Save /
     Open with buttons as before.
   - **Metadata:** one scrolling list, never cut off: name, kind, size,
-    SHA-256, dimensions, then every EXIF field the picture carries — GPS
+    dimensions, then every EXIF field the picture carries — GPS
     position, times, camera and lens (with serial numbers), owner, artist,
     software, comments — and, for a PDF, what its check found. Values the
     sender chose are shown as plain text, shortened, control and direction

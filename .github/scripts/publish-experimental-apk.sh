@@ -179,6 +179,7 @@ installed), and with the Termux client.
 | Viewer buttons | Open a received photo and a PDF: Open with another app, − / 100% / + and Previous / Next are all above the navigation bar and can be tapped | rc.164 |
 | Save to device | Open a received photo or PDF → Save to device…: read the warning, choose Downloads, save. Open it in Files. Wipe & Exit, reinstall: the saved copy is still in Downloads | rc.165 |
 | Viewer tabs | Open a photo taken with location on: Metadata lists GPS position, camera and time, and scrolls to the end. Hidden content says nothing follows the picture; a photo with a ZIP appended (cat photo.jpg x.zip > y.jpg) shows its size and says ZIP. A PDF lists its findings | rc.166 |
+| Viewer tabs (fix) | As rc.166; the Metadata tab no longer lists a SHA-256 | rc.167 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
