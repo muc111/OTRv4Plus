@@ -222,6 +222,11 @@ Building on musl (Alpine), every option and all commands: [docs/TECHNICAL.md](do
 
 Running a server: [docs/STRESS_TEST.md](docs/STRESS_TEST.md) · [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md) (limits, one-command install) · [docs/SECURITY_SESSIONS.md](docs/SECURITY_SESSIONS.md) (one session per account)
 
+**Relationship to OTR.** OTRv4+ is an independent implementation and extension of
+OTRv4, not affiliated with, endorsed by, or connected to the original OTR
+developers or otr.cypherpunks.ca, and uses none of their code, artwork or
+logos. It is not wire-compatible with stock OTRv4 ([SPEC §0](docs/SPEC.md)).
+
 ## License
 
 OTRv4+ is dual-licensed: `AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial`.

@@ -28,7 +28,10 @@ with each other.
 ### 0.2 Relationship to OTRv4
 
 OTRv4+ extends the OTRv4 Internet Draft (Goldbeck, de Moura, et al.). Where this
-document does not explicitly override OTRv4, the OTRv4 specification applies. The
+document does not explicitly override OTRv4, the OTRv4 specification applies.
+That draft is its authors' work and is referenced here, not reproduced; where a
+passage follows it, the credit is theirs. OTRv4+ is an independent project, not
+affiliated with or endorsed by the OTR developers. The
 extensions defined here are:
 
 1. ML-KEM-1024 (FIPS 203) encapsulation key transport in the DAKE.
