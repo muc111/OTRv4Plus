@@ -301,6 +301,14 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         service?.setUiVisible(visible)
     }
 
+    /** Whose message to ask about after a notification tap ([ArrivalPrompt]). */
+    fun nextArrival(): String? = service?.arrivals?.next()
+
+    /** Answered, or that conversation was opened: nothing left to ask. */
+    fun arrivalAnswered(jid: String) {
+        service?.arrivals?.answered(jid)
+    }
+
     fun checkRouter(jid: String) {
         val c = core ?: return
         if (busy != null) return

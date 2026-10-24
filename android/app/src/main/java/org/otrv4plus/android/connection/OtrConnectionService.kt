@@ -146,6 +146,12 @@ class OtrConnectionService : Service() {
      */
     val alerts = InboundAlerts()
 
+    /**
+     * Who the posted notification was for, so the tap asks in the app
+     * before showing anyone's conversation ([ArrivalPrompt]). Memory only.
+     */
+    val arrivals = org.otrv4plus.android.chat.ArrivalPrompt()
+
     @Volatile
     var phase: LinkPhase = LinkPhase.STOPPED
         private set
@@ -327,6 +333,7 @@ class OtrConnectionService : Service() {
                 // messages left in the shade after a sign-out is a statement
                 // about an account that is no longer on this device.
                 alerts.clear()
+                arrivals.clear()
                 cancelArrivalNotification()
                 cancelCallNotification()
                 jid = ""
@@ -476,6 +483,7 @@ class OtrConnectionService : Service() {
             },
             WipeAndExit.Step.CLEAR_NOTIFICATIONS to {
                 alerts.clear()
+                arrivals.clear()
                 getSystemService(NotificationManager::class.java)?.cancelAll()
             },
             WipeAndExit.Step.CLEAR_MEMORY to {
@@ -614,6 +622,7 @@ class OtrConnectionService : Service() {
                       if (next.isAuthenticated) "bound" else "cleared")
         }
         alerts.clear()
+        arrivals.clear()
         cancelArrivalNotification()
         chat.bindAccount(next)
     }
@@ -1009,7 +1018,7 @@ class OtrConnectionService : Service() {
         }
         when (org.otrv4plus.android.chat.SoundPolicy.forMessage(
                 alerts.uiVisible, chat.openConversation, from)) {
-            org.otrv4plus.android.chat.SoundPolicy.Sound.NOTIFICATION -> announceArrival()
+            org.otrv4plus.android.chat.SoundPolicy.Sound.NOTIFICATION -> announceArrival(from)
             org.otrv4plus.android.chat.SoundPolicy.Sound.IN_APP_TONE -> playInAppTone()
             else -> {}
         }
@@ -1018,8 +1027,9 @@ class OtrConnectionService : Service() {
     /** Tone and buzz, as the ring mode allows, without a notification. */
     private fun playInAppTone() = AlertFeedback.inApp(this)
 
-    private fun announceArrival() {
+    private fun announceArrival(from: String) {
         val alert = alerts.note() ?: return
+        arrivals.arrived(from)
         runCatching {
             getSystemService(NotificationManager::class.java)
                 ?.notify(MESSAGE_NOTIFICATION_ID, buildArrivalNotification(alert))
@@ -1146,9 +1156,13 @@ class OtrConnectionService : Service() {
      * it exists to provide.
      */
     private fun buildArrivalNotification(alert: InboundAlerts.Alert): Notification {
+        // The action alone says "a message notification was tapped"; the
+        // intent carries no sender. MainActivity then opens the chat list
+        // and asks before showing anyone ([ArrivalPrompt]).
         val open = PendingIntent.getActivity(
             this, 2,
             Intent(this, MainActivity::class.java)
+                .setAction(MainActivity.ACTION_OPEN_ARRIVAL)
                 .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
             PendingIntent.FLAG_IMMUTABLE,
         )

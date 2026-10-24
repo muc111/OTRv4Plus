@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.171 — 2026-10-24 — Notification tap asks before opening a conversation (core 0.13.1)
+
+- Tapping the message notification no longer drops you straight into a
+  conversation. The app opens on the chat list and asks "A new message from
+  <name> is waiting. View it?" with View / Not now. "Not now" leaves the
+  conversation closed (useful for someone you mean to ignore); with several
+  senders waiting it asks about each in turn, newest first.
+- The notification itself is unchanged: it still names nobody and the tap
+  intent carries no sender. The names are held in memory only and are
+  forgotten on sign-out, account change and Wipe & Exit.
+
 ## Android 0.7.0-experimental.rc.170 — 2026-10-24 — every viewer button on screen (core 0.13.1)
 
 - **The viewer's buttons are all on screen** (Pixel 7 / Android 17: under a

@@ -226,6 +226,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Wipe & Exit text | Profile → Wipe & Exit: the confirmation says files saved with Save to device are not touched; cancel | rc.168 |
 | Never plaintext 1:1 | Send a message to a contact who is offline: it shows as waiting and arrives encrypted once they are online. Send to an account on another XMPP app without OTRv4+: it waits, the chat says why, nothing arrives unencrypted | rc.169 |
 | Viewer buttons on top | Open a received photo and a PDF: Save to device and Open with… are at the top; − / 100% / + and Previous / Next above the picture; all can be tapped | rc.170 |
+| Notification tap (rc.171) | Tap the message notification: the app opens on the chat list and asks whether to view the message from that sender; View opens it, Not now leaves it closed. With two senders waiting, Not now moves on to the other. | rc.171 |
 
 ## ⚠️ Known limits
 

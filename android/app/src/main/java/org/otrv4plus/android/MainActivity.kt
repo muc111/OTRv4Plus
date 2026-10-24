@@ -3,6 +3,7 @@
 package org.otrv4plus.android
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -22,10 +23,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.chat.ChatViewModel
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import org.otrv4plus.android.ui.AboutScreen
+import org.otrv4plus.android.ui.ArrivalPromptDialog
 import org.otrv4plus.android.ui.ChangePasswordSection
 import org.otrv4plus.android.ui.OtrTheme
 import org.otrv4plus.android.ui.ThemeStore
@@ -136,6 +141,18 @@ class MainActivity : ComponentActivity() {
      * with the ViewModel and released in `onCleared`, so it stays up while the
      * app is backgrounded -- which is the one state this has to detect.
      */
+    /**
+     * Bumped on every tap of the message notification. AppRoot reacts by
+     * showing the chat list and asking whose message to open, never by
+     * opening a conversation itself ([org.otrv4plus.android.chat.ArrivalPrompt]).
+     */
+    private var arrivalTaps by mutableStateOf(0)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == ACTION_OPEN_ARRIVAL) arrivalTaps++
+    }
+
     override fun onStart() {
         super.onStart()
         connection.setUiVisible(true)
@@ -195,6 +212,10 @@ class MainActivity : ComponentActivity() {
             WindowManager.LayoutParams.FLAG_SECURE,
         )
 
+        // A tap that started the Activity; a recreation (rotation) is not
+        // a second tap.
+        if (savedInstanceState == null && intent?.action == ACTION_OPEN_ARRIVAL) arrivalTaps++
+
         setContent {
             AppRoot()
         }
@@ -249,6 +270,7 @@ class MainActivity : ComponentActivity() {
                     screen = target
                 }
                 fun openChat(jid: String) {
+                    connection.arrivalAnswered(jid)
                     openJid = jid
                     screen = Screen.CONVERSATION
                 }
@@ -270,6 +292,22 @@ class MainActivity : ComponentActivity() {
                 // login screen again just because the process restarted.
                 // Does nothing when nothing is remembered.
                 LaunchedEffect(Unit) { connection.resumeIfRemembered() }
+
+                // A message notification was tapped. Never straight into a
+                // conversation: back to the chat list, then ask about the
+                // most recent sender. The service may still be binding after
+                // a cold start, so wait briefly for it.
+                var askAbout by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(arrivalTaps) {
+                    if (arrivalTaps == 0) return@LaunchedEffect
+                    if (screen != Screen.CONNECT) {
+                        if (screen == Screen.CONVERSATION) chat.closeConversation()
+                        lastTab = Screen.CONVERSATIONS
+                        screen = Screen.CONVERSATIONS
+                    }
+                    withTimeoutOrNull(5_000) { snapshotFlow { connection.core }.first { it != null } }
+                    askAbout = connection.nextArrival()
+                }
 
                 LaunchedEffect(connection.core, connection.chat) {
                     val core = connection.core
@@ -367,6 +405,20 @@ class MainActivity : ComponentActivity() {
                 // fingerprint alert goes first; a changed key is not the
                 // moment to accept a file.
                 if (chat.fingerprintAlert == null) IncomingFileDialog(chat)
+
+                // Whose message is waiting, asked only once signed in and
+                // with no key-change alert in front of it.
+                val who = askAbout
+                if (who != null && screen != Screen.CONNECT && chat.fingerprintAlert == null) {
+                    ArrivalPromptDialog(
+                        name = chat.conversation(who).displayName,
+                        onView = { askAbout = null; openChat(who) },
+                        onNotNow = {
+                            connection.arrivalAnswered(who)
+                            askAbout = connection.nextArrival()
+                        },
+                    )
+                }
             }
         }
     }
@@ -487,5 +539,10 @@ class MainActivity : ComponentActivity() {
                 },
             )
         }
+    }
+
+    companion object {
+        /** The message notification's tap; the intent names nobody. */
+        const val ACTION_OPEN_ARRIVAL = "org.otrv4plus.android.OPEN_ARRIVAL"
     }
 }
