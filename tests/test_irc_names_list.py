@@ -300,6 +300,8 @@ class _Harness:
     """Only the surface the NAMES/WHO handlers touch."""
 
     handle_numeric_reply = irc.OTRv4IRCClient.handle_numeric_reply
+    locals().update({n: f for n, f in vars(irc.OTRv4IRCClient).items()
+                     if n.startswith("_rpl_")})
     handle_message = irc.OTRv4IRCClient.handle_message
     parse_irc_message = irc.OTRv4IRCClient.parse_irc_message
     _handle_unknown_command = irc.OTRv4IRCClient._handle_unknown_command
@@ -729,7 +731,7 @@ class TestIdentificationIsNotAuthentication:
         metadata, never from something a peer typed into a channel."""
         import textwrap
         tree = ast.parse(textwrap.dedent(
-            inspect.getsource(irc.OTRv4IRCClient.handle_numeric_reply)))
+            inspect.getsource(irc.OTRv4IRCClient._rpl_who)))
         writes = []
         for node in ast.walk(tree):
             if (isinstance(node, ast.Subscript)
@@ -737,7 +739,7 @@ class TestIdentificationIsNotAuthentication:
                     and "_otrv4_users" in ast.dump(node.value)):
                 writes.append(node.lineno)
         assert writes, "nothing populates the OTRv4+ map any more"
-        src = inspect.getsource(irc.OTRv4IRCClient.handle_numeric_reply)
+        src = inspect.getsource(irc.OTRv4IRCClient._rpl_who)
         head = src[:src.index("_otrv4_users[")]
         assert "code == 352" in head, (
             "the map is populated somewhere other than the WHO reply")
@@ -761,6 +763,19 @@ class TestIdentificationIsNotAuthentication:
                             or "_o[new_nick]" in seg:
                         writers.add(fn.name)
         assert writers, "found no writer at all; this test is reading the wrong code"
-        assert writers <= {"handle_numeric_reply", "handle_message",
+        assert writers <= {"_rpl_who", "_rpl_whois", "handle_message",
                            "dispatch_command", "handle_command"}, (
             "the OTRv4+ map is written in %s" % sorted(writers))
+
+    def test_the_numeric_families_are_reached_only_from_numeric_replies(self):
+        """`_rpl_who` and `_rpl_whois` may write the map because they only
+        ever see server numerics: nothing but handle_numeric_reply calls them."""
+        src = inspect.getsource(irc)
+        tree = ast.parse(src)
+        callers = set()
+        for fn in ast.walk(tree):
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for node in ast.walk(fn):
+                    if isinstance(node, ast.Attribute) and node.attr.startswith("_rpl_"):
+                        callers.add(fn.name)
+        assert callers == {"handle_numeric_reply"}, sorted(callers)

@@ -65,7 +65,8 @@ def run_pacer(preset, n, clock=None):
 
 
 class Client:
-    METHODS = ("_pacer", "_pace_name", "_cmd_fragrate", "_fragment_size",
+    METHODS = ("_pacer", "_pace_name", "_cmd_fragrate", "_cmd_view", "_cmd_chat",
+               "_cmd_lookup", "_cmd_moderate", "_cmd_otr", "_cmd_people", "_fragment_size",
                "_note_possible_flood", "_record_send_rate",
                "_rate_sample_min", "_auto_preset_for", "_describe_auto",
                "_flood_debt")

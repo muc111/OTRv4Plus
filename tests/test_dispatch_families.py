@@ -8,6 +8,7 @@ chain while no two families claim the same line, so every command a family
 matches is run through every family here, and exactly one may take it.
 """
 import ast
+import re
 import inspect
 from unittest import mock
 
@@ -73,3 +74,24 @@ def test_every_command_belongs_to_exactly_one_family():
 def test_ordinary_text_and_unknown_commands_belong_to_none():
     for line in ("hello there", "/nosuchcommand", "/smpx", "/callx"):
         assert not [f for f in FAMILIES if _claims(f, line)], line
+
+
+def test_the_irc_command_families_never_share_a_name():
+    """The IRC client's handle_command asks `_cmd_*` families in turn, and
+    stops at the first that takes the line: the same as one if/elif chain
+    only while no name is in two families."""
+    irc = pytest.importorskip("otrv4plus_irc")
+    cls = irc.OTRv4IRCClient
+    src = inspect.getsource(cls.handle_command)
+    families = re.findall(r"self\.(_cmd_[a-z]+)", src)
+    assert len(families) >= 5, families
+    owner = {}
+    for fam in families:
+        tree = ast.parse(inspect.cleandoc("\n" + inspect.getsource(getattr(cls, fam))))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare) and getattr(node.left, "id", "") == "cmd":
+                for c in ast.walk(node.comparators[0]):
+                    if isinstance(c, ast.Constant) and isinstance(c.value, str):
+                        assert owner.setdefault(c.value, fam) == fam, (
+                            "%r is in %s and %s" % (c.value, owner[c.value], fam))
+    assert {"join", "otr", "smp-secret", "help", "kick", "quit"} <= set(owner)

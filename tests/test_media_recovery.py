@@ -22,7 +22,7 @@ call identity all survive; only the address changes. That is the whole reason
 this is an announcement and not a rekey.
 """
 
-from source_of import voice_source  # noqa: E402
+from source_of import voice_source, init_source  # noqa: E402
 import asyncio
 import threading
 import types
@@ -1877,7 +1877,7 @@ class TestThePlanesStayIndependent:
         assert "_last_inbound" in src
         # Registered as a slixmpp inbound stanza filter, so the only thing it
         # can ever see is XMPP.
-        init = inspect.getsource(X.OTRv4PlusXMPP.__init__)
+        init = init_source(X.OTRv4PlusXMPP)
         assert 'add_filter("in", self._note_inbound)' in init
 
     def test_the_media_watchdog_reads_no_xmpp_state(self):

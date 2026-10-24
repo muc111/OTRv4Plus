@@ -2643,447 +2643,471 @@ class OTRv4IRCClient:
         pass
 
     def handle_numeric_reply(self, code: int, params: List[str], trailing: Optional[str]):
-        """Handle IRC numeric reply codes."""
+        """Handle IRC numeric reply codes: each family answers whether the
+        code was one of its own; anything left goes to `_rpl_other`."""
         try:
-
-            if code in (900, 903):
-
-                self.nickserv_identified = True
-                self.add_message("system", colorize("✅ SASL authentication successful", "green"))
-                if getattr(self, "_sasl_in_progress", False):
-                    self._sasl_in_progress = False
-                    self._finish_cap_negotiation()
-                return
-
-            if code in (902, 904, 905, 906):
-
-                self.add_message(
-                    "system", colorize(f"⚠ SASL authentication failed (code {code })", "yellow")
-                )
-                if getattr(self, "_sasl_in_progress", False):
-                    self._sasl_in_progress = False
-                    self._finish_cap_negotiation()
-                return
-
-            if code == 1:
-                self.auth_complete = True
-                welcome_text = trailing or ""
-                words = welcome_text.split()
-                clean_words = []
-                for w in words:
-                    if "!" in w or "@" in w:
-                        break
-                    clean_words.append(w)
-                clean = " ".join(clean_words) if clean_words else welcome_text
-                self.add_message("system", colorize(f"✅ {clean }", "green"))
-                self.debug("RPL_WELCOME")
-                if self.config.nickserv_login and self.config.nickserv_pass:
-                    self.add_message("system", colorize("🔑 Identifying with NickServ…", "cyan"))
-                    _ns_pass = self.config.nickserv_pass
-                    self.send(f"PRIVMSG NickServ :IDENTIFY {_ns_pass }")
-                    _ns_pass_ba = bytearray(_ns_pass.encode("utf-8"))
-                    _secure_wipe(_ns_pass_ba)
-                    del _ns_pass, _ns_pass_ba
-                    self.config.nickserv_pass = None
-                elif self.config.nickserv_register and self.config.nickserv_pass:
-                    self.add_message(
-                        "system", colorize("📝 Registering nick with NickServ…", "cyan")
-                    )
-                    _ns_pass = self.config.nickserv_pass
-                    self.send(f"PRIVMSG NickServ :REGISTER {_ns_pass } no-email")
-                    _ns_pass_ba = bytearray(_ns_pass.encode("utf-8"))
-                    _secure_wipe(_ns_pass_ba)
-                    del _ns_pass, _ns_pass_ba
-                    self.config.nickserv_pass = None
-
-                delay = (
-                    3.0 if (self.config.nickserv_login or self.config.nickserv_register) else 2.0
-                )
-                threading.Timer(delay, self.auto_join_channel).start()
-                return
-
-            if code in (433, 436):
-                self._on_nick_collision()
-                return
-
-            if code == 375:
-                self._motd_buf = []
-                return
-            if code == 372:
-                if not hasattr(self, "_motd_buf"):
-                    self._motd_buf = []
-                if trailing:
-                    import re as _re_irc
-
-                    line = trailing.lstrip("- ").strip()
-                    line = _re_irc.sub(r"\x03(?:\d{1,2}(?:,\d{1,2})?)?", "", line)
-                    line = _re_irc.sub(r"[\x02\x0f\x16\x1d\x1f]", "", line).strip()
-                    if line:
-                        self._motd_buf.append(line)
-                return
-            if code == 376:
-                buf = getattr(self, "_motd_buf", [])
-                if buf:
-                    self.add_message(
-                        "system", colorize("── MOTD ──────────────────────────────────", "dim")
-                    )
-
-                    import re as _re
-
-                    _SECTION_RE = _re.compile(r"^(?:\d+[.)]\s|/|https?://|\[|[A-Z]{3,}\s*:)")
-                    paragraphs = []
-                    current = []
-                    for frag in buf:
-                        is_new = (
-                            not current
-                            or _SECTION_RE.match(frag)
-                            or (
-                                len(frag) > 30
-                                and frag[0].isupper()
-                                and not current[-1].endswith(",")
-                            )
-                        )
-                        if is_new and current:
-                            paragraphs.append(" ".join(current))
-                            current = []
-                        current.append(frag)
-                    if current:
-                        paragraphs.append(" ".join(current))
-
-                    for para in paragraphs:
-                        if len(para) > 68:
-                            for wline in textwrap.wrap(
-                                para, width=68, break_long_words=False, break_on_hyphens=False
-                            ):
-                                self.add_message("system", colorize(wline, "dim"))
-                        else:
-                            self.add_message("system", colorize(para, "dim"))
-
-                    self.add_message(
-                        "system", colorize("──────────────────────────────────────────", "dim")
-                    )
-                self._motd_buf = []
-                return
-
-            if code in (
-                2,
-                4,
-                5,
-                251,
-                252,
-                253,
-                254,
-                255,
-                265,
-                266,
-                396,
-            ):
-                return
-
-            if code == 352:
-                _WHO_DISPLAY_MAX = 200
-                _who_nick = params[5] if len(params) > 5 else ""
-                _who_user = params[2] if len(params) > 2 else ""
-                _who_host = params[3] if len(params) > 3 else ""
-                _who_real = trailing or ""
-                if _who_real and _who_real.startswith("0 "):
-                    _who_real = _who_real[2:]
-                if not hasattr(self, "_otrv4_users"):
-                    self._otrv4_users: Dict[str, bool] = {}
-                # Client identification only.  See otrv4_client_version().
-                if _who_nick:
-                    self._otrv4_users[_who_nick] = advertises_otrv4(_who_real)
-                if getattr(self, "_who_pending", False):
-                    _wc = getattr(self, "_who_count", 0)
-                    if _wc == 0:
-                        self._who_count = 0
-                    if _wc < _WHO_DISPLAY_MAX:
-                        _wp2 = self.panel_manager.active_panel or "system"
-                        _m = colorize(" 🔵", "blue") if advertises_otrv4(_who_real) else ""
-                        self.add_message(
-                            _wp2,
-                            f"  {colorize (_who_nick or '?','cyan'):<20}{_sanitise (_who_user +'@'+_who_host ,50 ):<40}{_sanitise (_who_real ,40 )}{_m }",
-                        )
-                        self._who_count += 1
-                    elif _wc == _WHO_DISPLAY_MAX:
-                        _wp2 = self.panel_manager.active_panel or "system"
-                        self.add_message(
-                            _wp2,
-                            colorize(
-                                f"  … output capped at {_WHO_DISPLAY_MAX } rows - use /who in a smaller channel",
-                                "yellow",
-                            ),
-                        )
-                        self._who_count += 1
-                return
-
-            if code == 303:
-                _wp5 = self.panel_manager.active_panel or "system"
-                _online = trailing or ""
-                if _online.strip():
-                    self.add_message(
-                        _wp5, colorize(f"ISON online: {_sanitise (_online ,256 )}", "green")
-                    )
-                else:
-                    self.add_message(_wp5, colorize("ISON: none of those nicks are online", "dim"))
-                return
-            if code == 314:
-                _wp4 = self.panel_manager.active_panel or "system"
-                _ww_nick = params[1] if len(params) > 1 else "?"
-                _ww_user = params[2] if len(params) > 2 else ""
-                _ww_host = params[3] if len(params) > 3 else ""
-                _ww_real = trailing or ""
-                self.add_message(
-                    _wp4, colorize("── WHOWAS ───────────────────────────────────", "dim")
-                )
-                self.add_message(
-                    _wp4,
-                    f"  {colorize_username (_ww_nick )}  {_sanitise (_ww_user +'@'+_ww_host ,80 )}  {_sanitise (_ww_real ,60 )}",
-                )
-                return
-            if code == 315:
-                if getattr(self, "_who_pending", False):
-                    _wp3 = self.panel_manager.active_panel or "system"
-                    self.add_message(_wp3, colorize("─" * 56, "dim"))
-                    self._who_pending = False
-                    self._who_count = 0
-                return
-            if code == 332:
-                channel = params[1] if len(params) > 1 else ""
-                topic = trailing or ""
-                if channel in self.channels:
-                    self.channels[channel]["topic"] = topic
-                self.add_message(channel or "system", f"Topic: {topic }")
-                return
-
-            if code == 353:
-                # ":server 353 me = #chan :@alice +bob carol"
-                channel = params[2] if len(params) > 2 else ""
-                if not channel:
+            for family in (self._rpl_auth, self._rpl_motd, self._rpl_who,
+                           self._rpl_channel, self._rpl_whois):
+                if family(code, params, trailing):
                     return
-                users = [u for u in (trailing.split() if trailing else [])
-                         if split_names_entry(u)[1]]
-                if channel not in self.names_data:
-                    self.names_data[channel] = []
-                if not hasattr(self, "_names_total"):
-                    self._names_total = {}
-                # The server's count, kept whole even when the local list is
-                # capped, so the header reports the channel rather than the
-                # slice of it we chose to render.
-                self._names_total[channel] = self._names_total.get(channel, 0) + len(users)
-                _nlim = getattr(self, "_names_limit", 500)
-                _cur = len(self.names_data[channel])
-                if _cur < _nlim:
-                    self.names_data[channel].extend(users[: _nlim - _cur])
-                if channel in self.channels:
-                    for u in users:
-                        self.channels[channel]["users"].add(split_names_entry(u)[1])
-                return
-
-            if code == 366:
-                channel = params[1] if len(params) > 1 else ""
-                raw_users = self.names_data.get(channel, [])
-                total = getattr(self, "_names_total", {}).pop(channel, None)
-                if total is None:
-                    total = len(raw_users)
-                self.names_data[channel] = []
-                if getattr(self, "_pending_names_pager", None) != channel:
-                    # NAMES also arrives unsolicited on JOIN.  Accumulated
-                    # state is still cleared above, or it grows for the life
-                    # of the process and the next /names reports a stale
-                    # total.
-                    return
-                self._pending_names_pager = None
-                lines, picks = format_names_list(
-                    raw_users,
-                    getattr(self, "_otrv4_users", {}),
-                    total=total,
-                    selectable=True,
-                )
-                chosen = self.pager.display(
-                    lines,
-                    f"Users in {_sanitise (channel ,64 )} ({total })",
-                    choices=picks,
-                )
-                if chosen:
-                    # Starting a DAKE, which is what actually authenticates
-                    # the peer.  Selecting a blue entry is a shortcut for
-                    # typing /otr <nick>; it confers no trust of its own.
-                    self.start_guided_otr_session(chosen)
-                return
-
-            if code == 311:
-                target = params[1] if len(params) > 1 else ""
-                user = params[2] if len(params) > 2 else ""
-                host = params[3] if len(params) > 3 else ""
-                real = trailing or ""
-                # Both fields used to be computed from the local nick:
-                # `Client` printed our own VERSION whatever the peer ran, and
-                # `Name` printed TwentySevenClubNick.real_name(target), which
-                # returns "<nick> - OTRv4+ <version>" for any nick at all.  So
-                # /whois on a mIRC user reported them as an OTRv4+ client --
-                # a claim derived from the nick, which is exactly the
-                # inference this must not make.  Both now come off the wire.
-                _peer_version = otrv4_client_version(real)
-                if _peer_version:
-                    _client = colorize("OTRv4+ %s" % _peer_version, "blue")
-                else:
-                    _client = colorize("not advertised", "dim")
-                # Same reliable metadata as RPL_WHOREPLY, so /whois keeps the
-                # /names marker current for that nick.
-                if target:
-                    if not hasattr(self, "_otrv4_users"):
-                        self._otrv4_users: Dict[str, bool] = {}
-                    self._otrv4_users[target] = _peer_version is not None
-                _wp = self.panel_manager.active_panel or "system"
-                self._whois_panel = _wp
-                self.add_message(_wp, colorize("── WHOIS ─────────────────────────────────", "dim"))
-                self.add_message(_wp, f"  Nick     : {colorize_username (target )}")
-                self.add_message(_wp, f"  Client   : {_client }")
-                self.add_message(
-                    _wp, f"  User     : {_sanitise (user ,64 )}@{_sanitise (host ,128 )}"
-                )
-                self.add_message(_wp, f"  Name     : {_sanitise (real ,128 )}")
-                return
-
-            if code == 312:
-                target = params[1] if len(params) > 1 else ""
-                server = params[2] if len(params) > 2 else ""
-                info = trailing or ""
-                self.add_message(
-                    getattr(self, "_whois_panel", "system"),
-                    f"  Server   : {_sanitise (server ,128 )}"
-                    + (f" ({_sanitise (info ,256 )})" if info else ""),
-                )
-                return
-
-            if code == 313:
-                target = params[1] if len(params) > 1 else ""
-                self.add_message(
-                    getattr(self, "_whois_panel", "system"),
-                    f"  Status   : {colorize ('IRC Operator','yellow')}",
-                )
-                return
-
-            if code == 319:
-                target = params[1] if len(params) > 1 else ""
-                chans = trailing or ""
-                self.add_message(
-                    getattr(self, "_whois_panel", "system"),
-                    f"  Channels : {_sanitise (chans ,512 )}",
-                )
-                return
-
-            if code == 317:
-                target = params[1] if len(params) > 1 else ""
-                idle_s = int(params[2]) if len(params) > 2 and params[2].isdigit() else 0
-                signon = int(params[3]) if len(params) > 3 and params[3].isdigit() else 0
-                idle_str = _fmt_duration(idle_s)
-                if signon > 0:
-                    from datetime import datetime as _dt
-
-                    signon_str = _dt.fromtimestamp(signon).strftime("%Y-%m-%d %H:%M:%S")
-                    self.add_message(
-                        getattr(self, "_whois_panel", "system"), f"  Idle     : {idle_str }"
-                    )
-                    self.add_message(
-                        getattr(self, "_whois_panel", "system"), f"  Signon   : {signon_str }"
-                    )
-                else:
-                    self.add_message(
-                        getattr(self, "_whois_panel", "system"), f"  Idle     : {idle_str }"
-                    )
-                return
-
-            if code == 301:
-                target = params[1] if len(params) > 1 else ""
-                away = trailing or ""
-                self.add_message(
-                    getattr(self, "_whois_panel", "system"),
-                    f"  Away     : {colorize (_sanitise (away ,256 ),'yellow')}",
-                )
-                return
-
-            if code == 671:
-                target = params[1] if len(params) > 1 else ""
-                self.add_message(
-                    getattr(self, "_whois_panel", "system"),
-                    f"  Secure   : {colorize ('Yes (TLS)','green')}",
-                )
-                return
-
-            if code == 330:
-                target = params[1] if len(params) > 1 else ""
-                account = params[2] if len(params) > 2 else ""
-                self.add_message(
-                    getattr(self, "_whois_panel", "system"),
-                    f"  Account  : {_sanitise (account ,64 )}",
-                )
-                return
-
-            if code == 318:
-                self.add_message(
-                    getattr(self, "_whois_panel", "system"),
-                    colorize("──────────────────────────────────────────", "dim"),
-                )
-                return
-
-            if code == 321:
-                self.channel_list = []
-            elif code == 322:
-                if len(params) >= 3:
-                    self.channel_list.append(
-                        {
-                            "channel": _sanitise(params[1], 64),
-                            "users": int(params[2]) if params[2].isdigit() else 0,
-                            "topic": _sanitise((trailing or "")[:60], 60),
-                        }
-                    )
-            elif code == 323:
-                lines = [
-                    f"{colorize (c ['channel'],'green'):<20} {c ['users']:>4} users  {colorize (_sanitise (c ['topic'],256 ),'dim')}"
-                    for c in sorted(self.channel_list, key=lambda x: x["users"], reverse=True)
-                ]
-                self.pager.display(lines, "Channel list", f"{len (lines )} channels")
-
-            elif code == 401:
-                target = params[1] if len(params) > 1 else (params[0] if params else "")
-
-                if target and self.session_manager.has_session(target):
-                    sess = self.session_manager.get_session(target)
-                    state = getattr(sess, "session_state", None) if sess else None
-
-                    if not hasattr(self, "_401_count"):
-                        self._401_count = {}
-                    if not hasattr(self, "_401_handled"):
-                        self._401_handled = set()
-
-                    self._401_count[target] = self._401_count.get(target, 0) + 1
-
-                    state_name = getattr(state, "name", str(state)) if state is not None else ""
-                    is_dake_phase = state_name in ("DAKE_IN_PROGRESS", "CREATED", "PLAINTEXT")
-
-                    if is_dake_phase and self._401_count[target] < 5:
-
-                        self.debug(
-                            "401 during DAKE",
-                            {
-                                "peer": target,
-                                "state": state_name,
-                                "count": self._401_count[target],
-                            },
-                        )
-                    elif target not in self._401_handled:
-                        self._401_handled.add(target)
-                        self._on_peer_disconnected(target, "nick no longer on server")
-                elif trailing:
-                    self.add_message("system", colorize(f"⚠ {_sanitise (trailing ,512 )}", "dim"))
-
-            elif trailing:
-                self.add_message("system", colorize(trailing, "dim"))
-
+            self._rpl_other(code, params, trailing)
         except Exception as exc:
             self.debug("numeric reply error")
+
+    def _rpl_auth(self, code, params, trailing):
+        """SASL, the welcome and NickServ, a nick in use."""
+        if code in (900, 903):
+
+            self.nickserv_identified = True
+            self.add_message("system", colorize("✅ SASL authentication successful", "green"))
+            if getattr(self, "_sasl_in_progress", False):
+                self._sasl_in_progress = False
+                self._finish_cap_negotiation()
+            return True
+
+        if code in (902, 904, 905, 906):
+
+            self.add_message(
+                "system", colorize(f"⚠ SASL authentication failed (code {code })", "yellow")
+            )
+            if getattr(self, "_sasl_in_progress", False):
+                self._sasl_in_progress = False
+                self._finish_cap_negotiation()
+            return True
+
+        if code == 1:
+            self.auth_complete = True
+            welcome_text = trailing or ""
+            words = welcome_text.split()
+            clean_words = []
+            for w in words:
+                if "!" in w or "@" in w:
+                    break
+                clean_words.append(w)
+            clean = " ".join(clean_words) if clean_words else welcome_text
+            self.add_message("system", colorize(f"✅ {clean }", "green"))
+            self.debug("RPL_WELCOME")
+            if self.config.nickserv_login and self.config.nickserv_pass:
+                self.add_message("system", colorize("🔑 Identifying with NickServ…", "cyan"))
+                _ns_pass = self.config.nickserv_pass
+                self.send(f"PRIVMSG NickServ :IDENTIFY {_ns_pass }")
+                _ns_pass_ba = bytearray(_ns_pass.encode("utf-8"))
+                _secure_wipe(_ns_pass_ba)
+                del _ns_pass, _ns_pass_ba
+                self.config.nickserv_pass = None
+            elif self.config.nickserv_register and self.config.nickserv_pass:
+                self.add_message(
+                    "system", colorize("📝 Registering nick with NickServ…", "cyan")
+                )
+                _ns_pass = self.config.nickserv_pass
+                self.send(f"PRIVMSG NickServ :REGISTER {_ns_pass } no-email")
+                _ns_pass_ba = bytearray(_ns_pass.encode("utf-8"))
+                _secure_wipe(_ns_pass_ba)
+                del _ns_pass, _ns_pass_ba
+                self.config.nickserv_pass = None
+
+            delay = (
+                3.0 if (self.config.nickserv_login or self.config.nickserv_register) else 2.0
+            )
+            threading.Timer(delay, self.auto_join_channel).start()
+            return True
+
+        if code in (433, 436):
+            self._on_nick_collision()
+            return True
+        return False
+
+    def _rpl_motd(self, code, params, trailing):
+        """The message of the day and the server's statistics lines."""
+        if code == 375:
+            self._motd_buf = []
+            return True
+        if code == 372:
+            if not hasattr(self, "_motd_buf"):
+                self._motd_buf = []
+            if trailing:
+                import re as _re_irc
+
+                line = trailing.lstrip("- ").strip()
+                line = _re_irc.sub(r"\x03(?:\d{1,2}(?:,\d{1,2})?)?", "", line)
+                line = _re_irc.sub(r"[\x02\x0f\x16\x1d\x1f]", "", line).strip()
+                if line:
+                    self._motd_buf.append(line)
+            return True
+        if code == 376:
+            buf = getattr(self, "_motd_buf", [])
+            if buf:
+                self.add_message(
+                    "system", colorize("── MOTD ──────────────────────────────────", "dim")
+                )
+
+                import re as _re
+
+                _SECTION_RE = _re.compile(r"^(?:\d+[.)]\s|/|https?://|\[|[A-Z]{3,}\s*:)")
+                paragraphs = []
+                current = []
+                for frag in buf:
+                    is_new = (
+                        not current
+                        or _SECTION_RE.match(frag)
+                        or (
+                            len(frag) > 30
+                            and frag[0].isupper()
+                            and not current[-1].endswith(",")
+                        )
+                    )
+                    if is_new and current:
+                        paragraphs.append(" ".join(current))
+                        current = []
+                    current.append(frag)
+                if current:
+                    paragraphs.append(" ".join(current))
+
+                for para in paragraphs:
+                    if len(para) > 68:
+                        for wline in textwrap.wrap(
+                            para, width=68, break_long_words=False, break_on_hyphens=False
+                        ):
+                            self.add_message("system", colorize(wline, "dim"))
+                    else:
+                        self.add_message("system", colorize(para, "dim"))
+
+                self.add_message(
+                    "system", colorize("──────────────────────────────────────────", "dim")
+                )
+            self._motd_buf = []
+            return True
+
+        if code in (
+            2,
+            4,
+            5,
+            251,
+            252,
+            253,
+            254,
+            255,
+            265,
+            266,
+            396,
+        ):
+            return True
+        return False
+
+    def _rpl_who(self, code, params, trailing):
+        """WHO, ISON and WHOWAS replies."""
+        if code == 352:
+            _WHO_DISPLAY_MAX = 200
+            _who_nick = params[5] if len(params) > 5 else ""
+            _who_user = params[2] if len(params) > 2 else ""
+            _who_host = params[3] if len(params) > 3 else ""
+            _who_real = trailing or ""
+            if _who_real and _who_real.startswith("0 "):
+                _who_real = _who_real[2:]
+            if not hasattr(self, "_otrv4_users"):
+                self._otrv4_users: Dict[str, bool] = {}
+            # Client identification only.  See otrv4_client_version().
+            if _who_nick:
+                self._otrv4_users[_who_nick] = advertises_otrv4(_who_real)
+            if getattr(self, "_who_pending", False):
+                _wc = getattr(self, "_who_count", 0)
+                if _wc == 0:
+                    self._who_count = 0
+                if _wc < _WHO_DISPLAY_MAX:
+                    _wp2 = self.panel_manager.active_panel or "system"
+                    _m = colorize(" 🔵", "blue") if advertises_otrv4(_who_real) else ""
+                    self.add_message(
+                        _wp2,
+                        f"  {colorize (_who_nick or '?','cyan'):<20}{_sanitise (_who_user +'@'+_who_host ,50 ):<40}{_sanitise (_who_real ,40 )}{_m }",
+                    )
+                    self._who_count += 1
+                elif _wc == _WHO_DISPLAY_MAX:
+                    _wp2 = self.panel_manager.active_panel or "system"
+                    self.add_message(
+                        _wp2,
+                        colorize(
+                            f"  … output capped at {_WHO_DISPLAY_MAX } rows - use /who in a smaller channel",
+                            "yellow",
+                        ),
+                    )
+                    self._who_count += 1
+            return True
+
+        if code == 303:
+            _wp5 = self.panel_manager.active_panel or "system"
+            _online = trailing or ""
+            if _online.strip():
+                self.add_message(
+                    _wp5, colorize(f"ISON online: {_sanitise (_online ,256 )}", "green")
+                )
+            else:
+                self.add_message(_wp5, colorize("ISON: none of those nicks are online", "dim"))
+            return True
+        if code == 314:
+            _wp4 = self.panel_manager.active_panel or "system"
+            _ww_nick = params[1] if len(params) > 1 else "?"
+            _ww_user = params[2] if len(params) > 2 else ""
+            _ww_host = params[3] if len(params) > 3 else ""
+            _ww_real = trailing or ""
+            self.add_message(
+                _wp4, colorize("── WHOWAS ───────────────────────────────────", "dim")
+            )
+            self.add_message(
+                _wp4,
+                f"  {colorize_username (_ww_nick )}  {_sanitise (_ww_user +'@'+_ww_host ,80 )}  {_sanitise (_ww_real ,60 )}",
+            )
+            return True
+        if code == 315:
+            if getattr(self, "_who_pending", False):
+                _wp3 = self.panel_manager.active_panel or "system"
+                self.add_message(_wp3, colorize("─" * 56, "dim"))
+                self._who_pending = False
+                self._who_count = 0
+            return True
+        return False
+
+    def _rpl_channel(self, code, params, trailing):
+        """A channel's topic and its member list (NAMES)."""
+        if code == 332:
+            channel = params[1] if len(params) > 1 else ""
+            topic = trailing or ""
+            if channel in self.channels:
+                self.channels[channel]["topic"] = topic
+            self.add_message(channel or "system", f"Topic: {topic }")
+            return True
+
+        if code == 353:
+            # ":server 353 me = #chan :@alice +bob carol"
+            channel = params[2] if len(params) > 2 else ""
+            if not channel:
+                return True
+            users = [u for u in (trailing.split() if trailing else [])
+                     if split_names_entry(u)[1]]
+            if channel not in self.names_data:
+                self.names_data[channel] = []
+            if not hasattr(self, "_names_total"):
+                self._names_total = {}
+            # The server's count, kept whole even when the local list is
+            # capped, so the header reports the channel rather than the
+            # slice of it we chose to render.
+            self._names_total[channel] = self._names_total.get(channel, 0) + len(users)
+            _nlim = getattr(self, "_names_limit", 500)
+            _cur = len(self.names_data[channel])
+            if _cur < _nlim:
+                self.names_data[channel].extend(users[: _nlim - _cur])
+            if channel in self.channels:
+                for u in users:
+                    self.channels[channel]["users"].add(split_names_entry(u)[1])
+            return True
+
+        if code == 366:
+            channel = params[1] if len(params) > 1 else ""
+            raw_users = self.names_data.get(channel, [])
+            total = getattr(self, "_names_total", {}).pop(channel, None)
+            if total is None:
+                total = len(raw_users)
+            self.names_data[channel] = []
+            if getattr(self, "_pending_names_pager", None) != channel:
+                # NAMES also arrives unsolicited on JOIN.  Accumulated
+                # state is still cleared above, or it grows for the life
+                # of the process and the next /names reports a stale
+                # total.
+                return True
+            self._pending_names_pager = None
+            lines, picks = format_names_list(
+                raw_users,
+                getattr(self, "_otrv4_users", {}),
+                total=total,
+                selectable=True,
+            )
+            chosen = self.pager.display(
+                lines,
+                f"Users in {_sanitise (channel ,64 )} ({total })",
+                choices=picks,
+            )
+            if chosen:
+                # Starting a DAKE, which is what actually authenticates
+                # the peer.  Selecting a blue entry is a shortcut for
+                # typing /otr <nick>; it confers no trust of its own.
+                self.start_guided_otr_session(chosen)
+            return True
+        return False
+
+    def _rpl_whois(self, code, params, trailing):
+        """WHOIS replies."""
+        if code == 311:
+            target = params[1] if len(params) > 1 else ""
+            user = params[2] if len(params) > 2 else ""
+            host = params[3] if len(params) > 3 else ""
+            real = trailing or ""
+            # Both fields used to be computed from the local nick:
+            # `Client` printed our own VERSION whatever the peer ran, and
+            # `Name` printed TwentySevenClubNick.real_name(target), which
+            # returns "<nick> - OTRv4+ <version>" for any nick at all.  So
+            # /whois on a mIRC user reported them as an OTRv4+ client --
+            # a claim derived from the nick, which is exactly the
+            # inference this must not make.  Both now come off the wire.
+            _peer_version = otrv4_client_version(real)
+            if _peer_version:
+                _client = colorize("OTRv4+ %s" % _peer_version, "blue")
+            else:
+                _client = colorize("not advertised", "dim")
+            # Same reliable metadata as RPL_WHOREPLY, so /whois keeps the
+            # /names marker current for that nick.
+            if target:
+                if not hasattr(self, "_otrv4_users"):
+                    self._otrv4_users: Dict[str, bool] = {}
+                self._otrv4_users[target] = _peer_version is not None
+            _wp = self.panel_manager.active_panel or "system"
+            self._whois_panel = _wp
+            self.add_message(_wp, colorize("── WHOIS ─────────────────────────────────", "dim"))
+            self.add_message(_wp, f"  Nick     : {colorize_username (target )}")
+            self.add_message(_wp, f"  Client   : {_client }")
+            self.add_message(
+                _wp, f"  User     : {_sanitise (user ,64 )}@{_sanitise (host ,128 )}"
+            )
+            self.add_message(_wp, f"  Name     : {_sanitise (real ,128 )}")
+            return True
+
+        if code == 312:
+            target = params[1] if len(params) > 1 else ""
+            server = params[2] if len(params) > 2 else ""
+            info = trailing or ""
+            self.add_message(
+                getattr(self, "_whois_panel", "system"),
+                f"  Server   : {_sanitise (server ,128 )}"
+                + (f" ({_sanitise (info ,256 )})" if info else ""),
+            )
+            return True
+
+        if code == 313:
+            target = params[1] if len(params) > 1 else ""
+            self.add_message(
+                getattr(self, "_whois_panel", "system"),
+                f"  Status   : {colorize ('IRC Operator','yellow')}",
+            )
+            return True
+
+        if code == 319:
+            target = params[1] if len(params) > 1 else ""
+            chans = trailing or ""
+            self.add_message(
+                getattr(self, "_whois_panel", "system"),
+                f"  Channels : {_sanitise (chans ,512 )}",
+            )
+            return True
+
+        if code == 317:
+            target = params[1] if len(params) > 1 else ""
+            idle_s = int(params[2]) if len(params) > 2 and params[2].isdigit() else 0
+            signon = int(params[3]) if len(params) > 3 and params[3].isdigit() else 0
+            idle_str = _fmt_duration(idle_s)
+            if signon > 0:
+                from datetime import datetime as _dt
+
+                signon_str = _dt.fromtimestamp(signon).strftime("%Y-%m-%d %H:%M:%S")
+                self.add_message(
+                    getattr(self, "_whois_panel", "system"), f"  Idle     : {idle_str }"
+                )
+                self.add_message(
+                    getattr(self, "_whois_panel", "system"), f"  Signon   : {signon_str }"
+                )
+            else:
+                self.add_message(
+                    getattr(self, "_whois_panel", "system"), f"  Idle     : {idle_str }"
+                )
+            return True
+
+        if code == 301:
+            target = params[1] if len(params) > 1 else ""
+            away = trailing or ""
+            self.add_message(
+                getattr(self, "_whois_panel", "system"),
+                f"  Away     : {colorize (_sanitise (away ,256 ),'yellow')}",
+            )
+            return True
+
+        if code == 671:
+            target = params[1] if len(params) > 1 else ""
+            self.add_message(
+                getattr(self, "_whois_panel", "system"),
+                f"  Secure   : {colorize ('Yes (TLS)','green')}",
+            )
+            return True
+
+        if code == 330:
+            target = params[1] if len(params) > 1 else ""
+            account = params[2] if len(params) > 2 else ""
+            self.add_message(
+                getattr(self, "_whois_panel", "system"),
+                f"  Account  : {_sanitise (account ,64 )}",
+            )
+            return True
+
+        if code == 318:
+            self.add_message(
+                getattr(self, "_whois_panel", "system"),
+                colorize("──────────────────────────────────────────", "dim"),
+            )
+            return True
+        return False
+
+    def _rpl_other(self, code, params, trailing):
+        """LIST, no-such-nick, and any other numeric with text."""
+        if code == 321:
+            self.channel_list = []
+        elif code == 322:
+            if len(params) >= 3:
+                self.channel_list.append(
+                    {
+                        "channel": _sanitise(params[1], 64),
+                        "users": int(params[2]) if params[2].isdigit() else 0,
+                        "topic": _sanitise((trailing or "")[:60], 60),
+                    }
+                )
+        elif code == 323:
+            lines = [
+                f"{colorize (c ['channel'],'green'):<20} {c ['users']:>4} users  {colorize (_sanitise (c ['topic'],256 ),'dim')}"
+                for c in sorted(self.channel_list, key=lambda x: x["users"], reverse=True)
+            ]
+            self.pager.display(lines, "Channel list", f"{len (lines )} channels")
+
+        elif code == 401:
+            target = params[1] if len(params) > 1 else (params[0] if params else "")
+
+            if target and self.session_manager.has_session(target):
+                sess = self.session_manager.get_session(target)
+                state = getattr(sess, "session_state", None) if sess else None
+
+                if not hasattr(self, "_401_count"):
+                    self._401_count = {}
+                if not hasattr(self, "_401_handled"):
+                    self._401_handled = set()
+
+                self._401_count[target] = self._401_count.get(target, 0) + 1
+
+                state_name = getattr(state, "name", str(state)) if state is not None else ""
+                is_dake_phase = state_name in ("DAKE_IN_PROGRESS", "CREATED", "PLAINTEXT")
+
+                if is_dake_phase and self._401_count[target] < 5:
+
+                    self.debug(
+                        "401 during DAKE",
+                        {
+                            "peer": target,
+                            "state": state_name,
+                            "count": self._401_count[target],
+                        },
+                    )
+                elif target not in self._401_handled:
+                    self._401_handled.add(target)
+                    self._on_peer_disconnected(target, "nick no longer on server")
+            elif trailing:
+                self.add_message("system", colorize(f"⚠ {_sanitise (trailing ,512 )}", "dim"))
+
+        elif trailing:
+            self.add_message("system", colorize(trailing, "dim"))
+
 
     def _dispatch_otr_fragment(self, sender: str, fragment: str):
         """Accumulate OTR fragments; process when complete."""
@@ -3821,6 +3845,54 @@ class OTRv4IRCClient:
             return
         cmd = parts[0].lower()
 
+        for family in (self._cmd_view, self._cmd_chat, self._cmd_lookup,
+                       self._cmd_moderate, self._cmd_otr, self._cmd_people):
+            if family(cmd, parts):
+                return
+
+        if cmd == "/server":
+            if not parts[1:]:
+                _cur_net = NetworkConstants.detect(self.server)
+                _icons = {"i2p": "🧅 I2P", "tor": "🧅 Tor", "clearnet": "🌐 Clearnet"}
+                self.add_message(
+                    "system",
+                    f"Current server: {colorize (self .server ,'cyan')} "
+                    f"({colorize (_icons .get (_cur_net ,_cur_net ),'dark_cyan')})",
+                )
+                self.add_message("system", colorize("Usage: /server <hostname[:port]>", "dim"))
+            else:
+                new_srv = parts[1]
+                _new_net = NetworkConstants.detect(new_srv)
+                _icons = {"i2p": "🧅 I2P", "tor": "🧅 Tor", "clearnet": "🌐 Clearnet"}
+                _cols = {"i2p": "dark_cyan", "tor": "dark_magenta", "clearnet": "grey"}
+                self.add_message(
+                    "system",
+                    f"Switching to {colorize (new_srv ,'cyan')} "
+                    f"({colorize (_icons .get (_new_net ,_new_net ),_cols .get (_new_net ,'white'))})…",
+                )
+                if self.connected:
+                    self.send_raw("QUIT :switching server")
+                    self.connected = False
+                    self.running = False
+                    try:
+                        if self.sock:
+                            self.sock.close()
+                    except Exception:
+                        pass
+                self.server = new_srv
+                self.config.server = new_srv
+                if not self.connect():
+                    self.add_message(
+                        "system", colorize(f"❌ Failed to connect to {new_srv }", "bold_red")
+                    )
+            return
+
+        self.add_message(
+            "system", colorize(f"❌ Unknown command: {cmd }  (try /help)", "bold_red")
+        )
+
+    def _cmd_view(self, cmd, parts):
+        """Help, the panels and tabs, the screen, status and diagnostics. True if *cmd* was one of them."""
         if cmd == "help":
             topic = parts[1] if len(parts) > 1 else None
             self.show_help(topic)
@@ -3850,7 +3922,86 @@ class OTRv4IRCClient:
                 self.add_message("system", colorize("TUI off - back to scrollback mode.", "dim"))
                 if self._prompt_refresh_cb is not None:
                     self._prompt_refresh_cb()
-        elif cmd == "join" and len(parts) > 1:
+        elif cmd in ("switch", "tab") and len(parts) > 1:
+            _sw_name = parts[1]
+
+            if not self._switch_panel(_sw_name, force=True):
+                _sw_hashed = "#" + _sw_name if not _sw_name.startswith("#") else _sw_name
+                if not self._switch_panel(_sw_hashed, force=True):
+                    self.add_message("system", colorize(f"❌ No panel: {_sw_name }", "red"))
+        elif cmd == "fragrate":
+            self._cmd_fragrate(parts[1] if len(parts) > 1 else "")
+        elif cmd == "tabs":
+            self.show_tabs()
+        elif cmd == "tab-next":
+            self.switch_to_next_tab()
+        elif cmd == "tab-prev":
+            self.switch_to_previous_tab()
+        elif cmd == "tab-close" and len(parts) > 1:
+            p = parts[1]
+            if p in ("system", "debug"):
+                return True
+
+            if p not in self.panel_manager.panels and not p.startswith("#"):
+                p = "#" + p
+            if p in self.panel_manager.panels:
+                if self.panel_manager.active_panel == p:
+                    self._switch_panel("system")
+                del self.panel_manager.panels[p]
+                if p in self.panel_manager.panel_order:
+                    self.panel_manager.panel_order.remove(p)
+                self.panel_manager._render_ui()
+        elif cmd == "clear":
+            # Bare /clear now empties EVERY panel and the terminal's own
+            # scrollback, not just the active tab.  Clearing one tab while
+            # the others still hold the conversation -- and while the
+            # emulator still has every line of it scrolled off the top -- is
+            # not what anyone typing /clear wants; on a handset the threat
+            # is someone picking the phone up, and a per-tab clear does
+            # nothing about that.  `/clear <panel>` keeps the old behaviour
+            # for when you really do mean one tab.
+            if len(parts) > 1:
+                target = parts[1]
+                if target in self.panel_manager.panels:
+                    self.panel_manager.clear_panel_history(target)
+                else:
+                    self.add_message(
+                        "system", colorize(f"No such panel: {_sanitise(target, 64)}", "yellow"))
+            else:
+                self._purge_scrollback("/clear")
+        elif cmd == "clear-screen":
+            self.clear_screen()
+        elif cmd == "status":
+            self.show_status_panel()
+        elif cmd == "debug":
+
+            _engine.DEBUG_MODE = not _engine.DEBUG_MODE
+            if hasattr(self, "logger") and hasattr(self.logger, "set_debug"):
+                self.logger.set_debug(_engine.DEBUG_MODE)
+            self.add_message("system", f"Debug: {'ON'if _engine.DEBUG_MODE else 'OFF'}")
+            if _engine.DEBUG_MODE and "debug" not in self.panel_manager.panels:
+                self.panel_manager.add_panel("debug", "debug")
+        elif cmd == "version":
+            self.add_message("system", f"Version: {VERSION }")
+            self.add_message("system", "DAKE   : 🦀 Rust (X448 + ML-KEM-1024 + ML-DSA-87)")
+            self.add_message("system", "Ratchet: 🦀 Rust (zeroize-on-drop)")
+            self.add_message(
+                "system", "SMP    : 🦀 Rust (ML-KEM-1024 + ML-DSA-87 hybrid PQC, ZeroizeOnDrop)"
+            )
+        elif cmd == "pause":
+
+            _engine._scroll_locked = True
+            self.add_message("system", colorize("⏸ Scroll paused - /resume to continue", "yellow"))
+        elif cmd == "resume":
+            _scroll_unlock()
+            self.add_message("system", colorize("▶ Scroll resumed", "green"))
+        else:
+            return False
+        return True
+
+    def _cmd_chat(self, cmd, parts):
+        """Joining, leaving and talking: channels, messages, the server. True if *cmd* was one of them."""
+        if cmd == "join" and len(parts) > 1:
             _raw = " ".join(parts[1:]).replace(",", " ")
             for _ch in _raw.split():
                 _ch = _ch.strip()
@@ -3885,31 +4036,6 @@ class OTRv4IRCClient:
                     + colorize(": ", "dim")
                     + colorize(_msg_text, "white"),
                 )
-        elif cmd == "list":
-            self.send("LIST")
-        elif cmd == "whois" and len(parts) > 1:
-            _whois_nick = (
-                _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
-            )
-            if _whois_nick:
-                self.send(f"WHOIS {_whois_nick }")
-        elif cmd == "names":
-            ch = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or "")
-
-            if ch and not ch.startswith("#"):
-                ch = "#" + ch
-            if ch and ch.startswith("#"):
-                self.names_data[ch] = []
-                if not hasattr(self, "_otrv4_users"):
-                    self._otrv4_users: Dict[str, bool] = {}
-                if not hasattr(self, "_names_total"):
-                    self._names_total = {}
-                self._names_total.pop(ch, None)
-                self.send(f"WHO {ch }")
-                self.send(f"NAMES {ch }")
-                self._pending_names_pager = ch
-            else:
-                self.add_message("system", colorize("Usage: /names [#channel]", "dim"))
         elif cmd == "topic":
             ch = self.panel_manager.active_panel or ""
             if len(parts) > 1 and parts[1].startswith("#"):
@@ -3936,27 +4062,6 @@ class OTRv4IRCClient:
             )
             if _inv_nick and _inv_chan:
                 self.send(f"INVITE {_inv_nick } {_inv_chan }")
-        elif cmd == "kick" and len(parts) > 1:
-            ch = self.panel_manager.active_panel or ""
-            target = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
-            reason = _sanitise(" ".join(parts[2:]), 256) if len(parts) > 2 else ""
-            if ch.startswith("#") and target:
-                self.send(f"KICK {ch } {target }" + (f" :{reason }" if reason else ""))
-            elif not target:
-                self.add_message("system", colorize("Usage: /kick <nick> [reason]", "dim"))
-            else:
-                self.add_message("system", colorize("Must be in a channel to kick", "red"))
-        elif cmd == "mode":
-            if len(parts) > 1:
-
-                _mode_args = [
-                    _sanitise(p, 64).split()[0] for p in parts[1:] if _sanitise(p, 64).split()
-                ]
-                if _mode_args:
-                    self.send(f"MODE {' '.join (_mode_args )}")
-            else:
-                self.add_message("system", colorize("Usage: /mode <target> <+/-flag>", "dim"))
-                self.add_message("system", "  Type /help mode for all available modes")
         elif cmd == "away":
             reason = " ".join(parts[1:]) if len(parts) > 1 else "Away"
             self.send(f"AWAY :{reason }")
@@ -3966,28 +4071,6 @@ class OTRv4IRCClient:
             self.add_message("system", colorize("No longer away", "green"))
         elif cmd == "raw" and len(parts) > 1:
             self.send(" ".join(parts[1:]))
-        elif cmd == "who":
-            _t = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or "")
-            if _t and not _t.startswith("#"):
-                _t = "#" + _t
-            if _t:
-                self.send(f"WHO {_t }")
-            else:
-                self.send("WHO")
-            self._who_pending = True
-            self._who_count = 0
-            self.add_message(
-                self.panel_manager.active_panel or "system",
-                colorize("── WHO (max 200 rows) ────────────────────────────────────", "dim"),
-            )
-        elif cmd == "whowas" and len(parts) > 1:
-            _w = _sanitise(parts[1], 64).split()[0]
-            if _w:
-                self.send(f"WHOWAS {_w }")
-        elif cmd == "ison" and len(parts) > 1:
-            self.send(f"ISON {' '.join (_sanitise (p2 ,64 )for p2 in parts [1 :])}")
-        elif cmd == "userhost" and len(parts) > 1:
-            self.send(f"USERHOST {' '.join (_sanitise (p2 ,64 )for p2 in parts [1 :6 ])}")
         elif cmd == "motd":
             self.send("MOTD")
         elif cmd == "time":
@@ -4014,6 +4097,110 @@ class OTRv4IRCClient:
 
                 _t3.sleep(0.5)
                 self.send(f"JOIN {_cy }")
+        elif cmd == "setname" and len(parts) > 1:
+            self.send(f"SETNAME :{_sanitise (' '.join (parts [1 :]),128 )}")
+        elif cmd == "server" and len(parts) > 1:
+            _sv = _sanitise(parts[1], 256).split()[0]
+            try:
+                _sp = int(parts[2]) if len(parts) > 2 else self.config.port
+            except ValueError:
+                _sp = self.config.port
+            if _sv:
+                self.config.server = _sv
+                self.config.port = _sp
+                self.server = _sv
+                self.add_message("system", colorize(f"Switching to {_sv }:{_sp }…", "cyan"))
+                self._try_reconnect()
+        else:
+            return False
+        return True
+
+    def _cmd_lookup(self, cmd, parts):
+        """Finding people: WHOIS, NAMES, WHO, LIST, MONITOR and friends. True if *cmd* was one of them."""
+        if cmd == "list":
+            self.send("LIST")
+        elif cmd == "whois" and len(parts) > 1:
+            _whois_nick = (
+                _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            )
+            if _whois_nick:
+                self.send(f"WHOIS {_whois_nick }")
+        elif cmd == "names":
+            ch = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or "")
+
+            if ch and not ch.startswith("#"):
+                ch = "#" + ch
+            if ch and ch.startswith("#"):
+                self.names_data[ch] = []
+                if not hasattr(self, "_otrv4_users"):
+                    self._otrv4_users: Dict[str, bool] = {}
+                if not hasattr(self, "_names_total"):
+                    self._names_total = {}
+                self._names_total.pop(ch, None)
+                self.send(f"WHO {ch }")
+                self.send(f"NAMES {ch }")
+                self._pending_names_pager = ch
+            else:
+                self.add_message("system", colorize("Usage: /names [#channel]", "dim"))
+        elif cmd == "who":
+            _t = parts[1] if len(parts) > 1 else (self.panel_manager.active_panel or "")
+            if _t and not _t.startswith("#"):
+                _t = "#" + _t
+            if _t:
+                self.send(f"WHO {_t }")
+            else:
+                self.send("WHO")
+            self._who_pending = True
+            self._who_count = 0
+            self.add_message(
+                self.panel_manager.active_panel or "system",
+                colorize("── WHO (max 200 rows) ────────────────────────────────────", "dim"),
+            )
+        elif cmd == "whowas" and len(parts) > 1:
+            _w = _sanitise(parts[1], 64).split()[0]
+            if _w:
+                self.send(f"WHOWAS {_w }")
+        elif cmd == "ison" and len(parts) > 1:
+            self.send(f"ISON {' '.join (_sanitise (p2 ,64 )for p2 in parts [1 :])}")
+        elif cmd == "userhost" and len(parts) > 1:
+            self.send(f"USERHOST {' '.join (_sanitise (p2 ,64 )for p2 in parts [1 :6 ])}")
+        elif cmd == "accept" and len(parts) > 1:
+            self.send(f"ACCEPT {_sanitise (parts [1 ],64 )}")
+        elif cmd == "monitor" and len(parts) > 1:
+            _mop = parts[1]
+            if _mop == "l":
+                self.send("MONITOR L")
+            elif len(parts) > 2:
+                self.send(
+                    f"MONITOR {_mop .upper ()} {','.join (_sanitise (p2 ,64 )for p2 in parts [2 :])}"
+                )
+        else:
+            return False
+        return True
+
+    def _cmd_moderate(self, cmd, parts):
+        """Channel moderation: kick, modes, op, voice, bans. True if *cmd* was one of them."""
+        if cmd == "kick" and len(parts) > 1:
+            ch = self.panel_manager.active_panel or ""
+            target = _sanitise(parts[1], 64).split()[0] if _sanitise(parts[1], 64).split() else ""
+            reason = _sanitise(" ".join(parts[2:]), 256) if len(parts) > 2 else ""
+            if ch.startswith("#") and target:
+                self.send(f"KICK {ch } {target }" + (f" :{reason }" if reason else ""))
+            elif not target:
+                self.add_message("system", colorize("Usage: /kick <nick> [reason]", "dim"))
+            else:
+                self.add_message("system", colorize("Must be in a channel to kick", "red"))
+        elif cmd == "mode":
+            if len(parts) > 1:
+
+                _mode_args = [
+                    _sanitise(p, 64).split()[0] for p in parts[1:] if _sanitise(p, 64).split()
+                ]
+                if _mode_args:
+                    self.send(f"MODE {' '.join (_mode_args )}")
+            else:
+                self.add_message("system", colorize("Usage: /mode <target> <+/-flag>", "dim"))
+                self.add_message("system", "  Type /help mode for all available modes")
         elif cmd == "op" and len(parts) > 1:
             _ch2 = self.panel_manager.active_panel or ""
             if _ch2.startswith("#"):
@@ -4045,80 +4232,13 @@ class OTRv4IRCClient:
             if _ch2.startswith("#") and _kbn:
                 self.send(f"MODE {_ch2 } +b {_kbn }!*@*")
                 self.send(f"KICK {_ch2 } {_kbn } :{_kbr }")
-        elif cmd == "accept" and len(parts) > 1:
-            self.send(f"ACCEPT {_sanitise (parts [1 ],64 )}")
-        elif cmd == "monitor" and len(parts) > 1:
-            _mop = parts[1]
-            if _mop == "l":
-                self.send("MONITOR L")
-            elif len(parts) > 2:
-                self.send(
-                    f"MONITOR {_mop .upper ()} {','.join (_sanitise (p2 ,64 )for p2 in parts [2 :])}"
-                )
-        elif cmd == "setname" and len(parts) > 1:
-            self.send(f"SETNAME :{_sanitise (' '.join (parts [1 :]),128 )}")
-        elif cmd == "server" and len(parts) > 1:
-            _sv = _sanitise(parts[1], 256).split()[0]
-            try:
-                _sp = int(parts[2]) if len(parts) > 2 else self.config.port
-            except ValueError:
-                _sp = self.config.port
-            if _sv:
-                self.config.server = _sv
-                self.config.port = _sp
-                self.server = _sv
-                self.add_message("system", colorize(f"Switching to {_sv }:{_sp }…", "cyan"))
-                self._try_reconnect()
-        elif cmd in ("switch", "tab") and len(parts) > 1:
-            _sw_name = parts[1]
+        else:
+            return False
+        return True
 
-            if not self._switch_panel(_sw_name, force=True):
-                _sw_hashed = "#" + _sw_name if not _sw_name.startswith("#") else _sw_name
-                if not self._switch_panel(_sw_hashed, force=True):
-                    self.add_message("system", colorize(f"❌ No panel: {_sw_name }", "red"))
-        elif cmd == "fragrate":
-            self._cmd_fragrate(parts[1] if len(parts) > 1 else "")
-        elif cmd == "tabs":
-            self.show_tabs()
-        elif cmd == "tab-next":
-            self.switch_to_next_tab()
-        elif cmd == "tab-prev":
-            self.switch_to_previous_tab()
-        elif cmd == "tab-close" and len(parts) > 1:
-            p = parts[1]
-            if p in ("system", "debug"):
-                return
-
-            if p not in self.panel_manager.panels and not p.startswith("#"):
-                p = "#" + p
-            if p in self.panel_manager.panels:
-                if self.panel_manager.active_panel == p:
-                    self._switch_panel("system")
-                del self.panel_manager.panels[p]
-                if p in self.panel_manager.panel_order:
-                    self.panel_manager.panel_order.remove(p)
-                self.panel_manager._render_ui()
-        elif cmd == "clear":
-            # Bare /clear now empties EVERY panel and the terminal's own
-            # scrollback, not just the active tab.  Clearing one tab while
-            # the others still hold the conversation -- and while the
-            # emulator still has every line of it scrolled off the top -- is
-            # not what anyone typing /clear wants; on a handset the threat
-            # is someone picking the phone up, and a per-tab clear does
-            # nothing about that.  `/clear <panel>` keeps the old behaviour
-            # for when you really do mean one tab.
-            if len(parts) > 1:
-                target = parts[1]
-                if target in self.panel_manager.panels:
-                    self.panel_manager.clear_panel_history(target)
-                else:
-                    self.add_message(
-                        "system", colorize(f"No such panel: {_sanitise(target, 64)}", "yellow"))
-            else:
-                self._purge_scrollback("/clear")
-        elif cmd == "clear-screen":
-            self.clear_screen()
-        elif cmd == "otr" and len(parts) > 1:
+    def _cmd_otr(self, cmd, parts):
+        """OTR sessions, fingerprints, trust and SMP. True if *cmd* was one of them."""
+        if cmd == "otr" and len(parts) > 1:
             self.start_guided_otr_session(parts[1])
         elif cmd == "fingerprint":
             fp = (
@@ -4151,7 +4271,7 @@ class OTRv4IRCClient:
                         "red",
                     ),
                 )
-                return
+                return True
             if hasattr(self.session_manager, "smp_storage"):
                 self.session_manager.smp_storage.set_secret(peer, secret)
             self.add_message("system", f"🔑 SMP secret set for {peer }")
@@ -4171,7 +4291,13 @@ class OTRv4IRCClient:
                 sec = getattr(sess, "security_level", UIConstants.SecurityLevel.PLAINTEXT)
                 icon = UIConstants.SECURITY_ICONS.get(sec, "")
                 self.add_message("system", f"  {icon } {colorize_username (peer )}: {sec .name }")
-        elif cmd == "ignore" and len(parts) > 1:
+        else:
+            return False
+        return True
+
+    def _cmd_people(self, cmd, parts):
+        """Ignoring people, quitting and reconnecting. True if *cmd* was one of them."""
+        if cmd == "ignore" and len(parts) > 1:
             self.ignored_users.add(parts[1])
             self.add_message("system", f"🚫 Ignoring {colorize_username (parts [1 ])}")
         elif cmd == "unignore" and len(parts) > 1:
@@ -4184,8 +4310,6 @@ class OTRv4IRCClient:
                     self.add_message("system", f"  🚫 {colorize_username (u )}")
             else:
                 self.add_message("system", colorize("No users ignored", "dim"))
-        elif cmd == "status":
-            self.show_status_panel()
         elif cmd == "quit":
             self.shutdown()
         elif cmd == "reconnect":
@@ -4194,69 +4318,10 @@ class OTRv4IRCClient:
             else:
                 self.add_message("system", colorize("🔄 Reconnecting…", "cyan"))
                 self._try_reconnect()
-        elif cmd == "debug":
-
-            _engine.DEBUG_MODE = not _engine.DEBUG_MODE
-            if hasattr(self, "logger") and hasattr(self.logger, "set_debug"):
-                self.logger.set_debug(_engine.DEBUG_MODE)
-            self.add_message("system", f"Debug: {'ON'if _engine.DEBUG_MODE else 'OFF'}")
-            if _engine.DEBUG_MODE and "debug" not in self.panel_manager.panels:
-                self.panel_manager.add_panel("debug", "debug")
-        elif cmd == "version":
-            self.add_message("system", f"Version: {VERSION }")
-            self.add_message("system", "DAKE   : 🦀 Rust (X448 + ML-KEM-1024 + ML-DSA-87)")
-            self.add_message("system", "Ratchet: 🦀 Rust (zeroize-on-drop)")
-            self.add_message(
-                "system", "SMP    : 🦀 Rust (ML-KEM-1024 + ML-DSA-87 hybrid PQC, ZeroizeOnDrop)"
-            )
-        elif cmd == "pause":
-
-            _engine._scroll_locked = True
-            self.add_message("system", colorize("⏸ Scroll paused - /resume to continue", "yellow"))
-        elif cmd == "resume":
-            _scroll_unlock()
-            self.add_message("system", colorize("▶ Scroll resumed", "green"))
         else:
-            if cmd == "/server":
-                if not parts[1:]:
-                    _cur_net = NetworkConstants.detect(self.server)
-                    _icons = {"i2p": "🧅 I2P", "tor": "🧅 Tor", "clearnet": "🌐 Clearnet"}
-                    self.add_message(
-                        "system",
-                        f"Current server: {colorize (self .server ,'cyan')} "
-                        f"({colorize (_icons .get (_cur_net ,_cur_net ),'dark_cyan')})",
-                    )
-                    self.add_message("system", colorize("Usage: /server <hostname[:port]>", "dim"))
-                else:
-                    new_srv = parts[1]
-                    _new_net = NetworkConstants.detect(new_srv)
-                    _icons = {"i2p": "🧅 I2P", "tor": "🧅 Tor", "clearnet": "🌐 Clearnet"}
-                    _cols = {"i2p": "dark_cyan", "tor": "dark_magenta", "clearnet": "grey"}
-                    self.add_message(
-                        "system",
-                        f"Switching to {colorize (new_srv ,'cyan')} "
-                        f"({colorize (_icons .get (_new_net ,_new_net ),_cols .get (_new_net ,'white'))})…",
-                    )
-                    if self.connected:
-                        self.send_raw("QUIT :switching server")
-                        self.connected = False
-                        self.running = False
-                        try:
-                            if self.sock:
-                                self.sock.close()
-                        except Exception:
-                            pass
-                    self.server = new_srv
-                    self.config.server = new_srv
-                    if not self.connect():
-                        self.add_message(
-                            "system", colorize(f"❌ Failed to connect to {new_srv }", "bold_red")
-                        )
-                return
+            return False
+        return True
 
-            self.add_message(
-                "system", colorize(f"❌ Unknown command: {cmd }  (try /help)", "bold_red")
-            )
 
     def show_help(self, topic=None):
         if topic:

@@ -26,7 +26,7 @@ processing two messages for one peer concurrently races the ratchet, the
 skipped-key handling and the SMP state machine.
 """
 
-from source_of import class_source  # noqa: E402
+from source_of import class_source, init_source  # noqa: E402
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -68,7 +68,7 @@ class TestTheExecutorIsSingleThreaded:
 
     def test_the_client_builds_a_one_worker_pool(self):
         import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.__init__)
+        src = init_source(xmpp.OTRv4PlusXMPP)
         assert 'max_workers=1, thread_name_prefix="otr-crypto"' in src, (
             "the OTR executor is not single-threaded; an unsendable "
             "DakeOutput can move threads mid-handshake and panic")

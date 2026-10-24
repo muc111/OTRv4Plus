@@ -124,3 +124,9 @@ def main_source(module) -> str:
             seen.add(name)
             parts.append(textwrap.dedent(inspect.getsource(fn)))
     return "\n".join(parts)
+
+
+def init_source(cls) -> str:
+    """`cls.__init__` followed by the `_init_*` steps it is made of."""
+    steps = [getattr(cls, n) for n in vars(cls) if n.startswith("_init_")]
+    return "\n".join(inspect.getsource(f) for f in [cls.__init__] + steps)

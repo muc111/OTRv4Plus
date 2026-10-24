@@ -21,6 +21,7 @@ import sys
 import types
 
 import pytest
+from source_of import init_source  # noqa: E402
 
 
 def _client_class():
@@ -626,7 +627,7 @@ class TestALiveStreamIsNeverDeclaredDead:
 
     def test_the_filter_is_registered_for_inbound_stanzas(self):
         import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.__init__)
+        src = init_source(xmpp.OTRv4PlusXMPP)
         assert 'add_filter("in", self._note_inbound)' in src
 
     def test_an_unanswered_probe_during_traffic_is_not_counted(self):

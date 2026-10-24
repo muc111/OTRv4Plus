@@ -4,6 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.149 and Desktop — 2026-10-24 — code split, step 5: the longest functions (core 0.13.1)
+
+Nothing changes on the phone. The longest functions in the terminal clients
+are split into named parts:
+
+- XMPP client: `__init__` (295 lines) becomes its state, the OTR engine and
+  the XMPP handlers and plugins, in the same order.
+- IRC client: `handle_numeric_reply` (442 lines) becomes six families of
+  server replies, and `handle_command` (443 lines) six families of commands.
+  Both were compared with the old code on every reply code and every
+  command, with and without arguments: identical.
+- **Guards:** `tests/test_dispatch_families.py` now also requires that no
+  IRC command name is in two families. A new test requires that the
+  "speaks OTRv4+" marker on an IRC user is set only from server replies,
+  never from something a user typed.
+
 ## Android 0.7.0-experimental.rc.148 — 2026-10-24 — received PDFs are opened in an isolated process (core 0.13.1)
 
 - **A received PDF is parsed only in an isolated process.** A bug in a PDF

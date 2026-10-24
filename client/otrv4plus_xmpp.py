@@ -741,9 +741,25 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
     def __init__(self, jid, password, peer=None, debug=False):
+        """The client's state, the OTR engine, then the XMPP side: in that
+        order, since handlers and plugins may refer to both."""
         super().__init__(jid, password)
         self.peer = peer
+        self._init_state(jid)
+        self._init_engine(debug)
+        self._init_xmpp()
 
+        # Ephemeral encrypted per-session log: key zeroed and files deleted on exit,
+        # matching the IRC client wipe behaviour. Within-session scrollback is backed
+        # by the encrypted file so panels load their full history on tab open.
+        self.channel_log = _ChannelLogManager() if _LOG_AVAILABLE else None
+        self._cleaned_up = False
+        # Register globally so print() can route to channel_log even when
+        # the TUI is never started (plain mode is now the default).
+        _term._ACTIVE_CLIENT = self
+
+    def _init_state(self, jid):
+        """Every per-session field, before anything can call back into us."""
         # Per-peer UI state.
         # Locally-armed one-shot secret prompt: the JID a /smp-secret
         # command is collecting for, or None.  Only _request_smp_secret
@@ -873,6 +889,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         #: so our own attributed echo can replace it rather than repeat it.
         self._plain_echo = None
 
+    def _init_engine(self, debug):
+        """The OTR session manager and the one thread its crypto runs on."""
         # Diagnostic verbosity is fixed HERE, before the engine exists. The
         # tracer prints protocol state transitions itself, so constructing it
         # with enabled=True made those lines unsuppressible no matter what the
@@ -964,6 +982,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             max_workers=1, thread_name_prefix="otr-crypto"
         )
 
+    def _init_xmpp(self):
+        """Subscription policy, event handlers, XEP plugins, secure groups."""
         # Security: never auto-approve subscription requests.
         self.auto_authorize = False
         self.auto_subscribe = False
@@ -1026,15 +1046,6 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         self._metadata_question = None
         #: /wipe sets this: the exit then destroys group state too.
         self._wipe_on_exit = False
-
-        # Ephemeral encrypted per-session log: key zeroed and files deleted on exit,
-        # matching the IRC client wipe behaviour. Within-session scrollback is backed
-        # by the encrypted file so panels load their full history on tab open.
-        self.channel_log = _ChannelLogManager() if _LOG_AVAILABLE else None
-        self._cleaned_up = False
-        # Register globally so print() can route to channel_log even when
-        # the TUI is never started (plain mode is now the default).
-        _term._ACTIVE_CLIENT = self
 
     # -------------------------------------------------------------------------
     # Lifecycle
