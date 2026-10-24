@@ -2530,8 +2530,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         self._encrypted.discard(peer)
         self._check_dake_complete(peer)
 
-    @staticmethod
-    def show_help():
+    def show_help(self):
         print(
             "[help] OTRv4+ XMPP commands:\n"
             "  /to <name>           talk to a contact or secure group, then\n"

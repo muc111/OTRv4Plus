@@ -79,6 +79,12 @@ from .events import (CallState, CallStateChanged, ErrorOccurred,
 __all__ = ["CallBridge", "CallOutcome"]
 
 
+#: Why VoiceCallManager.start_call refused (its `last_refusal`); each is
+#: reported as the code `call_<reason>`, which CallUi turns into a sentence.
+CALL_REFUSALS = frozenset({"unavailable", "in_call", "no_session", "unverified",
+                           "rate_limited", "key_exchange", "tunnel"})
+
+
 class CallOutcome:
     """What a call request did, as a stable code for Kotlin to branch on.
 
@@ -290,7 +296,8 @@ class CallBridge:
             return CallOutcome.NOT_CONNECTED
         if self._live(peer):
             return CallOutcome.ALREADY
-        self._submit(manager.start_call(peer), peer, "call_not_placed")
+        self._submit(manager.start_call(peer), peer, "call_not_placed",
+                     refused_by=manager)
         return CallOutcome.STARTED
 
     def answer_call(self, peer: str) -> str:
@@ -556,8 +563,12 @@ class CallBridge:
     def _live(self, peer: str) -> bool:
         return self.state(peer) not in (CallState.IDLE, CallState.ENDED)
 
-    def _submit(self, coro, peer: str, error_code: str) -> None:
+    def _submit(self, coro, peer: str, error_code: str, refused_by=None) -> None:
         """Run a manager coroutine on the call loop, reporting a failure once.
+
+        When the coroutine answers False and `refused_by` (the manager) says
+        why (`last_refusal`), the code is `call_<reason>` -- `call_tunnel`,
+        `call_rate_limited` -- so the screen can say which step stopped it.
 
         Fire and forget with a done-callback, never a blocking wait: the
         coroutines here range from instant to a two-minute tunnel build, and
@@ -581,7 +592,9 @@ class CallBridge:
             # `start_call` answers False for every refusal it decides:
             # unverified peer, no session, rate limit, no audio backend.
             if result is False:
-                self._app._emit(ErrorOccurred(peer=peer, code=error_code))
+                reason = getattr(refused_by, "last_refusal", "") or ""
+                code = ("call_" + reason) if reason in CALL_REFUSALS else error_code
+                self._app._emit(ErrorOccurred(peer=peer, code=code))
 
         try:
             future = asyncio.run_coroutine_threadsafe(coro, loop)

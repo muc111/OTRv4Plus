@@ -593,3 +593,10 @@ class TestTheInvariants:
         import inspect
         src = class_source(xmpp.OTRv4PlusXMPP)
         assert 'register_plugin("xep_0133")' not in src
+
+
+def test_help_prints_without_raising(capsys):
+    """/help read self.TS_HELP from a staticmethod, so it raised NameError."""
+    client = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+    client.show_help()
+    assert "OTRv4+ XMPP commands" in capsys.readouterr().out

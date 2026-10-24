@@ -1943,7 +1943,6 @@ class VoiceFrameCrypto:
                 rust.zeroize()
             except Exception:
                 pass
-                setattr(self, name, None)
 
 
 # ---------------------------------------------------------------------------
@@ -5828,17 +5827,23 @@ class VoiceCallManager:
     async def start_call(self, peer: str) -> bool:
         """Place a call.  Initiator role: publish a destination, then accept."""
         peer = self._bare(peer)
+        # Why the last start_call answered False, for a host that shows it
+        # (android_bridge.voice); the printed line says the same to a terminal.
+        self.last_refusal = ""
         ok, reason = _HOST["voice_available"]()
         if not ok:
             _print("[voice] unavailable: %s" % reason)
+            self.last_refusal = "unavailable"
             return False
         try:
             kem_provider()
         except KemUnavailable as exc:
             _print("[voice] unavailable: %s" % _san(str(exc), 300))
+            self.last_refusal = "unavailable"
             return False
         if self._live_call_count() >= VOICE_MAX_CONCURRENT_CALLS:
             _print("[voice] already in a call")
+            self.last_refusal = "in_call"
             return False
 
         material = self._otr_material(peer)
@@ -5846,9 +5851,11 @@ class VoiceCallManager:
             _print("[voice] refusing: no usable encrypted OTR session with %s"
                    % _san(peer, 64))
             _print("[voice] run /otr first — voice is never sent unencrypted")
+            self.last_refusal = "no_session"
             return False
         if not self._smp_verified(peer):
             self._explain_unverified(peer)
+            self.last_refusal = "unverified"
             return False
 
         now = time.monotonic()
@@ -5856,6 +5863,7 @@ class VoiceCallManager:
         if now - last < VOICE_MIN_INVITE_INTERVAL:
             _print("[voice] slow down — one call attempt every %ds"
                    % int(VOICE_MIN_INVITE_INTERVAL))
+            self.last_refusal = "rate_limited"
             return False
         self._last_invite[peer] = now
 
@@ -5872,6 +5880,7 @@ class VoiceCallManager:
         except Exception as exc:
             _print("[voice] could not start the key exchange: %s"
                    % _san(str(exc), 200))
+            self.last_refusal = "key_exchange"
             return False
         session.on_stream_lost = self._handle_stream_lost
         session.on_media_stalled = self._handle_media_stalled
@@ -5889,6 +5898,7 @@ class VoiceCallManager:
             _print("[voice] could not create SAM session: %s"
                    % _san(str(exc), 200))
             await self.end_call(peer, notify_peer=False)
+            self.last_refusal = "tunnel"
             return False
 
         # Park in ACCEPT *before* the invite goes out, so the responder's

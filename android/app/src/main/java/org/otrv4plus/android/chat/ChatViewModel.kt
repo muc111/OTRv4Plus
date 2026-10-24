@@ -237,8 +237,13 @@ class ChatViewModel : ViewModel() {
             rooms.forEach { refreshGroupMembers(it) }
             withContext(Dispatchers.IO) { runCatching { c.ownedRooms() }.getOrNull() }
                 ?.let { state.noteOwnedRooms(it) }
-            withContext(Dispatchers.IO) { runCatching { c.serverAdmin() }.getOrNull() }
-                ?.let { state.noteServerAdmin(it); isServerAdmin = it }
+            // An unanswered or failed question is "not an admin", never the
+            // previous answer.
+            val admin = withContext(Dispatchers.IO) {
+                runCatching { c.serverAdmin() }.getOrNull()
+            } == true
+            state.noteServerAdmin(admin)
+            serverAdminAnswer = admin
             otherSessions = withContext(Dispatchers.IO) {
                 runCatching { c.otherSessions() }.getOrNull()
             } ?: 0
@@ -258,9 +263,18 @@ class ChatViewModel : ViewModel() {
     var otherSessions by mutableStateOf(0)
         private set
 
-    /** Whether we administer the server: only then can we end them. */
-    var isServerAdmin by mutableStateOf(false)
-        private set
+    /** The server's last answer to "is this account an admin?". */
+    private var serverAdminAnswer by mutableStateOf(false)
+
+    /**
+     * Whether we administer the server: only then are moderation (bans) and
+     * other people's sessions offered. Both the last answer AND the current
+     * account's state must say so: the state is cleared whenever the account
+     * changes, so an admin's answer cannot outlive their sign-in (owner,
+     * 2026-10-24: ban tools showed on an account that was not an admin).
+     */
+    val isServerAdmin: Boolean
+        get() = serverAdminAnswer && state?.serverAdmin == true
 
     var sessionsStatus by mutableStateOf<String?>(null)
 

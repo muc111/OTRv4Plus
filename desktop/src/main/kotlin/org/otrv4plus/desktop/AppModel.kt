@@ -201,8 +201,13 @@ class AppModel(
             groupMembers = groupMembers + members.filterValues { it.isNotEmpty() }
             withContext(Dispatchers.IO) { runCatching { core.ownedRooms() }.getOrNull() }
                 ?.let { chat.noteOwnedRooms(it) }
-            withContext(Dispatchers.IO) { runCatching { core.serverAdmin() }.getOrNull() }
-                ?.let { chat.noteServerAdmin(it); isServerAdmin = it }
+            // An unanswered or failed question is "not an admin", never the
+            // previous answer.
+            val admin = withContext(Dispatchers.IO) {
+                runCatching { core.serverAdmin() }.getOrNull()
+            } == true
+            chat.noteServerAdmin(admin)
+            serverAdminAnswer = admin
             otherSessions = withContext(Dispatchers.IO) { core.otherSessions() } ?: 0
         }
         changed()
@@ -750,8 +755,13 @@ class AppModel(
     /** Other sessions of our own account, as the server reports them. */
     var otherSessions by mutableStateOf(0)
         private set
-    var isServerAdmin by mutableStateOf(false)
-        private set
+    /** The server's last answer to "is this account an admin?". */
+    private var serverAdminAnswer by mutableStateOf(false)
+
+    /** Whether we administer the server: the last answer AND the current
+     *  account's state (cleared when the account changes) must both say so. */
+    val isServerAdmin: Boolean
+        get() = serverAdminAnswer && chat.serverAdmin
     var sessionsStatus by mutableStateOf<String?>(null)
 
     /** XEP-0133 end-user-session for every other session (admins only). */

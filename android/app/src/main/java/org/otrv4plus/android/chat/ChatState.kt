@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.android.chat
 
+import org.otrv4plus.android.crypto.CallUi
 import org.otrv4plus.android.crypto.Verification
 import org.otrv4plus.android.crypto.TransferUi
 
@@ -550,6 +551,7 @@ class ChatState(
             // to the call site that caused them.
             is OtrEvent.Failed -> {
                 (Verification.refusal(event.code)
+                    ?: CallUi.failure(event.code)
                     ?: GroupText.failure(event.code, event.peer))?.let { note(it) }
                 false
             }

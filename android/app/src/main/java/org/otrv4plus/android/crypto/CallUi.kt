@@ -306,4 +306,29 @@ object CallUi {
         // did nothing with no explanation.
         else -> "The call could not be started."
     }
+
+    /**
+     * What to tell the user when a call failed after the request was taken:
+     * an `ErrorOccurred` from `android_bridge.voice`. `call_<reason>` comes
+     * from the voice manager's own refusal, so the line says which step
+     * stopped it. Null for any other code (not a call's).
+     *
+     * Before this, these events were dropped, and pressing Call on a peer
+     * whose call could not go out did nothing visible at all.
+     */
+    @JvmStatic
+    fun failure(code: String): String? = when (code) {
+        "call_unavailable" -> "Voice is not available on this device."
+        "call_in_call" -> "You are already in a call."
+        "call_no_session" -> "The call needs an encrypted session. Start one, then call again."
+        "call_unverified" -> "Verify this contact before calling."
+        "call_rate_limited" -> "Wait a few seconds before calling again."
+        "call_key_exchange" -> "The call could not start its key exchange. Try again."
+        "call_tunnel" -> "The call's I2P tunnels could not be built. Check the I2P router, then try again."
+        "call_not_placed" -> "The call could not be started."
+        "call_not_answered" -> "The call could not be answered."
+        "call_not_ended" -> "The call could not be ended cleanly."
+        "call_signal_failed" -> "A call message from this contact could not be handled."
+        else -> null
+    }
 }

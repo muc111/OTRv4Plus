@@ -30,4 +30,17 @@ class ModerationTextTest {
         assertNull(ModerationText.days("3651"))
         assertNull(ModerationText.days("seven"))
     }
+
+    @Test
+    fun `an admin's standing does not survive a change of account`() {
+        // Owner, 2026-10-24: ban tools showed on an account that was not an
+        // admin. The screen asks ChatState.serverAdmin as well as the server's
+        // last answer, and ChatState forgets it with the account.
+        val s = ChatState().apply { bindAccount(AccountScope.of("admin@x.i2p")) }
+        s.noteServerAdmin(true)
+        kotlin.test.assertTrue(s.serverAdmin)
+        s.bindAccount(AccountScope.of("bob@x.i2p"))
+        kotlin.test.assertFalse(s.serverAdmin)
+    }
 }
+

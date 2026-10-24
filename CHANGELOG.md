@@ -4,6 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.143 and Desktop — 2026-10-24 — a call that cannot go out says why; ban tools for admins only (core 0.13.1)
+
+- **Pressing Call no longer does nothing.** Owner, phone to phone: "pressed
+  call button when it was green and nothing happened". The request was
+  taken, then the voice manager refused or failed in the background, and
+  the event it sent was one the app did not show. The manager now records
+  why (`last_refusal`) and the app says it: voice unavailable, already in a
+  call, no encrypted session, not verified, wait a few seconds, the key
+  exchange failed, or **the call's I2P tunnels could not be built**. The
+  next failed call names its step on screen.
+- **Moderation (ban) tools only for a server admin.** Owner: they showed on
+  the profile page of an account that is not one. The app kept the last
+  "you are an admin" answer forever: through a failed or unanswered check,
+  and across a change of account. A failed check now means "not an admin",
+  and the tools need the current account's own state to agree (cleared when
+  the account changes). Phone and desktop.
+- **Two old bugs found while splitting files**: `VoiceFrameCrypto.zeroize`
+  could raise `NameError` (a stray line in its error branch) if the core's
+  zeroize raised, despite "never raises"; and `/help` in the XMPP terminal
+  client raised `NameError` (a staticmethod reading `self.TS_HELP`). Both
+  fixed, both tested.
+
 ## Android 0.7.0-experimental.rc.142 and Desktop — 2026-10-24 — the connection controller, split (core 0.13.1)
 
 Nothing changes in the app. `android_bridge/connection.py` -- the

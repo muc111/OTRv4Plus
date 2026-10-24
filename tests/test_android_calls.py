@@ -284,7 +284,8 @@ class TestTheSmpGate:
         _settle(pair.alice)
         assert pair.alice.call_state(pair.bob_jid) is CallState.IDLE, (
             "a call was placed to a peer whose identity is not verified")
-        assert "call_not_placed" in pair.alice_sink.codes()
+        # The specific reason, which the app shows (CallUi.failure).
+        assert "call_unverified" in pair.alice_sink.codes()
         assert not _cleared_the_gate(pair.alice, pair.bob_jid), (
             "an unverified peer got past the verification gate")
 

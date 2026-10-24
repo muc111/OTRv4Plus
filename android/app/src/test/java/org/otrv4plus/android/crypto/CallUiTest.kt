@@ -223,4 +223,18 @@ class CallUiTest {
         assertEquals(0xFF2E7D32, CallUi.readinessColour(CallUi.Readiness.READY))
         assertEquals(0xFFC62828, CallUi.readinessColour(CallUi.Readiness.COLD))
     }
+
+    @Test
+    fun `a call that fails after the request says which step stopped it`() {
+        // Pressing Call used to do nothing visible when the call could not
+        // go out: these codes reached the app and were dropped.
+        for (code in listOf("call_unavailable", "call_in_call", "call_no_session",
+                            "call_unverified", "call_rate_limited",
+                            "call_key_exchange", "call_tunnel", "call_not_placed",
+                            "call_not_answered", "call_not_ended", "call_signal_failed")) {
+            assertTrue(!CallUi.failure(code).isNullOrBlank(), code)
+        }
+        assertTrue(CallUi.failure("call_tunnel")!!.contains("I2P"))
+        assertNull(CallUi.failure("group_send_failed"))
+    }
 }
