@@ -274,7 +274,7 @@ class TestSharedWithAndroid:
 
     def test_events_are_read_like_android(self):
         android = open(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
-                                    "otrv4plus", "android", "bridge", "ChaquopyOtrCore.kt")).read()
+                                    "otrv4plus", "android", "bridge", "ChaquopyEvents.kt")).read()
         desktop = open(os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org",
                                     "otrv4plus", "desktop", "engine", "DesktopCore.kt")).read()
 
@@ -282,6 +282,6 @@ class TestSharedWithAndroid:
             body = src.split(start, 1)[1].split("else -> null", 1)[0]
             return set(re.findall(r'^\s*"(\w+)" ->', body, re.M))
 
-        a = types(android, "private fun eventFrom")
+        a = types(android, "fun from(item: PyObject)")
         d = types(desktop, "fun eventFrom")
         assert a and a == d, (a ^ d)

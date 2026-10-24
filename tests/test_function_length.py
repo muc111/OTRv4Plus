@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""No Python function in the clients or the bridge grows past LIMIT lines.
+"""No function in the clients, the bridge or the apps grows past LIMIT lines.
 
 The long ones were split into named steps and families (dispatch_line was
 502 lines, main 460, handle_command 443), and a function that size is where
@@ -60,3 +60,84 @@ def test_every_ceiling_still_names_a_function_over_the_limit():
     lengths = {(rel, name): n for rel, name, n in _functions()}
     stale = [k for k in CEILING if lengths.get(k, 0) <= LIMIT]
     assert not stale, "these are now within the limit; remove them from CEILING: %s" % stale
+
+
+# -- Kotlin (the phone and desktop apps) ---------------------------------------
+
+#: (file, function) -> ceiling. The screens are single composables holding
+#: their own state; each section that moves out lowers its number here.
+KT_CEILING = {
+    ("android/app/src/main/java/org/otrv4plus/android/ui/ConnectScreen.kt", "ConnectScreen"): 423,
+    ("android/app/src/main/java/org/otrv4plus/android/ui/ConversationsScreen.kt",
+     "ConversationsScreen"): 358,
+    ("android/app/src/main/java/org/otrv4plus/android/ui/ProfileScreen.kt", "ProfileScreen"): 344,
+    ("android/app/src/main/java/org/otrv4plus/android/MainActivity.kt", "onCreate"): 322,
+    ("android/app/src/main/java/org/otrv4plus/android/ui/ConversationScreen.kt",
+     "ConversationScreen"): 278,
+    ("android/app/src/main/java/org/otrv4plus/android/ui/DevShellScreen.kt", "DevShellScreen"): 246,
+}
+
+
+def _strip_kotlin(src):
+    """Comments and string contents removed, line count kept, so braces in
+    either cannot be miscounted."""
+    import re
+    keep = lambda m: "\n" * m.group(0).count("\n")  # noqa: E731
+    src = re.sub(r'"""(.|\n)*?"""', lambda m: '""' + keep(m), src)
+    src = re.sub(r"/\*(.|\n)*?\*/", keep, src)
+    src = re.sub(r"//[^\n]*", "", src)
+    src = re.sub(r'"(\\.|[^"\\\n])*"', '""', src)
+    return re.sub(r"'(\\.|[^'\\\n])'", "''", src)
+
+
+def _kotlin_functions():
+    import re
+    paths = (glob.glob(os.path.join(ROOT, "android", "app", "src", "main", "java", "**", "*.kt"),
+                       recursive=True)
+             + glob.glob(os.path.join(ROOT, "desktop", "src", "main", "kotlin", "**", "*.kt"),
+                         recursive=True))
+    head = re.compile(r"\bfun\s+(?:<[^>]*>\s*)?(?:[A-Za-z0-9_.]+\.)?([A-Za-z0-9_]+)\s*\(")
+    for path in sorted(paths):
+        rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
+        s = _strip_kotlin(open(path, encoding="utf-8").read())
+        for m in head.finditer(s):
+            i, depth = m.end(), 1
+            while i < len(s) and depth:
+                depth += {"(": 1, ")": -1}.get(s[i], 0)
+                i += 1
+            while i < len(s) and s[i] not in "{=":
+                i += 1
+            if i >= len(s) or s[i] == "=":
+                continue                      # an expression body
+            depth, end = 0, i
+            while end < len(s):
+                if s[end] == "{":
+                    depth += 1
+                elif s[end] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            yield rel, m.group(1), s.count("\n", m.start(), end) + 1
+
+
+def test_the_kotlin_scan_sees_the_screens():
+    names = {(rel, name) for rel, name, _ in _kotlin_functions()}
+    assert set(KT_CEILING) <= names, set(KT_CEILING) - names
+
+
+def test_no_kotlin_function_is_longer_than_the_limit_or_its_ceiling():
+    over = []
+    for rel, name, length in _kotlin_functions():
+        ceiling = KT_CEILING.get((rel, name), LIMIT)
+        if length > ceiling:
+            over.append("%s %s: %d lines (limit %d)" % (rel, name, length, ceiling))
+    assert not over, "split these into smaller composables or steps:\n  " + "\n  ".join(over)
+
+
+def test_every_kotlin_ceiling_still_names_a_function_over_the_limit():
+    longest = {}
+    for rel, name, n in _kotlin_functions():
+        longest[(rel, name)] = max(n, longest.get((rel, name), 0))
+    stale = [k for k in KT_CEILING if longest.get(k, 0) <= LIMIT]
+    assert not stale, "now within the limit; remove from KT_CEILING: %s" % stale

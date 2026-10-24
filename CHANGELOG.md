@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.153 — 2026-10-24 — code split, step 8, and a length limit for Kotlin (core 0.13.1)
+
+Nothing changes on the phone.
+
+- The bridge's event decoding (every Python event turned into a Kotlin
+  `OtrEvent`) moves out of `ChaquopyOtrCore.kt` into `ChaquopyEvents.kt`,
+  unchanged. It reads only the event it is given.
+- `RoomsScreen` (521 lines) becomes the screen and three parts: your
+  encrypted groups, plain rooms, and the screen's dialogs.
+- **Guard:** `tests/test_function_length.py` now also covers the Kotlin of
+  both apps: no function over 200 lines. Six screens still are, each with
+  its current length as a ceiling.
+
 ## Android 0.7.0-experimental.rc.152 — 2026-10-24 — zoom in the file viewer; chats that need you pulse yellow (core 0.13.1)
 
 - **Zoom in the file viewer.** Pictures and PDF pages can be pinched,

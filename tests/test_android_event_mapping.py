@@ -28,7 +28,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 BRIDGE = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
-                      "otrv4plus", "android", "bridge", "ChaquopyOtrCore.kt")
+                      "otrv4plus", "android", "bridge", "ChaquopyEvents.kt")
 
 pytestmark = pytest.mark.skipif(
     not os.path.exists(BRIDGE),
@@ -60,7 +60,7 @@ def kotlin_source():
 def mapped_type_names():
     """The string literals the `when (str("type"))` actually branches on."""
     src = kotlin_source()
-    start = src.index("private fun eventFrom(")
+    start = src.index("fun from(item: PyObject)")
     body = src[start:]
     # Branch heads look like:  "SessionStateChanged" ->
     return set(re.findall(r'"([A-Za-z_][A-Za-z0-9_]*)"\s*->', body))

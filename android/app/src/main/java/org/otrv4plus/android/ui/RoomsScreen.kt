@@ -185,112 +185,7 @@ fun RoomsScreen(
         // we are not in, and plain rooms.
         val split = RoomSections.split(model.rooms, model.secureGroups)
 
-        // ══ Encrypted groups ══════════════════════════════════════════════
-        // Listed from the engine, not the server: these are the groups this
-        // account holds keys for, whether or not their room is joined yet.
-        LaunchedEffect(model.core) { if (model.core != null) model.refreshSecureGroups() }
-        var deleting by rememberSaveable { mutableStateOf<String?>(null) }
-        Section(
-            title = "🔐 " + RoomSections.MINE_TITLE,
-            note = RoomSections.MINE_NOTE,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            action = {
-                TextButton(enabled = busy == null, onClick = { model.refreshSecureGroups() }) {
-                    Text("Refresh")
-                }
-            },
-        ) {
-            if (model.secureGroups.isEmpty()) {
-                Text("None yet. Create one below, or accept an invitation.",
-                     style = MaterialTheme.typography.bodySmall)
-            }
-            for (group in model.secureGroups) {
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("🔐 $group", style = MaterialTheme.typography.bodyMedium)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(enabled = busy == null,
-                               onClick = { onOpenRoom(group) }) { Text("Open") }
-                        OutlinedButton(enabled = busy == null,
-                                       onClick = { model.leaveSecureGroup(group) }) { Text("Leave") }
-                        if (model.canDelete(group)) {
-                            OutlinedButton(enabled = busy == null,
-                                           onClick = { deleting = group }) {
-                                Text("Delete", color = MaterialTheme.colorScheme.error)
-                            }
-                        }
-                    }
-                }
-            }
-
-            HorizontalDivider()
-            // A secure group: MLS end to end, the room carries ciphertext
-            // only. Members are added by invitation over an encrypted OTRv4+
-            // session. Its passphrase (owner design, 2026-10-10) is how
-            // members verify each other later; group calls are among
-            // verified members only. Kept in `remember` only: never into
-            // the saved state. No room password: see
-            // RoomsViewModel.createSecure.
-            Text("New encrypted group", style = MaterialTheme.typography.titleSmall)
-            Text(RoomSections.MLS_PLUS_NOTE, style = MaterialTheme.typography.bodySmall,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-            var groupName by rememberSaveable { mutableStateOf("") }
-            var groupPassphrase by remember { mutableStateOf("") }
-            OutlinedTextField(
-                value = groupName,
-                onValueChange = { groupName = it },
-                label = { Text("Group name") },
-                placeholder = { Text("team") },
-                supportingText = {
-                    Text(service?.let { "Will be created on $it" }
-                             ?: "Looking for this server's rooms service…",
-                         style = MaterialTheme.typography.bodySmall)
-                },
-                singleLine = true,
-                enabled = busy == null,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = groupPassphrase,
-                onValueChange = { groupPassphrase = it },
-                label = { Text("Group passphrase (for verifying members)") },
-                supportingText = {
-                    Text("8+ characters. Tell the members in person or on a call, " +
-                         "never in a chat. Members type it to verify; only verified " +
-                         "members are in group calls. Never stored or sent.",
-                         style = MaterialTheme.typography.bodySmall)
-                },
-                singleLine = true,
-                enabled = busy == null,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Button(
-                enabled = busy == null && groupName.isNotBlank() && nick.isNotBlank() &&
-                    (groupPassphrase.isEmpty() || groupPassphrase.length >= 8),
-                onClick = {
-                    model.createSecure(groupName.trim(), nick.trim(), groupPassphrase)
-                    groupPassphrase = ""
-                },
-            ) { Text("Create encrypted group") }
-            Text("Invite members from the group once it is made. It needs no " +
-                     "password: nobody can read it without an invitation.",
-                 style = MaterialTheme.typography.bodySmall)
-        }
-        deleting?.let { group ->
-            AlertDialog(
-                onDismissRequest = { deleting = null },
-                title = { Text("Delete this group for everyone?") },
-                text = { Text(org.otrv4plus.android.chat.GroupText.endConfirm(true, group)) },
-                confirmButton = {
-                    TextButton(onClick = {
-                        model.deleteSecureGroup(group)
-                        deleting = null
-                    }) { Text("Delete") }
-                },
-                dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
-            )
-        }
+        EncryptedGroupsSection(model, busy, service, nick, onOpenRoom)
 
         // ── Encrypted groups on this server we are not in ────────────────
         if (service != null && split.encrypted.isNotEmpty()) {
@@ -314,259 +209,404 @@ fun RoomsScreen(
             }
         }
 
-        // ══ Plain rooms ═══════════════════════════════════════════════════
-        Section(
-            title = "# " + RoomSections.PLAIN_TITLE,
-            note = RoomSections.PLAIN_NOTE,
-            noteColor = MaterialTheme.colorScheme.error,
-            color = MaterialTheme.colorScheme.surfaceVariant,
-            action = {
-                if (service != null) {
-                    TextButton(enabled = busy == null,
-                               onClick = { model.refreshRooms(service) }) { Text("Refresh") }
-                }
-            },
-        ) {
-            // Rooms you are in (an encrypted group is in its own section).
-            val plainJoined = model.joined.filterKeys { it !in model.secureGroups }
-            if (plainJoined.isNotEmpty()) {
-                Text("You are in", style = MaterialTheme.typography.titleSmall)
-                for ((room, standing) in plainJoined) {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text("# $room", style = MaterialTheme.typography.bodyMedium)
-                        // Both, always. Affiliation is standing with the room
-                        // and survives leaving; role is standing in this
-                        // visit. An owner who joined as a visitor cannot
-                        // speak, and showing only one of the two would make
-                        // that unexplainable.
-                        Text(
-                            "${standing.affiliation} · ${standing.role}" +
-                                if (!standing.speak) " · read-only" else "",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedButton(
-                                enabled = busy == null,
-                                onClick = { model.leave(room, standing.nick) },
-                            ) { Text("Leave") }
-                            if (standing.destroy) {
-                                // Owners only. Offered to anybody else, this
-                                // is a button that fails minutes after it is
-                                // pressed.
-                                OutlinedButton(
-                                    enabled = busy == null,
-                                    onClick = { model.destroy(room) },
-                                ) { Text("Delete room") }
-                            }
-                        }
-                    }
-                }
-                HorizontalDivider()
-            }
+        PlainRoomsSection(model, busy, service, nick, split, address,
+                          onAddressChange = { address = it },
+                          onDelete = { deletingRoom = it })
 
-            // ── On this server ──
-            if (service != null) {
-                Text("On this server", style = MaterialTheme.typography.titleSmall)
-                if (split.plain.isEmpty()) {
-                    // Not an error. A room configured as hidden is absent by
-                    // design, so an empty list says what is ADVERTISED and
-                    // nothing about what exists.
-                    Text(
-                        "Nothing is advertised here. Rooms can be hidden, so " +
-                            "there may still be some — join by address if you " +
-                            "know one.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                for (room in split.plain) {
-                    ListedRoom(model, room, busy, onDelete = { deletingRoom = room.jid }) {
-                        TextButton(
-                            enabled = busy == null && nick.isNotBlank() &&
-                                !model.joined.containsKey(room.jid),
-                            onClick = { model.joinListed(room, nick.trim()) },
-                        ) {
-                            Text(if (model.joined.containsKey(room.jid)) "In" else "Join")
-                        }
-                    }
-                }
-                HorizontalDivider()
-            }
-
-            // ── Join or create by name ──
-            Text("Join or create a plain room", style = MaterialTheme.typography.titleSmall)
-            OutlinedTextField(
-                value = address,
-                onValueChange = { address = it },
-                // A NAME, NOT AN ADDRESS.
-                //
-                // This asked for a full JID and somebody creating a room
-                // typed the name of the room -- reasonably. What reached
-                // slixmpp was a domainless JID, `join_muc_wait` sat on it for
-                // its 300 s default, and the throw skipped the line that
-                // cleared the spinner. `RoomAddress` builds the JID from the
-                // DISCOVERED conference service instead; a full address is
-                // still accepted for a room on another server.
-                label = { Text("Room name") },
-                placeholder = { Text("myroom") },
-                supportingText = {
-                    Text(
-                        service?.let { "Will be created on $it" }
-                            ?: "Looking for this server's rooms service…",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                },
-                singleLine = true,
-                enabled = busy == null,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            // PASSWORD-PROTECTED CREATE, plain rooms only. Kept in
-            // `remember` only: a password must not be written into the
-            // saved-instance Bundle.
-            var protect by remember { mutableStateOf(false) }
-            var roomPassword by remember { mutableStateOf("") }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = protect, enabled = busy == null,
-                         onCheckedChange = { protect = it; if (!it) roomPassword = "" })
-                Text("Password protect a new room",
-                     style = MaterialTheme.typography.bodyMedium)
-            }
-            if (protect) {
-                OutlinedTextField(
-                    value = roomPassword,
-                    onValueChange = { roomPassword = it },
-                    label = { Text("Room password") },
-                    supportingText = {
-                        Text("Only people who enter this password can join. " +
-                                 RoomPassword.NOT_ENCRYPTION,
-                             style = MaterialTheme.typography.bodySmall)
-                    },
-                    singleLine = true,
-                    enabled = busy == null,
-                    visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            val canAct = busy == null && address.isNotBlank() && nick.isNotBlank()
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    enabled = canAct,
-                    onClick = { model.join(address.trim(), nick.trim()) },
-                ) { Text("Join") }
-
-                // Secondary, like Create account on the login screen and for
-                // the same reason: joining is the common case and creating
-                // happens once.
-                OutlinedButton(
-                    enabled = canAct && (!protect || roomPassword.isNotBlank()),
-                    onClick = {
-                        model.create(address.trim(), nick.trim(),
-                                     if (protect) roomPassword else "")
-                    },
-                ) { Text("Create") }
-
-                // Moderation: a room that is not listed (hidden) can still be
-                // deleted by its address -- offered only when the server says
-                // it is ours (owner, 2026-10-16: nobody else should see it).
-                if (address.isNotBlank() && model.canDelete(address)) {
-                    OutlinedButton(
-                        enabled = busy == null,
-                        onClick = { deletingRoom = address.trim() },
-                    ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
-                }
-            }
-        }
-
-        deletingRoom?.let { target ->
-            AlertDialog(
-                onDismissRequest = { deletingRoom = null },
-                title = { Text("Delete this room for everyone?") },
-                text = {
-                    Text("$target will be deleted on the server: everyone in it " +
-                             "is removed and its history goes. Only its owner (who " +
-                             "created it) or a server admin can do this. It cannot " +
-                             "be undone.")
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        model.deleteRoom(target)
-                        deletingRoom = null
-                    }) { Text("Delete") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { deletingRoom = null }) { Text("Cancel") }
-                },
-            )
-        }
-
-        // THE PROMPT. A plain room the list marks as protected, or one the
-        // service refused for want of a password (not-authorized); nothing
-        // retries without the user.
-        model.passwordPrompt?.let { prompt ->
-            var entered by remember(prompt) { mutableStateOf("") }
-            AlertDialog(
-                onDismissRequest = { model.cancelPassword() },
-                title = { Text("Room password") },
-                text = {
-                    Column {
-                        Text(prompt.message,
-                             color = if (prompt.retry) MaterialTheme.colorScheme.error
-                                     else MaterialTheme.colorScheme.onSurface)
-                        Spacer(Modifier.height(8.dp))
-                        OutlinedTextField(
-                            value = entered,
-                            onValueChange = { entered = it },
-                            label = { Text("Password") },
-                            singleLine = true,
-                            visualTransformation = PasswordVisualTransformation(),
-                            keyboardOptions = KeyboardOptions(
-                                keyboardType = KeyboardType.Password),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                        Spacer(Modifier.height(4.dp))
-                        Text(RoomPassword.NOT_ENCRYPTION,
-                             style = MaterialTheme.typography.bodySmall)
-                    }
-                },
-                confirmButton = {
-                    TextButton(enabled = entered.isNotBlank() && busy == null,
-                               onClick = { model.submitPassword(entered) }) {
-                        Text("Enter")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { model.cancelPassword() }) { Text("Cancel") }
-                },
-            )
-        }
-
-        // "Ask to join?" -- asked first, because it posts our address in a
-        // room whose occupants (and the server) can read it.
-        model.askToJoinFor?.let { room ->
-            AlertDialog(
-                onDismissRequest = { model.cancelAskToJoin() },
-                title = { Text(RoomPassword.NEEDS_INVITE_TITLE) },
-                text = {
-                    Column {
-                        Text(room, style = MaterialTheme.typography.bodyMedium)
-                        Spacer(Modifier.height(8.dp))
-                        Text(RoomPassword.NEEDS_INVITE)
-                    }
-                },
-                confirmButton = {
-                    TextButton(enabled = busy == null,
-                               onClick = { model.askToJoin(room) }) { Text("Ask to join") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { model.cancelAskToJoin() }) { Text("Cancel") }
-                },
-            )
-        }
+        RoomDialogs(model, busy, deletingRoom, onDismissDelete = { deletingRoom = null })
 
         if (showBack) {
             Spacer(Modifier.height(8.dp))
             TextButton(onClick = onBack) { Text("Back") }
         }
+    }
+}
+
+/** The encrypted groups this account holds keys for, and making a new one. */
+@Composable
+private fun EncryptedGroupsSection(
+    model: RoomsViewModel,
+    busy: String?,
+    service: String?,
+    nick: String,
+    onOpenRoom: (String) -> Unit,
+) {
+    // ══ Encrypted groups ══════════════════════════════════════════════
+    // Listed from the engine, not the server: these are the groups this
+    // account holds keys for, whether or not their room is joined yet.
+    LaunchedEffect(model.core) { if (model.core != null) model.refreshSecureGroups() }
+    var deleting by rememberSaveable { mutableStateOf<String?>(null) }
+    Section(
+        title = "🔐 " + RoomSections.MINE_TITLE,
+        note = RoomSections.MINE_NOTE,
+        color = MaterialTheme.colorScheme.primaryContainer,
+        action = {
+            TextButton(enabled = busy == null, onClick = { model.refreshSecureGroups() }) {
+                Text("Refresh")
+            }
+        },
+    ) {
+        if (model.secureGroups.isEmpty()) {
+            Text("None yet. Create one below, or accept an invitation.",
+                 style = MaterialTheme.typography.bodySmall)
+        }
+        for (group in model.secureGroups) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("🔐 $group", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(enabled = busy == null,
+                           onClick = { onOpenRoom(group) }) { Text("Open") }
+                    OutlinedButton(enabled = busy == null,
+                                   onClick = { model.leaveSecureGroup(group) }) { Text("Leave") }
+                    if (model.canDelete(group)) {
+                        OutlinedButton(enabled = busy == null,
+                                       onClick = { deleting = group }) {
+                            Text("Delete", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalDivider()
+        // A secure group: MLS end to end, the room carries ciphertext
+        // only. Members are added by invitation over an encrypted OTRv4+
+        // session. Its passphrase (owner design, 2026-10-10) is how
+        // members verify each other later; group calls are among
+        // verified members only. Kept in `remember` only: never into
+        // the saved state. No room password: see
+        // RoomsViewModel.createSecure.
+        Text("New encrypted group", style = MaterialTheme.typography.titleSmall)
+        Text(RoomSections.MLS_PLUS_NOTE, style = MaterialTheme.typography.bodySmall,
+             color = MaterialTheme.colorScheme.onSurfaceVariant)
+        var groupName by rememberSaveable { mutableStateOf("") }
+        var groupPassphrase by remember { mutableStateOf("") }
+        OutlinedTextField(
+            value = groupName,
+            onValueChange = { groupName = it },
+            label = { Text("Group name") },
+            placeholder = { Text("team") },
+            supportingText = {
+                Text(service?.let { "Will be created on $it" }
+                         ?: "Looking for this server's rooms service…",
+                     style = MaterialTheme.typography.bodySmall)
+            },
+            singleLine = true,
+            enabled = busy == null,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = groupPassphrase,
+            onValueChange = { groupPassphrase = it },
+            label = { Text("Group passphrase (for verifying members)") },
+            supportingText = {
+                Text("8+ characters. Tell the members in person or on a call, " +
+                     "never in a chat. Members type it to verify; only verified " +
+                     "members are in group calls. Never stored or sent.",
+                     style = MaterialTheme.typography.bodySmall)
+            },
+            singleLine = true,
+            enabled = busy == null,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Button(
+            enabled = busy == null && groupName.isNotBlank() && nick.isNotBlank() &&
+                (groupPassphrase.isEmpty() || groupPassphrase.length >= 8),
+            onClick = {
+                model.createSecure(groupName.trim(), nick.trim(), groupPassphrase)
+                groupPassphrase = ""
+            },
+        ) { Text("Create encrypted group") }
+        Text("Invite members from the group once it is made. It needs no " +
+                 "password: nobody can read it without an invitation.",
+             style = MaterialTheme.typography.bodySmall)
+    }
+    deleting?.let { group ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete this group for everyone?") },
+            text = { Text(org.otrv4plus.android.chat.GroupText.endConfirm(true, group)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    model.deleteSecureGroup(group)
+                    deleting = null
+                }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+        )
+    }
+}
+
+/** Plain rooms: the ones we are in, the ones listed, and joining or creating by name. */
+@Composable
+private fun PlainRoomsSection(
+    model: RoomsViewModel,
+    busy: String?,
+    service: String?,
+    nick: String,
+    split: RoomSections.Split,
+    address: String,
+    onAddressChange: (String) -> Unit,
+    onDelete: (String) -> Unit,
+) {
+    // ══ Plain rooms ═══════════════════════════════════════════════════
+    Section(
+        title = "# " + RoomSections.PLAIN_TITLE,
+        note = RoomSections.PLAIN_NOTE,
+        noteColor = MaterialTheme.colorScheme.error,
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        action = {
+            if (service != null) {
+                TextButton(enabled = busy == null,
+                           onClick = { model.refreshRooms(service) }) { Text("Refresh") }
+            }
+        },
+    ) {
+        // Rooms you are in (an encrypted group is in its own section).
+        val plainJoined = model.joined.filterKeys { it !in model.secureGroups }
+        if (plainJoined.isNotEmpty()) {
+            Text("You are in", style = MaterialTheme.typography.titleSmall)
+            for ((room, standing) in plainJoined) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("# $room", style = MaterialTheme.typography.bodyMedium)
+                    // Both, always. Affiliation is standing with the room
+                    // and survives leaving; role is standing in this
+                    // visit. An owner who joined as a visitor cannot
+                    // speak, and showing only one of the two would make
+                    // that unexplainable.
+                    Text(
+                        "${standing.affiliation} · ${standing.role}" +
+                            if (!standing.speak) " · read-only" else "",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            enabled = busy == null,
+                            onClick = { model.leave(room, standing.nick) },
+                        ) { Text("Leave") }
+                        if (standing.destroy) {
+                            // Owners only. Offered to anybody else, this
+                            // is a button that fails minutes after it is
+                            // pressed.
+                            OutlinedButton(
+                                enabled = busy == null,
+                                onClick = { model.destroy(room) },
+                            ) { Text("Delete room") }
+                        }
+                    }
+                }
+            }
+            HorizontalDivider()
+        }
+
+        // ── On this server ──
+        if (service != null) {
+            Text("On this server", style = MaterialTheme.typography.titleSmall)
+            if (split.plain.isEmpty()) {
+                // Not an error. A room configured as hidden is absent by
+                // design, so an empty list says what is ADVERTISED and
+                // nothing about what exists.
+                Text(
+                    "Nothing is advertised here. Rooms can be hidden, so " +
+                        "there may still be some — join by address if you " +
+                        "know one.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            for (room in split.plain) {
+                ListedRoom(model, room, busy, onDelete = { onDelete(room.jid) }) {
+                    TextButton(
+                        enabled = busy == null && nick.isNotBlank() &&
+                            !model.joined.containsKey(room.jid),
+                        onClick = { model.joinListed(room, nick.trim()) },
+                    ) {
+                        Text(if (model.joined.containsKey(room.jid)) "In" else "Join")
+                    }
+                }
+            }
+            HorizontalDivider()
+        }
+
+        // ── Join or create by name ──
+        Text("Join or create a plain room", style = MaterialTheme.typography.titleSmall)
+        OutlinedTextField(
+            value = address,
+            onValueChange = onAddressChange,
+            // A NAME, NOT AN ADDRESS.
+            //
+            // This asked for a full JID and somebody creating a room
+            // typed the name of the room -- reasonably. What reached
+            // slixmpp was a domainless JID, `join_muc_wait` sat on it for
+            // its 300 s default, and the throw skipped the line that
+            // cleared the spinner. `RoomAddress` builds the JID from the
+            // DISCOVERED conference service instead; a full address is
+            // still accepted for a room on another server.
+            label = { Text("Room name") },
+            placeholder = { Text("myroom") },
+            supportingText = {
+                Text(
+                    service?.let { "Will be created on $it" }
+                        ?: "Looking for this server's rooms service…",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            },
+            singleLine = true,
+            enabled = busy == null,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // PASSWORD-PROTECTED CREATE, plain rooms only. Kept in
+        // `remember` only: a password must not be written into the
+        // saved-instance Bundle.
+        var protect by remember { mutableStateOf(false) }
+        var roomPassword by remember { mutableStateOf("") }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = protect, enabled = busy == null,
+                     onCheckedChange = { protect = it; if (!it) roomPassword = "" })
+            Text("Password protect a new room",
+                 style = MaterialTheme.typography.bodyMedium)
+        }
+        if (protect) {
+            OutlinedTextField(
+                value = roomPassword,
+                onValueChange = { roomPassword = it },
+                label = { Text("Room password") },
+                supportingText = {
+                    Text("Only people who enter this password can join. " +
+                             RoomPassword.NOT_ENCRYPTION,
+                         style = MaterialTheme.typography.bodySmall)
+                },
+                singleLine = true,
+                enabled = busy == null,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        val canAct = busy == null && address.isNotBlank() && nick.isNotBlank()
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = canAct,
+                onClick = { model.join(address.trim(), nick.trim()) },
+            ) { Text("Join") }
+
+            // Secondary, like Create account on the login screen and for
+            // the same reason: joining is the common case and creating
+            // happens once.
+            OutlinedButton(
+                enabled = canAct && (!protect || roomPassword.isNotBlank()),
+                onClick = {
+                    model.create(address.trim(), nick.trim(),
+                                 if (protect) roomPassword else "")
+                },
+            ) { Text("Create") }
+
+            // Moderation: a room that is not listed (hidden) can still be
+            // deleted by its address -- offered only when the server says
+            // it is ours (owner, 2026-10-16: nobody else should see it).
+            if (address.isNotBlank() && model.canDelete(address)) {
+                OutlinedButton(
+                    enabled = busy == null,
+                    onClick = { onDelete(address.trim()) },
+                ) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+            }
+        }
+    }
+}
+
+/** Delete-for-everyone, a room's password, and "ask to join?". */
+@Composable
+private fun RoomDialogs(
+    model: RoomsViewModel,
+    busy: String?,
+    deletingRoom: String?,
+    onDismissDelete: () -> Unit,
+) {
+    deletingRoom?.let { target ->
+        AlertDialog(
+            onDismissRequest = onDismissDelete,
+            title = { Text("Delete this room for everyone?") },
+            text = {
+                Text("$target will be deleted on the server: everyone in it " +
+                         "is removed and its history goes. Only its owner (who " +
+                         "created it) or a server admin can do this. It cannot " +
+                         "be undone.")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    model.deleteRoom(target)
+                    onDismissDelete()
+                }) { Text("Delete") }
+            },
+            dismissButton = {
+                TextButton(onClick = onDismissDelete) { Text("Cancel") }
+            },
+        )
+    }
+
+    // THE PROMPT. A plain room the list marks as protected, or one the
+    // service refused for want of a password (not-authorized); nothing
+    // retries without the user.
+    model.passwordPrompt?.let { prompt ->
+        var entered by remember(prompt) { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { model.cancelPassword() },
+            title = { Text("Room password") },
+            text = {
+                Column {
+                    Text(prompt.message,
+                         color = if (prompt.retry) MaterialTheme.colorScheme.error
+                                 else MaterialTheme.colorScheme.onSurface)
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = entered,
+                        onValueChange = { entered = it },
+                        label = { Text("Password") },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(
+                            keyboardType = KeyboardType.Password),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(RoomPassword.NOT_ENCRYPTION,
+                         style = MaterialTheme.typography.bodySmall)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = entered.isNotBlank() && busy == null,
+                           onClick = { model.submitPassword(entered) }) {
+                    Text("Enter")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { model.cancelPassword() }) { Text("Cancel") }
+            },
+        )
+    }
+
+    // "Ask to join?" -- asked first, because it posts our address in a
+    // room whose occupants (and the server) can read it.
+    model.askToJoinFor?.let { room ->
+        AlertDialog(
+            onDismissRequest = { model.cancelAskToJoin() },
+            title = { Text(RoomPassword.NEEDS_INVITE_TITLE) },
+            text = {
+                Column {
+                    Text(room, style = MaterialTheme.typography.bodyMedium)
+                    Spacer(Modifier.height(8.dp))
+                    Text(RoomPassword.NEEDS_INVITE)
+                }
+            },
+            confirmButton = {
+                TextButton(enabled = busy == null,
+                           onClick = { model.askToJoin(room) }) { Text("Ask to join") }
+            },
+            dismissButton = {
+                TextButton(onClick = { model.cancelAskToJoin() }) { Text("Cancel") }
+            },
+        )
     }
 }
 
