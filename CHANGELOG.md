@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.138 and Desktop — 2026-10-24 — splitting the big files, step 4 (core 0.13.1)
+
+Nothing changes in the app. **`otrv4plus_termux.py`** takes the terminal
+client's Termux setup (packages, the sound server, the microphone permission
+and source) and the `/audioprobe` and `/audiotest` self-tests, 720 lines.
+`main()` and `/audiotest` hand it the client's own Opus loader and voice
+check, so the audio hooks the Android bridge binds are the ones it uses.
+`otrv4plus_xmpp.py` is 3,800 lines (8,650 four builds ago).
+
 ## Android 0.7.0-experimental.rc.137 and Desktop — 2026-10-24 — splitting the big files, step 3 (core 0.13.1)
 
 Nothing changes in the app. `otrv4plus_xmpp.py` is now 4,500 lines (from
