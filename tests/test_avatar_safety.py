@@ -492,7 +492,8 @@ class TestTheTransport:
         ctl._transport = t
         assert "I2P" in ctl.set_avatar(png(96, 96, 6))["detail"]
         # Each round trip gets minutes, not the 30 s a chat call gets.
-        assert T.AVATAR_TIMEOUT >= 120
+        from android_bridge import transport_avatar
+        assert transport_avatar.AVATAR_TIMEOUT >= 120
 
     def test_a_publish_through_the_real_loop_succeeds(self):
         t, plugin, _asyncio = self._transport("")
