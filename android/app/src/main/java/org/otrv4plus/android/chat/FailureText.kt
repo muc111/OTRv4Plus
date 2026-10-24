@@ -50,6 +50,11 @@ object FailureText {
         "no_transport" to "Not connected to the server.",
         "protocol_send_failed" to "A message to this contact could not be sent. Try again.",
         "decrypt_failed" to "A message from this contact could not be decrypted.",
+        // A2: the same identity without, or with another, post-quantum key is
+        // what an attacker able to forge the classical key looks like.
+        "pq_v2_required" to "Encryption with this contact was refused: their app is too old for this one's security requirements. Both of you need this version or newer.",
+        "pq_downgrade" to "Encryption with this contact was refused: their app did not prove its post-quantum key this time. Ask them in person whether they reinstalled or went back to an older version.",
+        "pq_key_changed" to "Encryption with this contact was refused: their post-quantum key has changed. Ask them in person whether they reinstalled before trusting them again.",
         "smp_not_produced" to "The verification could not be started. Try again.",
         "smp_respond_failed" to "Your verification answer could not be sent. Try again.",
         "smp_resume_failed" to "The verification could not be continued. Ask them to start it again.",

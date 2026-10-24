@@ -35,6 +35,18 @@ const MLKEM_EK_SIZE:  usize = 1568;
 const MLKEM_CT_SIZE:  usize = 1568;
 const MLDSA_PUB_SIZE: usize = 2592;
 const MLDSA_SIG_SIZE: usize = 4627;
+
+/// Capability byte in the signed ClientProfile version list: "authenticates
+/// with ML-DSA-87 in both directions" (SPEC §4.3, audit A2). When both
+/// profiles list it, the initiator MUST commit its ML-DSA key in DAKE1, the
+/// responder MUST commit and sign in DAKE2, and DAKE3 is then signed too.
+pub const PQ_AUTH_VERSION: u8 = 0x51;
+
+/// Does this signed-profile encoding list version `v`?
+fn profile_lists(profile: &[u8], v: u8) -> bool {
+    let Some(&count) = profile.get(1) else { return false };
+    profile.get(2..2 + count as usize).is_some_and(|vs| vs.contains(&v))
+}
 const MAC_SIZE:       usize = 64;
 
 const RING_SIGMA_SIZE: usize = 228;
@@ -340,6 +352,8 @@ pub struct DakeState {
     peer_profile_bytes: Option<Vec<u8>>,
 
     #[zeroize(skip)] pub our_profile_bytes: Vec<u8>,
+    /// The peer's ML-DSA key verified a signature over this handshake.
+    #[zeroize(skip)] peer_mldsa_verified: bool,
     session_keys:      Option<DakeSessionKeys>,
     transcript:        Vec<u8>,
 
@@ -402,7 +416,8 @@ impl DakeState {
             our_mlkem_sk: SecretVec::from_slice(&sk), our_mlkem_ek: mlek,
             peer_identity_pub: [0u8; ED448_PUB_SIZE], peer_eph_x448_pub: [0u8; X448_PUB_SIZE],
             peer_mlkem_ek: [0u8; MLKEM_EK_SIZE], peer_mldsa_pub: None, peer_profile_bytes: None,
-            our_profile_bytes: Vec::new(), session_keys: None, transcript: Vec::new(),
+            our_profile_bytes: Vec::new(), peer_mldsa_verified: false,
+            session_keys: None, transcript: Vec::new(),
             phase: DakePhase::Idle, is_initiator: false, sender_tag, receiver_tag: 0,
             wiped: false,
         })
@@ -413,6 +428,9 @@ impl DakeState {
         self.refuse_if_wiped()?;
         if self.phase != DakePhase::Idle { return Err(OtrError::Dake("wrong phase")); }
         self.is_initiator = true;
+        if self.our_profile_bytes.is_empty() {
+            self.our_profile_bytes = client_profile.to_vec();
+        }
         let mut msg = vec![MSG_DAKE1];
         msg.extend_from_slice(&self.our_eph_x448_pub);
         msg.extend_from_slice(&self.our_mlkem_ek);
@@ -494,8 +512,44 @@ impl DakeState {
         &mut self, client_profile: &[u8], our_prekey_priv: Option<&[u8]>,
         mldsa_pub: Option<&[u8]>,
     ) -> Result<(Vec<u8>, DakeSessionKeys)> {
+        self.generate_dake2_signed(client_profile, our_prekey_priv, mldsa_pub, None)
+    }
+
+    /// Both signed profiles list PQ_AUTH_VERSION: ML-DSA both ways, mandatory.
+    pub fn pq_auth(&self) -> bool {
+        profile_lists(&self.our_profile_bytes, PQ_AUTH_VERSION)
+            && self.peer_profile_bytes.as_deref()
+                   .is_some_and(|p| profile_lists(p, PQ_AUTH_VERSION))
+    }
+
+    /// Whether the peer's ML-DSA key has verified a signature over this
+    /// handshake: the responder's in DAKE2 (initiator side, when `pq_auth`),
+    /// the initiator's in DAKE3 (responder side).
+    pub fn peer_mldsa_verified(&self) -> bool { self.peer_mldsa_verified }
+
+    /// The message the responder's ML-DSA signature covers: the peer's DAKE1
+    /// (the transcript so far) and DAKE2 up to the signature.
+    fn auth_r_pq_msg(&self, dake2_prefix: &[u8]) -> Vec<u8> {
+        let mut m = Vec::with_capacity(self.transcript.len() + dake2_prefix.len());
+        m.extend_from_slice(&self.transcript);
+        m.extend_from_slice(dake2_prefix);
+        kdf::kdf_1(usage::AUTH_R_PQ_MSG, &m, 64)
+    }
+
+    /// DAKE2, with the responder's ML-DSA-87 signature when `pq_auth` (A2).
+    pub fn generate_dake2_signed(
+        &mut self, client_profile: &[u8], our_prekey_priv: Option<&[u8]>,
+        mldsa_pub: Option<&[u8]>, mldsa_sign: Option<MldsaSigner<'_>>,
+    ) -> Result<(Vec<u8>, DakeSessionKeys)> {
         self.refuse_if_wiped()?;
         if self.phase != DakePhase::ReceivedDake1 { return Err(OtrError::Dake("wrong phase")); }
+        if self.our_profile_bytes.is_empty() {
+            self.our_profile_bytes = client_profile.to_vec();
+        }
+        let pq_auth = self.pq_auth();
+        if pq_auth && self.peer_mldsa_pub.is_none() {
+            return Err(OtrError::Dake("v2 peer committed no ML-DSA-87 key in DAKE1"));
+        }
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
 
@@ -535,6 +589,16 @@ impl DakeState {
         wire_body.extend_from_slice(client_profile);
         if let Some(p) = mldsa_to_send {
             wire_body.extend_from_slice(p);
+        }
+        if pq_auth {
+            if mldsa_to_send.is_none() {
+                return Err(OtrError::Dake("v2 needs our ML-DSA-87 key in DAKE2"));
+            }
+            let sign = mldsa_sign
+                .ok_or(OtrError::Dake("v2 needs an ML-DSA-87 signer for DAKE2"))?;
+            let sig = sign(&self.auth_r_pq_msg(&wire_body))?;
+            if sig.len() != MLDSA_SIG_SIZE { return Err(OtrError::MlDsa); }
+            wire_body.extend_from_slice(&sig);
         }
 
         // ── CRITICAL FIX (Patch-3.5): MAC over the actual wire body bytes ──
@@ -597,8 +661,25 @@ impl DakeState {
         off += prof_size;
 
         // ── Optional ML‑DSA‑87 public key (no flag byte) ──────
+        // With pq_auth (both profiles list PQ_AUTH_VERSION) the key and the
+        // responder's signature are mandatory and their length is exact.
+        let peer_lists_pq_auth = profile_lists(profile_slice, PQ_AUTH_VERSION);
+        let pq_auth = peer_lists_pq_auth
+            && profile_lists(&self.our_profile_bytes, PQ_AUTH_VERSION);
+        if data.len() < off + MAC_SIZE {
+            return Err(OtrError::TooShort { need: off + MAC_SIZE, got: data.len() });
+        }
         let mac_start = data.len() - MAC_SIZE;
-        if mac_start > off && mac_start - off >= MLDSA_PUB_SIZE {
+        let mut pq_sig: Option<(usize, usize)> = None;
+        if pq_auth {
+            if mac_start - off != MLDSA_PUB_SIZE + MLDSA_SIG_SIZE {
+                return Err(OtrError::Dake("v2 responder's ML-DSA-87 key or signature missing"));
+            }
+            self.peer_mldsa_pub = Some(data[off..off + MLDSA_PUB_SIZE].to_vec());
+            off += MLDSA_PUB_SIZE;
+            pq_sig = Some((off, off + MLDSA_SIG_SIZE));
+            off += MLDSA_SIG_SIZE;
+        } else if mac_start > off && mac_start - off >= MLDSA_PUB_SIZE {
             self.peer_mldsa_pub = Some(data[off..off + MLDSA_PUB_SIZE].to_vec());
             off += MLDSA_PUB_SIZE;
         }
@@ -650,6 +731,15 @@ impl DakeState {
         }
 
         self.peer_identity_pub = Self::extract_identity_from_profile(profile_slice)?;
+        if let Some((a, b)) = pq_sig {
+            let pk = self.peer_mldsa_pub.clone().ok_or(OtrError::MlDsa)?;
+            let msg = self.auth_r_pq_msg(&data[..a]);
+            if let Err(e) = Self::mldsa_verify(&pk, &msg, &data[a..b]) {
+                self.peer_profile_bytes = None;
+                return Err(e);
+            }
+            self.peer_mldsa_verified = true;
+        }
         // peer_profile_bytes already stored before DH (line above).
         self.transcript.extend_from_slice(data);
         let session_keys = Self::derive_session_keys(&mixed_secret, &brace_key, &ssid)?;
@@ -716,6 +806,10 @@ impl DakeState {
             &self.transcript, data, &self.peer_identity_pub, &self.our_identity_pub,
             self.peer_mldsa_pub.as_deref(),
         )?;
+        if self.pq_auth() && !hybrid {
+            return Err(OtrError::Dake("v2 initiator did not sign DAKE3 with ML-DSA-87"));
+        }
+        self.peer_mldsa_verified = hybrid;
         self.transcript.extend_from_slice(data);
         self.phase = DakePhase::Established;
         Ok(hybrid)
@@ -1377,18 +1471,27 @@ impl PyDake {
     /// Call output.consume_into_ratchet(ad, is_initiator) to move the keys
     /// into a RustDoubleRatchet.  This closes the Critical Exposure Window
     /// for callers that use this path instead of generate_dake2.
+    #[pyo3(signature = (our_prekey_priv_bytes = None, mldsa_pub_bytes = None, mldsa_handle = None))]
     fn generate_dake2_output(
         &mut self,
         our_prekey_priv_bytes: Option<&[u8]>,
         mldsa_pub_bytes:       Option<&[u8]>,
+        mldsa_handle: Option<PyRef<'_, crate::mldsa::MlDsa87KeyHandle>>,
     ) -> PyResult<DakeOutput> {
         if self.inner.our_profile_bytes.is_empty() {
             return Err(PyErr::from(OtrError::Internal));
         }
         let profile = self.inner.our_profile_bytes.clone();
-        let (msg, keys) = self.inner.generate_dake2(
-            &profile, our_prekey_priv_bytes, mldsa_pub_bytes,
-        ).map_err(PyErr::from)?;
+        let signer = mldsa_handle.as_ref().map(|h| {
+            move |m: &[u8]| h.sign_internal(m).map_err(|_| OtrError::MlDsa)
+        });
+        let (msg, keys) = match &signer {
+            Some(f) => self.inner.generate_dake2_signed(
+                &profile, our_prekey_priv_bytes, mldsa_pub_bytes,
+                Some(f as &dyn Fn(&[u8]) -> Result<Vec<u8>>)),
+            None => self.inner.generate_dake2_signed(
+                &profile, our_prekey_priv_bytes, mldsa_pub_bytes, None),
+        }.map_err(PyErr::from)?;
         // We do not have the peer's public material in generate_dake2 unless
         // it was set during process_dake1.  Pull what we have.
         let remote_identity_pub  = self.inner.get_peer_identity_pub().to_vec();
@@ -1473,6 +1576,12 @@ impl PyDake {
         }.to_string()
     }
     fn is_established(&self) -> bool { self.inner.phase == DakePhase::Established }
+    /// Both signed profiles list PQ_AUTH_VERSION (A2): ML-DSA both ways.
+    #[getter]
+    fn pq_auth(&self) -> bool { self.inner.pq_auth() }
+    /// The peer's ML-DSA-87 key verified a signature over this handshake.
+    #[getter]
+    fn peer_mldsa_verified(&self) -> bool { self.inner.peer_mldsa_verified() }
 
     /// Destroy every secret this handshake holds, in place, and leave it
     /// failed. Idempotent. See `DakeState::wipe`.
@@ -1691,5 +1800,136 @@ mod profile_tests {
         body.extend_from_slice(&sig);
         assert!(!primitive_accepts);
         assert!(DakeState::extract_identity_from_profile(&body).is_err());
+    }
+}
+
+#[cfg(test)]
+mod pq_auth_tests {
+    //! Audit A2, v2: when both signed profiles list PQ_AUTH_VERSION the
+    //! responder signs DAKE2 with ML-DSA-87 and the initiator signs DAKE3, both
+    //! mandatory; a peer that does not list it keeps the v1 handshake.
+    use super::*;
+    use crate::mldsa::MlDsa87KeyHandle;
+    use ed448_goldilocks_plus::SigningKey;
+
+    struct Party { s: DakeState, profile: Vec<u8>, mldsa: MlDsa87KeyHandle }
+
+    fn party(seed: u8, versions: &[u8], tag: u32) -> Party {
+        let seed = [seed; 57];
+        let sk = SigningKey::try_from(&seed[..]).expect("seed");
+        let id: [u8; 57] = sk.verifying_key().to_bytes();
+        let (pre_priv, pre_pub) = DakeState::generate_x448_ephemeral().expect("prekey");
+        let mut body = vec![4u8, versions.len() as u8];
+        body.extend_from_slice(versions);
+        body.extend_from_slice(&id);
+        body.extend_from_slice(&pre_pub);
+        body.extend_from_slice(&(DakeState::unix_now() + 3600).to_be_bytes());
+        let sig: [u8; 114] = sk.sign_raw(&body).to_bytes();
+        body.extend_from_slice(&sig);
+        let mldsa = MlDsa87KeyHandle::generate();
+        let s = DakeState::new(&seed, &id, pre_priv.expose(), &pre_pub,
+                               None, Some(mldsa.public_key()), tag).expect("state");
+        Party { s, profile: body, mldsa }
+    }
+
+    const V2: &[u8] = &[4, 0x50, PQ_AUTH_VERSION];
+    const V1: &[u8] = &[4];
+
+    fn dake1(i: &mut Party, commit: bool) -> Vec<u8> {
+        let pk = i.mldsa.public_key().to_vec();
+        if commit { i.s.generate_dake1(&i.profile.clone(), Some(&pk)).expect("dake1") }
+        else {
+            i.s.our_mldsa_pub = None;
+            i.s.generate_dake1(&i.profile.clone(), None).expect("dake1")
+        }
+    }
+
+    fn dake2(r: &mut Party, sign: bool) -> Result<Vec<u8>> {
+        let pk = r.mldsa.public_key().to_vec();
+        let profile = r.profile.clone();
+        let h = &r.mldsa;
+        let f = move |m: &[u8]| h.sign_internal(m).map_err(|_| OtrError::MlDsa);
+        let signer: Option<MldsaSigner<'_>> = if sign { Some(&f) } else { None };
+        r.s.generate_dake2_signed(&profile, None, Some(&pk), signer).map(|(m, _)| m)
+    }
+
+    fn run(iv: &[u8], rv: &[u8]) -> Result<(Party, Party, usize)> {
+        let (mut i, mut r) = (party(0x41, iv, 1), party(0x52, rv, 2));
+        let d1 = dake1(&mut i, true);
+        r.s.process_dake1(&d1)?;
+        let d2 = dake2(&mut r, true)?;
+        i.s.process_dake2(&d2, None)?;
+        let h = &i.mldsa;
+        let f = move |m: &[u8]| h.sign_internal(m).map_err(|_| OtrError::MlDsa);
+        let d3 = i.s.generate_dake3(Some(&f))?;
+        r.s.process_dake3(&d3)?;
+        Ok((i, r, d2.len()))
+    }
+
+    #[test]
+    fn two_v2_peers_authenticate_each_other_with_ml_dsa() {
+        let (i, r, len2) = run(V2, V2).expect("handshake");
+        assert!(i.s.pq_auth() && r.s.pq_auth());
+        assert!(i.s.peer_mldsa_verified(), "the initiator verified the responder's ML-DSA signature");
+        assert!(r.s.peer_mldsa_verified(), "and the responder the initiator's");
+        let (_, _, v1_len2) = run(V1, V2).expect("v1 handshake");
+        assert_eq!(len2, v1_len2 + MLDSA_SIG_SIZE, "DAKE2 carries the signature");
+    }
+
+    #[test]
+    fn a_peer_without_v2_keeps_the_v1_handshake() {
+        for (iv, rv) in [(V1, V2), (V2, V1)] {
+            let (i, r, _) = run(iv, rv).expect("handshake");
+            assert!(!i.s.pq_auth() && !r.s.pq_auth());
+            assert!(!i.s.peer_mldsa_verified(), "v1: the responder's key is not signed");
+            assert!(r.s.peer_mldsa_verified(), "v1 still signs DAKE3 when both committed keys");
+        }
+    }
+
+    #[test]
+    fn a_v2_initiator_whose_ml_dsa_key_was_stripped_is_refused() {
+        let (mut i, mut r) = (party(0x41, V2, 1), party(0x52, V2, 2));
+        let d1 = dake1(&mut i, false);
+        r.s.process_dake1(&d1).expect("dake1 parses");
+        assert!(dake2(&mut r, true).is_err());
+    }
+
+    #[test]
+    fn a_v2_responder_must_sign() {
+        let (mut i, mut r) = (party(0x41, V2, 1), party(0x52, V2, 2));
+        let d1 = dake1(&mut i, true);
+        r.s.process_dake1(&d1).expect("dake1");
+        assert!(dake2(&mut r, false).is_err());
+    }
+
+    #[test]
+    fn a_wrong_responder_signature_is_refused() {
+        let (mut i, mut r) = (party(0x41, V2, 1), party(0x52, V2, 2));
+        let d1 = dake1(&mut i, true);
+        r.s.process_dake1(&d1).expect("dake1");
+        let pk = r.mldsa.public_key().to_vec();
+        let profile = r.profile.clone();
+        let other = MlDsa87KeyHandle::generate();
+        let f = |m: &[u8]| other.sign_internal(m).map_err(|_| OtrError::MlDsa);
+        let (d2, _) = r.s.generate_dake2_signed(&profile, None, Some(&pk), Some(&f)).expect("dake2");
+        assert!(i.s.process_dake2(&d2, None).is_err(), "signed by a key other than the one committed");
+        assert!(!i.s.peer_mldsa_verified());
+    }
+
+    #[test]
+    fn a_v2_dake2_without_the_signature_is_refused() {
+        // The shape a v1 responder sends, arriving where v2 was agreed.
+        let (mut i, mut r) = (party(0x41, V2, 1), party(0x52, V2, 2));
+        let d1 = dake1(&mut i, true);
+        r.s.process_dake1(&d1).expect("dake1");
+        r.s.our_profile_bytes = r.profile.clone();
+        let pk = r.mldsa.public_key().to_vec();
+        let profile = r.profile.clone();
+        // Bypass the responder's own check by clearing our side of pq_auth.
+        let mut v1_body = profile.clone();
+        v1_body[1] = 1;
+        r.s.our_profile_bytes = v1_body;
+        let (d2, _) = r.s.generate_dake2_signed(&profile, None, Some(&pk), None).expect("dake2");
+        assert!(i.s.process_dake2(&d2, None).is_err());
     }
 }

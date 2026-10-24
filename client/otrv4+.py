@@ -260,6 +260,11 @@ class OTRConstants:
     #: is in the DAKE transcript, so it cannot be stripped in transit; a
     #: decoder that predates it accepts the profile because 4 is still listed.
     PQ_RATCHET_VERSION = 0x50
+    #: "Authenticates with ML-DSA-87 in both directions" (SPEC §4.3, audit
+    #: A2): with both profiles listing it, the responder signs DAKE2 and the
+    #: initiator DAKE3, each with its long-term ML-DSA key, and both are
+    #: mandatory. Peers pin that key (TrustDatabase.check_or_pin_pq).
+    PQ_AUTH_VERSION = 0x51
     SESSION_ID_BYTES = 32
     ED448_PUBLIC_KEY_SIZE = 57
     ED448_SIGNATURE_SIZE = 114
@@ -477,15 +482,16 @@ class MLDSA87Auth:
     PRIV_BYTES = 4896
     SIG_BYTES = 4627
 
-    def __init__(self):
-        """Generate a fresh ML-DSA-87 keypair inside Rust.
+    def __init__(self, handle=None):
+        """Generate a fresh ML-DSA-87 keypair inside Rust, or wrap `handle`
+        (a long-term key reopened by otrv4plus_identity.load_or_create_mldsa).
 
         The secret key is held by an opaque `MlDsa87KeyHandle` and never
         becomes a Python object: `mldsa87_keygen` would return it as a
         bytearray and `mldsa87_sign` would need it passed back as `bytes`
         -- a fresh unwipeable copy per signature. `_priv` is the handle.
         """
-        self._priv = _RustDAKE_module.MlDsa87KeyHandle()
+        self._priv = handle if handle is not None else _RustDAKE_module.MlDsa87KeyHandle()
         self.pub_bytes: bytes = bytes(self._priv.public_bytes)
 
     def sign(self, msg: bytes) -> bytes:
@@ -3003,6 +3009,10 @@ class OTRConfig:
     # should not have to opt out of both by accident.
     persist_identity: bool = False
     persist_trust: bool = False
+    #: Refuse a peer whose signed profile does not list both v2 capabilities
+    #: (PQ_RATCHET_VERSION, PQ_AUTH_VERSION): no fallback to the v1 ratchet
+    #: (A1) or v1 authentication (A2). Off only for interop tests.
+    require_pq_v2: bool = True
 
     #: Sealed long-term identity record.  Only read when persist_identity.
     identity_path: Optional[str] = None
@@ -3558,7 +3568,11 @@ class ClientProfile:
         else:
             self.prekey = prekey
 
-        self.versions = [OTRConstants.PROTOCOL_VERSION, OTRConstants.PQ_RATCHET_VERSION]
+        self.versions = [OTRConstants.PROTOCOL_VERSION, OTRConstants.PQ_RATCHET_VERSION,
+                         OTRConstants.PQ_AUTH_VERSION]
+        #: This identity's long-term ML-DSA-87 key (MLDSA87Auth), set by the
+        #: session manager. None: each handshake makes its own (v1 only).
+        self.mldsa_identity = None
         self.created = int(time.time())
         self.expires = self.created + self.VALIDITY_SECONDS
         self.signature = None
@@ -4862,9 +4876,14 @@ class RustDAKEAdapter:
         self.remote_identity_key = None
         self.remote_profile: Optional["ClientProfile"] = None
 
-        self._mldsa_auth: Optional["MLDSA87Auth"] = None
+        # The profile's long-term ML-DSA key when the manager gave it one
+        # (A2: a key made per handshake authenticates nothing), else a fresh
+        # one for this handshake. Only a key made here is destroyed here.
+        self._mldsa_auth: Optional["MLDSA87Auth"] = getattr(
+            self.client_profile, "mldsa_identity", None)
+        self._owns_mldsa = self._mldsa_auth is None
         self._remote_mldsa_pub: Optional[bytes] = None
-        if MLDSA87_AVAILABLE:
+        if self._mldsa_auth is None and MLDSA87_AVAILABLE:
             try:
                 self._mldsa_auth = MLDSA87Auth()
             except Exception:
@@ -4907,7 +4926,7 @@ class RustDAKEAdapter:
             except Exception:
                 pass
         auth = getattr(self, "_mldsa_auth", None)
-        if auth is not None:
+        if auth is not None and getattr(self, "_owns_mldsa", True):
             try:
                 auth.zeroize()
             except Exception:
@@ -4917,6 +4936,18 @@ class RustDAKEAdapter:
     @property
     def state(self) -> DAKEState:
         return self._state
+
+    @property
+    def pq_auth(self) -> bool:
+        """Both signed profiles list PQ_AUTH_VERSION (A2)."""
+        return bool(getattr(self._rust, "pq_auth", False))
+
+    @property
+    def verified_peer_mldsa_pub(self) -> Optional[bytes]:
+        """The peer's ML-DSA key, when it signed this handshake under v2."""
+        if self.pq_auth and getattr(self._rust, "peer_mldsa_verified", False):
+            return self._remote_mldsa_pub
+        return None
 
     @property
     def is_initiator(self) -> bool:
@@ -5072,6 +5103,7 @@ class RustDAKEAdapter:
             output = self._rust.generate_dake2_output(
                 our_prekey_priv_bytes=None,
                 mldsa_pub_bytes=self._mldsa_auth.pub_bytes if self._mldsa_auth else None,
+                mldsa_handle=self._mldsa_auth._priv if self._mldsa_auth else None,
             )
             raw = bytes(output.dake2_bytes)
             self._raw_dake2_bytes = raw
@@ -5478,13 +5510,13 @@ class TrustDatabase:
             try:
                 entry = self._db.get(peer)
                 if entry is None:
-                    self._db[peer] = {"fingerprint": fingerprint, "trusted": False}
+                    self._set_entry(peer, fingerprint, False)
                     self._save()
                     return False
 
                 stored_fp = entry.get("fingerprint", "")
                 if not stored_fp:
-                    self._db[peer] = {"fingerprint": fingerprint, "trusted": False}
+                    self._set_entry(peer, fingerprint, False)
                     self._save()
                     return False
 
@@ -5524,6 +5556,63 @@ class TrustDatabase:
             except Exception:
                 return False
 
+    def _set_entry(self, peer: str, fingerprint: str, trusted: bool) -> None:
+        """Write the fingerprint pin, keeping the peer's ML-DSA pin (`pq`)."""
+        entry = {"fingerprint": fingerprint, "trusted": trusted}
+        pq = (self._db.get(peer) or {}).get("pq")
+        if pq:
+            entry["pq"] = pq
+        self._db[peer] = entry
+
+    class PqIdentityRefused(ValueError):
+        """A peer that authenticated with ML-DSA before did not, or used
+        another ML-DSA key, under the same Ed448 identity (audit A2).
+
+        `code` is `pq_downgrade` or `pq_key_changed`. Either is what an active
+        attacker able to forge Ed448 looks like, so the handshake is refused,
+        not merely flagged: the Ed448 fingerprint the user checks would match.
+        """
+
+        def __init__(self, peer: str, code: str):
+            self.peer = peer
+            self.code = code
+            what = ("did not authenticate with its post-quantum key"
+                    if code == "pq_downgrade" else "used a different post-quantum key")
+            super().__init__(
+                f"{peer } {what } under an identity that has used one before. "
+                "Handshake refused. If the contact reinstalled or went back to "
+                "an older version, confirm with them and reset trust for them.")
+
+    def check_or_pin_pq(self, peer: str, identity_pub: bytes,
+                        mldsa_pub: Optional[bytes], pq_auth: bool) -> None:
+        """Pin a peer's ML-DSA key on its first v2 handshake; refuse a later
+        handshake under the same Ed448 identity that drops it or changes it.
+
+        Keyed by the Ed448 identity: a peer with a new identity is the ordinary
+        fingerprint change (check_or_pin) and gets a new ML-DSA pin from its
+        next v2 handshake. Only a key that signed a v2 handshake is pinned; a
+        v1 peer's key is made per handshake and pins nothing.
+        """
+        if not peer or not identity_pub:
+            raise ValueError("Peer and identity cannot be empty")
+        ident = hashlib.sha3_256(bytes(identity_pub)).hexdigest()
+        key = hashlib.sha3_256(bytes(mldsa_pub)).hexdigest() if (pq_auth and mldsa_pub) else None
+        with self._lock:
+            entry = self._db.get(peer) or {}
+            pin = entry.get("pq") or {}
+            same_identity = hmac.compare_digest(pin.get("identity", "").encode(), ident.encode())
+            if not pin or not same_identity:
+                if key is not None:
+                    entry = dict(entry)
+                    entry["pq"] = {"identity": ident, "mldsa": key}
+                    self._db[peer] = entry
+                    self._save()
+                return
+            if key is None:
+                raise TrustDatabase.PqIdentityRefused(peer, "pq_downgrade")
+            if not hmac.compare_digest(pin.get("mldsa", "").encode(), key.encode()):
+                raise TrustDatabase.PqIdentityRefused(peer, "pq_key_changed")
+
     def add_trust(self, peer: str, fingerprint: str) -> bool:
         """Mark a (peer, fingerprint) pair as trusted.
 
@@ -5545,7 +5634,7 @@ class TrustDatabase:
                         stored_fp.encode("utf-8"), fingerprint.encode("utf-8")
                     ):
                         raise TrustDatabase.FingerprintMismatchError(peer, stored_fp, fingerprint)
-                self._db[peer] = {"fingerprint": fingerprint, "trusted": True}
+                self._set_entry(peer, fingerprint, True)
                 self._save()
                 return True
             except TrustDatabase.FingerprintMismatchError:
@@ -8176,6 +8265,65 @@ class EnhancedOTRSession:
             pass
 
 
+def _ephemeral_mldsa_identity() -> Optional["MLDSA87Auth"]:
+    """One ML-DSA key for an ephemeral identity's lifetime, like its Ed448
+    key: per process, not per handshake, so a peer's pin holds for the run."""
+    if not MLDSA87_AVAILABLE:
+        return None
+    try:
+        return MLDSA87Auth()
+    except Exception:
+        return None
+
+
+def _note_pq_refusal(manager, peer: str, code: str, detail: str) -> bool:
+    manager.__dict__.setdefault("pq_refusals", {})[peer] = code
+    tracer = getattr(manager, "tracer", None)
+    if tracer is not None:
+        tracer.trace(peer, "ERROR", "DAKE", "PQ_REFUSED", f"{code }: {detail }")
+    return True
+
+
+def _refuse_old_protocol(manager, peer: str, dake) -> bool:
+    """Refuse a peer whose signed profile lacks either v2 capability.
+
+    Checked by the responder on DAKE1, before it answers, and by the initiator
+    on DAKE2, before anything is encrypted. The profile is signed and in the
+    transcript, so what it lists is what the peer runs.
+    """
+    config = getattr(manager, "config", None)
+    if not getattr(config, "require_pq_v2", True):
+        return False
+    versions = getattr(getattr(dake, "remote_profile", None), "versions", None) or ()
+    needed = (OTRConstants.PQ_RATCHET_VERSION, OTRConstants.PQ_AUTH_VERSION)
+    if all(v in versions for v in needed):
+        return False
+    return _note_pq_refusal(
+        manager, peer, "pq_v2_required",
+        f"peer lists versions {list (versions )}; this build requires "
+        f"{[hex (v ) for v in needed ]} (A1, A2 fixed). Connection refused.")
+
+
+def _refuse_pq_identity(manager, peer: str, dake) -> bool:
+    """A2: the version policy, then the peer's ML-DSA pin, once its DAKE
+    message has verified.
+
+    True means refused: the caller abandons the handshake, and the code is
+    kept for `take_pq_refusal` so the app can say why.
+    """
+    if _refuse_old_protocol(manager, peer, dake):
+        return True
+    trust = getattr(manager, "trust_db", None)
+    identity = getattr(dake, "remote_identity_pub_bytes", None)
+    if trust is None or not identity:
+        return False
+    try:
+        trust.check_or_pin_pq(peer, identity, dake.verified_peer_mldsa_pub, dake.pq_auth)
+    except TrustDatabase.PqIdentityRefused as refused:
+        return _note_pq_refusal(manager, peer, refused.code, str(refused))
+    return False
+
+
 class SessionManager:
     """Session manager - owns DAKE engines and delegates to EnhancedOTRSession."""
 
@@ -8235,15 +8383,20 @@ class SessionManager:
         exists to report.
         """
         if not self.config.persist_identity:
-            return ClientProfile()
+            profile = ClientProfile()
+            profile.mldsa_identity = _ephemeral_mldsa_identity()
+            return profile
 
         # Imported here, not at module scope: the IRC client must never load
         # the persistence machinery at all, and an import that only happens on
         # the opted-in path makes that checkable rather than a promise.
-        from otrv4plus_identity import load_or_create_identity, IdentityUnavailable
+        from otrv4plus_identity import (load_or_create_identity, load_or_create_mldsa,
+                                        IdentityUnavailable)
 
         try:
             identity, prekey, _pub = load_or_create_identity(
+                self.config.identity_path, self.config.identity_dek_path)
+            mldsa = load_or_create_mldsa(
                 self.config.identity_path, self.config.identity_dek_path)
         except IdentityUnavailable:
             self._trace_identity("FAILED",
@@ -8252,7 +8405,9 @@ class SessionManager:
 
         self.identity_is_persistent = True
         self._trace_identity("READY", "persistent identity loaded")
-        return ClientProfile(identity_key=identity, prekey=prekey)
+        profile = ClientProfile(identity_key=identity, prekey=prekey)
+        profile.mldsa_identity = MLDSA87Auth(handle=mldsa)
+        return profile
 
     def _trace_identity(self, state: str, detail: str) -> None:
         """Trace without assuming this manager has a tracer (SessionManager does not)."""
@@ -8305,6 +8460,8 @@ class SessionManager:
                 # bucket, so the "per-peer" limit was process-wide and one
                 # sender could lock out DAKE1 from everybody else.
                 success = dake.process_dake1(dake1_msg, peer)
+                if success and _refuse_old_protocol(self, peer, dake):
+                    return None
                 if success:
                     dake2 = dake.generate_dake2()
                     self.pending_dakes[peer] = dake
@@ -8328,6 +8485,9 @@ class SessionManager:
             dake = self.pending_dakes[peer]
             try:
                 success = dake.process_dake2(dake2_msg)
+                if success and _refuse_pq_identity(self, peer, dake):
+                    del self.pending_dakes[peer]
+                    return None
                 if success:
                     dake3 = dake.generate_dake3()
 
@@ -8374,6 +8534,9 @@ class SessionManager:
             dake = self.pending_dakes[peer]
             try:
                 success = dake.process_dake3(dake3_msg)
+                if success and _refuse_pq_identity(self, peer, dake):
+                    del self.pending_dakes[peer]
+                    return False
                 if success:
                     session = EnhancedOTRSession(
                         peer=peer,
@@ -8773,15 +8936,20 @@ class EnhancedSessionManager:
         exists to report.
         """
         if not self.config.persist_identity:
-            return ClientProfile()
+            profile = ClientProfile()
+            profile.mldsa_identity = _ephemeral_mldsa_identity()
+            return profile
 
         # Imported here, not at module scope: the IRC client must never load
         # the persistence machinery at all, and an import that only happens on
         # the opted-in path makes that checkable rather than a promise.
-        from otrv4plus_identity import load_or_create_identity, IdentityUnavailable
+        from otrv4plus_identity import (load_or_create_identity, load_or_create_mldsa,
+                                        IdentityUnavailable)
 
         try:
             identity, prekey, _pub = load_or_create_identity(
+                self.config.identity_path, self.config.identity_dek_path)
+            mldsa = load_or_create_mldsa(
                 self.config.identity_path, self.config.identity_dek_path)
         except IdentityUnavailable:
             self._trace_identity("FAILED",
@@ -8790,7 +8958,9 @@ class EnhancedSessionManager:
 
         self.identity_is_persistent = True
         self._trace_identity("READY", "persistent identity loaded")
-        return ClientProfile(identity_key=identity, prekey=prekey)
+        profile = ClientProfile(identity_key=identity, prekey=prekey)
+        profile.mldsa_identity = MLDSA87Auth(handle=mldsa)
+        return profile
 
     def _trace_identity(self, state: str, detail: str) -> None:
         """Trace without assuming this manager has a tracer (SessionManager does not)."""
@@ -9205,6 +9375,9 @@ class EnhancedSessionManager:
             success = dake_engine.process_dake1(dake1_msg, peer)
             if not success:
                 return None
+            if _refuse_old_protocol(self, peer, dake_engine):
+                self.dake_engines.pop(peer, None)
+                return None
 
             dake2 = dake_engine.generate_dake2()
             if dake2:
@@ -9229,7 +9402,8 @@ class EnhancedSessionManager:
                 pass
         pending = self._new_session(peer, is_initiator=False)
         dake_engine = pending.initialize_dake(self.client_profile, explicit_initiator=False)
-        if not dake_engine.process_dake1(dake1_msg, peer):
+        if not dake_engine.process_dake1(dake1_msg, peer) or _refuse_old_protocol(
+                self, peer, dake_engine):
             try:
                 pending.terminate("DAKE1 rejected")
             except Exception:
@@ -9260,6 +9434,9 @@ class EnhancedSessionManager:
             try:
                 if not dake_engine.process_dake2(dake2_msg):
                     self.tracer.trace(peer, "ERROR", "DAKE2", "PROCESS_FAILED", "")
+                    return None
+                if _refuse_pq_identity(self, peer, dake_engine):
+                    self.dake_engines.pop(peer, None)
                     return None
 
                 dake3_msg = dake_engine.generate_dake3()
@@ -9327,6 +9504,9 @@ class EnhancedSessionManager:
                 if not dake_engine.process_dake3(dake3_msg):
                     self.tracer.trace(peer, "ERROR", "DAKE3", "PROCESS_FAILED", "")
                     return None
+                if _refuse_pq_identity(self, peer, dake_engine):
+                    self.dake_engines.pop(peer, None)
+                    return None
 
                 session_keys = dake_engine.get_session_keys()
                 if not session_keys:
@@ -9382,6 +9562,10 @@ class EnhancedSessionManager:
                 self.tracer.trace(peer, "ERROR", "DAKE3", "EXCEPTION", str(exc))
                 pass
                 return None
+
+    def take_pq_refusal(self, peer: str) -> Optional[str]:
+        """The A2 refusal code for the last handshake with `peer`, once."""
+        return self.__dict__.get("pq_refusals", {}).pop(peer, None)
 
     def _establish_session(self, session: "EnhancedOTRSession", peer: str, reason: str) -> None:
         """

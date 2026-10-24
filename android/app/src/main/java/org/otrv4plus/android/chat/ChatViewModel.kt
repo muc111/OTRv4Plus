@@ -883,6 +883,15 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** Forget the contact's pinned keys; the next handshake pins afresh. */
+    fun resetTrust(jid: String) {
+        val c = core ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { runCatching { c.resetTrust(jid) } }
+            loadIdentity(jid)
+        }
+    }
+
     /** "They match": record the session's key as confirmed by the user. */
     fun confirmFingerprint(jid: String) {
         val c = core ?: return

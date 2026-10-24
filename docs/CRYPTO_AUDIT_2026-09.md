@@ -175,6 +175,14 @@ it was written to do, but that falls short of what the spec claims.
 
 ### A2 — Medium (design): PQ authentication is initiator-only and strippable
 
+> **Update 2026-10-24: resolved for v2 sessions with known contacts.** Both
+> fixes below, negotiated by `PQ_AUTH_VERSION` (SPEC §4.3): each identity has
+> one long-term ML-DSA key, sealed beside it (a key per handshake, as before,
+> authenticated nobody); the responder signs DAKE2 and the initiator DAKE3,
+> both mandatory; and the peer's key is pinned, so dropping or changing it
+> under the same Ed448 identity refuses the handshake. First contact remains
+> trust-on-first-use. Tests: `dake::pq_auth_tests`, `tests/test_pq_auth_v2.py`.
+
 - **Where:** `dake.rs:404-416` (DAKE1 declares the ML-DSA key in an
   unauthenticated message) and `dake.rs:871-878` (DAKE3 flag).
 - **What:** only the initiator ever signs with ML-DSA, and only if it

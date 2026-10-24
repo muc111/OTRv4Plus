@@ -76,7 +76,11 @@ Semantic versioning, with one project-specific reading of MAJOR.
 > Both peers must run the **same** version. There is no fallback path, no
 > negotiation, and no interoperability with stock OTRv4.
 
-That policy predates this document. It has one exception, the ratchet: a peer
+That policy predates this document, and since Android rc.159 it is enforced:
+a peer whose signed profile does not list both `PQ_RATCHET_VERSION` and
+`PQ_AUTH_VERSION` is refused (`pq_v2_required`), with no fallback.
+`OTRConfig.require_pq_v2 = False` restores the negotiation below, for interop
+tests only. With it off: a peer
 that lists `PQ_RATCHET_VERSION` in its signed profile runs the v2 ratchet
 (SPEC §5.1) with another that does, and v1 with one that does not, so releases
 from before v2 keep talking to releases after it. The choice is made from the
@@ -96,6 +100,7 @@ mark a release**:
 |---|---|---|
 | `OTRConstants.PROTOCOL_VERSION` | `4` | ClientProfile / DAKE format |
 | `OTRConstants.PQ_RATCHET_VERSION` | `0x50` | capability in the profile's version list: "runs the v2 ratchet" (SPEC §5.1) |
+| `OTRConstants.PQ_AUTH_VERSION` | `0x51` | capability in the profile's version list: "authenticates with a long-term ML-DSA key both ways" (SPEC §4.3) |
 | `OTRv4DataMessage.PROTOCOL_VERSION` | `0x0005` | data-message format (incremented by the MKmac fix) |
 | `VOICE_PROTOCOL_VERSION` | `4` | voice frame header |
 | SMP wire byte | `0x01` / `0x02` / `0x03` | classical / hybrid-PQ (SHAKE stretch) / hybrid-PQ (Argon2id stretch) |

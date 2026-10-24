@@ -25,6 +25,8 @@ pub mod usage {
     pub const SHARED_SECRET:    u8 = 0x03;
     pub const AUTH_R_MAC:       u8 = 0x04;
     pub const AUTH_I_MSG:       u8 = 0x05;
+    /// The responder's ML-DSA-87 signature in a v2 DAKE2 (A2).
+    pub const AUTH_R_PQ_MSG:    u8 = 0x06;
     pub const ROOT_KEY:         u8 = 0x11;
     pub const CHAIN_KEY:        u8 = 0x12;
     pub const MESSAGE_KEY:      u8 = 0x13;

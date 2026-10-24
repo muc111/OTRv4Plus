@@ -1524,6 +1524,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             import time as _t
             self._dbg(f"[otr-crypto] done processing DATA from {peer} ({_t.time() - t0:.1f}s).")
 
+        self._report_pq_refusal(peer)
         self._check_dake_complete(peer)
         self._recover_if_orphaned(peer)
 

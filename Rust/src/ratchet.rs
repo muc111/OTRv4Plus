@@ -1245,6 +1245,7 @@ impl RustDoubleRatchet {
     fn pq_ratchet(&self) -> bool { self.inner.pq() }
 
     #[pyo3(signature = (header, ciphertext, nonce, tag, kem_ek=None, kem_ct=None))]
+    #[allow(clippy::too_many_arguments)]
     fn decrypt_same_dh<'py>(&mut self, py: Python<'py>,
         header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
         kem_ek: Option<&[u8]>, kem_ct: Option<&[u8]>) -> PyResult<Bound<'py, PyDict>> {

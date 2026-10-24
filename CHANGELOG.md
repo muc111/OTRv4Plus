@@ -4,6 +4,33 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.159 and Desktop — 2026-10-24 — protocol v2: post-quantum authentication both ways (A2) (core 0.13.1)
+
+- **A2 resolved for v2 sessions with known contacts.** Only the initiator
+  signed with ML-DSA, with a key made for that one handshake, so the signature
+  proved nothing about who sent it, and an attacker able to forge Ed448 could
+  just leave it out.
+- **One long-term ML-DSA-87 key per identity**, created once and sealed inside
+  Rust beside the Ed448 identity (`<identity>.mldsa`); a record that will not
+  open fails closed, like the identity.
+- **Both directions sign** when both signed profiles list `PQ_AUTH_VERSION`
+  (0x51): the responder in DAKE2 (new, SPEC §4.3), the initiator in DAKE3. Both
+  are mandatory.
+- **Pinned.** The contact's ML-DSA key is pinned on the first v2 handshake. A
+  later handshake under the same fingerprint without it, or with another one,
+  is refused (`pq_downgrade`, `pq_key_changed`), with a sentence on the phone
+  and in the terminal. Contact's profile → **Reset trust** (or `/trust-reset`)
+  clears it deliberately.
+- **No fallback.** A contact whose app does not list both v2 capabilities
+  (0x50 and 0x51) — so rc.157 and older, and rc.158 — is refused
+  (`pq_v2_required`): both of you need this version. A1 is now listed as
+  mitigated (the v1 ratchet is no longer reached).
+- Deniability (SPEC §10.1): the signatures cover only the handshake, never a
+  message; what is given up is deniability of having talked, not of what was
+  said.
+- Tests: `dake::pq_auth_tests` (6), `mldsa::tests`, `tests/test_pq_auth_v2.py`
+  (18).
+
 ## Android 0.7.0-experimental.rc.158 and Desktop — 2026-10-24 — protocol v2: the post-quantum ratchet (A1) (core 0.13.1)
 
 - **A1 resolved for v2 sessions.** The ratchet's ML-KEM-1024 secret now goes

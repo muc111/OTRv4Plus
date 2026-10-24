@@ -24,11 +24,22 @@ otr = E.otr
 A, B = "alice@example.test", "bob@example.test"
 
 
+@pytest.fixture(autouse=True)
+def _own_rate_limiter(monkeypatch):
+    """A fresh DAKE1 limiter (5 per peer per minute): these tests run more
+    handshakes with one peer name than that, and must not use up the budget
+    of the next module that does."""
+    monkeypatch.setattr(otr, "_dake1_rate_limiter", otr.DAKE1RateLimiter())
+
+
 def _pair(monkeypatch, alice_versions=None, bob_versions=None, rekey=3):
     # A short interval so the first DH step, and the first ML-KEM exchange,
     # come within a few messages rather than a hundred.
     monkeypatch.setattr(otr.OTRConstants, "REKEY_INTERVAL", rekey)
     a, b = E._manager(), E._manager()
+    if alice_versions is not None or bob_versions is not None:
+        # v1 interop needs the policy off: by default an old peer is refused.
+        a.config.require_pq_v2 = b.config.require_pq_v2 = False
     if alice_versions is not None:
         a.client_profile.versions = alice_versions
     if bob_versions is not None:
@@ -50,7 +61,8 @@ def _talk(a, b, rounds):
 def test_this_build_advertises_v2_in_its_signed_profile():
     p = otr.ClientProfile()
     assert p.versions == [otr.OTRConstants.PROTOCOL_VERSION,
-                          otr.OTRConstants.PQ_RATCHET_VERSION]
+                          otr.OTRConstants.PQ_RATCHET_VERSION,
+                          otr.OTRConstants.PQ_AUTH_VERSION]
     back = otr.ClientProfile.decode(p.encode())
     assert otr.OTRConstants.PQ_RATCHET_VERSION in back.versions
 
@@ -67,7 +79,7 @@ def test_two_v2_peers_rotate_a_fresh_post_quantum_secret_and_agree(monkeypatch):
 
 
 @pytest.mark.parametrize("who", ["alice", "bob"])
-def test_a_peer_without_v2_gets_v1_and_still_talks(monkeypatch, who):
+def test_with_the_policy_off_a_peer_without_v2_gets_v1_and_still_talks(monkeypatch, who):
     v1 = [otr.OTRConstants.PROTOCOL_VERSION]
     kw = {"alice_versions": v1} if who == "alice" else {"bob_versions": v1}
     a, b, sa, sb = _pair(monkeypatch, **kw)

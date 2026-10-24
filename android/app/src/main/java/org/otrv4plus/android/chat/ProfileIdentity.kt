@@ -62,6 +62,15 @@ object ProfileIdentity {
             "shared-secret check."
     const val CONFIRM_BUTTON = "They match"
 
+    const val RESET_TITLE = "Reset trust for this contact?"
+    const val RESET_BODY =
+        "This forgets their pinned fingerprint and post-quantum key, and the " +
+            "next conversation trusts whatever key it meets. Do it only after " +
+            "they told you, in person or on a call where you know their voice, " +
+            "that they reinstalled or changed versions. Then compare " +
+            "fingerprints again."
+    const val RESET_BUTTON = "Reset trust"
+
     const val OWN_NOTE =
         "Your fingerprint is made on this phone. Signing in again after Wipe & " +
             "Exit, or on a new install, makes a new one, and your contacts are " +

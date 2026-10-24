@@ -221,6 +221,37 @@ def load_or_create_identity(identity_path: str, dek_path: str):
             record.identity_pub)
 
 
+def load_or_create_mldsa(identity_path: str, dek_path: str):
+    """The identity's long-term ML-DSA-87 key, as an ``MlDsa87KeyHandle``.
+
+    Audit A2: a key made per handshake authenticates nothing, so the key is
+    made once, sealed inside Rust under the identity DEK, and stored beside
+    the identity record (``<identity_path>.mldsa``). A record that exists and
+    will not open fails closed, as the identity does: replacing it would look,
+    to every peer that pinned it, like the attack the pin is there to catch.
+    A missing record is created -- the first start after an upgrade.
+    """
+    if not identity_path:
+        raise IdentityUnavailable("no identity path configured")
+    import otrv4_core
+    path = identity_path + ".mldsa"
+    handle = TermuxFileDekProvider(dek_path).current()
+    dek = handle.rust_dek()
+    blob = _read_record(path)
+    if blob:
+        try:
+            return otrv4_core.unseal_mldsa_identity_under(blob, dek, handle.key_id)
+        except Exception:
+            raise IdentityUnavailable(
+                "the stored ML-DSA identity key could not be opened. It has NOT "
+                "been replaced: contacts who pinned it would refuse a new one. "
+                "If you know why, move %s aside and expect them to warn." % path
+            ) from None
+    key = otrv4_core.MlDsa87KeyHandle()
+    _write_record(path, bytes(otrv4_core.seal_mldsa_identity_under(key, dek, handle.key_id)))
+    return key
+
+
 def _read_record(path: str):
     try:
         with open(path, "rb") as fh:

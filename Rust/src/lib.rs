@@ -79,6 +79,8 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_sign,   m)?)?;
     m.add_function(wrap_pyfunction!(mldsa::mldsa87_verify, m)?)?;
     m.add_class::<mldsa::MlDsa87KeyHandle>()?;
+    m.add_function(wrap_pyfunction!(mldsa::seal_mldsa_identity_under,   m)?)?;
+    m.add_function(wrap_pyfunction!(mldsa::unseal_mldsa_identity_under, m)?)?;
     // AES-256-GCM (Phase 5.3h-B, v10.6.19): replaces cryptography.AESGCM
     #[cfg(feature = "raw-key-test-api")]
     m.add_function(wrap_pyfunction!(aead::aes256gcm_encrypt, m)?)?;

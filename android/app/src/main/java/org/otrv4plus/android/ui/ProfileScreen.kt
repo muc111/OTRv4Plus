@@ -283,6 +283,7 @@ private fun IdentitySection(model: ChatViewModel, own: Boolean, jid: String,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     var confirming by remember(jid) { mutableStateOf(false) }
+    var resetting by remember(jid) { mutableStateOf(false) }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         if (view.offerConfirm) {
             OutlinedButton(onClick = { confirming = true }) {
@@ -304,6 +305,22 @@ private fun IdentitySection(model: ChatViewModel, own: Boolean, jid: String,
                 }
             },
             dismissButton = { TextButton(onClick = { confirming = false }) { Text("Cancel") } },
+        )
+    }
+    TextButton(onClick = { resetting = true }) {
+        Text(org.otrv4plus.android.chat.ProfileIdentity.RESET_BUTTON)
+    }
+    if (resetting) {
+        AlertDialog(
+            onDismissRequest = { resetting = false },
+            title = { Text(org.otrv4plus.android.chat.ProfileIdentity.RESET_TITLE) },
+            text = { Text(org.otrv4plus.android.chat.ProfileIdentity.RESET_BODY) },
+            confirmButton = {
+                TextButton(onClick = { resetting = false; model.resetTrust(jid) }) {
+                    Text(org.otrv4plus.android.chat.ProfileIdentity.RESET_BUTTON)
+                }
+            },
+            dismissButton = { TextButton(onClick = { resetting = false }) { Text("Cancel") } },
         )
     }
 }

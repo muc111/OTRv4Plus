@@ -124,6 +124,7 @@ underlying OTRv4 KDF construction. The OTRv4+ extensions are distinguished by
 | SHARED_SECRET | 0x03 | Mixed shared secret |
 | AUTH_R_MAC | 0x04 | DAKE2 Auth-R MAC |
 | AUTH_I_MSG | 0x05 | DAKE3 Auth-I |
+| AUTH_R_PQ_MSG | 0x06 | v2 DAKE2: the message the responder's ML-DSA-87 signature covers (§4.3) |
 | ROOT_KEY | 0x11 | Ratchet root key |
 | CHAIN_KEY | 0x12 | Ratchet chain key advance |
 | MESSAGE_KEY | 0x13 | Per-message key |
@@ -268,6 +269,7 @@ Offset    Size      Field
                     the initiator's ek from DAKE1
 1625      237+V     responder ClientProfile
 1625+P    2592      [OPTIONAL] responder ML-DSA-87 public key
+...       4627      [v2 only, see §4.3] responder ML-DSA-87 signature
 ...       64        MAC (HMAC-SHA3-512), see §4.2.1
 ```
 
@@ -277,7 +279,7 @@ The MAC is computed over the **entire wire body** preceding the MAC field:
 
 ```
 wire_body = message_type || responder_X448_pub || ct || ClientProfile
-            [ || responder_ML-DSA-87_pub ]
+            [ || responder_ML-DSA-87_pub [ || responder_ML-DSA-87_sig ] ]
 mac_key   = KDF_1(0x15, mixed_secret, 64)       // DAKE_MAC_KEY
 MAC       = HMAC-SHA3-512(mac_key, wire_body)
 ```
@@ -307,17 +309,49 @@ When the flag is `0x01`, the receiver MUST verify **both** the Ed448 ring
 signature and the ML-DSA-87 signature. Both MUST verify for the handshake to
 succeed (hybrid authentication).
 
-**Scope of the post-quantum authentication (audit 2026-09).** The ML-DSA-87
-signature authenticates the *initiator only*, and only when the initiator's
-ML-DSA public key was committed in DAKE1. DAKE1 is unauthenticated, so an
-active adversary who can also forge Ed448 (a quantum adversary) can remove that
-commitment and then forge the ring signature; the responder never signs with
-ML-DSA at all. Against such an adversary this handshake therefore provides
-post-quantum *confidentiality* (the ML-KEM secret is in every session key, §4.4)
-but not post-quantum *authentication* in either direction. Closing that needs a
-policy that requires ML-DSA from known peers (so stripping is detected) and a
-responder ML-DSA signature in DAKE2; both are wire changes that need a new
-protocol version.
+**v1: scope of the post-quantum authentication (audit 2026-09, A2).** Between
+peers that do not both list `PQ_AUTH_VERSION`, the ML-DSA-87 signature
+authenticates the *initiator only*, under a key made for that handshake, and
+only when that key was committed in DAKE1. DAKE1 is unauthenticated, so an
+active adversary who can also forge Ed448 (a quantum adversary) can remove the
+commitment and forge the ring signature; the responder never signs with ML-DSA.
+Against such an adversary a v1 handshake provides post-quantum
+*confidentiality* (§4.4) but not post-quantum *authentication*.
+
+**v2: post-quantum authentication both ways.** When both signed ClientProfiles
+list `PQ_AUTH_VERSION` (`0x51`):
+
+1. Each party uses one **long-term** ML-DSA-87 key per identity, created once
+   and stored sealed beside the Ed448 identity (or, for an ephemeral identity,
+   one per run), never one per handshake.
+2. The initiator MUST commit its ML-DSA key in DAKE1 (flag `0x01`); a
+   responder refuses a DAKE1 without it.
+3. The responder MUST send its ML-DSA key and a signature in DAKE2, after the
+   key and before the MAC (§4.2), over
+   ```
+   KDF_1(0x06, DAKE1 || dake2_wire_body_up_to_the_signature, 64)   // AUTH_R_PQ_MSG
+   ```
+   The initiator refuses a DAKE2 without exactly a key and a signature there,
+   and verifies the signature after the MAC.
+4. DAKE3 then carries the initiator's ML-DSA signature (above), as before;
+   with v2 it is mandatory.
+5. **Pinning.** Each side pins the other's ML-DSA key on the first v2
+   handshake, keyed by the peer and its Ed448 identity. A later handshake under
+   the **same** Ed448 identity that does not authenticate with ML-DSA
+   (`pq_downgrade`) or uses another ML-DSA key (`pq_key_changed`) is refused:
+   in exactly that attack the Ed448 fingerprint a user would compare matches. A
+   new Ed448 identity is the ordinary fingerprint change and is re-pinned by
+   its next v2 handshake. Resetting trust for the peer clears the pin.
+
+**Policy.** By default an implementation refuses a peer whose profile lacks
+`0x50` or `0x51` (`pq_v2_required`): the responder before answering DAKE1, the
+initiator before sending DAKE3. There is no fallback to v1 authentication or
+the v1 ratchet. Pinning (5) also holds where that policy is relaxed.
+
+The negotiation byte sits in the signed profile and cannot be removed by an
+attacker who cannot forge Ed448. One who can is the case pinning exists for:
+it works for contacts seen under v2 before, not on first contact, as any
+trust-on-first-use does. The ML-DSA signatures are attributable (§10.1).
 
 ### 4.4 Session Key Derivation
 
@@ -443,7 +477,8 @@ are used by the receiver to bound skipped-key derivation across ratchet steps
 
 ### 5.1 Brace Key Rotation
 
-Two ratchet versions exist. Which one a session runs is fixed when the ratchet
+Two ratchet versions exist; by default only v2 is accepted (§4.3, Policy).
+Which one a session runs is fixed when the ratchet
 is built, before its first message, and both ends decide it from the same two
 signed ClientProfiles (§4.1): **v2** when both version lists contain
 `PQ_RATCHET_VERSION` (`0x50`), **v1** otherwise. The profiles are signed by
@@ -1604,7 +1639,23 @@ An implementation claiming conformance MUST:
   exponentiation is constant-time but the surrounding scalar multiply is not. A
   fully constant-time ZKP is future work.
 - Post-quantum deniability is NOT provided: the ML-DSA-87 signature in DAKE3 is
-  attributable. Classical deniability (Ed448 ring signature) is preserved.
+  attributable, and in a v2 handshake (§4.3) so is the responder's in DAKE2,
+  both under long-term keys. A transcript therefore shows that both parties took
+  part in a handshake with each other. The Ed448 ring signature itself remains
+  deniable.
+  What stays where it was: no signature touches the Double Ratchet. Message
+  keys, AES-GCM tags and MKmac come from symmetric chain keys that both
+  parties hold (§5), so a message is authenticated to its recipient only, and
+  either party could have produced any message in the transcript. The
+  ML-DSA signatures cover the handshake transcript (ephemeral keys and
+  profiles), never message keys or contents, and the session keys derive from
+  the DH and ML-KEM secrets alone, not from the signatures. So the v2 handshake
+  gives up *participation* deniability against anyone holding a transcript,
+  not deniability of what was said. The established pattern for keeping
+  participation deniable with post-quantum authentication is KEM-based
+  implicit authentication (long-term KEM keys instead of signatures, as studied
+  for the Signal handshake by Hashimoto et al. and Brendel et al.); adopting it
+  is a protocol change that needs expert review.
 - ClientProfile signatures are Ed448 only, not hybrid.
 
 ---

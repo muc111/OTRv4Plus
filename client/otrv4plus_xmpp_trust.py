@@ -210,6 +210,31 @@ class TrustMixin:
               "/trust-reset %s" % peer)
         return True
 
+    def _report_pq_refusal(self, peer):
+        """A2: the engine refused this handshake because the contact's
+        post-quantum key was dropped or changed under the same identity."""
+        take = getattr(self.otr, "take_pq_refusal", None)
+        code = take(peer) if take is not None else None
+        if code is None:
+            return
+        if code == "pq_v2_required":
+            print("[trust] HANDSHAKE REFUSED (pq_v2_required): %s runs an older "
+                  "protocol without the post-quantum ratchet and authentication "
+                  "(A1, A2). Both sides need this version or newer." % peer)
+            return
+        what = ("did not prove its post-quantum key this time" if code == "pq_downgrade"
+                else "now uses a different post-quantum key")
+        print("")
+        print("!" * 60)
+        print("[trust] HANDSHAKE REFUSED (%s): %s %s," % (code, peer, what))
+        print("[trust] under the same fingerprint that used one before.")
+        print("[trust] That is what an attacker who can forge the classical key")
+        print("[trust] looks like. It also looks like your contact reinstalling")
+        print("[trust] or going back to an older version: ask them in person.")
+        print("[trust] To accept deliberately:  /trust-reset %s" % peer)
+        print("!" * 60)
+        print("")
+
     def trust_reset(self, peer):
         """Deliberately drop a pin so the next contact re-pins (`/trust-reset`).
 

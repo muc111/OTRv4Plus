@@ -755,6 +755,18 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
                               "this contact's app does not support OTRv4+")
         return "waiting_for_otr"
 
+    def _report_pq_refusal(self, peer: str) -> None:
+        """A2: the engine refused a handshake because the contact's
+        post-quantum key was dropped or changed under the same identity."""
+        take = getattr(self._engine, "take_pq_refusal", None)
+        refused = take(peer) if take is not None else None
+        if refused == "pq_downgrade":
+            self._emit(ErrorOccurred(peer=peer, code="pq_downgrade"))
+        elif refused == "pq_key_changed":
+            self._emit(ErrorOccurred(peer=peer, code="pq_key_changed"))
+        elif refused == "pq_v2_required":
+            self._emit(ErrorOccurred(peer=peer, code="pq_v2_required"))
+
     def _session_settled(self, peer: str, before, after) -> None:
         """A session came up (or went): record the handshake time and send
         whatever waited for it."""
@@ -1251,6 +1263,7 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
             return None
 
         if result is None:
+            self._report_pq_refusal(peer)
             # Protocol frame (DAKE/SMP), not user text: surface any state change.
             after = self.security_state(peer)
             if after != before:

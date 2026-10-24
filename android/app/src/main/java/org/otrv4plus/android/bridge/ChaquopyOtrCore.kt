@@ -1199,6 +1199,12 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         runCatching { requireApp().callAttr("trust_peer", peer, fingerprint).toBoolean() }
             .getOrDefault(false)
 
+    /** Forget the contact's pinned keys (fingerprint and post-quantum), so
+     *  the next handshake pins what it sees. Asked for on the profile screen. */
+    fun resetTrust(peer: String): Boolean =
+        runCatching { requireApp().callAttr("reset_trust", peer).toBoolean() }
+            .getOrDefault(false)
+
     override fun securityDetails(peer: String): SecurityDetails {
         val d = requireApp().callAttr("security_details", peer)
         return SecurityDetails(

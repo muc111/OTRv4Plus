@@ -237,6 +237,15 @@ class SmpMixin:
         return bool(self._safe(lambda: self._engine.trust_fingerprint(peer, fingerprint),
                                default=False))
 
+    def reset_trust(self, peer: str) -> bool:
+        """Forget the contact's pinned fingerprint and post-quantum key, so
+        the next handshake pins what it sees: the deliberate way past a
+        `pq_downgrade` / `pq_key_changed` refusal (A2). The user is asked
+        first, on the screen, to check with the contact in person."""
+        peer = self.canonical_peer(peer)
+        return bool(self._safe(lambda: self._engine.trust_db.remove_trust(peer),
+                               default=False))
+
     # -- identity --------------------------------------------------------------
 
     def local_fingerprint(self) -> str:
