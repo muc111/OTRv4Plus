@@ -178,6 +178,7 @@ installed), and with the Termux client.
 | Deleted groups | Phone A creates a group with B and C, then deletes it: on B and C it disappears from the list within seconds, with its messages; reconnecting does not bring it back. Same for a plain room A owns | rc.163 |
 | Viewer buttons | Open a received photo and a PDF: Open with another app, − / 100% / + and Previous / Next are all above the navigation bar and can be tapped | rc.164 |
 | Save to device | Open a received photo or PDF → Save to device…: read the warning, choose Downloads, save. Open it in Files. Wipe & Exit, reinstall: the saved copy is still in Downloads | rc.165 |
+| Viewer tabs | Open a photo taken with location on: Metadata lists GPS position, camera and time, and scrolls to the end. Hidden content says nothing follows the picture; a photo with a ZIP appended (cat photo.jpg x.zip > y.jpg) shows its size and says ZIP. A PDF lists its findings | rc.166 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

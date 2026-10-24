@@ -4,6 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.166 — 2026-10-24 — a tabbed viewer: File, Metadata, Hidden content (core 0.13.1)
+
+- **The file viewer has three tabs: File, Metadata, Hidden content.**
+  - **File:** the picture, PDF, text, audio or video, with zoom and the Save /
+    Open with buttons as before.
+  - **Metadata:** one scrolling list, never cut off: name, kind, size,
+    SHA-256, dimensions, then every EXIF field the picture carries — GPS
+    position, times, camera and lens (with serial numbers), owner, artist,
+    software, comments — and, for a PDF, what its check found. Values the
+    sender chose are shown as plain text, shortened, control and direction
+    characters removed. Read off the main thread; dimensions come from the
+    header without decoding the picture.
+  - **Hidden content:** whether anything follows the real end of a JPEG, PNG
+    or WebP (the commonest way to hide a file in a photo — an EXIF
+    thumbnail's end marker is not mistaken for the picture's), how many bytes
+    and what they look like (ZIP, 7-Zip, RAR, PDF, another picture, text,
+    padding…); for a PDF, its scripts, attachments and other active parts. The
+    tab says what it does not check yet: data hidden in the pixels (LSB) and
+    edited areas, which need the forensics tools still to come. Pictures over
+    32 MB are not read whole for this check.
+- `HiddenDataTest`, `FileFactsTest`, `tests/test_viewer_zoom_and_attention.py`.
+
 ## Android 0.7.0-experimental.rc.165 — 2026-10-24 — save received files to the device (core 0.13.1)
 
 - **Save to device.** Received files stayed inside the app, where Wipe & Exit

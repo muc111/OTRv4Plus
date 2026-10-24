@@ -96,6 +96,8 @@ fun FileViewerDialog(
     }
     var metadataLine by remember(container) { mutableStateOf<String?>(null) }
     var pdfFindings by remember(container) { mutableStateOf<Set<PdfScan.Finding>>(emptySet()) }
+    var tab by remember(container) { mutableStateOf(ViewerTab.FILE) }
+    var facts by remember(container) { mutableStateOf<ViewerFacts?>(null) }
     DisposableEffect(container) {
         onDispose { viewDir.listFiles()?.forEach { it.delete() } }
     }
@@ -124,6 +126,13 @@ fun FileViewerDialog(
             }
             metadataLine = PdfScan.summary(pdfFindings)
         }
+        val k = kind
+        if (plain != null && k != null) {
+            facts = withContext(Dispatchers.IO) {
+                runCatching { readViewerFacts(plain, name, k, pdfFindings) }
+                    .getOrDefault(ViewerFacts(emptyList(), null))
+            }
+        }
     }
     // Edge to edge: from Android 15 a full-screen dialog is drawn under the
     // status and navigation bars whatever `decorFitsSystemWindows` says, so
@@ -147,9 +156,20 @@ fun FileViewerDialog(
                     }
                     TextButton(onClick = onClose) { Text("Close") }
                 }
-                Box(Modifier.weight(1f).fillMaxWidth()) {
+                // File | Metadata | Hidden content (owner, 2026-10-24). The
+                // Metadata tab is its own scrolling column, so no field is
+                // ever pushed off the screen by the picture.
+                TabRow(selectedTabIndex = tab.ordinal) {
+                    for (t in ViewerTab.entries) {
+                        Tab(selected = tab == t, onClick = { tab = t },
+                            text = { Text(t.title) })
+                    }
+                }
+                Box(Modifier.weight(1f).fillMaxWidth().padding(top = 8.dp)) {
                     val p = path
                     when {
+                        tab == ViewerTab.METADATA -> MetadataTab(facts, metadataLine)
+                        tab == ViewerTab.HIDDEN -> HiddenContentTab(facts, kind, pdfFindings)
                         kind == null -> Text("Opening…")
                         p == null -> Text("The file could not be opened.")
                         kind == SafeView.Kind.IMAGE -> ImageBody(p)
@@ -160,18 +180,6 @@ fun FileViewerDialog(
                         else -> Text(
                             "This kind of file cannot be shown inside the app. " +
                                 "Nothing in it has been opened or run.")
-                    }
-                }
-                metadataLine?.let {
-                    // Its own scrolling panel, so a long finding is never
-                    // pushed off the screen by the picture above it.
-                    val details = rememberScrollState()
-                    Column(Modifier.fillMaxWidth().heightIn(max = 160.dp)
-                               .padding(vertical = 6.dp)
-                               .verticalScrollbar(details)
-                               .verticalScroll(details)) {
-                        Text(it, style = MaterialTheme.typography.bodySmall,
-                             modifier = Modifier.padding(end = 8.dp))
                     }
                 }
                 saveNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
@@ -449,7 +457,7 @@ private fun ZoomableImage(image: ImageBitmap, description: String) {
 }
 
 /** A thin bar on the right showing where [state] is, when there is more to scroll. */
-private fun Modifier.verticalScrollbar(state: ScrollState): Modifier = drawWithContent {
+internal fun Modifier.verticalScrollbar(state: ScrollState): Modifier = drawWithContent {
     drawContent()
     val total = state.maxValue
     if (total <= 0 || total == Int.MAX_VALUE) return@drawWithContent

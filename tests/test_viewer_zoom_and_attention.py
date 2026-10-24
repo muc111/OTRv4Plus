@@ -30,11 +30,39 @@ def test_pictures_and_pdf_pages_are_zoomable():
         assert needed in body, needed
 
 
-def test_the_metadata_has_its_own_scrolling_panel():
+def test_the_viewer_has_file_metadata_and_hidden_content_tabs():
+    """Owner (2026-10-24): three tabs, and metadata never cut off."""
     viewer = _read("FileViewer.kt")
-    block = viewer[viewer.index("metadataLine?.let {"):][:700]
-    assert "verticalScroll(details)" in block and "heightIn(max" in block
-    assert "verticalScrollbar(details)" in block, "the panel must show that it scrolls"
+    tabs = _read("FileViewerTabs.kt")
+    assert 'FILE("File"), METADATA("Metadata"), HIDDEN("Hidden content")' in tabs
+    assert "TabRow(selectedTabIndex = tab.ordinal)" in viewer
+    assert "tab == ViewerTab.METADATA -> MetadataTab(facts, metadataLine)" in viewer
+    assert "tab == ViewerTab.HIDDEN -> HiddenContentTab(facts, kind, pdfFindings)" in viewer
+
+
+def test_the_metadata_tab_scrolls_the_whole_list_and_says_so():
+    tabs = _read("FileViewerTabs.kt")
+    body = tabs[tabs.index("internal fun MetadataTab("):tabs.index("internal fun HiddenContentTab(")]
+    assert "Modifier.fillMaxSize().verticalScrollbar(scroll).verticalScroll(scroll)" in body
+    assert "heightIn(max" not in body, "no cap: the tab is the whole space"
+    assert "for (f in facts.facts)" in body
+
+
+def test_facts_are_read_off_the_main_thread_and_within_a_memory_bound():
+    viewer = _read("FileViewer.kt")
+    assert "withContext(Dispatchers.IO) {\n                runCatching { readViewerFacts(" in viewer
+    tabs = _read("FileViewerTabs.kt")
+    read = tabs[tabs.index("internal fun readViewerFacts("):tabs.index("internal fun MetadataTab(")]
+    assert "inJustDecodeBounds = true" in read, "dimensions without decoding the picture"
+    assert "file.length() > HiddenData.MAX_SCAN_BYTES" in read
+    assert read.index("file.length() > HiddenData.MAX_SCAN_BYTES") < read.index("file.readBytes()")
+    assert "android.media.ExifInterface(path)" in read
+
+
+def test_the_hidden_tab_says_what_it_does_not_check():
+    tabs = _read("FileViewerTabs.kt")
+    assert "Not checked yet: data hidden in the" in tabs
+    assert "HiddenData.describe(report)" in tabs
 
 
 def test_a_chat_that_needs_the_user_pulses_and_says_so():
