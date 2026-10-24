@@ -4,6 +4,14 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.170 — 2026-10-24 — every viewer button on screen (core 0.13.1)
+
+- **The viewer's buttons are all on screen** (Pixel 7 / Android 17: under a
+  picture only Save to device showed, the rest below the screen). Save to
+  device and Open with… are one row at the top, under the file's name; the
+  zoom buttons and a PDF's Previous / Next are above the picture or page.
+  Nothing that needs a tap is left at the bottom edge.
+
 ## Android 0.7.0-experimental.rc.169 — 2026-10-24 — 1:1 messages are never sent unencrypted (core 0.13.1)
 
 - **A 1:1 message is never sent unencrypted** (owner report: another

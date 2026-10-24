@@ -225,6 +225,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Viewer tabs (fix) | As rc.166; the Metadata tab no longer lists a SHA-256 | rc.167 |
 | Wipe & Exit text | Profile → Wipe & Exit: the confirmation says files saved with Save to device are not touched; cancel | rc.168 |
 | Never plaintext 1:1 | Send a message to a contact who is offline: it shows as waiting and arrives encrypted once they are online. Send to an account on another XMPP app without OTRv4+: it waits, the chat says why, nothing arrives unencrypted | rc.169 |
+| Viewer buttons on top | Open a received photo and a PDF: Save to device and Open with… are at the top; − / 100% / + and Previous / Next above the picture; all can be tapped | rc.170 |
 
 ## ⚠️ Known limits
 

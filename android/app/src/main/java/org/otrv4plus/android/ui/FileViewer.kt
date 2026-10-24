@@ -156,6 +156,21 @@ fun FileViewerDialog(
                     }
                     TextButton(onClick = onClose) { Text("Close") }
                 }
+                // The actions, at the TOP and in one row (device report,
+                // Pixel 7 / Android 17: under the picture only Save to device
+                // showed, the rest below the screen). Nothing that needs a tap
+                // is left at the bottom edge, whatever the system bars take.
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(enabled = path != null, onClick = { confirmSave = true },
+                                   modifier = Modifier.weight(1f)) {
+                        Text(FileExport.BUTTON, maxLines = 1)
+                    }
+                    OutlinedButton(enabled = path != null, onClick = { confirmHandoff = true },
+                                   modifier = Modifier.weight(1f)) {
+                        Text("Open with…", maxLines = 1)
+                    }
+                }
+                saveNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                 // File | Metadata | Hidden content (owner, 2026-10-24). The
                 // Metadata tab is its own scrolling column, so no field is
                 // ever pushed off the screen by the picture.
@@ -181,15 +196,6 @@ fun FileViewerDialog(
                             "This kind of file cannot be shown inside the app. " +
                                 "Nothing in it has been opened or run.")
                     }
-                }
-                saveNote?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-                OutlinedButton(enabled = path != null, onClick = { confirmSave = true },
-                               modifier = Modifier.fillMaxWidth()) {
-                    Text(FileExport.BUTTON)
-                }
-                OutlinedButton(enabled = path != null, onClick = { confirmHandoff = true },
-                               modifier = Modifier.fillMaxWidth()) {
-                    Text("Open with another app…")
                 }
             }
         }
@@ -301,6 +307,11 @@ private fun PdfBody(path: String) {
         }
     }
     Column(Modifier.fillMaxSize()) {
+        Row {
+            TextButton(enabled = page > 0, onClick = { page-- }) { Text("Previous") }
+            Text("Page ${page + 1} of $count", Modifier.padding(12.dp))
+            TextButton(enabled = page < count - 1, onClick = { page++ }) { Text("Next") }
+        }
         Box(Modifier.weight(1f).fillMaxWidth()) {
             when {
                 failed -> Text("This PDF could not be shown. Nothing in it was run.")
@@ -309,11 +320,6 @@ private fun PdfBody(path: String) {
                 }
                 else -> Text("Rendering…")
             }
-        }
-        Row {
-            TextButton(enabled = page > 0, onClick = { page-- }) { Text("Previous") }
-            Text("Page ${page + 1} of $count", Modifier.padding(12.dp))
-            TextButton(enabled = page < count - 1, onClick = { page++ }) { Text("Next") }
         }
     }
 }
@@ -426,6 +432,19 @@ private fun ZoomableImage(image: ImageBitmap, description: String) {
                      Zoom.clampPan(pan.y + by.y, scale, view.height))
     }
     Column(Modifier.fillMaxSize()) {
+        // Above the picture, not under it: the bottom edge is where the
+        // system bars can take space (see FileViewerDialog).
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+            TextButton(enabled = scale > Zoom.MIN, onClick = { settle(Zoom.zoomOut(scale)) }) {
+                Text("−", style = MaterialTheme.typography.titleLarge)
+            }
+            TextButton(enabled = scale > Zoom.MIN, onClick = { settle(Zoom.MIN) }) {
+                Text(Zoom.label(scale))
+            }
+            TextButton(enabled = scale < Zoom.MAX, onClick = { settle(Zoom.zoomIn(scale)) }) {
+                Text("+", style = MaterialTheme.typography.titleLarge)
+            }
+        }
         Box(Modifier.weight(1f).fillMaxWidth().clipToBounds()
                 .onSizeChanged { view = Size(it.width.toFloat(), it.height.toFloat()) }
                 .pointerInput(Unit) {
@@ -441,17 +460,6 @@ private fun ZoomableImage(image: ImageBitmap, description: String) {
                       translationX = pan.x
                       translationY = pan.y
                   })
-        }
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-            TextButton(enabled = scale > Zoom.MIN, onClick = { settle(Zoom.zoomOut(scale)) }) {
-                Text("−", style = MaterialTheme.typography.titleLarge)
-            }
-            TextButton(enabled = scale > Zoom.MIN, onClick = { settle(Zoom.MIN) }) {
-                Text(Zoom.label(scale))
-            }
-            TextButton(enabled = scale < Zoom.MAX, onClick = { settle(Zoom.zoomIn(scale)) }) {
-                Text("+", style = MaterialTheme.typography.titleLarge)
-            }
         }
     }
 }

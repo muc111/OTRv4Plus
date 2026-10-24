@@ -78,12 +78,20 @@ def test_the_chats_tab_pulses_while_any_chat_needs_the_user():
 
 
 def test_the_viewer_keeps_its_buttons_clear_of_the_system_bars():
-    """Device report (Pixel 7 / Android 17): the buttons under pictures and
-    PDFs were cut off. From Android 15 a full-screen dialog is drawn edge to
-    edge, so the viewer takes the bars' space itself."""
+    """Device reports (Pixel 7 / Android 17): the buttons under pictures and
+    PDFs were cut off, and after rc.164 only Save to device showed with the
+    rest below the screen. The actions are one row at the TOP, and the zoom
+    and page controls sit above the picture: nothing to tap at the bottom
+    edge, whatever the system bars take."""
     viewer = _read("FileViewer.kt")
     dialog = viewer[viewer.index("Dialog(onDismissRequest = onClose"):]
-    dialog = dialog[:dialog.index("if (confirmHandoff)")]
+    dialog = dialog[:dialog.index("if (confirmSave)")]
     assert "decorFitsSystemWindows = false" in dialog
-    assert dialog.index(".windowInsetsPadding(WindowInsets.safeDrawing)") < dialog.index(
-        "Open with another app"), "the padding wraps the whole column, buttons included"
+    assert ".windowInsetsPadding(WindowInsets.safeDrawing)" in dialog
+    actions = dialog.index("onClick = { confirmSave = true }")
+    assert actions < dialog.index("onClick = { confirmHandoff = true }") < dialog.index("TabRow(")
+    assert dialog.index("TabRow(") < dialog.index("Box(Modifier.weight(1f)")
+    zoom = viewer[viewer.index("private fun ZoomableImage("):]
+    assert zoom.index("Zoom.zoomOut(scale)") < zoom.index("Box(Modifier.weight(1f)")
+    pdf = viewer[viewer.index("private fun PdfBody("):]
+    assert pdf.index('Text("Previous")') < pdf.index("Box(Modifier.weight(1f)")
