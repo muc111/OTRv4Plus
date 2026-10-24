@@ -30,6 +30,7 @@ slixmpp 1.17 client against a real STARTTLS server on loopback
 """
 from __future__ import annotations
 
+from source_of import transport_source  # noqa: E402
 import os
 import socket
 import ssl
@@ -466,7 +467,7 @@ class TestOnlyClearnetUsesDns:
                 assert t._route.kind != "clearnet_tls"
             finally:
                 t.close()
-        src = open(os.path.join(ROOT, "android_bridge", "transport.py")).read()
+        src = transport_source()
         # _plan_clearnet_dns is only called under a CLEARNET_TLS check.
         for chunk in src.split("self._plan_clearnet_dns(client, watch, host)")[:-1]:
             assert "CLEARNET_TLS" in chunk[-900:]

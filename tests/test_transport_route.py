@@ -18,6 +18,7 @@ the rule under test is the generic one in android_bridge/route.py.
 """
 from __future__ import annotations
 
+from source_of import transport_source  # noqa: E402
 import os
 import ssl
 import sys
@@ -519,7 +520,7 @@ class TestNothingWeakensTLS:
     one behind endpoint_authenticated_by, and nothing trusts all."""
 
     def test_source(self):
-        src = open(os.path.join(ROOT, "android_bridge", "transport.py")).read()
+        src = transport_source()
         assert src.count("ssl.CERT_NONE") == 1
         assert src.count("check_hostname = False") == 1
         for bad in ("_create_unverified_context", "verify=False",

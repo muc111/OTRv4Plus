@@ -28,6 +28,7 @@ from slixmpp.plugins.xep_0030.stanza import DiscoInfo  # noqa: E402
 from slixmpp.xmlstream import ET  # noqa: E402
 
 from android_bridge import transport as T  # noqa: E402
+from android_bridge import transport_rooms as R  # noqa: E402
 from tests.test_android_rooms import (FakeDisco, Items, MUC_SERVICE,  # noqa: E402
                                       build)
 
@@ -52,17 +53,17 @@ class TestParsing:
     @pytest.mark.parametrize("text,want", [("0", 0), ("1", 1), ("42", 42),
                                            (" 7 ", 7)])
     def test_the_count_is_read(self, text, want):
-        assert T._room_occupant_count(info_with(text)) == want
+        assert R._room_occupant_count(info_with(text)) == want
 
     @pytest.mark.parametrize("text", ["", "-1", "many", "1.5", "99999999"])
     def test_anything_but_a_plain_count_is_not_given(self, text):
-        assert T._room_occupant_count(info_with(text)) is None
+        assert R._room_occupant_count(info_with(text)) is None
 
     def test_no_form_means_not_given_not_zero(self):
-        assert T._room_occupant_count(info_with(None)) is None
+        assert R._room_occupant_count(info_with(None)) is None
 
     def test_garbage_does_not_raise(self):
-        assert T._room_occupant_count(object()) is None
+        assert R._room_occupant_count(object()) is None
 
 
 class CountingDisco(FakeDisco):

@@ -9,6 +9,7 @@ the way the transport does: server disco#items -> MUC service -> its public
 rooms -> exact name. Fixture JIDs are fixtures, not claims about the server.
 """
 
+from source_of import transport_source  # noqa: E402
 import os
 import sys
 
@@ -422,7 +423,7 @@ class TestAddingAndPending:
         chats = self._src("android", "app", "src", "main", "java", "org",
                           "otrv4plus", "android", "ui", "ConversationsScreen.kt")
         assert "PeopleSection" not in chats and "onOpenPeople" in chats
-        transport = self._src("android_bridge", "transport.py")
+        transport = transport_source()
         body = transport[transport.index("async def _add_contact"):]
         body = body[:body.index("\n    def ", 5)]
         assert "update_roster(jid" in body

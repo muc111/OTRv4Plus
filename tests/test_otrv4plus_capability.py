@@ -16,6 +16,7 @@ XmppTransport send/presence/message paths (with a fake slixmpp client), and
 real OtrApp engines doing a real DAKE.
 """
 
+from source_of import transport_source  # noqa: E402
 import asyncio
 import os
 import sys
@@ -429,5 +430,5 @@ class TestBothClientsAgree:
         assert "_caps.FEATURE" in src and "add_feature" in src
 
     def test_the_android_transport_registers_entity_capabilities(self):
-        src = open(os.path.join(ROOT, "android_bridge", "transport.py"), encoding="utf-8").read()
+        src = transport_source()
         assert '"xep_0115"' in src and "_caps.FEATURE" in src

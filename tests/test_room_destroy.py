@@ -17,6 +17,7 @@ room" command, after the owner destroy and only for an admin.
 MLS+ groups are MUC rooms carrying ciphertext: the same destroy, no special
 case. The real slixmpp stanzas are captured here, not hand-built ones.
 """
+from source_of import transport_source  # noqa: E402
 import asyncio
 import os
 import sys
@@ -119,7 +120,7 @@ A = ("android", "app", "src", "main", "java", "org", "otrv4plus", "android")
 
 def test_the_server_admin_predicate_feeds_both_screens():
     """rc.88: the server lists XEP-0133 commands to its admins only."""
-    tr = _read("android_bridge", "transport.py")
+    tr = transport_source()
     assert 'ADMIN_COMMAND_PREFIX = "http://jabber.org/protocol/admin#"' in tr
     state = _read(*A, "chat", "ChatState.kt")
     assert "RoomDeletion.mayDelete(owner = bare(jid) in ownedRooms, serverAdmin = serverAdmin)" in state
@@ -220,7 +221,7 @@ def test_the_admin_command_is_in_the_module_and_admin_only():
     mod = _read("prosody", "mod_otrv4plus_moderation.lua")
     assert ('adhoc_new("Destroy a room", NS .. "destroy-room", destroy_handler, "admin")'
             in mod)
-    tr = _read("android_bridge", "transport.py")
+    tr = transport_source()
     assert '"destroy": "destroy-room"' in tr
 
 

@@ -46,3 +46,18 @@ def open_irc_and_engine(*_args, **_kwargs):
     """`open()` stand-in returning irc_and_engine_source() as a file."""
     import io
     return io.StringIO(irc_and_engine_source())
+
+
+def transport_files() -> list:
+    """The Android/desktop XMPP transport: android_bridge/transport.py and
+    the transport_*.py modules XmppTransport is built from."""
+    import glob
+    import os
+    bridge = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "android_bridge")
+    return ([os.path.join(bridge, "transport.py")]
+            + sorted(glob.glob(os.path.join(bridge, "transport_*.py"))))
+
+
+def transport_source() -> str:
+    """All of the transport's source, one file after another."""
+    return "\n".join(open(p, encoding="utf-8").read() for p in transport_files())

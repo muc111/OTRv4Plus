@@ -11,6 +11,7 @@ a scripted SAM bridge.
 """
 from __future__ import annotations
 
+from source_of import transport_source  # noqa: E402
 import asyncio
 import os
 import socket
@@ -169,6 +170,6 @@ def test_sign_out_drops_it():
 
 
 def test_the_android_transport_asks_for_it():
-    src = open(os.path.join(ROOT, "android_bridge", "transport.py"), encoding="utf-8").read()
+    src = transport_source()
     assert 'if _accepts(forward, "hold"):' in src
     assert 'extra["hold"] = True' in src

@@ -147,9 +147,9 @@ class TestHeldGroupsAreListed:
 class TestCreatedRoomsAskToBeListed:
 
     def test_the_app_and_termux_ask_for_a_public_marked_room(self):
-        here = os.path.join(ROOT, "android_bridge", "transport.py")
+        from source_of import transport_source
         termux = os.path.join(ROOT, "client", "otrv4plus_groups.py")
-        for path in (here, termux):
-            src = open(path, encoding="utf-8").read()
+        for path, src in (("android_bridge/transport*.py", transport_source()),
+                          (termux, open(termux, encoding="utf-8").read())):
             assert "muc#roomconfig_publicroom" in src, path
             assert "SECURE_GROUP_DESC" in src, path
