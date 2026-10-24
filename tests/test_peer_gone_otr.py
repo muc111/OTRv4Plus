@@ -350,8 +350,9 @@ def test_another_session_of_our_account_is_warned_about(capsys):
 
 
 def test_the_terminal_names_a_session_limit():
-    assert xmpp._is_session_limit(
+    import otrv4plus_xmpp_connection as _conn
+    assert _conn._is_session_limit(
         "policy-violation", "<policy-violation/><text>Too many active "
         "connections to this account</text>")
-    assert not xmpp._is_session_limit("policy-violation", "rate limited")
-    assert "already signed in on another device" in xmpp.SESSION_LIMIT_TEXT
+    assert not _conn._is_session_limit("policy-violation", "rate limited")
+    assert "already signed in on another device" in _conn.SESSION_LIMIT_TEXT

@@ -187,10 +187,8 @@ class TestSignInPacing:
         svc = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
                                 "android/connection/OtrConnectionService.kt")).read()
         assert "ReconnectPolicy(jitter = RECONNECT_JITTER)" in svc
-        import otrv4plus_xmpp as X
-        import inspect
-        src = inspect.getsource(X)
-        assert "secrets.randbelow(501)" in src
+        from source_of import client_source
+        assert "secrets.randbelow(501)" in client_source()
 
 
 class TestABanIsNamedAndNotRetried:

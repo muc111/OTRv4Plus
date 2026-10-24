@@ -236,13 +236,13 @@ class TestTheCallersTreatUnsupportedAsAlive:
             "original bug with a different exception type")
 
     def test_the_terminal_client_uses_the_shared_helper(self):
-        body = self._body("otrv4plus_xmpp.py",
+        body = self._body("client/otrv4plus_xmpp_connection.py",
                           "async def _probe_stream(self)")
         assert "_ping.round_trip(" in body
         assert "async_ping" not in body
 
     def test_the_terminal_client_survives_an_unusable_ping(self):
-        body = self._body("otrv4plus_xmpp.py",
+        body = self._body("client/otrv4plus_xmpp_connection.py",
                           "async def _probe_stream(self)")
         assert "except _ping.PingUnsupported:" in body
         after = body[body.index("except _ping.PingUnsupported:"):]
@@ -253,7 +253,8 @@ class TestTheCallersTreatUnsupportedAsAlive:
         import io
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for path in ("android_bridge/transport.py", "otrv4plus_xmpp.py"):
+        for path in ("android_bridge/transport.py",
+                     "client/otrv4plus_xmpp_connection.py"):
             with io.open(os.path.join(root, path), encoding="utf-8") as fh:
                 text = fh.read()
             # The /ping COMMAND in the terminal client is a different thing:

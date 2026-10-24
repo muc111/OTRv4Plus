@@ -165,7 +165,8 @@ class TestVoiceMediaIsNotCoupledToTheXmppTransport:
     def test_losing_xmpp_does_not_end_a_call(self):
         # Media rides its own I2P datagram session; only rekey signalling
         # uses XMPP, and an undeliverable rekey keeps the committed epoch.
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        from source_of import client_source
+        source = client_source()
         start = source.index("def _on_disconnected")
         body = source[start:start + 900]
         assert "_voice_manager" not in body, (

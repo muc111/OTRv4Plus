@@ -4,6 +4,26 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.137 and Desktop — 2026-10-24 — splitting the big files, step 3 (core 0.13.1)
+
+Nothing changes in the app. `otrv4plus_xmpp.py` is now 4,500 lines (from
+8,650 two builds ago); what left this time:
+
+- **`otrv4plus_tunnels.py`**: XMPP over Tor (SOCKS5) and over I2P (SAM),
+  the held SAM session and its socket helpers. 645 lines.
+- **`otrv4plus_xmpp_connection.py`**: the client's own stream — keepalive
+  (and the long note on why a slow I2P ping is not a dead stream), a refused
+  password, reconnect with backoff. 600 lines.
+- **`otrv4plus_xmpp_presence.py`**: other people — presence, the peer-gone
+  timer, delivery receipts, contact requests, bounced messages. 280 lines.
+- **`otrv4plus_xmpp_files.py`** and **`otrv4plus_xmpp_trade.py`**: files and
+  voice notes; tips and courier trades. 550 and 230 lines.
+- **`otrv4plus_host.py`**: Termux or not, the state folder, finding and
+  running programs. Read through the module, so one setting is seen by
+  every part of the client.
+
+Imports and aliases the client no longer uses are removed.
+
 ## Android 0.7.0-experimental.rc.136 and Desktop — 2026-10-24 — splitting the big files, step 2 (core 0.13.1)
 
 Nothing changes in the app. Three parts of the terminal XMPP client's

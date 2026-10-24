@@ -473,7 +473,8 @@ class TestMediaSurvivesTheWholeCycle:
     reconnects. Nothing in this fix may change that."""
 
     def test_declaring_dead_and_reconnecting_never_touches_the_voice_manager(self):
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        from source_of import client_source
+        source = client_source()
         for name in ("def _declare_stream_dead", "def _on_disconnected",
                      "async def _reconnect"):
             start = source.index(name)
