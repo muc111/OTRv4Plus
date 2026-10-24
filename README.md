@@ -14,10 +14,8 @@ OTRv4+ is an open-source client for end-to-end encrypted chat, encrypted
 group chat, file transfer and voice calls. It is built around the I2P network
 and needs no phone number. Tor and TLS also work for chat.
 
-**Security status: extensively tested and hardened through developer-led and
-AI-assisted analysis, but not independently audited.** See
-[Security assessment and audit status](#security-assessment-and-audit-status)
-for what that covers and what it does not.
+**Security status: extensively tested and hardened through developer-led and AI-assisted analysis, but not independently audited.**
+See [Security assessment and audit status](#security-assessment-and-audit-status) for what that covers and what it does not.
 
 ## Screenshots
 
@@ -62,15 +60,7 @@ start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+
 
 ## Server capacity (stress test)
 
-One 2015 ThinkPad T450 running Prosody, measured with the built-in stress test: every user in an encrypted (MLS) group of 20, each sending a message a minute, far more than people do. Local connections; I2P not yet measured.
-
-| Users online | Prosody CPU (of one core) | Memory | Delivery time, typical / slowest 5% | Delivered |
-|---|---|---|---|---|
-| 200 | 8.5% | 53 MB | 0.11 s / 0.23 s | ~100% |
-| 400 | 17.5% | 106 MB | 0.17 s / 0.34 s | ~100% |
-| 800 | 37% | 303 MB | 0.31 s / 0.56 s | ~100% |
-
-On a 2015 ThinkPad T450, **1,600 users** chatting in groups of 20 used about 40% of the one core Prosody uses (p95 0.5 s), and the server recovered within two minutes of a burst of joins. The server is capped at **1,600 online**, lets sign-ins in 10 a second so a restart does not spike it, and limits new accounts per hour (and caps accounts in total at 5,000). Method and raw results: [docs/STRESS_TEST.md](docs/STRESS_TEST.md); limits: [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md).
+On one 2015 ThinkPad T450 running Prosody, measured with the built-in stress test (encrypted groups of 20, each user sending a message a minute, local connections; I2P not yet measured): 800 users online used 37% of one core and 303 MB, delivery 0.31 s typical / 0.56 s slowest 5%, ~100% delivered; **1,600 users** used about 40% (p95 0.5 s). The server is capped at 1,600 online, 10 sign-ins a second and 5,000 accounts. Method and raw results: [docs/STRESS_TEST.md](docs/STRESS_TEST.md); limits: [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md).
 
 ## Security assessment and audit status
 
@@ -129,12 +119,24 @@ Secure groups use **MLS+** through OpenMLS, with every primitive from the same R
 
 ## Quick start
 
+**Pick a branch; every command below names one.** Both ends of a conversation need the same one.
+
+| Branch | What it is |
+|---|---|
+| `dev` | Newest. The Android test APK on the Releases page is built from it. |
+| `main` | The last stable release. Older protocol: the current APK and `dev` refuse it. |
+
+`git pull` stays on your branch. Switch a clone: `git fetch origin dev && git checkout dev` (or `git checkout main`), then build again.
+
 ### Desktop app (Ubuntu, Debian, Qubes OS)
 
 Built from source on your machine. **Ubuntu 24.04+ / Debian 13+**, one line (re-run to update):
 
 ```bash
-sudo apt install -y git && git clone https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+# dev (matches the current APK):
+sudo apt install -y git && git clone -b dev https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+# main (stable):
+sudo apt install -y git && git clone -b main https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
 ```
 What it installs: [desktop/README.md](desktop/README.md#install-on-ubuntu-or-debian). Qubes OS 4.2: [qubes/README.md](qubes/README.md).
 
@@ -161,14 +163,12 @@ Do not `pip install` anything: `build.sh` puts the Python modules in the project
 the build tool once, so it takes longer; later builds are much faster):
 
 ```bash
-git clone https://github.com/muc111/OTRv4Plus.git
+git clone -b dev https://github.com/muc111/OTRv4Plus.git    # or -b main (see Pick a branch)
 cd OTRv4Plus/Rust
 bash build.sh
 cd ..
 ```
 
-`main` matches the APK on the Releases page. A clone made earlier from the
-`claude/...` branch moves over with `git fetch origin && git checkout main`.
 `build.sh` sets up its own Python environment in `.venv`, runs the Rust tests and
 lints, installs the core (with secure groups) and ends with `BUILD OK`. Keep Termux
 open while it runs; details in [docs/TECHNICAL.md](docs/TECHNICAL.md#buildsh-in-detail).
@@ -177,7 +177,7 @@ open while it runs; details in [docs/TECHNICAL.md](docs/TECHNICAL.md#buildsh-in-
 
 ```bash
 cd ~/OTRv4Plus
-git pull
+git pull                         # stays on dev or main, whichever you cloned
 cd Rust && bash build.sh && cd ..
 git log -1 --format='%h %ad'     # check you are on the latest commit
 ```

@@ -100,11 +100,17 @@ Ubuntu 24.04+ or Debian 13+. Everything is built from source on your
 machine; nothing prebuilt is downloaded except the toolchains. One line:
 
 ```bash
-sudo apt install -y git && git clone https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+# dev (newest; matches the current Android test APK):
+sudo apt install -y git && git clone -b dev https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
+# main (the last stable release):
+sudo apt install -y git && git clone -b main https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
 ```
 
-Already have the clone? `bash ~/OTRv4Plus/desktop/install.sh`. Running it
-again later pulls and rebuilds; keys and settings in `~/.otrv4plus` stay.
+Both ends of a conversation need the same branch (`dev` refuses `main`'s older
+protocol). Already have the clone? `bash ~/OTRv4Plus/desktop/install.sh`.
+Running it again later pulls the branch you are on and rebuilds; keys and
+settings in `~/.otrv4plus` stay. Switch branch with
+`git fetch origin dev && git checkout dev` (or `git checkout main`), then run it again.
 `--no-run` installs without starting the app.
 
 [`install.sh`](install.sh) is short; read it first if you like. It:
