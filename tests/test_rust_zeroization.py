@@ -123,7 +123,7 @@ class TestPythonDoesNotHoldWhatRustShould:
 
     def test_the_engine_has_no_ratchet_key_bytes(self):
         """Ratchet material moves Rust-to-Rust through an opaque handle."""
-        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
         assert "get_session_keys" not in src or "legacy" in src.lower()
 
     def test_voice_derives_no_key_in_python(self):
@@ -134,7 +134,7 @@ class TestPythonDoesNotHoldWhatRustShould:
         gap is closed: every cipher comes from a root handle's `make_cipher`,
         and the Python HKDF that duplicated the Rust schedule is gone.
         """
-        src = open(os.path.join(ROOT, "otrv4plus_voice.py"),
+        src = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
                    encoding="utf-8").read()
         for gone in ("def derive_media_key(", "def ratchet_key(", "def _hkdf(",
                      "from cryptography", "kyber_py"):

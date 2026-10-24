@@ -24,4 +24,13 @@ Design rules this package must keep:
     package is testable on a desktop CI machine.
 """
 
+import os as _os
+import sys as _sys
+
+# The engine modules (otrv4plus_*.py) live in client/ in the repository. In
+# the APK they sit flat beside this package and there is no client/.
+_CLIENT = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "client")
+if _os.path.isdir(_CLIENT) and _CLIENT not in _sys.path:
+    _sys.path.insert(0, _CLIENT)
+
 __all__ = ["secure_store", "identity", "events", "app"]

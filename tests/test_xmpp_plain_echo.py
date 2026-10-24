@@ -257,7 +257,7 @@ class TestTheWiring:
         assert xmpp._PRINT_SEQ > before
 
     def test_the_input_loop_arms_it(self):
-        src = open("otrv4plus_xmpp.py").read()
+        src = open("client/otrv4plus_xmpp.py").read()
         assert "client._plain_echo = (_PRINT_SEQ, line.rstrip(\"\\n\"))" in src
 
     def test_the_echo_erases_before_it_prints(self):

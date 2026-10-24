@@ -46,7 +46,7 @@ class TestTheStartupWarning:
     """Caught before a single stanza goes out, which is the cheapest place."""
 
     def _warn(self, jid, peer, capsys):
-        src = io.open(os.path.join(ROOT, "otrv4plus_xmpp.py"),
+        src = io.open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
                       encoding="utf-8").read()
         # The checker lives inside main(); lift it out rather than run main().
         start = src.index("    def _warn_if_domains_differ(jid, peer):")
@@ -122,7 +122,7 @@ class TestTheNoSessionHintNamesTheRealPeer:
     def test_every_no_session_message_carries_it(self):
         """Four call sites. One left without the hint is the one the user
         hits."""
-        src = io.open(os.path.join(ROOT, "otrv4plus_xmpp.py"),
+        src = io.open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
                       encoding="utf-8").read()
         bare = len(re.findall(
             r'no encrypted session with \{peer\}\. Run /otr first\."\)', src))

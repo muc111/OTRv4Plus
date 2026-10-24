@@ -16,10 +16,16 @@ import sys
 import types
 import importlib.util
 
-# ── 1. Add the project root to sys.path ──────────────────────────────────────
+# ── 1. Put client/ (the modules) ahead of the project root on sys.path ───────
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+CLIENT = os.path.join(HERE, "client")
+for _p in (HERE, CLIENT):
+    if _p in sys.path:
+        sys.path.remove(_p)
+    sys.path.insert(0, _p)
+# The test helpers (smp_engine_compat, otrv4_testlib) live in tests/.
+if os.path.join(HERE, "tests") not in sys.path:
+    sys.path.append(os.path.join(HERE, "tests"))
 
 # ── 2. Stub non-crypto imports that fail outside Termux ──────────────────────
 def _stub(name):
@@ -62,7 +68,7 @@ def _load_main():
     candidates = ['otrv4+.py', 'otrv4_.py', 'otrv4_combined.py']
     path = None
     for c in candidates:
-        p = os.path.join(HERE, c)
+        p = os.path.join(CLIENT, c)
         if os.path.exists(p):
             path = p
             break

@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.134 and Desktop — 2026-10-24 — a tidier repository (core 0.13.1)
+
+Nothing changes in the app; the repository is laid out like a project:
+
+- **Python modules in `client/`.** The engine and terminal clients
+  (`otrv4+.py`, `otrv4plus_*.py`, the WeeChat plugin, `i2p_hosts.defaults`)
+  moved out of the top level. Module names are unchanged (`client/` is put on
+  the import path), the APK packages the same files, and `python otrv4+.py` /
+  `python otrv4plus_xmpp.py` still work: those two are symlinks into
+  `client/`. A clone with a `.venv` at the top still switches to it.
+- **Documents in `docs/`**, with an index (`docs/README.md`). README,
+  CHANGELOG, CONTRIBUTING, SECURITY and the licensing files stay at the top.
+- **Every test in `tests/`.** Four suites (245 tests: voice security, the
+  audio backend, voice integration, MAC revelation) sat at the top level,
+  where CI never ran them; three had gone stale and now assert what the code
+  does. Two duplicated test helpers and two dead scripts are gone.
+- CONTRIBUTING.md has a repository-layout table.
+
 ## Android 0.7.0-experimental.rc.133 — 2026-10-24 — the bundled I2P router builds from scratch again (core 0.13.1)
 
 - **The bundled i2pd builds on a fresh CI machine again.** The first build

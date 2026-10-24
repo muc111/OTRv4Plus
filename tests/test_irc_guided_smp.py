@@ -46,7 +46,7 @@ otr = pytest.importorskip("otrv4plus")
 smpflow = pytest.importorskip("otrv4plus_smpflow")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENGINE = os.path.join(ROOT, "otrv4+.py")
+ENGINE = os.path.join(ROOT, "client", "otrv4+.py")
 
 CLIENT = otr.EnhancedOTRv4IRCClient
 

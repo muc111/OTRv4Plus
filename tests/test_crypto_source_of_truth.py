@@ -68,8 +68,8 @@ def test_only_the_vault_uses_platform_cryptography_in_kotlin():
 
 
 def test_the_removed_duplicates_stay_removed():
-    engine = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
-    voice = open(os.path.join(ROOT, "otrv4plus_voice.py"), encoding="utf-8").read()
+    engine = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
+    voice = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"), encoding="utf-8").read()
     assert not os.path.exists(os.path.join(ROOT, ".attic"))
     for gone in ("def _unpack_session_keys", "def _kdf_ck", "def _enh_dec_legacy"):
         assert gone not in engine, gone

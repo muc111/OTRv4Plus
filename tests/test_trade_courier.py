@@ -555,7 +555,7 @@ class TestNothingIsKept:
     def test_the_module_never_writes_to_disk(self):
         """INV-25. Trade state that survived a restart would mean trusting a
         file about who the counterparty was and how far the trade had got."""
-        with open(os.path.join(ROOT, "otrv4plus_trade.py"),
+        with open(os.path.join(ROOT, "client", "otrv4plus_trade.py"),
                   encoding="utf-8") as fh:
             source = fh.read()
         for forbidden in ("open(", "os.write", "pathlib", "json.dump",
@@ -611,7 +611,7 @@ class TestItIsNotAWallet:
     @staticmethod
     @pytest.fixture(scope="class")
     def source():
-        with open(os.path.join(ROOT, "otrv4plus_trade.py"),
+        with open(os.path.join(ROOT, "client", "otrv4plus_trade.py"),
                   encoding="utf-8") as fh:
             return fh.read()
 

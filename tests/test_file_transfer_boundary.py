@@ -462,7 +462,7 @@ class TestTheFeatureIsXmppOnly:
     """
 
     def _engine_source(self):
-        return open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        return open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
 
     def test_the_irc_engine_does_not_import_the_module(self):
         tree = ast.parse(self._engine_source())
@@ -493,10 +493,10 @@ class TestTheFeatureIsXmppOnly:
 
     def test_the_xmpp_client_is_the_only_importer(self):
         importers = []
-        for name in sorted(os.listdir(ROOT)):
+        for name in sorted(os.listdir(os.path.join(ROOT, "client"))):
             if not name.endswith(".py") or name == "otrv4plus_filetransfer.py":
                 continue
-            path = os.path.join(ROOT, name)
+            path = os.path.join(ROOT, "client", name)
             if os.path.islink(path):
                 continue
             if "otrv4plus_filetransfer" in open(path, encoding="utf-8").read():

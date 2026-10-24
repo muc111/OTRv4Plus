@@ -146,7 +146,7 @@ class TestIrcDoesNotImportTheIdentityModule:
         every IRC run.  The engine imports it inside the opted-in branch
         instead, which makes the separation checkable rather than a promise."""
         import ast
-        tree = ast.parse(open(os.path.join(ROOT, "otrv4+.py"),
+        tree = ast.parse(open(os.path.join(ROOT, "client", "otrv4+.py"),
                               encoding="utf-8").read())
         for node in tree.body:                      # top level only
             if isinstance(node, ast.ImportFrom) and node.module:
@@ -160,7 +160,7 @@ class TestIrcDoesNotImportTheIdentityModule:
 
     def test_every_identity_import_is_guarded_by_persist_identity(self):
         import ast
-        tree = ast.parse(open(os.path.join(ROOT, "otrv4+.py"),
+        tree = ast.parse(open(os.path.join(ROOT, "client", "otrv4+.py"),
                               encoding="utf-8").read())
         found = 0
         for fn in ast.walk(tree):
@@ -173,7 +173,7 @@ class TestIrcDoesNotImportTheIdentityModule:
                 continue
             found += len(imports)
             body = ast.get_source_segment(
-                open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read(),
+                open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read(),
                 fn)
             guard = body.index("persist_identity")
             assert guard < body.index("otrv4plus_identity"), (
@@ -182,7 +182,7 @@ class TestIrcDoesNotImportTheIdentityModule:
         assert found >= 1, "nothing loads the identity module any more"
 
     def test_the_identity_module_says_why_it_is_separate(self):
-        src = open(os.path.join(ROOT, "otrv4plus_identity.py"),
+        src = open(os.path.join(ROOT, "client", "otrv4plus_identity.py"),
                    encoding="utf-8").read()
         head = src[:src.index('"""', 3)]
         assert "IRC" in head and "XMPP" in head
@@ -196,6 +196,6 @@ class TestIrcDoesNotImportTheIdentityModule:
         the identity change TOFU exists to flag."""
         ident = pytest.importorskip("otrv4plus_identity")
         assert issubclass(ident.IdentityUnavailable, RuntimeError)
-        src = open(os.path.join(ROOT, "otrv4plus_identity.py"),
+        src = open(os.path.join(ROOT, "client", "otrv4plus_identity.py"),
                    encoding="utf-8").read()
         assert "Raised rather than falling back" in src

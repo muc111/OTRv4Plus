@@ -90,7 +90,7 @@ class TestTheSessionDestroysIt:
         assert not msg.verify_mac(os.urandom(64))
 
     def test_production_python_never_hashes_a_mac_key(self):
-        with open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8") as f:
+        with open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8") as f:
             src = f.read()
         assert "sha3_512(mac_key" not in src
         assert 'enc["mac_key"]' in src           # passed through, as a handle

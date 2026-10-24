@@ -90,7 +90,7 @@ mkdir -p "$APP/android_bridge" "$LIB" "$ROOT/usr/bin" "$ROOT/DEBIAN" \
          "$ROOT/usr/share/doc/otrv4plus"
 
 # 2. The client.
-cp "$REPO"/otrv4_.py "$REPO"/otrv4plus.py "$REPO"/otrv4plus_*.py "$APP/"
+cp "$REPO"/client/otrv4_.py "$REPO"/client/otrv4plus.py "$REPO"/client/otrv4plus_*.py "$APP/"
 rm -f "$APP/otrv4plus_tui.py.orig"
 # The whole engine package: the terminal client uses nine of these modules;
 # the desktop GUI's engine process (desktop_bridge) drives OtrApp and the
@@ -98,7 +98,7 @@ rm -f "$APP/otrv4plus_tui.py.orig"
 cp "$REPO"/android_bridge/*.py "$APP/android_bridge/"
 mkdir -p "$APP/desktop_bridge"
 cp "$REPO"/desktop_bridge/*.py "$APP/desktop_bridge/"
-cp "$REPO/i2p_hosts.defaults" "$APP/" 2>/dev/null || true
+cp "$REPO/client/i2p_hosts.defaults" "$APP/" 2>/dev/null || true
 
 # 3. Its libraries, from the checked files only (no index, no dependencies
 #    resolved here: the lock is the dependency list).

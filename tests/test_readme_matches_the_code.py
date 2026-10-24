@@ -155,7 +155,7 @@ class TestTheVoiceCaveatIsNotStale:
     def test_voice_has_no_python_fallback(self, readme):
         """The caveat's replacement claims this; a fallback would restore
         exactly what was removed."""
-        voice = _read("otrv4plus_voice.py")
+        voice = _read("client/otrv4plus_voice.py")
         assert "def _require_rust_voice():" in voice
         assert "RUST_VOICE_AVAILABLE" in voice, (
             "the hard requirement is gone; voice may run without the core")

@@ -27,12 +27,14 @@ OPT_OUT = "OTRV4PLUS_NO_VENV"
 
 
 def venv_python(script: str) -> str:
-    """The project interpreter beside `script`, or "" if there is none."""
-    root = os.path.dirname(os.path.realpath(script))
-    for name in ("python", "python3"):
-        path = os.path.join(root, ".venv", "bin", name)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
+    """The project interpreter beside `script` (or one level up, for the
+    modules in client/), or "" if there is none."""
+    here = os.path.dirname(os.path.realpath(script))
+    for root in (here, os.path.dirname(here)):
+        for name in ("python", "python3"):
+            path = os.path.join(root, ".venv", "bin", name)
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
     return ""
 
 

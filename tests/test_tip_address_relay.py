@@ -204,7 +204,7 @@ class TestNoRemoteInputCapture:
         anywhere in this module would mean an inbound TLV could reach a
         prompt, which is the defect INV-06 exists for."""
         import ast
-        with open(os.path.join(ROOT, "otrv4plus_tip.py"),
+        with open(os.path.join(ROOT, "client", "otrv4plus_tip.py"),
                   encoding="utf-8") as fh:
             source = fh.read()
         names = set()
@@ -588,7 +588,7 @@ class TestItIsStillARelay:
     @staticmethod
     @pytest.fixture(scope="class")
     def source():
-        with open(os.path.join(ROOT, "otrv4plus_tip.py"),
+        with open(os.path.join(ROOT, "client", "otrv4plus_tip.py"),
                   encoding="utf-8") as fh:
             return fh.read()
 

@@ -40,7 +40,7 @@ import pytest
 otr = pytest.importorskip("otrv4plus")
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENGINE = os.path.join(ROOT, "otrv4+.py")
+ENGINE = os.path.join(ROOT, "client", "otrv4+.py")
 
 PEER = "IronFenrir"
 STARTING = "🔑 Starting OTR session with IronFenrir…"

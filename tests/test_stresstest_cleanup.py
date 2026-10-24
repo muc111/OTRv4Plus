@@ -51,7 +51,7 @@ def test_accounts_left_behind_come_with_a_cleanup_line():
     assert line.startswith("> ") and 'local d = "otrv4plus.i2p"' in line
     # Only the run's own accounts: stress-<run hex>-<number>.
     assert 'u:match("^stress%-%x+%-%d+$")' in line
-    with open(os.path.join(ROOT, "otrv4plus_stresstest.py"), encoding="utf-8") as fh:
+    with open(os.path.join(ROOT, "client", "otrv4plus_stresstest.py"), encoding="utf-8") as fh:
         src = fh.read()
     assert "await _admin_back(admin, args.host, args.port, say)" in src
     assert "str(exc)[:60]" not in src
@@ -92,5 +92,5 @@ def test_the_run_records_prosodys_peak_cpu_and_memory(monkeypatch):
     # 250 ticks = 2.5 s of CPU in 5 s: 50% of one core.
     assert row["prosody_cpu_peak_pct"] == 50.0 and row["prosody_rss_mib"] == 70.0
     assert sampler.peak_cpu == 50.0 and sampler.peak_rss == 70.0
-    src = real_open(os.path.join(ROOT, "otrv4plus_stresstest.py"), encoding="utf-8").read()
+    src = real_open(os.path.join(ROOT, "client", "otrv4plus_stresstest.py"), encoding="utf-8").read()
     assert "row.update(server.minute())" in src and "Prosody peak:" in src

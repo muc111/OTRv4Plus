@@ -144,6 +144,7 @@ installed), and with the Termux client.
 | Chat kinds | Chats list: 1:1 chats tinted blue, encrypted groups green, public rooms (Welcome) amber, each with a stripe on the left and its kind in words under the name. With more than one kind there are chips at the top (All · People (n) · Groups (n) · Public (n)); a chip shows only that kind. Check light and dark theme: names stay readable | rc.131 |
 | Security update | Nothing to see: the ctutils crate updated for RUSTSEC-2026-0385 (a constant-time fix). Check that 1:1 chats, a group message and a call still work as on rc.131 | rc.132 |
 | Bundled router | Nothing to see: the bundled I2P router is rebuilt from the same pinned sources. With no I2P app on the phone, sign in over I2P: the app starts its own router and connects | rc.133 |
+| Repository layout | Nothing to see: the Python sources moved into a folder of their own. Sign in, send a message, make a call and send a voice note as on the previous build | rc.134 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

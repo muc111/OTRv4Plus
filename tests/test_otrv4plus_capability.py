@@ -425,7 +425,7 @@ class TestAutomaticOtr:
 class TestBothClientsAgree:
 
     def test_the_termux_client_advertises_the_same_feature(self):
-        src = open(os.path.join(ROOT, "otrv4plus_xmpp.py"), encoding="utf-8").read()
+        src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"), encoding="utf-8").read()
         assert "_caps.FEATURE" in src and "add_feature" in src
 
     def test_the_android_transport_registers_entity_capabilities(self):

@@ -66,11 +66,14 @@ def _packaged_modules():
 
 
 def _watched_paths():
-    """The path globs `android.yml` triggers on."""
+    """The path globs `android.yml` triggers on. The modules are watched as
+    client/<name>, the folder `syncPythonSources` copies them from; they are
+    returned as <name> to compare with the gradle list."""
     source = _read(WORKFLOW)
     block = source[source.index("paths: &android_paths"):]
     block = block[:block.index("pull_request:")]
-    return set(re.findall(r'^\s+-\s+"([^"]+)"\s*$', block, re.M))
+    found = re.findall(r'^\s+-\s+"([^"]+)"\s*$', block, re.M)
+    return {w[len("client/"):] if w.startswith("client/") else w for w in found}
 
 
 @pytest.fixture(scope="module")

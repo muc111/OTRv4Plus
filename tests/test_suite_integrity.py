@@ -60,7 +60,7 @@ def test_the_engine_module_is_loaded_not_stubbed():
     engine = sys.modules["otrv4_"]
     assert getattr(engine, "__file__", None), "otrv4_ has no source file"
     assert os.path.realpath(engine.__file__) == \
-        os.path.realpath(os.path.join(ROOT, "otrv4+.py")), (
+        os.path.realpath(os.path.join(ROOT, "client", "otrv4+.py")), (
         "otrv4_ is not otrv4+.py")
 
 

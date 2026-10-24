@@ -68,6 +68,25 @@ history in `git blame`. `tests/test_spdx_headers_on_new_files.py` enforces the
 rule on files added after 2026-09-14 and exempts everything older, so the
 policy applies going forward without rewriting what is already here.
 
+## Repository layout
+
+| Path | What is there |
+|---|---|
+| `Rust/` | The core: every cryptographic primitive, built as the `otrv4_core` Python module |
+| `client/` | The Python engine and terminal clients (`otrv4+.py`, `otrv4plus_*.py`) |
+| `android_bridge/` | The app's Python API over the engine, used by the phone and the desktop app |
+| `android/`, `desktop/` | The Android app and the desktop app (Kotlin, Compose) |
+| `desktop_bridge/` | The desktop app's engine process |
+| `prosody/`, `qubes/` | Server modules and the Qubes OS packaging |
+| `tests/` | Every Python test (`pytest tests`) |
+| `tools/` | One-off utilities |
+| `docs/` | Specs, design notes, test plans and dated audits ([index](docs/README.md)) |
+
+`otrv4+.py` and `otrv4plus_xmpp.py` at the top level are symlinks into
+`client/`, so `python otrv4+.py` and `python otrv4plus_xmpp.py` still work.
+Module names are flat (`import otrv4plus_voice`): `client/` is put on the import
+path, not imported as a package.
+
 ## Before you write code
 
 Open an issue first to discuss. The single-file Python design is intentional —

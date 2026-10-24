@@ -114,7 +114,7 @@ class TestTheEngineNamesPySocksItself:
     @staticmethod
     @pytest.fixture(scope="class")
     def engine_source():
-        with open(os.path.join(ROOT, "otrv4+.py"), "r", encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, "client", "otrv4+.py"), "r", encoding="utf-8") as fh:
             return fh.read()
 
     def test_the_import_is_guarded(self, engine_source):

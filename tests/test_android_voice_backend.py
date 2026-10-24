@@ -228,7 +228,7 @@ class TestTermuxIsUnchanged:
 
     def test_the_backends_are_separate_in_source(self):
         for name in ("otrv4plus_xmpp.py", "otrv4plus_voice.py", "otrv4plus_audio.py"):
-            src = open(os.path.join(ROOT, name), encoding="utf-8").read()
+            src = open(os.path.join(ROOT, "client", name), encoding="utf-8").read()
             assert "android_audio" not in src, name
             assert "OpusEncoder" not in src, name
 
@@ -265,7 +265,7 @@ class TestTransportIsUntouched:
         monkeypatch.delenv("OTRV4PLUS_VOICE_TRANSPORT", raising=False)
         mode = voice._voice_transport_mode() if hasattr(voice, "_voice_transport_mode") else None
         if mode is None:
-            src = open(os.path.join(ROOT, "otrv4plus_voice.py"), encoding="utf-8").read()
+            src = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"), encoding="utf-8").read()
             assert 'VOICE_TRANSPORT_DATAGRAM = "datagram"' in src
         else:
             assert mode == voice.VOICE_TRANSPORT_DATAGRAM

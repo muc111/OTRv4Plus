@@ -55,7 +55,7 @@ class TestTheVersionStamp:
         answer to give them.
         """
         engine = re.search(r'^VERSION = "OTRv4\+ ([\d.]+)"',
-                           open("otrv4+.py").read(), re.M)
+                           open("client/otrv4+.py").read(), re.M)
         assert engine, "VERSION is no longer a module-level literal in otrv4+.py"
         stamped = re.search(r'^\*\*Version:\*\* ([\d.]+)', spec_text(), re.M)
         assert stamped, "docs/SPEC.md has no version header"
@@ -122,7 +122,7 @@ def code_tlv_types():
     one the engine constructs and dispatches on, so it is the one the spec must
     match.
     """
-    src = open("otrv4+.py").read()
+    src = open("client/otrv4+.py").read()
     block = src[src.index("class OTRv4TLV:"):]
     block = block[:block.index("SMP_TYPES")]
     return {m.group(1): int(m.group(2), 16)
@@ -179,7 +179,7 @@ class TestTheApplicationLayerExtensions:
 
     def test_the_tip_tlv_bounds_match_the_implementation(self):
         # Read the constants without importing: the module pulls in the engine.
-        src = open("otrv4plus_tip.py").read()
+        src = open("client/otrv4plus_tip.py").read()
         bounds = {m.group(1): int(m.group(2))
                   for m in re.finditer(r'^(MAX_\w+)\s*=\s*(\d+)', src, re.M)}
         text = spec_text()
@@ -189,7 +189,7 @@ class TestTheApplicationLayerExtensions:
                 "not appear in SPEC §5.6.2" % (name, value))
 
     def test_the_tip_tlv_type_agrees_with_the_engine(self):
-        src = open("otrv4plus_tip.py").read()
+        src = open("client/otrv4plus_tip.py").read()
         mirrored = int(re.search(r'TIP_TLV_TYPE = (0x[0-9a-fA-F]+)',
                                  src).group(1), 16)
         assert code_tlv_types()["TIP"] == mirrored
@@ -197,7 +197,7 @@ class TestTheApplicationLayerExtensions:
 
     def test_the_trade_prefix_is_documented(self):
         prefix = re.search(r'TRADE_PREFIX = "([^"]+)"',
-                           open("otrv4plus_trade.py").read()).group(1)
+                           open("client/otrv4plus_trade.py").read()).group(1)
         assert prefix in spec_text(), (
             "%r appears on the wire inside encrypted bodies and is documented "
             "nowhere in docs/SPEC.md" % prefix)

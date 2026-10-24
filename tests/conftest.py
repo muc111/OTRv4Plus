@@ -19,9 +19,16 @@ import types
 HERE   = os.path.dirname(os.path.abspath(__file__))   # .../OTRv4Plus/tests/
 PARENT = os.path.dirname(HERE)                         # .../OTRv4Plus/
 
-for p in (HERE, PARENT):
-    if p not in sys.path:
-        sys.path.insert(0, p)
+# client/ last, so it comes first: the launchers at the top level share the
+# module names.
+for p in (HERE, PARENT, os.path.join(PARENT, "client")):
+    if p in sys.path:
+        sys.path.remove(p)
+    sys.path.insert(0, p)
+# The same for the interpreters some tests start.
+os.environ["PYTHONPATH"] = os.pathsep.join(
+    [os.path.join(PARENT, "client")]
+    + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p])
 
 # ── 2. Stub Termux-only imports before anything else loads ────────────────────
 def _stub(name):

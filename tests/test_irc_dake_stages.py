@@ -151,7 +151,7 @@ class TestFragmentCountsMoveToDebug:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -200,7 +200,7 @@ class TestTheHandlersUseIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         out = {}
         cls = next(n for n in tree.body

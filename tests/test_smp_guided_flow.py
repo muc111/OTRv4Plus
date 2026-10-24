@@ -474,7 +474,7 @@ class TestRemoteCannotCapture:
 
     def test_no_inbound_path_reaches_the_armer(self):
         """The call graph, not a hand-written list."""
-        src = open(os.path.join(ROOT, "otrv4plus_xmpp.py"), encoding="utf-8").read()
+        src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"), encoding="utf-8").read()
         tree = ast.parse(src)
         methods = {}
         for node in ast.walk(tree):
@@ -750,7 +750,7 @@ class TestTheCoreApiContract:
         import otrv4plus_coreapi as coreapi
         declared = {attr for owner, attr, _ in coreapi.REQUIRED_CORE_API
                     if owner == "RustSMPVault"}
-        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
         tree = ast.parse(src)
         called = set()
         for node in ast.walk(tree):
@@ -884,7 +884,7 @@ class TestTheGuidedFlagActuallyReachesTheEngine:
     def test_the_client_turns_it_on(self):
         """Structural, because the defect was an assignment that did not
         exist anywhere."""
-        src = open(os.path.join(ROOT, "otrv4plus_xmpp.py"),
+        src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
                    encoding="utf-8").read()
         tree = ast.parse(src)
         enabled = False
@@ -902,7 +902,7 @@ class TestTheGuidedFlagActuallyReachesTheEngine:
             "responder flow is dead code")
 
     def test_the_manager_passes_it_to_new_sessions(self):
-        src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+        src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
         assert src.count("session.smp_guided_prompt = getattr(") == 3, (
             "a session-creation path does not receive the flag; sessions "
             "made there would silently abort instead of parking")

@@ -777,7 +777,7 @@ class TestHostApiCompatibility(unittest.TestCase):
         import re
         import otrv4plus_voice as V
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4plus_xmpp.py")) as fh:
+        with open(os.path.join(root, "client", "otrv4plus_xmpp.py")) as fh:
             src = fh.read()
         missing = []
         for cls, attr in re.findall(

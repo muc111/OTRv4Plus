@@ -40,7 +40,7 @@ REQUIRED_APP_MODULES = ("otrv4_.py", "otrv4plus_xmpp.py", "otrv4plus_voice.py",
 #: pre-Rust engine, and anything that would be a second implementation.
 FORBIDDEN_APP = re.compile(
     r"(^|/)(otrv4plus_tui|weechat_otrv4plus|smp_engine_compat|otrv4_testlib|"
-    r"integrate_voice_v3|conftest|test_[^/]*|otrv4plus-1)\.pyc?$|(^|/)tests/|(^|/)\.attic/")
+    r"conftest|test_[^/]*|otrv4plus-1)\.pyc?$|(^|/)tests/|(^|/)\.attic/")
 
 #: Python distributions the APK must carry, and ones it must not.
 REQUIRED_REQS = ("otrv4_core", "slixmpp", "socks", "pyasn1", "pyasn1_modules")

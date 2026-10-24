@@ -324,7 +324,7 @@ EXIT_ALLOWED = {
     # it has no library surface to import -- so it cannot take a test run or a
     # CI job down with it, and raising instead would only make WeeChat's own
     # error reporting worse.
-    "weechat_otrv4plus.py",
+    "client/weechat_otrv4plus.py",
 }
 
 
@@ -388,7 +388,7 @@ class TestNoOtherModuleEndsTheProcessOnImport:
     def _project_files():
         import glob
         paths = []
-        for pattern in ("*.py", "android_bridge/*.py", "tests/*.py"):
+        for pattern in ("*.py", "client/*.py", "android_bridge/*.py", "tests/*.py"):
             for p in glob.glob(os.path.join(ROOT, pattern)):
                 # otrv4_.py and otrv4plus.py are symlinks to otrv4+.py; reading
                 # the same file three times would report every finding thrice.

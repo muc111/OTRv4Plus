@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 134
+        versionCode = 135
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -91,7 +91,7 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.133+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.134+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -380,7 +380,7 @@ chaquopy {
     }
 }
 
-// Keep the APK's Python sources in step with the repository root instead of
+// Keep the APK's Python sources in step with the repository's client/ instead of
 // maintaining a second copy that can silently drift.
 val syncPythonSources by tasks.registering(Copy::class) {
     description = "Copy the OTRv4+ orchestration layer and bridge into the APK source set."
@@ -388,7 +388,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
 
     val repoRoot = rootProject.projectDir.parentFile
 
-    from(repoRoot) {
+    from(repoRoot.resolve("client")) {
         include(
             "otrv4+.py",
             "otrv4plus_xmpp.py",
@@ -512,7 +512,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
     //
     // The repository keeps exactly one copy; the second exists only inside the
     // build output, which is why this is a rename here rather than a file.
-    from(repoRoot) {
+    from(repoRoot.resolve("client")) {
         include("otrv4+.py")
         rename { "otrv4_.py" }
     }
@@ -525,8 +525,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
     // Never package the TUI, the IRC clients, the WeeChat plugin or the
     // test-only SMP shim. smp_engine_compat.py in particular re-implements the
     // SMP KDF in pure Python and must not reach a device.
-    exclude("otrv4plus_tui.py", "weechat_otrv4plus.py", "smp_engine_compat.py",
-            "otrv4_testlib.py", "integrate_voice_v3.py")
+    exclude("otrv4plus_tui.py", "weechat_otrv4plus.py")
 }
 
 tasks.named("preBuild") { dependsOn(syncPythonSources) }

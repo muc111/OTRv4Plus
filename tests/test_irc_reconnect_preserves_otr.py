@@ -344,7 +344,7 @@ class TestTheReconnectPathUsesIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "_try_reconnect")
@@ -373,7 +373,7 @@ class TestTheReconnectPathUsesIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         found = [ast.unparse(n) for n in ast.walk(tree)
                  if isinstance(n, ast.FunctionDef) and n.name == "shutdown"]

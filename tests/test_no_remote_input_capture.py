@@ -29,7 +29,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-XMPP = os.path.join(ROOT, "otrv4plus_xmpp.py")
+XMPP = os.path.join(ROOT, "client", "otrv4plus_xmpp.py")
 
 
 def _src():

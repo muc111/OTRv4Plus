@@ -203,7 +203,7 @@ class TestTheTwoSidesAreDistinguishable:
     def test_the_incoming_renderer_uses_the_speech_shape(self):
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4plus_xmpp.py"),
+        with open(os.path.join(root, "client", "otrv4plus_xmpp.py"),
                   encoding="utf-8") as fh:
             src = fh.read()
         assert '_colorize(peer_s + ":", "yellow")' in src
@@ -214,7 +214,7 @@ class TestTheTwoSidesAreDistinguishable:
         you can tell your own lines at a glance."""
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4plus_xmpp.py"),
+        with open(os.path.join(root, "client", "otrv4plus_xmpp.py"),
                   encoding="utf-8") as fh:
             src = fh.read()
         assert '_colorize(mine_s + ":", "cyan")' in src
@@ -224,7 +224,7 @@ class TestTheTwoSidesAreDistinguishable:
         is harder to read than either shape alone."""
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4plus_xmpp.py"),
+        with open(os.path.join(root, "client", "otrv4plus_xmpp.py"),
                   encoding="utf-8") as fh:
             src = fh.read()
         assert 'f"[plain] {_sanitise(peer, 128)}: {_sanitise(body)}"' in src

@@ -88,7 +88,7 @@ def _docstring_ids(tree):
 
 def test_terminal_client_output():
     bad = []
-    for name in ("otrv4plus_xmpp.py", "otrv4plus_sync.py", "otrv4plus_termsync.py"):
+    for name in ("client/otrv4plus_xmpp.py", "client/otrv4plus_sync.py", "client/otrv4plus_termsync.py"):
         path = os.path.join(ROOT, name)
         tree = ast.parse(_read(path))
         docs = _docstring_ids(tree)

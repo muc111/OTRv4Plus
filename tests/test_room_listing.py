@@ -148,7 +148,7 @@ class TestCreatedRoomsAskToBeListed:
 
     def test_the_app_and_termux_ask_for_a_public_marked_room(self):
         here = os.path.join(ROOT, "android_bridge", "transport.py")
-        termux = os.path.join(ROOT, "otrv4plus_groups.py")
+        termux = os.path.join(ROOT, "client", "otrv4plus_groups.py")
         for path in (here, termux):
             src = open(path, encoding="utf-8").read()
             assert "muc#roomconfig_publicroom" in src, path

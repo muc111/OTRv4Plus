@@ -949,7 +949,7 @@ info "installing $(basename "${wheels[0]}") into $VENV"
 step "7/7 Checks: import, client API, MLS, both clients (IRC and XMPP)"
 # Run from the repository root, as the clients are run, so a module anywhere
 # Python looks first would be found -- and refused.
-(cd "$REPO_ROOT" && OTRV4PLUS_VENV="$VENV" "$PY" - <<'PYEOF'
+(cd "$REPO_ROOT/client" && OTRV4PLUS_VENV="$VENV" "$PY" - <<'PYEOF'
 import os
 import sys
 

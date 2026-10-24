@@ -151,7 +151,7 @@ class TestTheRendererUsesIt:
     @staticmethod
     @pytest.fixture(scope="class")
     def source():
-        with open(os.path.join(ROOT, "otrv4plus_xmpp.py"),
+        with open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
                   encoding="utf-8") as fh:
             return fh.read()
 

@@ -340,7 +340,7 @@ class TestNoShippedDestination:
         import re
         pat = re.compile(r"\b[a-z2-7]{52}\.b32\.i2p\b")
         for rel in ("android_bridge/settings.py", "android_bridge/connection.py",
-                    "android_bridge/transport.py", "i2p_hosts.defaults"):
+                    "android_bridge/transport.py", "client/i2p_hosts.defaults"):
             with open(os.path.join(ROOT, rel), encoding="utf-8") as f:
                 assert not pat.search(f.read()), rel
 

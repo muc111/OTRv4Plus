@@ -146,7 +146,7 @@ def test_the_bell_is_not_written_into_a_pipe():
 # -- wiring --------------------------------------------------------------------
 
 def test_the_client_answers_calls_and_files_with_y_n_and_sounds_messages():
-    src = (ROOT / "otrv4plus_xmpp.py").read_text()
+    src = (ROOT / "client" / "otrv4plus_xmpp.py").read_text()
     assert "quick().answer(line)" in src
     assert "on_state=self._on_file_state" in src and "quick_answer=True" in src
     assert "self._alerts().message()" in src
@@ -154,13 +154,13 @@ def test_the_client_answers_calls_and_files_with_y_n_and_sounds_messages():
     # The y/n check sits before group questions and before command parsing.
     assert src.index("quick().answer(line)") < src.index(
         "groups.answer_prompt(line)") < src.index('if lstrip == "/tui":')
-    voice = (ROOT / "otrv4plus_voice.py").read_text()
+    voice = (ROOT / "client" / "otrv4plus_voice.py").read_text()
     assert 'getattr(self.client, "ask_answer_call", None)' in voice
     assert "Answer? [y/n]" in voice
 
 
 def test_nothing_a_peer_sent_reaches_the_notification():
-    src = (ROOT / "otrv4plus_alerts.py").read_text()
+    src = (ROOT / "client" / "otrv4plus_alerts.py").read_text()
     body = src[src.index("    def _notify("):src.index("    @staticmethod")]
     assert '"--content", content' in body
     # The only contents are fixed strings and a count.

@@ -172,7 +172,7 @@ and `libaaudio.so` is on the device.
 cp otrv4plus_audio.py otrv4plus_voice.py otrv4plus_xmpp.py ~/otrv4plus/
 cd ~/otrv4plus
 python3 -m unittest test_audio_backend -v
-python3 otrv4plus_audio.py          # standalone probe
+python3 client/otrv4plus_audio.py         # standalone probe
 ```
 
 Then in a session: `/audioprobe`. Force a backend with

@@ -41,7 +41,7 @@ class TestTheSharedRulesAreActuallyShared:
 
     def test_the_cli_calls_the_shared_validator(self):
         """otrv4plus_xmpp must not grow a second copy of these rules."""
-        with open(os.path.join(ROOT, "otrv4plus_xmpp.py"),
+        with open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
                   encoding="utf-8") as fh:
             src = fh.read()
         assert "_address.jid_error" in src, (

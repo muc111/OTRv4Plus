@@ -603,7 +603,7 @@ class TestTheSessionMethodItself:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         for node in ast.walk(tree):
             if (isinstance(node, ast.FunctionDef)

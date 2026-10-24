@@ -81,7 +81,8 @@ def missing_optional() -> List[str]:
 
 def _find_source(search_paths: Optional[List[str]] = None) -> Optional[str]:
     paths = list(search_paths or [])
-    paths.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    paths.extend((os.path.join(root, "client"), root))
     paths.extend(p for p in sys.path if isinstance(p, str) and p)
     for directory in paths:
         for name in _CANDIDATE_FILENAMES:

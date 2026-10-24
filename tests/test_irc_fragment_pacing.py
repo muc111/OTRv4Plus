@@ -510,7 +510,7 @@ class TestItIsWiredIn:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             return ast.parse(fh.read())
 
     def test_fragrate_reaches_the_handler_on_the_running_class(self, client):
@@ -674,7 +674,7 @@ class TestTheDisconnectSaysWhatWasHappening:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef) and n.name == "_recv_loop")
@@ -684,7 +684,7 @@ class TestTheDisconnectSaysWhatWasHappening:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         assert any("_last_server_error" in ast.unparse(n)
                    for n in ast.walk(tree)
@@ -704,7 +704,7 @@ class TestTheRecvThreadHazardIsRecorded:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -719,7 +719,7 @@ class TestTheRecvThreadHazardIsRecorded:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             src = fh.read()
         assert "_smp_executor" in src
 
@@ -797,7 +797,7 @@ class TestAPeerKilledForFloodingIsEvidenceAboutUs:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -809,7 +809,7 @@ class TestAPeerKilledForFloodingIsEvidenceAboutUs:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -911,7 +911,7 @@ class TestTheReportNamesTheRateThatCausedIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -927,7 +927,7 @@ class TestTheReportNamesTheRateThatCausedIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -944,7 +944,7 @@ class TestTheReportNamesTheRateThatCausedIt:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -972,7 +972,7 @@ class TestTheReconnectDoesNotContradictItself:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -1164,7 +1164,7 @@ class TestAutoIsWiredThroughTheSendPath:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)
@@ -1175,7 +1175,7 @@ class TestAutoIsWiredThroughTheSendPath:
         import ast
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
             tree = ast.parse(fh.read())
         fn = next(n for n in ast.walk(tree)
                   if isinstance(n, ast.FunctionDef)

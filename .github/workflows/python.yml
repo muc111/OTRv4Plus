@@ -9,7 +9,7 @@
 #
 # Every rule this project actually enforces about the protocol, the transport,
 # the voice path, the diagnostics and the orchestration layer lives in
-# `otrv4plus_*.py`, `otrv4_.py` and `tests/` — none of which match. So a commit
+# `client/` (then the top level) and `tests/` — none of which match. So a commit
 # touching only those ran NO checks at all and reported nothing, which is
 # indistinguishable from passing. That happened: the commit adding the I2P
 # tunnel-length request produced no run, and it was only noticed because
@@ -21,7 +21,7 @@
 # WHY THERE IS NO PATH FILTER
 # ---------------------------
 # Deliberate, and the whole point. Python in this repository is spread across
-# the root (`otrv4plus_*.py`, `otrv4+.py`, `otrv4_.py`), `android_bridge/`,
+# `client/` (`otrv4plus_*.py`, `otrv4+.py`), `android_bridge/`,
 # `tests/`, and `Rust/` — which builds the extension module half the suite
 # imports. A filter broad enough to be correct would match nearly everything,
 # and a filter narrower than that is the failure mode this file was written to

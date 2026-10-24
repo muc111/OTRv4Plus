@@ -20,11 +20,11 @@ See [SECURITY.md](../SECURITY.md) caveat 11.
 OTRv4+ has two layers:
 
 1. **Rust core (`otrv4_core`)** — a PyO3 native module (`libotrv4_core.so`,
-   copied to the project root as `otrv4_core.so`). All cryptography lives here.
+   installed into the project `.venv`). All cryptography lives here.
    Private key material is held in Rust-owned `SecretBytes` / `SecretVec` with
    `ZeroizeOnDrop` and is never exposed to Python as `bytes`.
 
-2. **Python orchestration (`otrv4+.py`)** — ~13,000 lines handling IRC
+2. **Python orchestration (`client/otrv4+.py` and `client/otrv4plus_*.py`)** — ~13,000 lines handling IRC
    connectivity, IRCv3 capability negotiation, fragment reassembly, the terminal
    UI, command parsing, and the OTR/SMP state-machine driving. It holds no
    private key material; every crypto operation is delegated to the Rust core.

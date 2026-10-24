@@ -24,7 +24,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-LOG_MODULE = os.path.join(ROOT, "otrv4plus_log.py")
+LOG_MODULE = os.path.join(ROOT, "client", "otrv4plus_log.py")
 
 
 def _src(path=LOG_MODULE):

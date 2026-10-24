@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def test_the_legacy_parser_is_gone():
-    src = open(os.path.join(ROOT, "otrv4+.py"), encoding="utf-8").read()
+    src = open(os.path.join(ROOT, "client", "otrv4+.py"), encoding="utf-8").read()
     assert "_enh_dec_legacy" not in src
 
 

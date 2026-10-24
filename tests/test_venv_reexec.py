@@ -17,8 +17,11 @@ def _tmp():
     return pathlib.Path(tempfile.mkdtemp())
 
 
-def _repo(tmp_path, with_venv=True):
-    script = tmp_path / "otrv4+.py"
+def _repo(tmp_path, with_venv=True, folder="client"):
+    # The modules live in client/ and .venv one level up; `folder=""` is a
+    # flat copy with .venv beside the script.
+    script = tmp_path / folder / "otrv4+.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
     script.write_text("")
     if with_venv:
         bin_dir = tmp_path / ".venv" / "bin"
@@ -46,6 +49,12 @@ def test_another_python_is_replaced_by_the_project_one(monkeypatch):
     assert target == str(tmp_path / ".venv" / "bin" / "python")
     assert args[1:] == [os.path.realpath(script), "-n", "nick"]
     assert env[V.GUARD] == "1" and env["PYTHONMALLOC"] == "malloc"
+
+
+def test_a_flat_copy_finds_the_venv_beside_it(monkeypatch):
+    tmp_path = _tmp()
+    calls = _ensure(_repo(tmp_path, folder=""), monkeypatch)
+    assert [c[0] for c in calls] == [str(tmp_path / ".venv" / "bin" / "python")]
 
 
 def test_no_venv_means_no_change(monkeypatch):

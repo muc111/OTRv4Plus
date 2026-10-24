@@ -24,6 +24,8 @@ import sys
 import pytest
 
 GRADLE = "android/app/build.gradle.kts"
+#: Where syncPythonSources copies the modules from.
+CLIENT = "client"
 ENTRY_POINTS = ("otrv4plus_xmpp.py", "otrv4+.py")
 
 #: Modules that must never be packaged, and why.
@@ -58,10 +60,10 @@ def import_closure():
     seen, queue = set(), list(ENTRY_POINTS)
     while queue:
         path = queue.pop()
-        if path in seen or not os.path.exists(path):
+        if path in seen or not os.path.exists(os.path.join(CLIENT, path)):
             continue
         seen.add(path)
-        for node in ast.walk(ast.parse(open(path).read())):
+        for node in ast.walk(ast.parse(open(os.path.join(CLIENT, path)).read())):
             if isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.module:
@@ -117,7 +119,7 @@ class TestTheAppShipsWhatItImports:
 
     def test_nothing_packaged_is_missing_from_the_repository(self):
         for name in sorted(synced_files()):
-            assert os.path.exists(name), (
+            assert os.path.exists(os.path.join(CLIENT, name)), (
                 "%s is in the copy list but not in the repository" % name)
 
 
@@ -126,8 +128,11 @@ class TestWhatMustNotShip:
     def test_the_test_only_smp_shim_is_excluded(self):
         # It re-implements the SMP KDF in pure Python. On a device that would
         # be a second cryptographic implementation of the thing the Rust core
-        # exists to own.
-        assert "smp_engine_compat.py" in excluded_files()
+        # exists to own. It lives in tests/, outside the folder the build
+        # copies from.
+        assert os.path.exists(os.path.join("tests", "smp_engine_compat.py"))
+        assert not os.path.exists(os.path.join(CLIENT, "smp_engine_compat.py"))
+        assert "smp_engine_compat.py" not in synced_files()
 
     def test_the_forbidden_modules_are_not_in_the_copy_list(self):
         synced = synced_files()
@@ -149,7 +154,7 @@ class TestTheListIsHonest:
         It would also package the test suite and the IRC TUI. The point is
         that the list is the closure, not the directory.
         """
-        repo_modules = {f for f in os.listdir(".")
+        repo_modules = {f for f in os.listdir(CLIENT)
                         if f.startswith("otrv4plus_") and f.endswith(".py")}
         packaged = synced_files() - set(ENTRY_POINTS)
         assert packaged < repo_modules, (
@@ -206,7 +211,7 @@ class TestTheOrchestrationLayerIsImportable:
 
 def test_the_retired_omemo_module_stays_retired():
     """Not in the repository, not in the copy list, imported by nothing."""
-    assert not os.path.exists("otrv4plus_omemo.py")
+    assert not os.path.exists(os.path.join(CLIENT, "otrv4plus_omemo.py"))
     assert "otrv4plus_omemo" not in _task_source()
     assert not any("omemo" in path for path in import_closure())
 

@@ -115,7 +115,7 @@ class TestTheTerminalClientUsesIt:
     @staticmethod
     @pytest.fixture(scope="class")
     def source():
-        with open("otrv4plus_xmpp.py", encoding="utf-8") as fh:
+        with open("client/otrv4plus_xmpp.py", encoding="utf-8") as fh:
             return fh.read()
 
     def test_the_send_path_consults_the_policy(self, source):

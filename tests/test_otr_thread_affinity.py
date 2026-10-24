@@ -215,7 +215,7 @@ class TestTheDakeOutputLifecycleStaysInbound:
     def _call_graph():
         import ast
         import pathlib
-        path = pathlib.Path(__file__).resolve().parent.parent / "otrv4+.py"
+        path = pathlib.Path(__file__).resolve().parent.parent / "client" / "otrv4+.py"
         if not path.is_file():
             pytest.skip("engine source not present")
         source = path.read_text(encoding="utf-8")
@@ -274,7 +274,7 @@ class TestTheDakeOutputLifecycleStaysInbound:
         """
         import pathlib
         import re
-        path = pathlib.Path(__file__).resolve().parent.parent / "otrv4+.py"
+        path = pathlib.Path(__file__).resolve().parent.parent / "client" / "otrv4+.py"
         if not path.is_file():
             pytest.skip("engine source not present")
         source = path.read_text(encoding="utf-8")

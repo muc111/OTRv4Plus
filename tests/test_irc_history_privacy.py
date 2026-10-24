@@ -327,7 +327,7 @@ class TestThePurgeIsWiredIntoTheLifecycle:
     def source():
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), "r", encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), "r", encoding="utf-8") as fh:
             return fh.read()
 
     def _body(self, source, marker):
@@ -374,7 +374,7 @@ class TestTimestampsCarryTheDate:
         is worse than either alone."""
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "otrv4+.py"), "r", encoding="utf-8") as fh:
+        with open(os.path.join(root, "client", "otrv4+.py"), "r", encoding="utf-8") as fh:
             source = fh.read()
         assert 'time.strftime("%H:%M:%S' not in source, (
             "a hard-coded clock-only timestamp is back; use TIMESTAMP_FORMAT"

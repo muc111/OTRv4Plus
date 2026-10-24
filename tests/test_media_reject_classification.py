@@ -80,7 +80,7 @@ class TestTheRaiseSitesAreClassified:
     """Read the source: an unclassified raise is the regression."""
 
     def _src(self):
-        return open(os.path.join(ROOT, "otrv4plus_voice.py"),
+        return open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
                     encoding="utf-8").read()
 
     def test_the_no_key_path_is_classified(self):
@@ -117,7 +117,7 @@ class TestNothingIsAccepted:
     """Classification must not have become tolerance."""
 
     def _src(self):
-        return open(os.path.join(ROOT, "otrv4plus_voice.py"),
+        return open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
                     encoding="utf-8").read()
 
     def test_every_reason_still_drops_the_frame(self):
@@ -143,7 +143,7 @@ class TestNothingIsAccepted:
 class TestTheDiagnosticSaysWhich:
 
     def _src(self):
-        return open(os.path.join(ROOT, "otrv4plus_voice.py"),
+        return open(os.path.join(ROOT, "client", "otrv4plus_voice.py"),
                     encoding="utf-8").read()
 
     def test_the_no_media_diagnosis_breaks_out_the_causes(self):

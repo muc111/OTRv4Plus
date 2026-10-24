@@ -839,7 +839,7 @@ created it and nowhere else, while the 52-character `.b32.i2p` form works
 everywhere because it *is* the destination hash. That is why the long form has
 to be pasted, and it is unreasonable on a phone keyboard.
 
-**The project's own server is already in the box.** `i2p_hosts.defaults`
+**The project's own server is already in the box.** `client/i2p_hosts.defaults`
 ships with the source, so a fresh clone connects with the short name and never
 sees a b32:
 
