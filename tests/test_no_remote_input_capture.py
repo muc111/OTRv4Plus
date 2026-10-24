@@ -33,7 +33,9 @@ XMPP = os.path.join(ROOT, "client", "otrv4plus_xmpp.py")
 
 
 def _src():
-    return open(XMPP, encoding="utf-8").read()
+    # The client and the modules its class is mixed from.
+    from source_of import client_source
+    return client_source()
 
 
 def _tree():

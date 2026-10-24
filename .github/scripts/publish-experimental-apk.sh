@@ -146,6 +146,7 @@ installed), and with the Termux client.
 | Bundled router | Nothing to see: the bundled I2P router is rebuilt from the same pinned sources. With no I2P app on the phone, sign in over I2P: the app starts its own router and connects | rc.133 |
 | Repository layout | Nothing to see: the Python sources moved into a folder of their own. Sign in, send a message, make a call and send a voice note as on the previous build | rc.134 |
 | Code split, step 1 | Nothing to see: the terminal client's output code moved to its own module. On the phone, sign in, chat and call as on the previous build | rc.135 |
+| Code split, step 2 | Nothing to see on the phone: the terminal client's SMP, TUI and admin code moved to modules of their own. Sign in, verify a contact with SMP and call as on the previous build | rc.136 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

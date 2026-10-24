@@ -1033,7 +1033,7 @@ class TestAnAbortIsNotAMismatch:
                 return _Sess()
 
         client.otr = _Otr()
-        monkeypatch.setattr(xmpp, "_smp_query",
+        monkeypatch.setattr(xmpp._trust, "_smp_query",
                             lambda otr, peer: (False, phase_name))
         client._report_smp(PEER)
         return " ".join(capture)

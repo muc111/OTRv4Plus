@@ -14,7 +14,6 @@ import sys
 import time
 
 import otrv4plus_term as _term
-from otrv4plus_term import print  # noqa: A004 (the client's print)
 
 # The engine's TUI pieces; set by bind_engine().
 _otr = None

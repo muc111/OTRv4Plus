@@ -122,8 +122,8 @@ class TestTheNoSessionHintNamesTheRealPeer:
     def test_every_no_session_message_carries_it(self):
         """Four call sites. One left without the hint is the one the user
         hits."""
-        src = io.open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
-                      encoding="utf-8").read()
+        from source_of import client_source
+        src = client_source()
         bare = len(re.findall(
             r'no encrypted session with \{peer\}\. Run /otr first\."\)', src))
         assert bare == 0, (

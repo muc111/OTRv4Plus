@@ -15,3 +15,18 @@ def class_source(cls) -> str:
     return "\n".join(inspect.getsource(c) for c in cls.__mro__
                      if c.__module__.startswith("otrv4plus")
                      or c.__module__ == "__main__")
+
+
+def client_files() -> list:
+    """The XMPP client's source files: otrv4plus_xmpp.py and the modules its
+    class is mixed from (otrv4plus_xmpp_*.py)."""
+    import glob
+    import os
+    client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
+    return ([os.path.join(client, "otrv4plus_xmpp.py")]
+            + sorted(glob.glob(os.path.join(client, "otrv4plus_xmpp_*.py"))))
+
+
+def client_source() -> str:
+    """All of the XMPP client's source, one file after another."""
+    return "\n".join(open(p, encoding="utf-8").read() for p in client_files())

@@ -4,6 +4,25 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.136 and Desktop — 2026-10-24 — splitting the big files, step 2 (core 0.13.1)
+
+Nothing changes in the app. Three parts of the terminal XMPP client's
+5,600-line class become mixins in their own modules (same methods, same
+bodies; `OTRv4PlusXMPP` inherits them, as it already did `TermSyncMixin`):
+
+- **`otrv4plus_xmpp_trust.py`**: fingerprints pinned on first use, and the
+  whole SMP flow (consent, the secret prompt that does not echo, progress,
+  the result). 790 lines.
+- **`otrv4plus_xmpp_tui.py`**: the inline TUI (panel routing, start/stop,
+  keys). 570 lines.
+- **`otrv4plus_xmpp_admin.py`**: `/admin`, XEP-0133 server administration.
+  260 lines.
+
+`otrv4plus_xmpp.py` is 6,760 lines, from 8,650. The engine is handed to the
+new modules by the client (they do not import it), and two imports nothing
+used (`hashlib`, `hmac`) are gone. Tests that ask "does any method of the
+client do X" read the class with its mixins (`tests/source_of.py`).
+
 ## Android 0.7.0-experimental.rc.135 and Desktop — 2026-10-24 — splitting the big files, step 1 (core 0.13.1)
 
 Nothing changes in the app. Phase 3 of the code tidy-up splits the largest
