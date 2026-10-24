@@ -106,8 +106,8 @@ def _close_forwarders():
     losing them to the garbage collector mid-session would drop the XMPP
     connection. Tests have to undo that explicitly or the loop cannot close.
     """
-    while xmpp._TOR_FORWARDERS:
-        server, _reader, writer = xmpp._TOR_FORWARDERS.pop()
+    while xmpp._tunnels._TOR_FORWARDERS:
+        server, _reader, writer = xmpp._tunnels._TOR_FORWARDERS.pop()
         for closeable in (server, writer):
             try:
                 closeable.close()
@@ -126,7 +126,7 @@ class TestSocks5Handshake:
         async def _go():
             proxy = FakeSocks5()
             host, port = await proxy.start()
-            reader, writer = await xmpp.socks5_connect(
+            reader, writer = await xmpp._tunnels.socks5_connect(
                 ONION, 5222, socks_host=host, socks_port=port)
             writer.close()
             await proxy.stop()
@@ -135,7 +135,7 @@ class TestSocks5Handshake:
         requests = _run(_go())
         assert len(requests) == 1
         atyp, sent_host, sent_port = requests[0]
-        assert atyp == xmpp.SOCKS5_ATYP_DOMAIN, "destination was not a domain"
+        assert atyp == xmpp._tunnels.SOCKS5_ATYP_DOMAIN, "destination was not a domain"
         assert sent_host == ONION
         assert sent_port == 5222
 
@@ -143,7 +143,7 @@ class TestSocks5Handshake:
         async def _go():
             proxy = FakeSocks5()
             host, port = await proxy.start()
-            reader, writer = await xmpp.socks5_connect(
+            reader, writer = await xmpp._tunnels.socks5_connect(
                 ONION, 5222, socks_host=host, socks_port=port)
             writer.write(b"<stream:stream>")
             await writer.drain()
@@ -165,7 +165,7 @@ class TestSocks5Handshake:
             proxy = FakeSocks5(reply=code)
             host, port = await proxy.start()
             try:
-                await xmpp.socks5_connect(ONION, 5222, socks_host=host,
+                await xmpp._tunnels.socks5_connect(ONION, 5222, socks_host=host,
                                           socks_port=port)
             finally:
                 await proxy.stop()
@@ -178,7 +178,7 @@ class TestSocks5Handshake:
             proxy = FakeSocks5(bad_version=True)
             host, port = await proxy.start()
             try:
-                await xmpp.socks5_connect(ONION, 5222, socks_host=host,
+                await xmpp._tunnels.socks5_connect(ONION, 5222, socks_host=host,
                                           socks_port=port)
             finally:
                 await proxy.stop()
@@ -191,7 +191,7 @@ class TestSocks5Handshake:
             proxy = FakeSocks5(offer_auth=True)
             host, port = await proxy.start()
             try:
-                await xmpp.socks5_connect(ONION, 5222, socks_host=host,
+                await xmpp._tunnels.socks5_connect(ONION, 5222, socks_host=host,
                                           socks_port=port)
             finally:
                 await proxy.stop()
@@ -205,7 +205,7 @@ class TestSocks5Handshake:
             probe.bind(("127.0.0.1", 0))
             dead_port = probe.getsockname()[1]
         with pytest.raises(Exception):
-            _run(xmpp.socks5_connect(ONION, 5222, socks_host="127.0.0.1",
+            _run(xmpp._tunnels.socks5_connect(ONION, 5222, socks_host="127.0.0.1",
                                      socks_port=dead_port, timeout=2.0))
 
 
@@ -215,7 +215,7 @@ class TestForwarderKeepsTheOnionOffTheResolver:
         async def _go():
             proxy = FakeSocks5()
             host, port = await proxy.start()
-            local_host, local_port = await xmpp.start_tor_socks_forwarder(
+            local_host, local_port = await xmpp._tunnels.start_tor_socks_forwarder(
                 ONION, 5222, socks_host=host, socks_port=port)
             _close_forwarders()
             await proxy.stop()
@@ -239,7 +239,7 @@ class TestForwarderKeepsTheOnionOffTheResolver:
             proxy = FakeSocks5()
             host, port = await proxy.start()
             # Numeric host, so asyncio needs no resolution of its own.
-            reader, writer = await xmpp.socks5_connect(
+            reader, writer = await xmpp._tunnels.socks5_connect(
                 ONION, 5222, socks_host=host, socks_port=port)
             writer.close()
             await proxy.stop()
@@ -287,7 +287,7 @@ class TestReconnectPreservesTor:
             if not works:
                 raise ConnectionError("tor down")
             return ("127.0.0.1", 45000)
-        monkeypatch.setattr(xmpp, "start_tor_socks_forwarder", _fwd)
+        monkeypatch.setattr(xmpp._tunnels, "start_tor_socks_forwarder", _fwd)
 
     def test_a_healthy_reconnect_goes_back_through_tor(self, monkeypatch):
         self._patch(monkeypatch, works=True)

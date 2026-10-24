@@ -82,6 +82,7 @@ on:
       - "client/otrv4plus_xmpp_trade.py"
       - "client/otrv4plus_xmpp_files.py"
       - "client/otrv4plus_host.py"
+      - "client/otrv4plus_tunnels.py"
       - "client/otrv4plus_voicenote.py"
       - "client/otrv4plus_roomsync.py"
       - "client/otrv4plus_mediapath.py"

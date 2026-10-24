@@ -55,7 +55,7 @@ def _patch_sam(monkeypatch, works=True, calls=None):
             raise OSError("SAM bridge unavailable")
         return ("127.0.0.1", 41234)
 
-    monkeypatch.setattr(xmpp, "start_i2p_sam_forwarder", _forwarder)
+    monkeypatch.setattr(xmpp._tunnels, "start_i2p_sam_forwarder", _forwarder)
 
 
 SAM_PARAMS = {"server_b32": "x.b32.i2p", "dest_port": 5222,
