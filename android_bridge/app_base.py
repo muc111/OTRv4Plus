@@ -22,6 +22,8 @@ class BridgeError(RuntimeError):
         super().__init__(code)
         self.code = code
         self.detail = detail
+        from . import codes
+        codes.note(code)
 
 
 class _RedactingFilter(logging.Filter):

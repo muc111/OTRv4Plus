@@ -160,6 +160,13 @@ def build(status: Optional[Dict[str, Any]] = None,
         except Exception as exc:                            # pragma: no cover
             parts.append("  (could not read: %s)" % type(exc).__name__)
 
+    parts.append(_section("Failures seen (most frequent first)"))
+    try:
+        from . import codes
+        parts.append(codes.render_tally())
+    except Exception as exc:                                # pragma: no cover
+        parts.append("  (could not read: %s)" % type(exc).__name__)
+
     parts.append(_section("Events (oldest first)"))
     try:
         parts.append(trace.render(limit))
@@ -262,6 +269,13 @@ def summary(status: Optional[Dict[str, Any]] = None,
     if last.get("code") and last.get("code") != "ok":
         lines.append("last    %s: %s" % (last.get("code"),
                                          last.get("detail", "")))
+    try:
+        from . import codes
+        worst = codes.tally()[:3]
+    except Exception:                                       # pragma: no cover
+        worst = []
+    if worst:
+        lines.append("failed  %s" % ", ".join("%s x%d" % (c, n) for c, n, _, _ in worst))
     lines.append("")
     lines.append("last %d events:" % events)
     try:

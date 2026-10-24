@@ -511,6 +511,12 @@ class ErrorOccurred(Event):
     code: str = "unknown"
     detail: str = ""
 
+    def __post_init__(self) -> None:
+        # Into the debug log as it happens, whether or not a screen is
+        # attached to show it (android_bridge/codes.py).
+        from . import codes
+        codes.note(self.code, self.peer)
+
 
 class EventSink(Protocol):
     """What the Kotlin host implements (via Chaquopy) to receive events."""

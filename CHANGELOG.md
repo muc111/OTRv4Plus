@@ -4,6 +4,24 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.146 and Desktop — 2026-10-24 — every failure has a code in the debug log (core 0.13.1)
+
+- **One list of failure codes, each with what it means.**
+  `android_bridge/codes.py` names every code the app's Python side can
+  report (64 of them: calls, verification, OTR sessions, rooms, groups,
+  files), the part of the app it belongs to and one line on what failed.
+  The code is what the screen shows when it has no sentence, and grepping
+  the source for it lands on the line that produced it.
+- **Every failure is written to the debug log as it happens**, with its
+  code, meaning, time and the peer's label (never the address), even when
+  no screen was attached to show it.
+- **The diagnostic report opens with a tally**: each code seen since the
+  app started, how many times, first and last time. The clipboard summary
+  names the three most frequent. Wipe & Exit clears it with the log.
+- **Guard:** `tests/test_failure_codes_registered.py` fails CI when the
+  bridge can produce a code the list does not name, so a new failure comes
+  with its meaning written down.
+
 ## Android 0.7.0-experimental.rc.145 and Desktop — 2026-10-24 — no failure is silent; guards against regressions (core 0.13.1)
 
 - **Every failure the app is told about now says something.** The call

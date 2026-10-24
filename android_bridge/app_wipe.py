@@ -133,6 +133,8 @@ class WipeMixin:
         try:
             from .trace import TRACE as _trace
             _trace.clear()
+            from . import codes as _codes
+            _codes.reset()
         except Exception:
             report["errors"].append("trace")
         try:

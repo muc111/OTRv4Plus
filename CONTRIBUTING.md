@@ -98,6 +98,10 @@ waiting for a phone to find it.
 - `tests/test_failures_reach_the_screen.py`: every failure code the bridge
   emits has a sentence in the app (`FailureText`) or a `QUIET` entry saying
   why not; an unknown code is shown by name, never dropped.
+- `tests/test_failure_codes_registered.py`: every failure code the bridge
+  can produce is listed in `android_bridge/codes.py` with its meaning, and
+  is written to the debug log when it happens; the diagnostic report opens
+  with a tally of codes seen.
 - `tests/test_client_finds_the_bridge.py`: a terminal client started from
   `client/` can import `android_bridge`.
 - `tests/test_ci_watches_what_it_tests.py`: the desktop install job runs

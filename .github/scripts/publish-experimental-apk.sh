@@ -157,6 +157,7 @@ installed), and with the Termux client.
 | Ban tools for admins | Sign in as an account that is NOT a server admin and open a contact's profile: there are no ban buttons. As an admin they are there | rc.143 |
 | Open a received picture | Receive a photo, close and reopen the app, open the chat: the "File received" line has Open. Open shows the picture and, under it, a Metadata line ("none" for a stripped photo) | rc.144 |
 | Failures say something | Call a contact whose phone is offline or not verified, send to a group while signed out: each says what went wrong instead of nothing | rc.145 |
+| Failure codes in the report | Make a call fail (contact offline), then Profile → Diagnostics → export: the report starts with "Failures seen" listing the code (for example call_tunnel), how often and when | rc.146 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |
