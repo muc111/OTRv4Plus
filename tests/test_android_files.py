@@ -51,6 +51,7 @@ voice = pytest.importorskip("otrv4plus_voice")
 from android_bridge.app import OtrApp, Transport                  # noqa: E402
 from android_bridge.events import SecurityState, SmpState         # noqa: E402
 from android_bridge.files import FileOutcome, is_file_signal      # noqa: E402
+from source_of import conversation_screen_source  # noqa: E402
 
 SECRET = "a shared secret we both know"
 
@@ -578,7 +579,7 @@ class TestTheAndroidSideUsesSaf:
     @staticmethod
     @pytest.fixture(scope="class")
     def screen():
-        return _kt("ui", "ConversationScreen.kt")
+        return conversation_screen_source()
 
     def test_the_picker_is_the_system_document_picker(self, screen):
         assert "ActivityResultContracts.OpenDocument()" in screen, (
@@ -598,7 +599,7 @@ class TestTheAndroidSideUsesSaf:
     def test_the_staged_copy_stays_in_the_apps_own_cache(self, screen):
         """What is copied is about to be encrypted and sent. A readable
         duplicate in a shared directory would undo the point."""
-        body = screen[screen.index("private fun stageForSending("):]
+        body = screen[screen.index("internal fun stageForSending("):]
         body = body[:body.index("\n}")]
         assert "context.cacheDir" in body
         for shared in ("getExternalStorage", "Environment.DIRECTORY",
@@ -609,7 +610,7 @@ class TestTheAndroidSideUsesSaf:
     def test_a_provider_supplied_name_cannot_carry_a_path(self, screen):
         """The display name comes from somebody else's content provider and
         is about to become a File()."""
-        body = screen[screen.index("private fun displayName("):]
+        body = screen[screen.index("internal fun displayName("):]
         body = body[:body.index("\n}")]
         assert "substringAfterLast('/')" in body, (
             "a provider-supplied name reaches File() with its separators")
@@ -821,7 +822,7 @@ class TestTheMetadataChoiceOnAndroid:
         return _kt("chat", "ChatViewModel.kt")
 
     def test_a_picked_file_is_examined_before_it_is_sent(self):
-        screen = _kt("ui", "ConversationScreen.kt")
+        screen = conversation_screen_source()
         picker = screen[screen.index("ActivityResultContracts.OpenDocument()"):]
         picker = picker[:picker.index("model.pendingMetadata")]
         assert "model.prepareFile(" in picker, (
@@ -931,10 +932,7 @@ class TestTheMetadataDialogOffersThreeChoices:
     nothing. Read from the Compose source, which only CI can compile."""
 
     def test_the_dialog(self):
-        screen = open(os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "android/app/src/main/java/org/otrv4plus/android/ui/ConversationScreen.kt"),
-            encoding="utf-8").read()
+        screen = conversation_screen_source()
         dialog = screen[screen.index("model.pendingMetadata"):]
         dialog = dialog[:dialog.index("for (transfer in transfers)")]
         confirm = dialog[dialog.index("confirmButton"):dialog.index("dismissButton")]

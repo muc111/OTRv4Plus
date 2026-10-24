@@ -20,6 +20,7 @@ import re
 import sys
 
 import pytest
+from source_of import CONVERSATION_SCREEN_PARTS  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -336,7 +337,8 @@ class TestSomebodyWhoMessagedUsAndWasNeverAdded:
     @pytest.fixture(scope="class")
     @classmethod
     def conversation(cls):
-        return code_of(CONVERSATION)
+        return "\n".join(code_of(os.path.join(UI, "ui", n))
+                         for n in CONVERSATION_SCREEN_PARTS)
 
     def test_the_conversation_says_they_are_not_a_contact(self, conversation):
         assert "Not in your contacts" in conversation
@@ -357,13 +359,13 @@ class TestSomebodyWhoMessagedUsAndWasNeverAdded:
             self, conversation):
         """The remedy still exists; it just cannot be carried out this
         second. Hiding it makes the explanation read as a dead end."""
-        block = body_of(conversation, "private fun UnsavedSenderBanner")
+        block = body_of(conversation, "internal fun UnsavedSenderBanner")
         assert "enabled = enabled" in block
 
     def test_it_is_not_dressed_as_an_error(self, conversation):
         """Nothing is wrong. An error colour here teaches people to ignore
         error colours."""
-        block = body_of(conversation, "private fun UnsavedSenderBanner")
+        block = body_of(conversation, "internal fun UnsavedSenderBanner")
         assert "colorScheme.error" not in block
 
     def test_the_list_row_says_it_too(self):

@@ -26,6 +26,7 @@ import pytest
 
 from android_bridge.connection import ConnectionController, SamProbe
 from android_bridge.settings import ConnectionProfile
+from source_of import CONVERSATION_SCREEN_PARTS  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UI = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
@@ -602,7 +603,7 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
             text = _read(UI, name)
             _assert_balanced(text, name)
         for name in ("ConnectScreen.kt", "ConversationsScreen.kt",
-                     "ConversationScreen.kt", "AboutScreen.kt"):
+                     "AboutScreen.kt") + CONVERSATION_SCREEN_PARTS:
             _assert_balanced(_read(UI, "ui", name), name)
 
 

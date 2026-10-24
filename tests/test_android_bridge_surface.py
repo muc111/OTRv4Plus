@@ -177,14 +177,14 @@ class TestNoAnnotationIsAppliedTwice:
 
         ConversationScreen.kt:227:1 This annotation is not repeatable.
 
-    An edit anchored on `private fun SecurityLine(...)` inserted a new
+    An edit anchored on `internal fun SecurityLine(...)` inserted a new
     composable above it and carried its own `@Composable`, leaving the
     original one stranded on the line before -- so the file read
 
         @Composable
         /** doc for the new function */
         @Composable
-        private fun EncryptionOffer(...)
+        internal fun EncryptionOffer(...)
 
     Kotlin rejects a repeated non-repeatable annotation. Nothing needed a
     compiler to see it; the two were four lines apart.

@@ -46,6 +46,7 @@ import re
 import sys
 
 import pytest
+from source_of import CONVERSATION_SCREEN_PARTS  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -77,7 +78,8 @@ def code_of(path):
 
 @pytest.fixture(scope="module")
 def chat():
-    return code_of(CONVERSATION)
+    return "\n".join(code_of(os.path.join(UI, "ui", n))
+                         for n in CONVERSATION_SCREEN_PARTS)
 
 
 # ── the keyboard is subtracted exactly once ──────────────────────────────────
@@ -170,7 +172,7 @@ class TestTheComposerStaysAtTheBottom:
     def test_the_composer_clears_the_navigation_bar(self, chat):
         """The window no longer fits the decor, so without this the Send
         button sits under the gesture bar."""
-        block = chat[chat.index("private fun Composer("):]
+        block = chat[chat.index("internal fun Composer("):]
         assert "navigationBarsPadding()" in block
 
 

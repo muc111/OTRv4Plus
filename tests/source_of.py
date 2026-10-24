@@ -130,3 +130,19 @@ def init_source(cls) -> str:
     """`cls.__init__` followed by the `_init_*` steps it is made of."""
     steps = [getattr(cls, n) for n in vars(cls) if n.startswith("_init_")]
     return "\n".join(inspect.getsource(f) for f in [cls.__init__] + steps)
+
+
+#: ConversationScreen.kt and the files split from it, in that order.
+CONVERSATION_SCREEN_PARTS = ("ConversationScreen.kt", "ConversationGroupUi.kt",
+                             "ConversationSecurityUi.kt", "ConversationMediaUi.kt")
+
+
+def conversation_screen_source() -> str:
+    """The conversation screen: ConversationScreen.kt and its Conversation*Ui.kt
+    parts, so a check on "the screen" keeps reading every composable on it."""
+    import os
+    ui = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                      "android", "app", "src", "main", "java", "org", "otrv4plus",
+                      "android", "ui")
+    return "\n".join(open(os.path.join(ui, n), encoding="utf-8").read()
+                     for n in CONVERSATION_SCREEN_PARTS)

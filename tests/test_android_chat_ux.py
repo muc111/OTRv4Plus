@@ -29,6 +29,7 @@ import re
 import pytest
 
 from android_bridge.app import OtrApp
+from source_of import conversation_screen_source, CONVERSATION_SCREEN_PARTS  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANDROID = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
@@ -339,7 +340,7 @@ class TestStateLivesInAViewModel:
                 "two readers of a destructive queue lose messages" % pulled)
 
     def test_the_screens_hold_no_history(self):
-        for name in ("ConversationScreen.kt", "ConversationsScreen.kt"):
+        for name in CONVERSATION_SCREEN_PARTS + ("ConversationsScreen.kt",):
             source = _code_only(_read(ANDROID, "ui", name))
             assert "mutableStateMapOf" not in source, (
                 "%s keeps state that should be in the ViewModel" % name)
@@ -356,7 +357,7 @@ class TestStateLivesInAViewModel:
         being destroyed entirely."""
         assert "state?.setDraft" in chat_vm
         assert "state?.draft" in chat_vm
-        screen = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        screen = _code_only(conversation_screen_source())
 
         # SCOPED TO THE COMPOSER, and it did not used to be. This asserted
         # that `remember { mutableStateOf` appeared NOWHERE in the file, which
@@ -366,7 +367,7 @@ class TestStateLivesInAViewModel:
         # not in the ViewModel: a secret held there would outlive the dialog.
         # A guard that forbids the correct handling of a passphrase in order
         # to protect a draft is guarding the wrong thing.
-        composer = screen[screen.index("private fun Composer("):]
+        composer = screen[screen.index("internal fun Composer("):]
         # The composer itself: up to the next composable in the file.
         end = composer.find("\n@Composable", 1)
         composer = composer[:end] if end > 0 else composer
@@ -381,14 +382,14 @@ class TestStateLivesInAViewModel:
         Anything else appearing here is state that belongs in `ChatState`,
         which the service owns and which outlives the Activity.
         """
-        screen = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        screen = _code_only(conversation_screen_source())
         holders = screen.count("remember { mutableStateOf")
         # The SMP passphrase and (rc.43) the group passphrase: both secrets
         # that must not outlive their dialog. Nothing else.
         assert holders == 2, (
             "%d pieces of composition-local state; only the two passphrases "
             "may be" % holders)
-        for fn in ("private fun VerificationPrompt(", "private fun GroupPassphrasePrompt("):
+        for fn in ("internal fun VerificationPrompt(", "internal fun GroupPassphrasePrompt("):
             prompt = screen[screen.index(fn):]
             prompt = prompt[:prompt.index("AlertDialog(")]
             assert "remember { mutableStateOf" in prompt, (
@@ -418,7 +419,7 @@ class TestNavigationCarriesNoObjects:
             "or duplicated core is exactly what navigation must not carry")
 
     def test_both_chat_screens_take_the_model_and_a_jid(self):
-        conversation = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        conversation = _code_only(conversation_screen_source())
         assert "jid: String" in conversation
         assert "model: ChatViewModel" in conversation
 
@@ -430,7 +431,7 @@ class TestTheSecurityBoundaryHoldsInTheUi:
     @staticmethod
     @pytest.fixture(scope="class")
     def conversation():
-        return _read(ANDROID, "ui", "ConversationScreen.kt")
+        return conversation_screen_source()
 
     def test_the_security_line_comes_from_the_engine(self, conversation):
         assert "conversation.security" in conversation
@@ -502,7 +503,7 @@ class TestTheSecurityBoundaryHoldsInTheUi:
         whatever the fallback happened to say, in the model or on screen."""
         for path, marker in (
             (("chat", "ChatModels.kt"), "fun forInbound(state: SecurityState)"),
-            (("ui", "ConversationScreen.kt"), "fun SecurityLine("),
+            (("ui", "ConversationSecurityUi.kt"), "fun SecurityLine("),
         ):
             code = _code_only(_read(ANDROID, *path))
             block = code[code.index(marker):]
@@ -692,7 +693,7 @@ class TestTheConversationList:
             "a message from somebody not on the roster has nowhere to appear")
 
     def test_no_contact_is_hard_coded(self):
-        for name in ("ConversationsScreen.kt", "ConversationScreen.kt"):
+        for name in ("ConversationsScreen.kt",) + CONVERSATION_SCREEN_PARTS:
             source = _read(ANDROID, "ui", name)
             for planted in ("alice@", "bob@", "carol@"):
                 assert planted not in source, (
@@ -711,7 +712,7 @@ class TestTheComposer:
     @staticmethod
     @pytest.fixture(scope="class")
     def conversation():
-        return _read(ANDROID, "ui", "ConversationScreen.kt")
+        return conversation_screen_source()
 
     def test_it_is_pinned_to_the_bottom(self, conversation):
         assert "bottomBar = {" in conversation
@@ -721,7 +722,7 @@ class TestTheComposer:
         assert "KeyboardActions(onSend" in conversation
 
     def test_the_button_sends(self, conversation):
-        block = conversation[conversation.index("private fun Composer("):]
+        block = conversation[conversation.index("internal fun Composer("):]
         assert "onClick = onSend" in block
 
     def test_blank_input_disables_the_button(self, conversation):
@@ -853,7 +854,7 @@ class TestTheOtrTapReachesTheWire:
         """The chain, named link by link, because each one was once absent:
         screen -> ChatViewModel.startEncryption -> EncryptionLauncher ->
         OtrV4PlusProvider.establish -> OtrCore.startSession -> Python."""
-        screen = _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        screen = _code_only(conversation_screen_source())
         assert "model.startEncryption(jid)" in screen
 
         vm = _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
@@ -919,14 +920,14 @@ class TestIdentityVerificationReachesTheUser:
     @staticmethod
     @pytest.fixture(scope="class")
     def screen():
-        return _code_only(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        return _code_only(conversation_screen_source())
 
     @staticmethod
     @pytest.fixture(scope="class")
     def screen_text():
         """With string bodies KEPT. The user-facing sentences are the subject
         of some of these, and `_code_only` blanks them."""
-        return _uncommented(_read(ANDROID, "ui", "ConversationScreen.kt"))
+        return _uncommented(conversation_screen_source())
 
     @staticmethod
     @pytest.fixture(scope="class")
@@ -989,8 +990,8 @@ class TestIdentityVerificationReachesTheUser:
     def test_the_verified_state_is_not_a_button(self, screen):
         """Offering to verify an already-verified peer implies the last answer
         expired. It did not."""
-        block = screen[screen.index("private fun VerificationOffer"):]
-        block = block[:block.index("private fun VerificationPrompt")]
+        block = screen[screen.index("internal fun VerificationOffer"):]
+        block = block[:block.index("internal fun VerificationPrompt")]
         # The CONTROL branch, not the first mention of VERIFIED -- that one is
         # in the `when` that picks the sentence, and slicing from it swept in
         # every button below.
@@ -1045,21 +1046,21 @@ class TestIdentityVerificationReachesTheUser:
     def test_the_passphrase_field_is_masked(self, screen):
         """A passphrase prompt that shows the passphrase is not a passphrase
         prompt -- the same rule the connect screen applies to the password."""
-        block = screen[screen.index("private fun VerificationPrompt"):]
+        block = screen[screen.index("internal fun VerificationPrompt"):]
         assert "PasswordVisualTransformation()" in block
 
     def test_the_passphrase_is_not_written_to_the_saved_state_bundle(
             self, screen):
         """`rememberSaveable` puts a value in savedInstanceState, which
         Android serialises to disk. `remember` keeps it in the composition."""
-        block = screen[screen.index("private fun VerificationPrompt"):]
+        block = screen[screen.index("internal fun VerificationPrompt"):]
         field = block[:block.index("AlertDialog(")]
         assert "rememberSaveable" not in field, (
             "the passphrase would be written to the saved-state Bundle")
         assert "remember {" in field
 
     def test_the_passphrase_is_cleared_on_both_exits(self, screen):
-        block = screen[screen.index("private fun VerificationPrompt"):]
+        block = screen[screen.index("internal fun VerificationPrompt"):]
         assert block.count('secret = ""') >= 2, (
             "the passphrase survives in the composition after submit or "
             "cancel")
@@ -1103,8 +1104,8 @@ class TestIdentityVerificationReachesTheUser:
             self, screen_text):
         """The distinction SMP exists for. A conversation that is encrypted
         and unverified must not read as verified."""
-        block = screen_text[screen_text.index("private fun VerificationOffer"):]
-        block = block[:block.index("private fun VerificationPrompt")]
+        block = screen_text[screen_text.index("internal fun VerificationOffer"):]
+        block = block[:block.index("internal fun VerificationPrompt")]
         assert "Identity Verified" in block
         assert "have not checked who is on the other end" in block
 

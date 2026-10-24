@@ -4,6 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.151 — 2026-10-24 — code split, step 7: the conversation screen (core 0.13.1)
+
+Nothing changes on the phone. `ConversationScreen.kt` (1,986 lines) becomes
+four files in the same package: the screen itself with its messages and
+composer (692), rooms and secure groups (`ConversationGroupUi.kt`),
+encryption, verification and blocking (`ConversationSecurityUi.kt`), and
+files, calls and voice notes (`ConversationMediaUi.kt`). Every composable
+moved unchanged: the four files hold exactly the original lines, with the
+moved file-private declarations made `internal` so the parts can see each
+other. Tests that read "the screen" read all four (`tests/source_of.py`).
+
 ## Android 0.7.0-experimental.rc.150 and Desktop — 2026-10-24 — code split, step 6, and a length limit (core 0.13.1)
 
 Nothing changes on the phone.
