@@ -13,7 +13,8 @@ and everything else dropped.
   * Control and formatting characters are removed, including the Unicode
     bidi overrides that make "gpj.exe" display as "exe.jpg". Newlines survive
     only in the note. Text is NFC-normalised.
-  * Shaped fields are checked: a birthday is YYYY-MM-DD, a phone number is
+  * Shaped fields are checked: a birthday is an ISO 8601 date (YYYY-MM-DD,
+    or a signed year of up to nine digits: -450000-01-01), a phone number is
     digits and + ( ) - space, an e-mail has one @ and no spaces, a web
     address is http(s) and is shown as text, never as a link.
   * Lengths are capped, and so is the number of characters overall.
@@ -41,7 +42,7 @@ FIELDS: List[Tuple[str, str, str, int, bool]] = [
     ("given", "First name", "N/GIVEN", 60, False),
     ("family", "Last name", "N/FAMILY", 60, False),
     ("nickname", "Nickname", "NICKNAME", 60, False),
-    ("bday", "Birthday (YYYY-MM-DD)", "BDAY", 10, False),
+    ("bday", "Birthday (YYYY-MM-DD, any year: -450000-01-01)", "BDAY", 16, False),
     ("email", "E-mail", "EMAIL/USERID", 120, False),
     ("tel", "Phone", "TEL/NUMBER", 32, False),
     ("url", "Web site", "URL", 200, False),
@@ -57,7 +58,29 @@ _BY_KEY = {f[0]: f for f in FIELDS}
 #: The whole profile, every field together.
 MAX_TOTAL = 3000
 
-_BDAY = re.compile(r"\d{4}-\d{2}-\d{2}")
+#: ISO 8601 calendar date. Four-digit years as usual; more digits only with
+#: a sign (the standard's expanded form), up to nine, no leading zero.
+_BDAY = re.compile(r"([+-]?)(\d{4}|[1-9]\d{4,8})-(\d{2})-(\d{2})")
+_DAYS = (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+
+def _is_date(text: str) -> bool:
+    """Whether *text* is a real ISO 8601 date, in any year.
+
+    Years are astronomical (there is a year 0, and -1 is 2 BC) and leap years
+    follow the Gregorian rule extended backwards, as ISO 8601 does.
+    """
+    m = _BDAY.fullmatch(text)
+    if m is None:
+        return False
+    sign, digits, month, day = m.groups()
+    if len(digits) > 4 and not sign:
+        return False
+    year, month, day = int(sign + digits), int(month), int(day)
+    if not 1 <= month <= 12:
+        return False
+    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
+    return 1 <= day <= _DAYS[month - 1] + (1 if month == 2 and leap else 0)
 _TEL = re.compile(r"[0-9+()\- ]{3,32}")
 _EMAIL = re.compile(r"[^@\s<>\"']{1,64}@[^@\s<>\"']{1,120}")
 _URL = re.compile(r"https?://[^\s<>\"']{1,190}", re.IGNORECASE)
@@ -93,7 +116,9 @@ def clean_field(key: str, value) -> str:
     text = text[:limit]
     if not text:
         return ""
-    if key == "bday" and not _BDAY.fullmatch(text):
+    if key == "bday":
+        text = text.replace("\u2212", "-")     # a typed minus sign
+    if key == "bday" and not _is_date(text):
         return ""
     if key == "tel" and not _TEL.fullmatch(text):
         return ""

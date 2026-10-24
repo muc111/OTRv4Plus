@@ -77,8 +77,6 @@ fun ConnectScreen(
     val init = model.init
     val status = model.status
     val busy = model.busy
-    val error = model.error
-    val registration = model.registration
 
     // The only state that genuinely belongs to the screen: what is typed into
     // it. The password in particular must not outlive the composition, so it
@@ -95,7 +93,6 @@ fun ConnectScreen(
     // Saver is required.
     var customServerChosen by rememberSaveable { mutableStateOf(false) }
     var customServer by rememberSaveable { mutableStateOf("") }
-    var menuOpen by remember { mutableStateOf(false) }
     var wiping by rememberSaveable { mutableStateOf(false) }
     val choice = if (customServerChosen) SignIn.Choice.CUSTOM
                  else SignIn.Choice.DEFAULT
@@ -133,60 +130,8 @@ fun ConnectScreen(
             .padding(horizontal = 24.dp, vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
-        // ── Who we are ────────────────────────────────────────────────────
-        //
-        // The name in words (owner, 2026-10-14: people asked what OTRv4+
-        // means), and everything that is not signing in tucked behind ⋮:
-        // Test server, About & licences, Debug (debug builds only) and Wipe &
-        // Exit. Three buttons in a row read as clutter; a login screen has
-        // one job.
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("Off The Record v4 Plus",
-                     style = MaterialTheme.typography.headlineSmall,
-                     fontWeight = FontWeight.SemiBold)
-                Text("Private messaging over I2P, with post-quantum OTRv4+ encryption",
-                     style = MaterialTheme.typography.bodySmall,
-                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Box {
-                TextButton(onClick = { menuOpen = true }) {
-                    Text("⋮", style = MaterialTheme.typography.titleLarge)
-                }
-                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                    // Reaches the server and stops: no sign-in, no account,
-                    // no password. Needs only the address.
-                    DropdownMenuItem(
-                        text = { Text("Test server") },
-                        enabled = busy == null && !status.connected && target != null,
-                        onClick = {
-                            menuOpen = false
-                            model.testServer(target!!.jid, target.server)
-                        },
-                    )
-                    // Never disabled: the licence notice and the attribution
-                    // are obligations that do not depend on the app's state.
-                    DropdownMenuItem(
-                        text = { Text("About & licences") },
-                        onClick = { menuOpen = false; onOpenAbout() },
-                    )
-                    // Debug builds only. A release build is for people who
-                    // want to chat, not to read a transport trace.
-                    if (BuildConfig.DEV_DIAGNOSTICS) {
-                        DropdownMenuItem(
-                            text = { Text("Debug") },
-                            enabled = !status.connected && busy == null,
-                            onClick = { menuOpen = false; onOpenDiagnostics() },
-                        )
-                    }
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("Wipe & Exit", color = MaterialTheme.colorScheme.error) },
-                        onClick = { menuOpen = false; wiping = true },
-                    )
-                }
-            }
-        }
+        ConnectHeader(model, busy, target, onOpenAbout, onOpenDiagnostics,
+                      onWipe = { wiping = true })
         if (wiping) {
             WipeAndExitDialog(onWipe = { model.wipeAndExit(it) }, onDismiss = { wiping = false },
                               offerAccountDeletion = model.phase == org.otrv4plus.android.connection.LinkPhase.CONNECTED)
@@ -216,76 +161,9 @@ fun ConnectScreen(
             return@Column
         }
 
-        // ── Where we are connecting ───────────────────────────────────────
-        //
-        // A DROPDOWN, not a b32 field. The destination hash for the default
-        // server is compiled into android_bridge/settings.py and applied by
-        // the bridge; nobody has to know it exists.
-        //
-        // NO ROUTER CHOICE. An I2P app already running on the phone is used;
-        // otherwise the router built into the app starts (RouterChoice.decide).
-        var serverMenuOpen by remember { mutableStateOf(false) }
-        ExposedDropdownMenuBox(
-            expanded = serverMenuOpen,
-            onExpandedChange = { if (editable) serverMenuOpen = !serverMenuOpen },
-        ) {
-            OutlinedTextField(
-                value = when (choice) {
-                    SignIn.Choice.DEFAULT -> SignIn.DEFAULT_DOMAIN
-                    SignIn.Choice.CUSTOM -> "Another server"
-                },
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("Server") },
-                trailingIcon = {
-                    ExposedDropdownMenuDefaults.TrailingIcon(serverMenuOpen)
-                },
-                enabled = editable,
-                modifier = Modifier
-                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
-                    .fillMaxWidth(),
-            )
-            ExposedDropdownMenu(
-                expanded = serverMenuOpen,
-                onDismissRequest = { serverMenuOpen = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text(SignIn.DEFAULT_DOMAIN) },
-                    onClick = {
-                        customServerChosen = false
-                        serverMenuOpen = false
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Another server…") },
-                    onClick = {
-                        customServerChosen = true
-                        serverMenuOpen = false
-                    },
-                )
-            }
-        }
-
-        if (choice == SignIn.Choice.CUSTOM) {
-            OutlinedTextField(
-                value = customServer,
-                onValueChange = { customServer = it },
-                label = { Text("Server address") },
-                placeholder = { Text("chat.example.i2p") },
-                supportingText = {
-                    // The route comes from the name (android_bridge.route):
-                    // .i2p -> I2P, .onion -> Tor, anything else -> clearnet
-                    // TLS with a checked certificate.
-                    Text("A domain (clearnet, .i2p or .onion), or a " +
-                         "full .b32.i2p destination.")
-                },
-                singleLine = true,
-                enabled = editable,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri,
-                                                  imeAction = ImeAction.Next),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
+        ServerChoice(choice, editable, customServer,
+                     onCustomServerChange = { customServer = it },
+                     onChoose = { customServerChosen = it })
 
         // ── Account ───────────────────────────────────────────────────────
         OutlinedTextField(
@@ -387,102 +265,261 @@ fun ConnectScreen(
             Text(it, style = MaterialTheme.typography.bodySmall)
         }
 
-        // ── What happened ─────────────────────────────────────────────────
-        //
-        // ONE LINE, and it is a sentence -- and none at all while there is
-        // nothing to say. The transport's codes and arguments are on the
-        // Debug screen of a debug build, where somebody who wants them can
-        // find them.
-        if (status.stage != "idle" && !model.connecting) {
-            StatusRow("State", stageLabel(status.stage))
-            // How long it took this time, router and retries included.
-            if (status.connected) {
-                model.connectTiming?.let {
-                    StatusRow("Connected in",
-                              org.otrv4plus.android.connection.ConnectTiming.line(it))
-                }
-            }
-        }
+        ConnectOutcome(model)
+    }
+}
 
-        // Registration is its own outcome, not a connection state.
-        registration?.let {
-            Text(
-                if (it.ok) "Account created" else "Could not create the account",
-                style = MaterialTheme.typography.titleSmall,
-                color = if (it.ok) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.error,
+/** Which server: the default, or another typed in full. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ServerChoice(
+    choice: SignIn.Choice,
+    editable: Boolean,
+    customServer: String,
+    onCustomServerChange: (String) -> Unit,
+    onChoose: (custom: Boolean) -> Unit,
+) {
+    // ── Where we are connecting ───────────────────────────────────────
+    //
+    // A DROPDOWN, not a b32 field. The destination hash for the default
+    // server is compiled into android_bridge/settings.py and applied by
+    // the bridge; nobody has to know it exists.
+    //
+    // NO ROUTER CHOICE. An I2P app already running on the phone is used;
+    // otherwise the router built into the app starts (RouterChoice.decide).
+    var serverMenuOpen by remember { mutableStateOf(false) }
+    ExposedDropdownMenuBox(
+        expanded = serverMenuOpen,
+        onExpandedChange = { if (editable) serverMenuOpen = !serverMenuOpen },
+    ) {
+        OutlinedTextField(
+            value = when (choice) {
+                SignIn.Choice.DEFAULT -> SignIn.DEFAULT_DOMAIN
+                SignIn.Choice.CUSTOM -> "Another server"
+            },
+            onValueChange = {},
+            readOnly = true,
+            label = { Text("Server") },
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(serverMenuOpen)
+            },
+            enabled = editable,
+            modifier = Modifier
+                .menuAnchor(MenuAnchorType.PrimaryNotEditable)
+                .fillMaxWidth(),
+        )
+        ExposedDropdownMenu(
+            expanded = serverMenuOpen,
+            onDismissRequest = { serverMenuOpen = false },
+        ) {
+            DropdownMenuItem(
+                text = { Text(SignIn.DEFAULT_DOMAIN) },
+                onClick = {
+                    onChoose(false)
+                    serverMenuOpen = false
+                },
             )
-            Text(it.detail, style = MaterialTheme.typography.bodySmall)
-            if (it.ok) {
-                Text(
-                    "Now press Log in with the same details.",
-                    style = MaterialTheme.typography.bodySmall,
+            DropdownMenuItem(
+                text = { Text("Another server…") },
+                onClick = {
+                    onChoose(true)
+                    serverMenuOpen = false
+                },
+            )
+        }
+    }
+
+    if (choice == SignIn.Choice.CUSTOM) {
+        OutlinedTextField(
+            value = customServer,
+            onValueChange = onCustomServerChange,
+            label = { Text("Server address") },
+            placeholder = { Text("chat.example.i2p") },
+            supportingText = {
+                // The route comes from the name (android_bridge.route):
+                // .i2p -> I2P, .onion -> Tor, anything else -> clearnet
+                // TLS with a checked certificate.
+                Text("A domain (clearnet, .i2p or .onion), or a " +
+                     "full .b32.i2p destination.")
+            },
+            singleLine = true,
+            enabled = editable,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri,
+                                              imeAction = ImeAction.Next),
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+/** The app's name, and everything that is not signing in, behind ⋮. */
+@Composable
+private fun ConnectHeader(
+    model: ConnectionViewModel,
+    busy: String?,
+    target: SignIn.Target?,
+    onOpenAbout: () -> Unit,
+    onOpenDiagnostics: () -> Unit,
+    onWipe: () -> Unit,
+) {
+    val status = model.status
+    var menuOpen by remember { mutableStateOf(false) }
+    // ── Who we are ────────────────────────────────────────────────────
+    //
+    // The name in words (owner, 2026-10-14: people asked what OTRv4+
+    // means), and everything that is not signing in tucked behind ⋮:
+    // Test server, About & licences, Debug (debug builds only) and Wipe &
+    // Exit. Three buttons in a row read as clutter; a login screen has
+    // one job.
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text("Off The Record v4 Plus",
+                 style = MaterialTheme.typography.headlineSmall,
+                 fontWeight = FontWeight.SemiBold)
+            Text("Private messaging over I2P, with post-quantum OTRv4+ encryption",
+                 style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Box {
+            TextButton(onClick = { menuOpen = true }) {
+                Text("⋮", style = MaterialTheme.typography.titleLarge)
+            }
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                // Reaches the server and stops: no sign-in, no account,
+                // no password. Needs only the address.
+                DropdownMenuItem(
+                    text = { Text("Test server") },
+                    enabled = busy == null && !status.connected && target != null,
+                    onClick = {
+                        menuOpen = false
+                        model.testServer(target!!.jid, target.server)
+                    },
+                )
+                // Never disabled: the licence notice and the attribution
+                // are obligations that do not depend on the app's state.
+                DropdownMenuItem(
+                    text = { Text("About & licences") },
+                    onClick = { menuOpen = false; onOpenAbout() },
+                )
+                // Debug builds only. A release build is for people who
+                // want to chat, not to read a transport trace.
+                if (BuildConfig.DEV_DIAGNOSTICS) {
+                    DropdownMenuItem(
+                        text = { Text("Debug") },
+                        enabled = !status.connected && busy == null,
+                        onClick = { menuOpen = false; onOpenDiagnostics() },
+                    )
+                }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Wipe & Exit", color = MaterialTheme.colorScheme.error) },
+                    onClick = { menuOpen = false; onWipe() },
                 )
             }
         }
+    }
+}
 
-        model.identityChange?.let { change ->
-            ServerIdentityWarning(
-                change = change,
-                onTrust = { model.trustNewServerAddress() },
-                onKeep = { model.dismissIdentityChange() },
-            )
-        }
-
-        model.serverTest?.let {
-            Text(
-                if (it.ok) "Server test: reached" else "Server test: failed",
-                style = MaterialTheme.typography.titleSmall,
-                color = if (it.ok) MaterialTheme.colorScheme.onSurface
-                        else MaterialTheme.colorScheme.error,
-            )
-            SelectionContainer {
-                Text(it.detail + (if (BuildConfig.DEV_DIAGNOSTICS)
-                                      "\n${it.code}" + (if (it.reached.isNotBlank()) " · reached ${it.reached}" else "")
-                                  else ""),
-                     style = MaterialTheme.typography.bodySmall)
+/** What happened: the stage, the account or server-test result, and any problem. */
+@Composable
+private fun ConnectOutcome(model: ConnectionViewModel) {
+    val status = model.status
+    val registration = model.registration
+    val error = model.error
+    // ── What happened ─────────────────────────────────────────────────
+    //
+    // ONE LINE, and it is a sentence -- and none at all while there is
+    // nothing to say. The transport's codes and arguments are on the
+    // Debug screen of a debug build, where somebody who wants them can
+    // find them.
+    if (status.stage != "idle" && !model.connecting) {
+        StatusRow("State", stageLabel(status.stage))
+        // How long it took this time, router and retries included.
+        if (status.connected) {
+            model.connectTiming?.let {
+                StatusRow("Connected in",
+                          org.otrv4plus.android.connection.ConnectTiming.line(it))
             }
         }
+    }
 
-        // What went wrong, if anything did -- and NOT while the app is still
-        // doing its job (owner report, 2026-10-11). ConnectProblem decides:
-        // expected I2P start-up trouble is a quiet "still connecting" line
-        // until it has repeated; a wrong password or a security stop is an
-        // error at once.
-        val problemLine = org.otrv4plus.android.connection.ConnectProblem.line(
-            failure = model.failureCode,
-            connected = status.connected,
-            retrying = model.connecting,
-            failuresInARow = model.failuresInARow,
-            bundledRouterUpMs = model.bundledRouterUpMs,
+    // Registration is its own outcome, not a connection state.
+    registration?.let {
+        Text(
+            if (it.ok) "Account created" else "Could not create the account",
+            style = MaterialTheme.typography.titleSmall,
+            color = if (it.ok) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.error,
         )
-        problemLine?.let { line ->
-            val isError = line.tone == org.otrv4plus.android.connection.ConnectProblem.Tone.ERROR
+        Text(it.detail, style = MaterialTheme.typography.bodySmall)
+        if (it.ok) {
             Text(
-                line.text,
+                "Now press Log in with the same details.",
                 style = MaterialTheme.typography.bodySmall,
-                color = if (isError) MaterialTheme.colorScheme.error
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            // The transport's own sentence, for an error only.
-            if (isError && status.detail.isNotBlank() && status.stage == "failed") {
-                SelectionContainer {
-                    Text(status.detail, style = MaterialTheme.typography.bodySmall)
-                }
+        }
+    }
+
+    model.identityChange?.let { change ->
+        ServerIdentityWarning(
+            change = change,
+            onTrust = { model.trustNewServerAddress() },
+            onKeep = { model.dismissIdentityChange() },
+        )
+    }
+
+    model.serverTest?.let {
+        Text(
+            if (it.ok) "Server test: reached" else "Server test: failed",
+            style = MaterialTheme.typography.titleSmall,
+            color = if (it.ok) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.error,
+        )
+        SelectionContainer {
+            Text(it.detail + (if (BuildConfig.DEV_DIAGNOSTICS)
+                                  "\n${it.code}" + (if (it.reached.isNotBlank()) " · reached ${it.reached}" else "")
+                              else ""),
+                 style = MaterialTheme.typography.bodySmall)
+        }
+    }
+
+    // What went wrong, if anything did -- and NOT while the app is still
+    // doing its job (owner report, 2026-10-11). ConnectProblem decides:
+    // expected I2P start-up trouble is a quiet "still connecting" line
+    // until it has repeated; a wrong password or a security stop is an
+    // error at once.
+    val problemLine = org.otrv4plus.android.connection.ConnectProblem.line(
+        failure = model.failureCode,
+        connected = status.connected,
+        retrying = model.connecting,
+        failuresInARow = model.failuresInARow,
+        bundledRouterUpMs = model.bundledRouterUpMs,
+    )
+    problemLine?.let { line ->
+        val isError = line.tone == org.otrv4plus.android.connection.ConnectProblem.Tone.ERROR
+        Text(
+            line.text,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (isError) MaterialTheme.colorScheme.error
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        // The transport's own sentence, for an error only.
+        if (isError && status.detail.isNotBlank() && status.stage == "failed") {
+            SelectionContainer {
+                Text(status.detail, style = MaterialTheme.typography.bodySmall)
             }
         }
+    }
 
-        error?.let {
-            // A Kotlin-side throw, as opposed to a reported Python failure.
-            // The class name only, and only in a debug build: an exception's
-            // message can carry what the engine was handling.
-            Text(
-                "Something went wrong in the app" +
-                    (if (BuildConfig.DEV_DIAGNOSTICS) " ($it)." else ". Please try again."),
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
+    error?.let {
+        // A Kotlin-side throw, as opposed to a reported Python failure.
+        // The class name only, and only in a debug build: an exception's
+        // message can carry what the engine was handling.
+        Text(
+            "Something went wrong in the app" +
+                (if (BuildConfig.DEV_DIAGNOSTICS) " ($it)." else ". Please try again."),
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+        )
     }
 }
 

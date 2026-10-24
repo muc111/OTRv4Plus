@@ -164,3 +164,32 @@ class TestTheBridge:
         fields = ctl.profile_fields()
         assert fields[0] == "fn\tFull name\t100\t0"
         assert "desc\tAbout me\t1000\t1" in fields
+
+
+class TestBirthdaysInAnyYear:
+    """Owner, 2026-10-24: "Can we support extended dates for profile such as
+    -450000-01-01". ISO 8601's expanded years: a sign and up to nine digits.
+    Prosody stores vcard-temp as it is given, so only this check decides."""
+
+    def test_extended_years_with_a_sign_are_kept(self):
+        for value in ("-450000-01-01", "+12026-06-01", "-999999999-12-31",
+                      "0000-01-01", "-0001-12-31"):
+            assert P.clean_field("bday", value) == value, value
+
+    def test_a_typed_minus_sign_is_a_hyphen(self):
+        assert P.clean_field("bday", "−450000-01-01") == "-450000-01-01"
+
+    def test_more_than_four_digits_need_a_sign(self):
+        assert P.clean_field("bday", "12026-01-01") == ""
+        assert P.clean_field("bday", "-1000000000-01-01") == ""   # ten digits
+
+    def test_only_real_dates(self):
+        for value in ("2020-13-01", "2020-00-10", "2020-04-31", "2023-02-29",
+                      "-0100-02-29", "1990-4-1", "soon"):
+            assert P.clean_field("bday", value) == "", value
+        for value in ("2024-02-29", "-0400-02-29", "2000-02-29"):
+            assert P.clean_field("bday", value) == value, value
+
+    def test_an_extended_date_survives_the_vcard_round_trip(self):
+        back = P.from_vcard(P.to_vcard({"bday": "-450000-01-01"}))
+        assert back["bday"] == "-450000-01-01"

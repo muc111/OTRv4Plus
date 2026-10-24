@@ -18,7 +18,7 @@ object ProfileText {
 
     /**
      * After a save: which typed fields the bridge did not keep (wrong shape,
-     * e.g. a birthday not in YYYY-MM-DD), named by their labels.
+     * e.g. a birthday that is not a real date), named by their labels.
      */
     fun saved(
         typed: Map<String, String>,

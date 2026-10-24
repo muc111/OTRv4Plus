@@ -67,7 +67,7 @@ def test_every_ceiling_still_names_a_function_over_the_limit():
 #: (file, function) -> ceiling. The screens are single composables holding
 #: their own state; each section that moves out lowers its number here.
 KT_CEILING = {
-    ("android/app/src/main/java/org/otrv4plus/android/ui/ConnectScreen.kt", "ConnectScreen"): 423,
+    ("android/app/src/main/java/org/otrv4plus/android/ui/ConnectScreen.kt", "ConnectScreen"): 206,
     ("android/app/src/main/java/org/otrv4plus/android/ui/ConversationsScreen.kt",
      "ConversationsScreen"): 358,
     ("android/app/src/main/java/org/otrv4plus/android/ui/ProfileScreen.kt", "ProfileScreen"): 344,

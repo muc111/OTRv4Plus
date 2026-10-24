@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.154 and Desktop — 2026-10-24 — birthdays in any year; code split, step 9 (core 0.13.1)
+
+- **A profile birthday can be in any year**, in ISO 8601's expanded form:
+  `-450000-01-01`, `+12026-06-01`. Four-digit years work as before; a year
+  with more digits needs its sign, up to nine digits. A typed minus sign
+  (−) counts as one. The date must also be real now: month 13, 31 April or
+  29 February in a common year were accepted before and are refused (leap
+  years follow the Gregorian rule, extended back with a year 0). Nothing
+  changes on the server: Prosody stores the profile as it is given.
+- `ConnectScreen` (423 lines) becomes the screen and three parts: the header
+  with its ⋮ menu, the server choice, and the "what happened" lines.
+- **Guard:** `tests/test_profile_vcard.py` covers extended years, real
+  dates and the vCard round trip.
+
 ## Android 0.7.0-experimental.rc.153 — 2026-10-24 — code split, step 8, and a length limit for Kotlin (core 0.13.1)
 
 Nothing changes on the phone.
