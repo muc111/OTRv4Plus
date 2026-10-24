@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.140 and Desktop — 2026-10-24 — the app's XMPP transport, split (core 0.13.1)
+
+Nothing changes in the app. `android_bridge/transport.py`, which both apps
+use to talk to the server, goes from 4,840 lines to about 2,700: the
+`XmppTransport` class is built from mixins, as it already was from three
+sync mixins.
+
+- **`transport_rooms.py`**: finding, joining, creating, leaving and
+  destroying rooms; their messages and occupants. 700 lines.
+- **`transport_server.py`**: what this account may do on its server --
+  archive support, admin, moderation and bans, its other sessions, the
+  password, room standing. 450 lines.
+- **`transport_registration.py`**: creating an account and probing a
+  server. 590 lines with its helpers.
+- **`transport_avatar.py`** and **`transport_welcome.py`**: profile pictures
+  and the profile; the Welcome room.
+- **`transport_stream.py`** and **`transport_base.py`**: what the sign-in
+  path and account creation share (the stage watcher, TLS check and failure
+  text), and what every part shares (the error type, timeouts, log).
+- An unused helper (`_family`) and three imports nothing used are removed.
+
 ## Android 0.7.0-experimental.rc.139 and Desktop — 2026-10-24 — the engine and the IRC client are separate files (core 0.13.1)
 
 - **`otrv4+.py` is the engine only** (10,500 lines, from 17,350): sessions,

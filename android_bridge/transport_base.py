@@ -20,6 +20,12 @@ CONNECT_TIMEOUT = 300.0
 CALL_TIMEOUT = 30.0
 
 
+#: The c2s port on the far side of the SAM stream. 5222 is the XMPP default and
+#: the I2P destination speaks it normally -- the tunnel is a pipe, not a proxy
+#: that rewrites ports.
+DEFAULT_C2S_PORT = 5222
+
+
 class TransportError(RuntimeError):
     """The transport could not do what was asked.
 
