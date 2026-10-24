@@ -1878,7 +1878,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     str("peer"), str("transfer_id"), str("filename"),
                     item.callAttr("get", "size")?.toLong() ?: 0L,
                     item.callAttr("get", "outgoing")?.toBoolean() ?: false,
-                    str("state"), str("reason"))
+                    str("state"), str("reason"), str("path"))
 
             "VoiceNoteReceived" ->
                 OtrEvent.VoiceNoteReceived(

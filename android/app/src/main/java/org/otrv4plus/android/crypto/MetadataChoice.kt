@@ -34,6 +34,25 @@ object MetadataChoice {
         data class SendUnchecked(val notice: String) : Next
     }
 
+    /**
+     * The viewer's line about a RECEIVED picture's metadata, from the same
+     * examination as before sending (owner, 2026-10-24: "display metadata
+     * so we can confirm its stripped"). Says what was looked for, so "none"
+     * means checked, and never claims a check that could not be made.
+     */
+    @JvmStatic
+    fun receivedSummary(finding: MetadataFinding?): String = when {
+        finding == null || !finding.canScrub ->
+            "Metadata: this file could not be checked."
+        finding.carriesMetadata ->
+            "Metadata: this ${finding.kind.uppercase()} still carries " +
+                "${finding.metadataBytes} bytes of metadata (EXIF, XMP, IPTC or " +
+                "comments), which can include location, camera and time."
+        else ->
+            "Metadata: none. Checked this ${finding.kind.uppercase()} for EXIF " +
+                "(location, camera, time), XMP, IPTC and comments."
+    }
+
     @JvmStatic
     fun next(finding: MetadataFinding): Next = when {
         !finding.canScrub -> Next.SendUnchecked(UNCHECKED)

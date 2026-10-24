@@ -564,7 +564,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "QueuedSent" -> OtrEvent.QueuedSent(str("peer"), int("count"), flag("encrypted"))
                 "FileTransferChanged" -> OtrEvent.FileTransferChanged(
                     str("peer"), str("transfer_id"), str("filename"), e["size"].asLong(),
-                    flag("outgoing"), str("state"), str("reason"))
+                    flag("outgoing"), str("state"), str("reason"), str("path"))
                 "VoiceNoteReceived" -> OtrEvent.VoiceNoteReceived(
                     str("peer"), str("transfer_id"), str("path"), str("sender"))
                 "ErrorOccurred" -> OtrEvent.Failed(str("peer").ifBlank { null }, str("code"))

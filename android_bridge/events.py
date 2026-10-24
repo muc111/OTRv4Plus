@@ -485,7 +485,9 @@ class FileTransferChanged(Event):
     """A file transfer moved. `state` is an `otrv4plus_filetransfer.
     TransferState` code and `reason` a `TransferReason` code -- never engine
     text. `filename` has been through `sanitise_filename`: somebody else chose
-    it and it is about to be rendered. No hash, no key, no path.
+    it and it is about to be rendered. No hash and no key. `path` is set only
+    on RECEIVED, for a file this device received and verified: its sealed
+    container in app-private storage, so the conversation can open it again.
     """
 
     transfer_id: str = ""
@@ -494,6 +496,7 @@ class FileTransferChanged(Event):
     outgoing: bool = False
     state: str = ""
     reason: str = ""
+    path: str = ""
 
 
 @dataclass(frozen=True)

@@ -270,6 +270,11 @@ class FileBridge:
                 outgoing=bool(outgoing),
                 state=str(getattr(transfer, "state", "")),
                 reason=str(getattr(transfer, "reason", "")),
+                # Only a file we received and the engine verified has one:
+                # its sealed container, so the conversation can open it again.
+                path=(str(getattr(transfer, "final_path", "") or "")
+                      if not outgoing and str(getattr(transfer, "state", ""))
+                      == ft.TransferState.RECEIVED else ""),
             )
             if event.state in ft.TransferState.TERMINAL:
                 with self._lock:

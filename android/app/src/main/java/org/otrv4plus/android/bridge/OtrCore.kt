@@ -1049,6 +1049,9 @@ sealed interface OtrEvent {
         val outgoing: Boolean,
         val state: String,
         val reason: String,
+        /** Set only on RECEIVED, for a file we received and the engine
+         *  verified: its sealed container, so the line can open it later. */
+        val path: String = "",
     ) : OtrEvent
     /** A voice note arrived and was kept, sealed, at [path] (a received
      *  container, played through `open_received_to` / `voice_note_play`).

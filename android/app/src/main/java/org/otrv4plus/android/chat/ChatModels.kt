@@ -77,6 +77,13 @@ data class Message(
      * every other message. Local only: it never crosses the wire.
      */
     val voicePath: String = "",
+    /**
+     * A file we RECEIVED and the engine verified: its sealed `.otrv`
+     * container in app-private storage, so the conversation line can open it
+     * again later (the live transfer row is gone after a restart). Empty
+     * otherwise.
+     */
+    val filePath: String = "",
 )
 
 /**

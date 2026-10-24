@@ -6,6 +6,7 @@ A mixin of OTRv4PlusXMPP (otrv4plus_xmpp.py). The transfer protocol and its
 keys are otrv4plus_filetransfer.py; this is the `/sendfile`, `/voice` and
 `/transfer` commands, the metadata question asked before a file goes, and
 the quick y/n answers files and calls share."""
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import asyncio
 import os
 import time

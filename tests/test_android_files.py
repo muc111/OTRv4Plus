@@ -895,6 +895,29 @@ class TestOnlyAVerifiedFileCanBeOpened:
         assert os.stat(row["path"]).st_mode & 0o077 == 0, \
             "the received file is readable by others"
 
+    def test_the_received_event_carries_the_container(self, verified, landing,
+                                                      a_file):
+        """The conversation line opens the file later from this path (owner,
+        2026-10-24: received pictures could not be opened again)."""
+        from android_bridge.events import FileTransferChanged
+        bob_seen, alice_seen = [], []
+        verified.bob._sink = type("S", (), {
+            "on_event": lambda _s, e: bob_seen.append(e)})()
+        verified.alice._sink = type("S", (), {
+            "on_event": lambda _s, e: alice_seen.append(e)})()
+        verified.alice.send_file(verified.bob_jid, a_file)
+        verified.bob.accept_file(verified.bob.transfers()[0]["id"])
+        assert self._wait(lambda: any(
+            isinstance(e, FileTransferChanged) and e.state == "received"
+            for e in bob_seen))
+        got = [e for e in bob_seen if isinstance(e, FileTransferChanged)]
+        received = [e for e in got if e.state == "received"][0]
+        row = [r for r in verified.bob.transfers() if r["state"] == "received"][0]
+        assert received.path == row["path"] and received.path.endswith(".otrv")
+        assert all(e.path == "" for e in got if e.state != "received")
+        assert all(e.path == "" for e in alice_seen
+                   if isinstance(e, FileTransferChanged)), "the sender got a path"
+
     def test_the_sender_never_gets_a_path(self, verified, landing, a_file):
         verified.alice.send_file(verified.bob_jid, a_file)
         verified.bob.accept_file(verified.bob.transfers()[0]["id"])

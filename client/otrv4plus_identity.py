@@ -46,6 +46,7 @@ backups or sync tools that capture one file and not the other.
 
 from __future__ import annotations
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import os
 import stat
 

@@ -45,6 +45,7 @@ with everything else (`wipe`). Android's Wipe & Exit is untouched.
 """
 from __future__ import annotations
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import asyncio
 import os
 import time

@@ -54,6 +54,7 @@ Not part of the app: the APK does not ship this file.
 """
 from __future__ import annotations
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import argparse
 import asyncio
 import base64

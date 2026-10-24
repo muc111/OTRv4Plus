@@ -638,7 +638,8 @@ class GroupFiles:
         self._emit(FileTransferChanged(peer=inc.room, transfer_id=inc.tid,
                                        filename=inc.name, size=inc.size,
                                        outgoing=False, state=inc.state,
-                                       reason=inc.reason))
+                                       reason=inc.reason,
+                                       path=inc.path if inc.state == "received" else ""))
         # A group member's voice note: taken without asking, and shown as a
         # message that plays (owner, 2026-10-20). See files.is_voice_note.
         from .files import is_voice_note, _later

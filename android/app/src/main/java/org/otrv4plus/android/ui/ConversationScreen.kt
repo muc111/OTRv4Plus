@@ -814,6 +814,7 @@ private fun TransferBar(model: ChatViewModel, jid: String, group: Boolean = fals
     model.viewing?.let { file ->
         FileViewerDialog(container = file.path, name = file.filename,
                          materialize = { dir -> model.openReceivedTo(file.path, dir) },
+                         inspect = { plain -> model.inspectViewed(plain) },
                          onClose = { model.closeViewer() })
     }
 
@@ -1313,6 +1314,11 @@ private fun Bubble(message: Message, model: ChatViewModel, onOpenChat: ((String)
                 } else {
                     SelectionContainer {
                         Text(message.body, style = MaterialTheme.typography.bodyMedium)
+                    }
+                    // A received, verified file opens from its line, here and
+                    // after a restart, in the in-app viewer.
+                    if (model.canOpenLine(message)) {
+                        TextButton(onClick = { model.openLine(message) }) { Text("Open") }
                     }
                 }
             }

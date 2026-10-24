@@ -29,6 +29,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.otrv4plus.android.bridge.MetadataFinding
+import org.otrv4plus.android.crypto.MetadataChoice
 import org.otrv4plus.android.crypto.SafeView
 import java.io.File
 
@@ -51,6 +53,8 @@ fun FileViewerDialog(
     name: String,
     materialize: (directory: String) -> String?,
     onClose: () -> Unit,
+    /** What metadata the decrypted copy carries (pictures only), or null. */
+    inspect: (plainPath: String) -> MetadataFinding? = { null },
 ) {
     val context = LocalContext.current
     // The received file rests as a sealed `.otrv` container. It is decrypted
@@ -61,6 +65,7 @@ fun FileViewerDialog(
     var path by remember(container) { mutableStateOf<String?>(null) }
     var kind by remember(container) { mutableStateOf<SafeView.Kind?>(null) }
     var confirmHandoff by remember { mutableStateOf(false) }
+    var metadataLine by remember(container) { mutableStateOf<String?>(null) }
     DisposableEffect(container) {
         onDispose { viewDir.listFiles()?.forEach { it.delete() } }
     }
@@ -76,6 +81,10 @@ fun FileViewerDialog(
                 val n = File(plain).inputStream().use { it.read(head) }.coerceAtLeast(0)
                 SafeView.kindOf(head.copyOf(n))
             }.getOrDefault(SafeView.Kind.UNSUPPORTED)
+        }
+        if (plain != null && kind == SafeView.Kind.IMAGE) {
+            metadataLine = MetadataChoice.receivedSummary(
+                withContext(Dispatchers.IO) { runCatching { inspect(plain) }.getOrNull() })
         }
     }
     Dialog(onDismissRequest = onClose,
@@ -106,6 +115,10 @@ fun FileViewerDialog(
                             "This kind of file cannot be shown inside the app. " +
                                 "Nothing in it has been opened or run.")
                     }
+                }
+                metadataLine?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall,
+                         modifier = Modifier.padding(vertical = 6.dp))
                 }
                 OutlinedButton(enabled = path != null, onClick = { confirmHandoff = true },
                                modifier = Modifier.fillMaxWidth()) {

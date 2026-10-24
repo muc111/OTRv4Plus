@@ -1785,11 +1785,20 @@ class ChatViewModel : ViewModel() {
             .filterNot { VoiceNotes.looksLikeNote(it.filename) }
     }
 
+    /** A received file being viewed: its sealed container and its name. */
+    data class ViewedFile(val path: String, val filename: String)
+
     /** A verified received file the user asked to view, or null. */
-    var viewing: FileTransferView? by mutableStateOf(null)
+    var viewing: ViewedFile? by mutableStateOf(null)
         private set
 
     private var receivedDir: String? = null
+
+    private fun receivedDirOrNull(): String? = receivedDir ?: core?.let { c ->
+        runCatching { c.receivedFileDir() }.getOrDefault("").also {
+            if (it.isNotBlank()) receivedDir = it
+        }.ifBlank { null }
+    }
 
     /**
      * Whether [transfer] may be opened in the viewer: received, verified by
@@ -1797,17 +1806,43 @@ class ChatViewModel : ViewModel() {
      */
     fun canOpen(transfer: FileTransferView): Boolean {
         if (transfer.outgoing || transfer.state != TransferUi.State.RECEIVED) return false
-        val dir = receivedDir ?: core?.let { c ->
-            runCatching { c.receivedFileDir() }.getOrDefault("").also {
-                if (it.isNotBlank()) receivedDir = it
-            }
-        } ?: return false
+        val dir = receivedDirOrNull() ?: return false
         return SafeView.openable(transfer.path, dir)
     }
 
     /** Explicit tap only; nothing is ever opened on arrival. */
     fun openReceived(transfer: FileTransferView) {
-        if (canOpen(transfer)) viewing = transfer
+        if (canOpen(transfer)) viewing = ViewedFile(transfer.path, transfer.filename)
+    }
+
+    /**
+     * Whether a conversation line can open its file: a file we received and
+     * the engine verified ([Message.filePath]), still in the private received
+     * directory (deleted chats and Wipe remove it).
+     */
+    fun canOpenLine(message: Message): Boolean {
+        if (message.filePath.isEmpty()) return false
+        val dir = receivedDirOrNull() ?: return false
+        return SafeView.openable(message.filePath, dir) && java.io.File(message.filePath).isFile
+    }
+
+    /** Open a conversation line's file in the viewer. Explicit tap only. */
+    fun openLine(message: Message) {
+        if (canOpenLine(message)) viewing = ViewedFile(message.filePath, receivedName(message.filePath))
+    }
+
+    /** The name a container was stored under, without the `.otrv` suffix. */
+    private fun receivedName(path: String): String =
+        java.io.File(path).name.removeSuffix(".otrv")
+
+    /**
+     * What metadata [plainPath] (the viewer's decrypted copy) still carries,
+     * so the viewer can show that a picture's was stripped. Null if the
+     * question could not be asked.
+     */
+    fun inspectViewed(plainPath: String): MetadataFinding? {
+        val c = core ?: return null
+        return runCatching { c.inspectFile(plainPath) }.getOrNull()
     }
 
     fun closeViewer() { viewing = null }
@@ -1818,8 +1853,9 @@ class ChatViewModel : ViewModel() {
      */
     fun openReceivedTo(container: String, directory: String): String? {
         val c = core ?: return null
-        val transfer = viewing ?: return null
-        if (!canOpen(transfer) || transfer.path != container) return null
+        val file = viewing ?: return null
+        val dir = receivedDirOrNull() ?: return null
+        if (file.path != container || !SafeView.openable(container, dir)) return null
         return c.openReceivedTo(container, directory)
     }
 

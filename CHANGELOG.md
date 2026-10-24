@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.144 and Desktop — 2026-10-24 — open a received picture from the chat and see its metadata; terminal secure groups back (core 0.13.1)
+
+- **A received file opens from its line in the conversation**, now and after
+  a restart. Owner: "it should allow me to open and view image within the
+  app". The Open button lived only on the live transfer row, which is gone
+  once the app restarts. The line now keeps the file's sealed container
+  (`Message.filePath`; history format 6, older history still reads) and
+  shows Open while the file is there.
+- **The viewer says what metadata a picture carries.** Owner: "display
+  metadata so we can confirm its stripped". Under the picture: "Metadata:
+  none. Checked this JPEG for EXIF (location, camera, time), XMP, IPTC and
+  comments" -- or how many bytes remain, or that it could not be checked.
+  It is the same examination the app runs before sending.
+- **Terminal client: secure groups, group calls and the sealed identity work
+  again.** Since rc.134 moved the modules into `client/`, a client started
+  as `python otrv4plus_xmpp.py` could not import `android_bridge`, which
+  those features reuse; secure groups quietly turned off. The same failure
+  stopped `desktop/install.sh` at its final check. `otrv4plus_repo.py` puts
+  the repository on the import path; a test starts a clean interpreter the
+  way the client starts.
+
 ## Android 0.7.0-experimental.rc.143 and Desktop — 2026-10-24 — a call that cannot go out says why; ban tools for admins only (core 0.13.1)
 
 - **Pressing Call no longer does nothing.** Owner, phone to phone: "pressed

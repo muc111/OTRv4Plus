@@ -28,6 +28,7 @@ Nothing here touches a key. Keys, nonces and the replay window are in
 """
 from __future__ import annotations
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import asyncio
 import collections
 import secrets

@@ -155,6 +155,7 @@ installed), and with the Termux client.
 | Controller split | Nothing to see: the connection controller is now in several modules. Join a room, create and leave a secure group, start a group call and change your picture as on the previous build | rc.142 |
 | Call failures shown | Call a verified contact. If the call cannot go out, a line now says why (for example that its I2P tunnels could not be built) instead of nothing happening. Report the exact line | rc.143 |
 | Ban tools for admins | Sign in as an account that is NOT a server admin and open a contact's profile: there are no ban buttons. As an admin they are there | rc.143 |
+| Open a received picture | Receive a photo, close and reopen the app, open the chat: the "File received" line has Open. Open shows the picture and, under it, a Metadata line ("none" for a stripped photo) | rc.144 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

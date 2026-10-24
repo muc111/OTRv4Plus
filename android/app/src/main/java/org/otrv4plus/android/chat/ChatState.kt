@@ -616,6 +616,11 @@ class ChatState(
                 at = now(),
                 sendState = SendState.NONE,
                 security = SecurityLabel.SYSTEM,
+                // A received, verified file: the line opens it (owner,
+                // 2026-10-24: "it should allow me to open and view image
+                // within the app").
+                filePath = if (!event.outgoing && event.state == TransferUi.State.RECEIVED)
+                    event.path else "",
             ))
             if (added) deleted.restore(peer)
         }
