@@ -110,5 +110,6 @@ class TestPeopleOpenAProfile:
         main = _read("MainActivity.kt")
         i = main.index("PeopleScreen(")
         block = main[i:i + 600]
-        assert "profileBack = Screen.PEOPLE" in block
-        assert "screen = Screen.PROFILE" in block
+        assert "openProfile(who, Screen.PEOPLE)" in block
+        opener = main[main.index("fun openProfile("):][:300]
+        assert "profileBack = back" in opener and "screen = Screen.PROFILE" in opener

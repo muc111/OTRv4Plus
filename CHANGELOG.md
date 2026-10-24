@@ -4,6 +4,20 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.156 — 2026-10-24 — code split, step 11: no Kotlin function over 200 lines (core 0.13.1)
+
+Nothing changes on the phone.
+
+- `MainActivity.onCreate` (322 lines) keeps only the window set-up; the
+  screens are drawn by `AppRoot`, which holds the navigation and hands each
+  screen a small route (profile, conversation, chats, rooms) that moves
+  between screens only through callbacks.
+- The connection screen's username and password fields, and the debug
+  screen's live-connection block, are parts of their own.
+- **Every Kotlin function in both apps is now under 200 lines**, so the
+  length guard's list of exceptions for Kotlin is empty: a function that
+  grows past the limit fails CI.
+
 ## Android 0.7.0-experimental.rc.155 — 2026-10-24 — code split, step 10: the chat screens (core 0.13.1)
 
 Nothing changes on the phone.

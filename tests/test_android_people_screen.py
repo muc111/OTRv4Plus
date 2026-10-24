@@ -91,8 +91,11 @@ def test_the_bottom_bar_is_on_every_tab_and_never_in_a_chat():
     main = open(os.path.join(root, "android", "app", "src", "main", "java", "org",
                              "otrv4plus", "android", "MainActivity.kt")).read()
     for tab in ("MainTab.CHATS", "MainTab.PEOPLE", "MainTab.ROOMS", "MainTab.PROFILE"):
-        assert "MainTabs(%s, chat, ::selectTab)" % tab in main, tab
-    convo = main[main.index("Screen.CONVERSATION -> {"):main.index("Screen.CONVERSATIONS -> {")]
+        assert re.search(r"MainTabs\(%s, chat, (::)?selectTab\)" % re.escape(tab), main), tab
+    convo = main[main.index("Screen.CONVERSATION -> {"):main.index("Screen.CONVERSATIONS ->")]
+    route = main[main.index("private fun ConversationRoute("):]
+    route = route[:route.index("\n    }\n")]
+    assert "MainTabs(" not in route, "a conversation must not carry the bottom bar"
     assert "MainTabs(" not in convo, "a conversation must not carry the bottom bar"
     assert "screen = lastTab" in convo, "leaving a chat returns to the tab it came from"
     chats = open(os.path.join(root, "android", "app", "src", "main", "java", "org",

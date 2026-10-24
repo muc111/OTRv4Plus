@@ -92,56 +92,7 @@ fun DevShellScreen(
     ) {
         Text("Debug", style = MaterialTheme.typography.headlineSmall)
 
-        // ── The connection, in full ───────────────────────────────────────
-        //
-        // FIRST, and before the start-up snapshot, because it is what somebody
-        // reaching this screen is almost always here about. The snapshot below
-        // is taken at launch and is minutes old by the time anything goes
-        // wrong; this is now.
-        Text("Connection", style = MaterialTheme.typography.titleSmall)
-        StatusRow("Stage", status.stage)
-        StatusRow("Connected", status.connected.toString())
-        StatusRow("Worker thread",
-            if (status.workerAlive) "alive" else "not running")
-        if (status.code.isNotBlank()) StatusRow("Last code", status.code)
-        if (status.sam.isNotBlank()) StatusRow("SAM", status.sam)
-        StatusRow("Default server", status.isDefaultServer.toString())
-        if (status.detail.isNotBlank()) {
-            SelectionContainer {
-                Text(status.detail, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        // "Did the call fail, or did it get the wrong arguments" are two
-        // questions, and from a handset they are indistinguishable without
-        // this. Rendered in Python, where the rule about what a diagnostic may
-        // contain lives; the password appears as present/absent only.
-        if (status.inputs.isNotBlank()) {
-            Text("What reached the transport",
-                style = MaterialTheme.typography.bodySmall)
-            SelectionContainer {
-                Text(status.inputs, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-
-        // ── The router ────────────────────────────────────────────────────
-        //
-        // A SAM HELLO is a local handshake that answers in milliseconds;
-        // building a tunnel takes up to four minutes. Asked separately, it
-        // answers "is there a router at all" without the wait -- which is why
-        // it is a button and not part of connecting.
-        Spacer(Modifier.height(4.dp))
-        OutlinedButton(enabled = busy == null, onClick = onCheckRouter) {
-            Text("Check I2P router")
-        }
-        probe?.let {
-            StatusRow("Reachable", if (it.reachable) "yes" else "no")
-            StatusRow("Code", it.code)
-            if (it.version.isNotBlank()) StatusRow("SAM version", it.version)
-            SelectionContainer {
-                Text(it.detail, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-        busy?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+        ConnectionDebug(status, probe, busy, onCheckRouter)
 
         Spacer(Modifier.height(12.dp))
         Text("Start-up", style = MaterialTheme.typography.titleSmall)
@@ -290,6 +241,66 @@ fun DevShellScreen(
             )
         }
     }
+}
+
+/** The connection now, and a direct check of the I2P router's SAM bridge. */
+@Composable
+private fun ConnectionDebug(
+    status: ConnectionStatus,
+    probe: RouterProbe?,
+    busy: String?,
+    onCheckRouter: () -> Unit,
+) {
+    // ── The connection, in full ───────────────────────────────────────
+    //
+    // FIRST, and before the start-up snapshot, because it is what somebody
+    // reaching this screen is almost always here about. The snapshot below
+    // is taken at launch and is minutes old by the time anything goes
+    // wrong; this is now.
+    Text("Connection", style = MaterialTheme.typography.titleSmall)
+    StatusRow("Stage", status.stage)
+    StatusRow("Connected", status.connected.toString())
+    StatusRow("Worker thread",
+        if (status.workerAlive) "alive" else "not running")
+    if (status.code.isNotBlank()) StatusRow("Last code", status.code)
+    if (status.sam.isNotBlank()) StatusRow("SAM", status.sam)
+    StatusRow("Default server", status.isDefaultServer.toString())
+    if (status.detail.isNotBlank()) {
+        SelectionContainer {
+            Text(status.detail, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    // "Did the call fail, or did it get the wrong arguments" are two
+    // questions, and from a handset they are indistinguishable without
+    // this. Rendered in Python, where the rule about what a diagnostic may
+    // contain lives; the password appears as present/absent only.
+    if (status.inputs.isNotBlank()) {
+        Text("What reached the transport",
+            style = MaterialTheme.typography.bodySmall)
+        SelectionContainer {
+            Text(status.inputs, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+
+    // ── The router ────────────────────────────────────────────────────
+    //
+    // A SAM HELLO is a local handshake that answers in milliseconds;
+    // building a tunnel takes up to four minutes. Asked separately, it
+    // answers "is there a router at all" without the wait -- which is why
+    // it is a button and not part of connecting.
+    Spacer(Modifier.height(4.dp))
+    OutlinedButton(enabled = busy == null, onClick = onCheckRouter) {
+        Text("Check I2P router")
+    }
+    probe?.let {
+        StatusRow("Reachable", if (it.reachable) "yes" else "no")
+        StatusRow("Code", it.code)
+        if (it.version.isNotBlank()) StatusRow("SAM version", it.version)
+        SelectionContainer {
+            Text(it.detail, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+    busy?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 }
 
 /**

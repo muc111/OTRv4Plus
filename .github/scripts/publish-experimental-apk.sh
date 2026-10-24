@@ -168,6 +168,7 @@ installed), and with the Termux client.
 | Code split, step 8 | Nothing to see: the Rooms screen is in parts. Open Rooms, create and delete an encrypted group, join a plain room, as on the previous build | rc.153 |
 | Any-year birthdays | Profile → edit, Birthday -450000-01-01, save: it is kept and shown. 2023-02-29 is refused | rc.154 |
 | Code split, step 10 | Nothing to see: the chat list and the conversation screen are in parts. Open a chat, use ⋮ (profile, block), accept an invitation, change the theme, as on the previous build | rc.155 |
+| Code split, step 11 | Nothing to see: the app's navigation is in parts. Move between Chats, People, Rooms and Profile; open a contact's profile from People and press Back (returns to People), as on the previous build | rc.156 |
 | Pictures | Profile pictures from phone photos in their usual formats, converted and fitted to 96 x 96 / 8 KB (rc.87) |
 | Rooms | Room discovery, creating and joining a room; earlier messages loaded from the server archive (rc.68) |
 | Message actions | Reply, correct, delete for everyone, react — 1:1, rooms and secure groups (rc.68–rc.69) |

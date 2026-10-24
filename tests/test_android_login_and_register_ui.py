@@ -237,7 +237,10 @@ class TestTheDebugScreenCarriesWhatMoved:
     def test_the_connection_is_shown_before_the_startup_snapshot(self, debug):
         """The snapshot is taken at launch and is minutes old by the time
         anything goes wrong."""
-        assert debug.index('Text("Connection"') < debug.index('Text("Start-up"')
+        screen = debug[debug.index("fun DevShellScreen("):]
+        assert screen.index("ConnectionDebug(status") < screen.index('Text("Start-up"')
+        part = debug[debug.index("private fun ConnectionDebug("):]
+        assert 'Text("Connection"' in part[:part.index("\n}\n")]
 
     def test_it_still_exports_the_error_log(self, debug):
         assert "DiagnosticsExport.share(" in debug

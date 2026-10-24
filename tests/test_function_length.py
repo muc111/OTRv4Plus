@@ -64,13 +64,9 @@ def test_every_ceiling_still_names_a_function_over_the_limit():
 
 # -- Kotlin (the phone and desktop apps) ---------------------------------------
 
-#: (file, function) -> ceiling. The screens are single composables holding
-#: their own state; each section that moves out lowers its number here.
-KT_CEILING = {
-    ("android/app/src/main/java/org/otrv4plus/android/ui/ConnectScreen.kt", "ConnectScreen"): 206,
-    ("android/app/src/main/java/org/otrv4plus/android/MainActivity.kt", "onCreate"): 322,
-    ("android/app/src/main/java/org/otrv4plus/android/ui/DevShellScreen.kt", "DevShellScreen"): 246,
-}
+#: (file, function) -> ceiling, for a function that must stay over LIMIT for
+#: a reason written beside it. Empty: every Kotlin function is within it.
+KT_CEILING = {}
 
 
 def _strip_kotlin(src):
@@ -181,8 +177,11 @@ def _kotlin_functions():
 
 
 def test_the_kotlin_scan_sees_the_screens():
-    names = {(rel, name) for rel, name, _ in _kotlin_functions()}
-    assert set(KT_CEILING) <= names, set(KT_CEILING) - names
+    found = {(rel, name): n for rel, name, n in _kotlin_functions()}
+    assert set(KT_CEILING) <= set(found), set(KT_CEILING) - set(found)
+    ui = "android/app/src/main/java/org/otrv4plus/android/ui/"
+    for screen in ("ConversationScreen", "RoomsScreen", "ConnectScreen", "ProfileScreen"):
+        assert found.get((ui + screen + ".kt", screen), 0) > 50, screen
 
 
 def test_no_kotlin_function_is_longer_than_the_limit_or_its_ceiling():

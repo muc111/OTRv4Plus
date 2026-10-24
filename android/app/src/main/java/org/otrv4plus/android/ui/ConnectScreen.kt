@@ -87,7 +87,6 @@ fun ConnectScreen(
     // full address is still accepted and respected -- see SignIn.resolve.
     var account by rememberSaveable { mutableStateOf(SignIn.INITIAL_USERNAME) }
     var password by remember { mutableStateOf("") }
-    var showPassword by remember { mutableStateOf(false) }
     // Stored as a Boolean rather than the enum: `rememberSaveable` puts this
     // in a Bundle, and a primitive needs no argument about whether a custom
     // Saver is required.
@@ -165,45 +164,9 @@ fun ConnectScreen(
                      onCustomServerChange = { customServer = it },
                      onChoose = { customServerChosen = it })
 
-        // ── Account ───────────────────────────────────────────────────────
-        OutlinedTextField(
-            value = account,
-            onValueChange = { account = it },
-            label = { Text("Username") },
-            placeholder = { Text(SignIn.USERNAME_HINT) },
-            supportingText = {
-                // Says where they are about to end up, without making them
-                // assemble it themselves.
-                Text(target?.jid ?: (problem ?: ""))
-            },
-            isError = account.isNotBlank() && problem != null,
-            singleLine = true,
-            enabled = editable,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email,
-                                              imeAction = ImeAction.Next),
-            modifier = Modifier.fillMaxWidth(),
-        )
-        OutlinedTextField(
-            value = password,
-            onValueChange = { password = it },
-            label = { Text("Password") },
-            singleLine = true,
-            enabled = editable,
-            // Hidden unless the user asks to see it, and hidden again on
-            // every new screen: a password prompt that shows the password by
-            // default is not a password prompt.
-            visualTransformation = if (showPassword) VisualTransformation.None
-                                   else PasswordVisualTransformation(),
-            trailingIcon = {
-                TextButton(onClick = { showPassword = !showPassword }) {
-                    Text(if (showPassword) "Hide" else "Show")
-                }
-            },
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password,
-                                              imeAction = ImeAction.Done),
-            keyboardActions = KeyboardActions(onDone = { logIn() }),
-            modifier = Modifier.fillMaxWidth(),
-        )
+        AccountFields(account, onAccount = { account = it }, password,
+                      onPassword = { password = it }, target, problem, editable,
+                      onDone = { logIn() })
 
         // ── Actions ───────────────────────────────────────────────────────
         //
@@ -267,6 +230,60 @@ fun ConnectScreen(
 
         ConnectOutcome(model)
     }
+}
+
+/** Username and password. The password is the screen's state, never saved. */
+@Composable
+private fun AccountFields(
+    account: String,
+    onAccount: (String) -> Unit,
+    password: String,
+    onPassword: (String) -> Unit,
+    target: SignIn.Target?,
+    problem: String?,
+    editable: Boolean,
+    onDone: () -> Unit,
+) {
+    var showPassword by remember { mutableStateOf(false) }
+    // ── Account ───────────────────────────────────────────────────────
+    OutlinedTextField(
+        value = account,
+        onValueChange = onAccount,
+        label = { Text("Username") },
+        placeholder = { Text(SignIn.USERNAME_HINT) },
+        supportingText = {
+            // Says where they are about to end up, without making them
+            // assemble it themselves.
+            Text(target?.jid ?: (problem ?: ""))
+        },
+        isError = account.isNotBlank() && problem != null,
+        singleLine = true,
+        enabled = editable,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email,
+                                          imeAction = ImeAction.Next),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = password,
+        onValueChange = onPassword,
+        label = { Text("Password") },
+        singleLine = true,
+        enabled = editable,
+        // Hidden unless the user asks to see it, and hidden again on
+        // every new screen: a password prompt that shows the password by
+        // default is not a password prompt.
+        visualTransformation = if (showPassword) VisualTransformation.None
+                               else PasswordVisualTransformation(),
+        trailingIcon = {
+            TextButton(onClick = { showPassword = !showPassword }) {
+                Text(if (showPassword) "Hide" else "Show")
+            }
+        },
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password,
+                                          imeAction = ImeAction.Done),
+        keyboardActions = KeyboardActions(onDone = { onDone() }),
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
 
 /** Which server: the default, or another typed in full. */
