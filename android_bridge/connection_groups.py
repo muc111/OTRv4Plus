@@ -191,12 +191,38 @@ class GroupsControlMixin:
             pass
 
     def _on_room_destroyed(self, room: str) -> None:
+        """The room is gone (its owner destroyed it, XEP-0045 <destroy>, or a
+        rejoin found it gone). Device report, 2026-10-24: other members were
+        left in it. Every room, secure or plain, is forgotten here -- by the
+        bridge and by the transport, so nothing sends to it or rejoins it (a
+        join would create it again) -- and the app is told to remove it."""
+        room = str(room or "").split("/", 1)[0].lower()
+        if not room:
+            return
+        secure = False
         groups = getattr(self._app, "groups", None)
         if groups is not None:
             try:
-                groups.on_room_destroyed(room)
+                secure = bool(groups.on_room_destroyed(room))   # emits "deleted"
             except Exception:
                 _TRACE.record("groups", "destroy_handling_failed", "warning")
+        try:
+            self._app._rooms.discard(room)
+        except Exception:
+            pass
+        forget = getattr(self._transport, "forget_room", None)
+        if forget is not None:
+            try:
+                forget(room)
+            except Exception:
+                pass
+        _TRACE.record("muc", "room_destroyed", "info", secure=secure)
+        if not secure:
+            try:
+                from .events import GroupChanged
+                self._app._emit(GroupChanged(peer=room, change="room_deleted"))
+            except Exception:
+                pass
 
     def delete_secure_group(self, room: str) -> Dict[str, Any]:
         """Delete a secure group for everyone: destroy its room (the service

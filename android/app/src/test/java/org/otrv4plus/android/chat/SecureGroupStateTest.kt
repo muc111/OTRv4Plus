@@ -148,4 +148,41 @@ class SecureGroupStateTest {
         assertEquals(null, GroupText.outcome("ok"))
         assertTrue("OTRv4+" in GroupText.outcome("otr_required")!!)
     }
+
+    @Test
+    fun `a destroyed group leaves the phone with its history`() {
+        // Device report (2026-10-24): when the creator deleted a group the
+        // other members were left in it.
+        val s = state()
+        s.handle(OtrEvent.GroupChanged(room, "joined", 1, ""))
+        s.handle(OtrEvent.RoomMessageReceived(room, "alice", "hello", 1.0,
+                                              encrypted = true, senderIdentity = "alice@x",
+                                              verified = true))
+        s.open(room)
+        assertTrue(s.conversations().any { it.jid == room })
+        s.handle(OtrEvent.GroupChanged(room, "deleted", 2, ""))
+        assertFalse(s.isSecureRoom(room))
+        assertFalse(s.isRoom(room))
+        assertTrue(s.messages(room).isEmpty(), "its history is deleted")
+        assertFalse(s.conversations().any { it.jid == room }, "and it leaves the list")
+        assertEquals(null, s.openConversation, "an open view of it is closed")
+        // A rejoin's replay of the old history does not bring it back.
+        s.handle(OtrEvent.RoomMessageReceived(room, "alice", "hello", 1.0,
+                                              encrypted = true, senderIdentity = "alice@x",
+                                              verified = true))
+        assertTrue(s.messages(room).isEmpty())
+    }
+
+    @Test
+    fun `a destroyed plain room goes the same way`() {
+        val s = state()
+        val lobby = "lobby@conference.x"
+        s.handle(OtrEvent.RoomMessageReceived(lobby, "bob", "hi", 1.0))
+        s.handle(OtrEvent.GroupInvited("alice@x", lobby, verified = true))
+        s.handle(OtrEvent.GroupChanged(lobby, "room_deleted", 0, ""))
+        assertFalse(s.isRoom(lobby))
+        assertTrue(s.messages(lobby).isEmpty())
+        assertTrue(s.pendingGroupInvites.none { it.room == lobby })
+        assertNotNull(s.notice)
+    }
 }

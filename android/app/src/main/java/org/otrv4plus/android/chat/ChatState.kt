@@ -959,8 +959,17 @@ class ChatState(
             // A restored group says so as soon as the app opens it.
             "syncing" -> { secureRooms.add(room); rooms.add(room); syncingRooms.add(room) }
             "synced" -> { secureRooms.add(room); syncingRooms.remove(room) }
-            "left", "removed_us", "deleted" -> {
+            "left", "removed_us" -> {
                 secureRooms.remove(room); syncingRooms.remove(room); joiningRooms.remove(room)
+            }
+            // The room was destroyed by its owner (device report: members
+            // were left in it). Gone from the list, its history and draft
+            // deleted, an invitation to it dropped, and closed if open.
+            "deleted", "room_deleted" -> {
+                secureRooms.remove(room); syncingRooms.remove(room); joiningRooms.remove(room)
+                forgetRoom(room)
+                clearGroupInvite(room)
+                deleteConversation(room)
             }
         }
         GroupText.describe(event)?.let { note(it) }

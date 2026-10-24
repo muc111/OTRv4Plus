@@ -136,8 +136,10 @@ object GroupText {
         "refused" -> refusal(event.detail, event.room)
         // Back in the room after a reconnect or sign-in: what is typed waits
         // until the group is in sync, or it would be sent on an old key and lost.
-        "deleted" -> "${event.room} was deleted (its room is gone). Its keys are gone " +
-            "from this phone; the messages already here stay."
+        "deleted" -> "${event.room} was deleted by its owner. It is gone from this " +
+            "phone: its keys and its messages."
+        "room_deleted" -> "${event.room} was deleted by its owner. It is gone from " +
+            "this phone, with its messages."
         "reinvited" -> "${event.detail} invited you again to ${event.room}, which this " +
             "phone is already in. Accept only if the group stopped working here: " +
             "this phone's copy is replaced with the current one."

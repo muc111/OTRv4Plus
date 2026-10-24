@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.163 — 2026-10-24 — a deleted group leaves every member's phone (core 0.13.1)
+
+- **A deleted group left its members in it** (device report). When the
+  creator deleted a group, the other phones were told (the room's
+  `<destroy>` notice) but only the group's keys went: the room stayed in the
+  list with its history, a deleted plain room was not handled at all, and the
+  app still treated the room as one it was in. Now every destroyed room, secure
+  or plain, is forgotten at once: it leaves the list, its messages, draft and
+  any invitation to it are deleted, an open view of it closes, and nothing
+  rejoins it (a join would have created it again).
+- `tests/test_muc_destroy.py` (a real destroy presence through the transport
+  and controller), `SecureGroupStateTest` (the app side).
+
 ## Android 0.7.0-experimental.rc.162 — 2026-10-24 — calls connect over the built-in router (core 0.13.1)
 
 - **Answered calls never connected** (Pixel 7 report: `call_tunnel x2`,

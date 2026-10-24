@@ -296,7 +296,9 @@ class GroupChanged(Event):
     removed_us, left, commit_lost (our change lost the race and was dropped;
     retry), invite_sent, invite_declined, joining (we accepted and await
     the Welcome: no text until it arrives), join_expired (it never came),
-    refused (a join or invite was refused; `detail` says which check)."""
+    refused (a join or invite was refused; `detail` says which check),
+    deleted (the group's room was destroyed: the group is gone), and
+    room_deleted (a plain room was destroyed by its owner)."""
 
     change: str = ""
     epoch: int = 0

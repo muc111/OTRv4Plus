@@ -684,6 +684,14 @@ class RoomsMixin:
         getattr(self, "_room_nicks", {}).pop(str(room).split("/", 1)[0].lower(), None)
         return {}
 
+    def forget_room(self, room: str) -> None:
+        """Drop what this session keeps about a room that no longer exists:
+        our nick in it (what rejoins and room sends key on) and its
+        recreated mark. The service already removed us."""
+        room = str(room).split("/", 1)[0].lower()
+        getattr(self, "_room_nicks", {}).pop(room, None)
+        self._recreated = self._recreated - {room}
+
     def destroy_room(self, room: str,
                      reason: str = "") -> "tuple[str, str, dict]":
         """Delete a room. OWNERS ONLY, and the service is what enforces it.
