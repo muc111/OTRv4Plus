@@ -58,3 +58,17 @@ def test_the_installer_builds_the_branch_it_finds():
     assert "git pull --ff-only" in script
     assert "git checkout" not in script and "git switch" not in script, (
         "install.sh must not move a clone to another branch")
+
+
+def test_the_readme_says_which_script_is_for_the_desktop():
+    """Two scripts: desktop/install.sh does everything for the app (it pulls
+    and runs Rust/build.sh itself); Rust/build.sh alone is the terminal
+    clients' core build. The README must say so, and it must stay true."""
+    readme = _read("README.md")
+    desktop = readme[readme.index("### Desktop app"):readme.index("### Termux")]
+    assert "**Desktop needs only `desktop/install.sh`.**" in desktop
+    assert "runs `Rust/build.sh` for you" in desktop
+    assert "no separate `git pull`" in desktop
+    script = _read(os.path.join("desktop", "install.sh"))
+    assert "(cd Rust && bash build.sh)" in script
+    assert "git pull --ff-only" in script

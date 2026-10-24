@@ -138,7 +138,7 @@ sudo apt install -y git && git clone -b dev https://github.com/muc111/OTRv4Plus.
 # main (stable):
 sudo apt install -y git && git clone -b main https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
 ```
-What it installs: [desktop/README.md](desktop/README.md#install-on-ubuntu-or-debian). Qubes OS 4.2: [qubes/README.md](qubes/README.md).
+**Desktop needs only `desktop/install.sh`.** It installs the apt packages (and Rust if missing), pulls, runs `Rust/build.sh` for you and adds the app to the menu; to update, run it again (no separate `git pull`). `Rust/build.sh` on its own builds only the core for the terminal clients below. Details: [desktop/README.md](desktop/README.md#install-on-ubuntu-or-debian). Qubes OS 4.2: [qubes/README.md](qubes/README.md).
 
 ### Termux, Ubuntu and other Linux (terminal clients)
 
