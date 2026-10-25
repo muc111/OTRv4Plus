@@ -35,6 +35,7 @@ import org.otrv4plus.android.chat.ChatKinds
 import org.otrv4plus.android.chat.ChatState
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Conversation
+import org.otrv4plus.android.chat.NewChat
 import org.otrv4plus.android.chat.OnlineUsers
 import org.otrv4plus.android.chat.Presence
 import org.otrv4plus.android.chat.RowSecurity
@@ -214,8 +215,9 @@ fun ConversationsScreen(
     }
 
     if (showAdd) {
-        AddContactDialog(
-            onAdd = { jid -> model.addContact(jid); showAdd = false },
+        NewChatDialog(
+            model,
+            onStart = { jid -> showAdd = false; onOpen(jid) },
             onDismiss = { showAdd = false },
         )
     }
@@ -578,15 +580,15 @@ private fun EmptyConversations(
         Text(
             if (connected)
                 "Your roster is fetched when you connect, so anyone already " +
-                    "on it appears here on its own. Add someone by address to " +
-                    "start."
+                    "on it appears here on its own. Start one with someone online, " +
+                    "or by address."
             else
                 "Connect to fetch your contacts.",
             style = MaterialTheme.typography.bodyMedium,
         )
         if (connected) {
             Spacer(Modifier.height(16.dp))
-            Button(onClick = onAdd) { Text("Add a contact") }
+            Button(onClick = onAdd) { Text("New chat") }
         }
     }
 }
@@ -814,38 +816,66 @@ private fun UnreadBadge(count: Int) {
     }
 }
 
+/**
+ * "New chat": who is online, one tap each to start an OTRv4+ chat, and the
+ * search box doubles as the address for anyone else (NewChat). Owner
+ * (2026-10-25): "a list of users who are online ... instead of manually
+ * typing names in". Someone not yet a contact is sent the contact request
+ * here, so they can accept while you type; nothing is ever sent in the clear.
+ */
 @Composable
-private fun AddContactDialog(onAdd: (String) -> Unit, onDismiss: () -> Unit) {
-    var jid by rememberSaveable { mutableStateOf("") }
+private fun NewChatDialog(model: ChatViewModel, onStart: (String) -> Unit, onDismiss: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    // Fresh when opened: the Welcome room and the server's list.
+    LaunchedEffect(Unit) { model.refreshDiscovery() }
+    val online = NewChat.online(model.directory, query)
+    val typed = NewChat.address(query, model.ownJid())
+        ?.takeIf { jid -> online.none { it.jid == jid } }
+    fun start(jid: String) {
+        if (!model.isContact(jid)) model.addContact(jid)
+        onStart(jid)
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add a contact") },
+        title = { Text(NewChat.TITLE) },
         text = {
             Column {
-                Text(
-                    "Their full address. Adding them asks to see their " +
-                        "presence; they decide whether to allow it.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Spacer(Modifier.height(8.dp))
                 OutlinedTextField(
-                    value = jid,
-                    onValueChange = { jid = it },
-                    label = { Text("Address") },
-                    placeholder = { Text("someone@server.i2p") },
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text(NewChat.SEARCH_HINT) },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Email),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (typed != null) {
+                    TextButton(onClick = { start(typed) }) { Text(NewChat.startButton(typed)) }
+                }
+                if (online.isEmpty()) {
+                    Text(if (query.isBlank()) NewChat.EMPTY else NewChat.NO_MATCH,
+                         style = MaterialTheme.typography.bodySmall,
+                         modifier = Modifier.padding(vertical = 8.dp))
+                } else {
+                    LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                        items(online, key = { it.jid }) { e ->
+                            Column(Modifier.fillMaxWidth().clickable { start(e.jid) }
+                                       .padding(vertical = 8.dp)) {
+                                Text(e.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                     style = MaterialTheme.typography.bodyMedium)
+                                Text(e.jid + " · " + NewChat.subtitle(e), maxLines = 1,
+                                     overflow = TextOverflow.Ellipsis,
+                                     style = MaterialTheme.typography.labelSmall,
+                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                }
+                Text(NewChat.NOTE, style = MaterialTheme.typography.labelSmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     modifier = Modifier.padding(top = 8.dp))
             }
         },
-        confirmButton = {
-            TextButton(
-                enabled = jid.contains("@") && !jid.trim().endsWith("@"),
-                onClick = { onAdd(jid.trim()) },
-            ) { Text("Add") }
-        },
+        confirmButton = {},
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
