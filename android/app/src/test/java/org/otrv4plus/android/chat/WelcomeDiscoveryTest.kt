@@ -69,13 +69,17 @@ class WelcomeDiscoveryTest {
         assertEquals(R.ADDED_ONLINE, rows.single().relation)
     }
 
+    // Pending and accept are kept. An OFFLINE contact who is in the room is
+    // online (device report, 2026-10-25: alice and charlie, both in the
+    // room, each listed the other offline; the app has no "appear offline",
+    // so being in the room is being online).
     @Test
-    fun `roster state wins - offline, pending and accept are kept`() {
+    fun `roster state wins for pending and accept - in the room is online`() {
         val s = state(contact(bob, PeerPresence.OFFLINE),
                       contact(carol, PeerPresence.UNKNOWN, Subscription.PENDING))
         s.noteSubscription(OtrEvent.SubscriptionRequested(dave, SubscriptionPolicy.ASK))
         s.applyWelcome(welcome(bob, carol, dave))
-        assertEquals(R.ADDED_OFFLINE, rel(s)[bob])
+        assertEquals(R.ADDED_ONLINE, rel(s)[bob])
         assertEquals(R.PENDING, rel(s)[carol])
         assertEquals(R.ACCEPT, rel(s)[dave])
         assertEquals(3, s.directory().size, "a person was listed twice")
