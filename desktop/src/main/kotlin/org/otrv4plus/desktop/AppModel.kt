@@ -152,6 +152,11 @@ class AppModel(
                     else -> ""
                 }, chat.openConversation)
             if (event is OtrEvent.GroupChanged && event.change == "call_ringing") notifier.call(group = true)
+            // A group invitation, a verification request, a join request:
+            // told even with the window in the background (device report,
+            // 2026-10-25: an invitation showed neither a notification nor
+            // anything in the app).
+            org.otrv4plus.android.chat.Attention.of(event)?.let { notifier.attention(it) }
             any = true
         }
         // Only a verified peer's call can reach RINGING (CallAlert).

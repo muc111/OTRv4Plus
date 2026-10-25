@@ -1349,6 +1349,13 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
         if is_group_signal(body):
             self._touch(peer)
             if not self._wiped:
+                # Groups that did not open at sign-in (another copy of the app
+                # held the state, since closed): try again before the signal is
+                # refused, so an invitation is not lost to a lock long gone.
+                if not self.groups.is_open:
+                    own = self._own_bare()
+                    if own:
+                        self.open_groups(own)
                 try:
                     self.groups.on_signal(peer, body)
                 except GroupError:

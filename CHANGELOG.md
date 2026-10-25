@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.173 — 2026-10-24 — Group invitations never lost in silence; desktop notifies them (core 0.13.1)
+
+- Group invitations are no longer lost in silence. When an account's
+  encrypted groups could not open at sign-in (another copy of the app still
+  held their state, or a build without group encryption), only a trace line
+  was written and every invitation was then refused on arrival. The reason
+  is now shown, an arriving group signal retries the open first, and a
+  refused invitation says the groups were not open.
+- Desktop: a group invitation, a verification request or a join request now
+  raises a desktop notification (the kind only, never who), using the
+  Android app's rules.
+
 ## Android 0.7.0-experimental.rc.172 — 2026-10-24 — Desktop viewer with the Android tabs; shared EXIF reader (core 0.13.1)
 
 - Desktop 0.14.0: received files open inside the desktop app. A received

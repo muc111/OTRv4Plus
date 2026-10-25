@@ -228,6 +228,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Viewer buttons on top | Open a received photo and a PDF: Save to device and Open with… are at the top; − / 100% / + and Previous / Next above the picture; all can be tapped | rc.170 |
 | Notification tap (rc.171) | Tap the message notification: the app opens on the chat list and asks whether to view the message from that sender; View opens it, Not now leaves it closed. With two senders waiting, Not now moves on to the other. | rc.171 |
 | Desktop file viewer (rc.172) | Desktop app: click Open on a received picture: File tab shows it (Fit, +/−), Metadata lists EXIF and GPS as the phone does, Hidden content reports appended data; Save to… writes a copy. A PDF shows its Metadata and Hidden tabs. | rc.172 |
+| Group invite to desktop (rc.173) | From the phone, invite the desktop account to an encrypted group: the desktop shows a notification (Group invitation) and a Join card under Rooms. If another copy of the app holds the account, the desktop says so. | rc.173 |
 
 ## ⚠️ Known limits
 

@@ -44,6 +44,7 @@ class Notifier(
 ) {
     val alerts = InboundAlerts()
     @Volatile private var messageId: String? = null
+    @Volatile private var attentionId: String? = null
     @Volatile private var visible = false
     /** Sounds on or off (Settings). Notifications are not affected. */
     @Volatile var sounds: Boolean = true
@@ -72,6 +73,19 @@ class Notifier(
             SoundPolicy.Sound.IN_APP_TONE -> sound(TONE_SOUND)
             else -> {}
         }
+    }
+
+    /**
+     * Something waits on the user: a group invitation, a verification request,
+     * someone asking to join ([org.otrv4plus.android.chat.Attention], the
+     * Android rules). The kind's words only, never who. Posted when the window
+     * is not in front; a tone when it is (the app shows the request itself).
+     */
+    fun attention(kind: org.otrv4plus.android.chat.Attention.Kind) {
+        if (visible) { sound(TONE_SOUND); return }
+        val id = post(kind.text, urgency = "normal", replace = attentionId)
+        if (id != null) attentionId = id
+        sound(MESSAGE_SOUND)
     }
 
     /** A call is ringing, 1:1 or group. Announced whatever the focus. */

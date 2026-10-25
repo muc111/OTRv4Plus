@@ -302,6 +302,13 @@ class RoomChatMixin:
             self.groups.open(self.canonical_peer(account))
         except GroupError as exc:
             _TRACE.record("groups", "open_failed", "warning", code=exc.code)
+            # Said on screen, not only traced (device report, 2026-10-25:
+            # group invitations to the desktop showed nothing at all). With
+            # the groups closed every invitation is refused on arrival, so the
+            # reason -- usually another copy of the app holding this
+            # account's group state -- has to be visible.
+            if exc.code in ("state_in_use", "groups_unavailable"):
+                self._emit(ErrorOccurred(peer=None, code=exc.code))
             return False
         # Group verification (the group passphrase) and group calls: built
         # now, so a verification or a ring that arrives first is not lost.

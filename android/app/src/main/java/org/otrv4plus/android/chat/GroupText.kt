@@ -172,6 +172,11 @@ object GroupText {
         "welcome_refused", "welcome_for_another_room" ->
             "Could not join $room: the group data was invalid."
         "too_many_invites" -> "Too many pending group invitations; one was ignored."
+        // Groups closed on this device (FailureText says why at sign-in).
+        "not_ready", "state_in_use" ->
+            "A group invitation or update for $room arrived, but encrypted groups " +
+                "are not open on this device. Close any other copy of the app for " +
+                "this account, sign in again, and ask for a new invitation."
         else -> "A secure-group operation for $room was refused."
     }
 

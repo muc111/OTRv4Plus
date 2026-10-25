@@ -957,6 +957,11 @@ class SecureGroups:
     def account(self) -> str:
         return self._account
 
+    @property
+    def is_open(self) -> bool:
+        """Whether an account's MLS state is open, so signals can be handled."""
+        return self._client is not None and not self._wiped
+
     def set_verify_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
         self._verify_handler = fn
 
