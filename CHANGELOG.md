@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.176 — 2026-10-24 — One router decision for create account and sign-in (core 0.13.1)
+
+- One router decision for Create account, Log in, and the sign-in after a
+  new account: the I2P app's (or i2pd's) SAM bridge on the phone when it
+  answers, otherwise the built-in router. Fixed: an account created through
+  i2pd was followed by a sign-in that started the built-in router (minutes
+  of warm-up) although i2pd was still running. A bridge that accepts but is
+  slow to answer is now given 1.5 s, 3 s and 6 s instead of being taken for
+  "no router", and once it has answered in this run a slow answer keeps it.
+  A closed port still starts the built-in router at once.
+- Guards: nothing outside the connection service may register an account,
+  and both paths must choose the router before reaching the server.
+
 ## Android 0.7.0-experimental.rc.175 — 2026-10-24 — Create account finds the router first, then signs in (core 0.13.1)
 
 - Create account works without the I2P app. It used to run from the

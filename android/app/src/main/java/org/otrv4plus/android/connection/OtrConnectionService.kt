@@ -784,6 +784,7 @@ class OtrConnectionService : Service() {
                 if (stopRouter) {
                     runCatching { router.stop() }
                     routerState = RouterChoice.State.NOT_USED
+                    externalSamSeen = false
                 }
             }
             enter(LinkPhase.STOPPED, "teardown finished")
@@ -979,6 +980,14 @@ class OtrConnectionService : Service() {
      * The rules are [RouterChoice.decide]; this is the platform half. Blocking:
      * called on the IO dispatcher.
      */
+    /**
+     * The phone's own I2P router (the I2P app, i2pd) answered SAM in this run.
+     * Cleared when it is found closed, and by Sign out, so a router that has
+     * really gone is not waited for again.
+     */
+    @Volatile
+    private var externalSamSeen = false
+
     private suspend fun chooseRouter(): Int {
         if (!RouterChoice.needsI2p(jid, server)) {
             routerState = RouterChoice.State.NOT_USED
@@ -988,11 +997,21 @@ class OtrConnectionService : Service() {
         // SAM bridge answers a HELLO is used, otherwise ours starts
         // (RouterChoice.decide). Asked first, on every attempt.
         val probe = RouterChoice.findExternalSam()
-        val external = probe == RouterChoice.Probe.SAM
-        val use = RouterChoice.decide(external, router.available)
+        when (probe) {
+            RouterChoice.Probe.SAM -> externalSamSeen = true
+            RouterChoice.Probe.NO_ANSWER -> externalSamSeen = false   // closed: really gone
+            else -> {}
+        }
+        // The SAME choice for Create account, Log in and the sign-in that
+        // follows a new account: a router that answered once in this run and
+        // is merely slow now is kept (RouterChoice.decide).
+        val use = RouterChoice.decide(probe, router.available, externalSamSeen)
+        val external = use == RouterChoice.Use.EXTERNAL &&
+            (probe == RouterChoice.Probe.SAM || externalSamSeen)
         runCatching {
             core.note("service", "i2p_router", "info",
-                      "external=${probe.name.lowercase()} bundled=${router.available} use=$use")
+                      "external=${probe.name.lowercase()} seen=$externalSamSeen " +
+                          "bundled=${router.available} use=$use")
         }
         if (use == RouterChoice.Use.EXTERNAL) {
             // Ours is not needed while the phone's own router answers.

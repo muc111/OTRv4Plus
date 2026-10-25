@@ -203,8 +203,8 @@ class RouterChoiceTest {
         serve("HTTP/1.1 400 Bad Request\n").use {
             assertEquals(RouterChoice.Probe.NOT_SAM, RouterChoice.probeSam(it.localPort))
         }
-        serve(null).use {          // accepts, says nothing
-            assertEquals(RouterChoice.Probe.NOT_SAM, RouterChoice.probeSam(it.localPort, 300))
+        serve(null).use {          // accepts, says nothing: slow, not "not SAM"
+            assertEquals(RouterChoice.Probe.SLOW, RouterChoice.probeSam(it.localPort, 300))
         }
         serve("HELLO REPLY RESULT=NOVERSION\n").use {
             assertEquals(RouterChoice.Probe.NOT_SAM, RouterChoice.probeSam(it.localPort))
@@ -230,13 +230,52 @@ class RouterChoiceTest {
         val answers = ArrayDeque(listOf(RouterChoice.Probe.NO_ANSWER, RouterChoice.Probe.SAM))
         val slept = mutableListOf<Long>()
         assertEquals(RouterChoice.Probe.SAM,
-            RouterChoice.findExternalSam(probe = { answers.removeFirst() }, sleep = { slept += it }))
+            RouterChoice.findExternalSam(probe = { _, _ -> answers.removeFirst() }, sleep = { slept += it }))
         assertEquals(1, slept.size)
         var asked = 0
         assertEquals(RouterChoice.Probe.NO_ANSWER,
-            RouterChoice.findExternalSam(tries = 3, probe = { asked++; RouterChoice.Probe.NO_ANSWER },
+            RouterChoice.findExternalSam(tries = 3, probe = { _, _ -> asked++; RouterChoice.Probe.NO_ANSWER },
                                          sleep = {}))
         assertEquals(3, asked)
+    }
+
+    @Test
+    fun `a slow bridge is given longer each time`() {
+        val waited = mutableListOf<Int>()
+        RouterChoice.findExternalSam(probe = { _, t -> waited += t; RouterChoice.Probe.SLOW }, sleep = {})
+        assertEquals(listOf(1_500, 3_000, 6_000), waited)
+        val busy = ArrayDeque(listOf(RouterChoice.Probe.SLOW, RouterChoice.Probe.SAM))
+        assertEquals(RouterChoice.Probe.SAM,
+            RouterChoice.findExternalSam(probe = { _, _ -> busy.removeFirst() }, sleep = {}))
+    }
+
+    // Owner report (2026-10-25): an account created through i2pd on the phone,
+    // then the sign-in after it started the built-in router although i2pd was
+    // still running. Create account, Log in and the sign-in after a new account
+    // make the same choice.
+    @Test
+    fun `the phone's router that answered before is kept while it is merely slow`() {
+        assertEquals(Use.EXTERNAL, RouterChoice.decide(RouterChoice.Probe.SLOW, bundled = true, externalSeen = true))
+    }
+
+    @Test
+    fun `a slow port never seen answering does not stop the built-in router`() {
+        assertEquals(Use.BUILT_IN, RouterChoice.decide(RouterChoice.Probe.SLOW, bundled = true, externalSeen = false))
+    }
+
+    @Test
+    fun `a closed port or a wrong reply starts the built-in router even after the phone's answered`() {
+        assertEquals(Use.BUILT_IN, RouterChoice.decide(RouterChoice.Probe.NO_ANSWER, bundled = true, externalSeen = true))
+        assertEquals(Use.BUILT_IN, RouterChoice.decide(RouterChoice.Probe.NOT_SAM, bundled = true, externalSeen = true))
+    }
+
+    @Test
+    fun `SAM always wins, and no built-in router means the phone's`() {
+        for (seen in listOf(true, false)) {
+            assertEquals(Use.EXTERNAL, RouterChoice.decide(RouterChoice.Probe.SAM, bundled = true, externalSeen = seen))
+            for (p in RouterChoice.Probe.values())
+                assertEquals(Use.EXTERNAL, RouterChoice.decide(p, bundled = false, externalSeen = seen))
+        }
     }
 
     @Test

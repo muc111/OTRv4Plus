@@ -81,8 +81,33 @@ object RouterChoice {
     fun decide(externalAnswers: Boolean, bundled: Boolean): Use =
         if (externalAnswers || !bundled) Use.EXTERNAL else Use.BUILT_IN
 
-    /** What is on [EXTERNAL_SAM_PORT]. Only [SAM] counts as a router on the phone. */
-    enum class Probe { SAM, NOT_SAM, NO_ANSWER }
+    /**
+     * [decide] from the probe, remembering whether the phone's router has
+     * answered SAM before in this run ([externalSeen]).
+     *
+     * Owner report (2026-10-25): the account was created through i2pd running
+     * on the phone, then the sign-in that followed started the built-in router
+     * -- minutes of warm-up -- although i2pd was still there. A SAM bridge busy
+     * with the session just closed can accept the connection and answer the
+     * HELLO late. [Probe.SLOW] from a router that already answered in this run
+     * is that router being busy, not gone: it is used again. A router never
+     * seen to answer gets no such benefit (an I2P app still starting accepts
+     * and then fails every sign-in, and the built-in router must get its turn),
+     * and a closed port ([Probe.NO_ANSWER]) is never sticky.
+     */
+    fun decide(probe: Probe, bundled: Boolean, externalSeen: Boolean): Use = when {
+        probe == Probe.SAM -> Use.EXTERNAL
+        !bundled -> Use.EXTERNAL
+        probe == Probe.SLOW && externalSeen -> Use.EXTERNAL
+        else -> Use.BUILT_IN
+    }
+
+    /**
+     * What is on [EXTERNAL_SAM_PORT]. Only [SAM] counts as a router on the
+     * phone. [SLOW]: it accepted the connection but sent no reply in time;
+     * [NOT_SAM]: it replied, and not as a SAM bridge agreeing to talk.
+     */
+    enum class Probe { SAM, NOT_SAM, SLOW, NO_ANSWER }
 
     /** The HELLO the probe sends: the one our tunnels send (otrv4plus_tunnels). */
     const val SAM_HELLO = "HELLO VERSION MIN=3.1 MAX=3.1\n"
@@ -114,8 +139,14 @@ object RouterChoice {
                     if (b < 0 || b == '\n'.code) break
                     line.append(b.toChar())
                 }
-                if (isSamHello(line.toString())) Probe.SAM else Probe.NOT_SAM
+                when {
+                    isSamHello(line.toString()) -> Probe.SAM
+                    line.isEmpty() -> Probe.SLOW
+                    else -> Probe.NOT_SAM
+                }
             }
+        } catch (_: java.net.SocketTimeoutException) {
+            if (connected) Probe.SLOW else Probe.NO_ANSWER
         } catch (_: Exception) {
             if (connected) Probe.NOT_SAM else Probe.NO_ANSWER
         }
@@ -126,16 +157,25 @@ object RouterChoice {
      * an I2P app opened a moment ago may take a second to open its bridge.
      */
     fun findExternalSam(port: Int = EXTERNAL_SAM_PORT, tries: Int = 3, gapMs: Long = 400,
-                        probe: (Int) -> Probe = { probeSam(it) },
+                        probe: (port: Int, timeoutMs: Int) -> Probe = { p, t -> probeSam(p, t) },
                         sleep: (Long) -> Unit = { Thread.sleep(it) }): Probe {
         var last = Probe.NO_ANSWER
         repeat(tries) { i ->
-            last = probe(port)
+            last = probe(port, PROBE_TIMEOUTS_MS[minOf(i, PROBE_TIMEOUTS_MS.size - 1)])
             if (last == Probe.SAM) return last
             if (i < tries - 1) sleep(gapMs)
         }
         return last
     }
+
+    /**
+     * Each try's wait for the HELLO reply, longer each time. A closed port
+     * fails at once whatever this is, so a phone with no I2P app still starts
+     * the built-in router without delay; only a bridge that accepted and is
+     * slow to answer is waited for -- seconds, against the built-in router's
+     * minutes of warm-up if it were started for nothing.
+     */
+    val PROBE_TIMEOUTS_MS = intArrayOf(1_500, 3_000, 6_000)
 
     /**
      * Whether a sign-in goes over I2P at all. Clearnet (TLS) and Tor accounts
