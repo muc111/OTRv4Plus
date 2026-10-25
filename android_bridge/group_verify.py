@@ -15,6 +15,14 @@ that person now. What members trust: the coordinator's word about each
 other, which they already trust with who is in the group at all. The text
 below describes the SMP itself, which is unchanged.
 
+ONE ATTEMPT (owner, 2026-10-25: "verify must only be once ... anyone who got
+it wrong can be excluded and kicked from group by creator"). Each member key
+gets one SMP; a failure is recorded against that key (SecureGroups, kept
+across restarts) and is never retried -- a passphrase cannot be guessed at
+one try per run -- until the creator removes them (one commit for all who
+failed) or they are invited back with a new key. A run ends, and its
+passphrase is zeroed, once every member is verified or failed.
+
 Owner design (2026-10-10): whoever creates a secure group sets a passphrase,
 told to the members out of band (in person, on a call -- never in a chat).
 Any member starts a verification; each member who joins it types the
@@ -65,8 +73,8 @@ __all__ = ["VERIFY_PREFIX", "GroupVerify"]
 VERIFY_PREFIX = "\x00OTRv4GV1:"
 #: A run is forgotten (and its passphrase zeroed) after this long.
 RUN_SECONDS = 30 * 60.0
-#: Failed SMPs with one member, per run, before we stop trying with them.
-MAX_FAILURES = 3
+#: SMPs with one member per run: one (see ONE ATTEMPT above).
+MAX_FAILURES = 1
 #: One pair's SMP over I2P before any has been measured: four ~6-12 KB
 #: messages through the room, each paced and relayed. Measured runs replace it.
 PAIR_SECONDS_GUESS = 90.0
@@ -184,9 +192,9 @@ class GroupVerify:
             if run is None and not self.may_start(room):
                 if secret is not None:
                     _zero(secret)
-                # Everyone is verified already (the creator's vouches, or
-                # verified invitations): there is nothing left to join.
-                if self.all_verified(room):
+                # Everyone is verified or has had their one attempt: there
+                # is nothing left to join (the creator removes who failed).
+                if self.settled(room):
                     return ""
                 raise ValueError("only_the_creator_starts")
             if secret is None:
@@ -237,6 +245,8 @@ class GroupVerify:
             jid = m["jid"]
             if m["verified"]:
                 out[jid] = "verified"
+            elif m.get("failed"):
+                out[jid] = "failed"
             elif run is None:
                 out[jid] = "not_verified"
             elif run.result.get(jid) == "failed":
@@ -285,6 +295,14 @@ class GroupVerify:
     def all_verified(self, room: str) -> bool:
         st = self.status(room)
         return bool(st) and all(v == "verified" for v in st.values())
+
+    def settled(self, room: str) -> bool:
+        """Every other member is verified or has failed their one attempt."""
+        st = self.status(room)
+        return bool(st) and all(v in ("verified", "failed") for v in st.values())
+
+    def failed(self, room: str) -> list:
+        return sorted(j for j, v in self.status(room).items() if v == "failed")
 
     def cancel(self, room: str) -> None:
         with self._lock:
@@ -434,17 +452,22 @@ class GroupVerify:
 
     def _pair_up(self, room: str) -> None:
         """The coordinator starts SMP with each member who joined; nobody
-        else starts any (see the module docstring)."""
+        else starts any (see the module docstring). Never twice with a key
+        that failed."""
         me = self._me()
         if me != self.coordinator(room):
             return
+        try:
+            failed = {m["jid"] for m in self._groups.members(room) if m.get("failed")}
+        except Exception:
+            failed = set()
         with self._lock:
             run = self._live(room)
             if run is None or run.secret is None:
                 return
             todo = [p for p in sorted(run.ready)
                     if p != me and p not in run.smp
-                    and run.result.get(p) != "verified"
+                    and run.result.get(p) != "verified" and p not in failed
                     and run.failures.get(p, 0) < self.MAX_FAILURES]
         for peer in todo:
             try:
@@ -540,6 +563,13 @@ class GroupVerify:
                 smp.destroy()
             except Exception:
                 pass
+        # Recorded against their key, on both sides: never tried again with
+        # it (a member whose passphrase did not match the creator's cannot
+        # trust the creator's key either).
+        try:
+            self._groups.mark_member_failed(room, peer)
+        except Exception:
+            pass
         self._emit(GroupChanged(peer=room, change="member_verify_failed", detail=peer))
         if self._me() == self.coordinator(room):
             self._vouch(room, run)
@@ -550,15 +580,17 @@ class GroupVerify:
         """The coordinator tells the group who is verified (with the group
         key each was verified on) and whose passphrase did not match. The
         whole list each time, so a member who joined late learns everyone."""
-        verified = []
+        verified, failed = [], []
         try:
             for m in self._groups.members(room):
-                if m["verified"] and not m["me"]:
+                if m["me"]:
+                    continue
+                if m["verified"]:
                     verified.append([m["jid"], m["fingerprint"]])
+                elif m.get("failed"):
+                    failed.append([m["jid"], m["fingerprint"]])
         except Exception:
             return
-        with self._lock:
-            failed = sorted(j for j, r in run.result.items() if r == "failed")
         self._send(room, {"t": "vouch", "run": run.run_id, "ok": verified,
                           "failed": failed, "by": self._me()})
 
@@ -579,11 +611,27 @@ class GroupVerify:
                             run.result[item[0]] = "verified"
         failed = msg.get("failed")
         if isinstance(failed, list):
-            with self._lock:
-                for jid in failed[:4096]:
-                    if isinstance(jid, str) and jid not in (me, sender) \
-                            and run.result.get(jid) != "verified":
-                        run.result[jid] = "failed"
+            for item in failed[:4096]:
+                # [jid, fingerprint]; a bare jid from an older build is
+                # taken for this run only, bound to no key.
+                if isinstance(item, list) and len(item) == 2 \
+                        and all(isinstance(x, str) for x in item) and len(item[1]) <= 256:
+                    jid, fp = item
+                elif isinstance(item, str):
+                    jid, fp = item, None
+                else:
+                    continue
+                if jid in (me, sender):
+                    continue
+                with self._lock:
+                    if run.result.get(jid) == "verified":
+                        continue
+                    run.result[jid] = "failed"
+                if fp is not None:
+                    try:
+                        self._groups.mark_member_failed(room, jid, expected_fp=fp)
+                    except Exception:
+                        pass
         self._emit(GroupChanged(peer=room, change="verify_progress"))
         self._maybe_finish(room, run)
 
@@ -605,6 +653,8 @@ class GroupVerify:
                                         ",".join(prog["excluded"]))))
         if self.all_verified(room):
             self._emit(GroupChanged(peer=room, change="group_verified"))
+        if self.settled(room):
+            # Nothing left to try: the run (and its passphrase) ends.
             with self._lock:
                 if self._runs.get(room) is run:
                     self._runs.pop(room, None)

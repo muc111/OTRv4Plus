@@ -499,6 +499,10 @@ class SecureGroups:
         #: room -> {jid: fingerprint hex} learned over OTRv4+, and whether
         #: that session was SMP-verified when it arrived.
         self._bound: Dict[str, Dict[str, Tuple[str, bool]]] = {}
+        #: room -> {jid: fingerprint hex} whose group verification FAILED on
+        #: that key: one attempt per key (owner, 2026-10-25), kept until the
+        #: creator removes them; a new key (invited again) starts clean.
+        self._failed: Dict[str, Dict[str, str]] = {}
         #: room -> {message id: MLS identity of its author}, bounded, memory
         #: only (the UI keeps the author with each stored message).
         self._authors: Dict[str, "collections.OrderedDict[str, str]"] = {}
@@ -725,6 +729,7 @@ class SecureGroups:
             "v": self._APP_STATE_VERSION,
             "bound": {r: {j: [fp, bool(v)] for j, (fp, v) in m.items()}
                       for r, m in self._bound.items()},
+            "failed": {r: dict(m) for r, m in self._failed.items() if m},
             "invites": {r: [i.peer, i.fingerprint, i.at, i.accepted]
                         for r, i in self._invites.items()},
             "outgoing": [[r, p, o.at] for (r, p), o in self._outgoing.items()],
@@ -774,6 +779,8 @@ class SecureGroups:
 
         each("bound", lambda kv: self._bound.setdefault(str(kv[0]), {}).update(
             {str(j): (str(v[0]), bool(v[1])) for j, v in kv[1].items()}))
+        each("failed", lambda kv: self._failed.setdefault(str(kv[0]), {}).update(
+            {str(j): str(fp) for j, fp in kv[1].items()}))
         each("invites", lambda kv: self._invites.__setitem__(str(kv[0]), _Invite(
             peer=str(kv[1][0]), fingerprint=str(kv[1][1]), at=float(kv[1][2]),
             accepted=bool(kv[1][3]))))
@@ -898,6 +905,7 @@ class SecureGroups:
             self._welcome_out.clear()
             self._pending_binding.clear()
             self._bound.clear()
+            self._failed.clear()
             self._reassembler.clear()
             self._unconfirmed.clear()
             self._since_rekey.clear()
@@ -935,6 +943,7 @@ class SecureGroups:
             client = self._need()
             out = []
             bound = self._bound.get(room, {})
+            failed = self._failed.get(room, {})
             for ident in client.members(room.encode()):
                 jid = bytes(ident).decode(errors="replace")
                 fp = bytes(client.member_fingerprint(room.encode(), bytes(ident))).hex()
@@ -945,6 +954,7 @@ class SecureGroups:
                     "me": jid == self._account,
                     "verified": bool(known and known[0] == fp and known[1]),
                     "bound": bool(known and known[0] == fp),
+                    "failed": failed.get(jid) == fp and not (known and known[0] == fp and known[1]),
                 })
             return out
 
@@ -988,11 +998,46 @@ class SecureGroups:
                 return False
             before = self._bound.get(room, {}).get(member)
             self._bound.setdefault(room, {})[member] = (fp, True)
+            self._failed.get(room, {}).pop(member, None)
             if before != (fp, True):
                 self.save()
         if before != (fp, True):
             self._emit(GroupChanged(peer=room, change="member_verified", detail=member))
         return True
+
+    def mark_member_failed(self, room: str, member: str,
+                           expected_fp: Optional[str] = None) -> bool:
+        """`member`'s group verification failed (the passphrase did not
+        match) on the key the group holds for them now -- ours, or said by
+        the creator. Not over a key already verified. Returns whether it
+        was recorded."""
+        with self._lock:
+            client = self._need()
+            try:
+                fp = bytes(client.member_fingerprint(room.encode(), member.encode())).hex()
+            except ValueError:
+                return False
+            if expected_fp is not None and expected_fp.lower() != fp:
+                return False
+            known = self._bound.get(room, {}).get(member)
+            if known and known[0] == fp and known[1]:
+                return False
+            book = self._failed.setdefault(room, {})
+            if book.get(member) == fp:
+                return True
+            book[member] = fp
+            self.save()
+        return True
+
+    def coordinator(self, room: str) -> str:
+        """The group's creator: the member at the first MLS leaf (the
+        longest-standing member once the creator has left). "" if unknown."""
+        try:
+            with self._lock:
+                ids = self._need().members(room.encode())
+                return bytes(ids[0]).decode(errors="replace") if ids else ""
+        except Exception:
+            return ""
 
     def set_file_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
         self._file_handler = fn
@@ -1913,14 +1958,35 @@ class SecureGroups:
         return True
 
     def remove(self, room: str, member: str) -> None:
+        self.remove_many(room, [member])
+
+    def remove_many(self, room: str, members: List[str]) -> None:
+        """Remove members, in one commit. The creator's (owner, 2026-10-25:
+        "excluded and kicked from group by creator"); anyone else is refused
+        here, before anything is sent."""
+        members = [m for m in dict.fromkeys(members) if m and m != self._account]
+        if not members:
+            return
         with self._lock:
             client = self._need()
+            if self.coordinator(room) != self._account:
+                raise GroupError("only_the_creator_removes")
             try:
-                commit = bytes(client.remove_members(room.encode(), [member.encode()]))
+                commit = bytes(client.remove_members(
+                    room.encode(), [m.encode() for m in members]))
             except ValueError as exc:
                 raise GroupError("remove_refused", str(exc)[:80])
+            book = self._failed.get(room, {})
+            for m in members:
+                book.pop(m, None)
             self.save()
         self._post_commit(room, commit)
+
+    def remove_failed(self, room: str) -> List[str]:
+        """Remove everyone whose verification failed, in one commit."""
+        failed = sorted(m["jid"] for m in self.members(room) if m.get("failed"))
+        self.remove_many(room, failed)
+        return failed
 
     def rekey(self, room: str) -> None:
         """A fresh leaf key for us (post-compromise security)."""
@@ -1938,6 +2004,7 @@ class SecureGroups:
         with self._lock:
             self._need().forget_group(room.encode())
             self._bound.pop(room, None)
+            self._failed.pop(room, None)
             self.save()
         self._emit(GroupChanged(peer=room, change="left"))
 
@@ -1950,7 +2017,7 @@ class SecureGroups:
             if client is None or self._wiped or not client.has_group(room.encode()):
                 return False
             client.forget_group(room.encode())
-            for book in (self._bound, self._syncing, self._held, self._unconfirmed,
+            for book in (self._bound, self._failed, self._syncing, self._held, self._unconfirmed,
                          self._queued_kps, self._since_rekey, self._activity):
                 book.pop(room, None)
             self.save()
@@ -2149,6 +2216,7 @@ class SecureGroups:
                 return GroupChanged(peer=room, change="replaced", epoch=epoch,
                                     detail=inv.peer)
             self._bound.pop(room, None)
+            self._failed.pop(room, None)
             self._activity.pop(room, None)
             self._queued_kps.pop(room, None)
             self.save()

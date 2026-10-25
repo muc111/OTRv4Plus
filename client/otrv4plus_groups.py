@@ -74,7 +74,7 @@ STALE_WARN_AFTER = 3
 JOIN_TIMEOUT = 120
 #: The `/group` verbs; any other first word is read as a room name.
 VERBS = frozenset(("help", "?", "create", "invite", "invites", "accept", "decline",
-                   "say", "members", "verify", "smp", "sendkeys", "remove", "rekey",
+                   "say", "members", "verify", "smp", "sendkeys", "remove", "removefailed", "rekey",
                    "leave", "delete", "call", "answer", "hangup", "pause", "calls",
                    "list", "sendfile", "files"))
 
@@ -95,7 +95,9 @@ HELP = """\
                                         verified members are in group calls
   /group sendkeys <room>                send your group key to each member (verified
                                         once you have done 1:1 /smp with them)
-  /group remove <room> <jid>            remove a member (new epoch)
+  /group remove <room> <jid>            remove a member (new epoch; the creator)
+  /group removefailed <room>            remove everyone whose verification failed
+                                        (one attempt each; the creator)
   /group rekey <room>                   fresh key for you (post-compromise)
   /group leave <room>                   forget the group's keys here and leave
   /group delete <room>                  delete the group for everyone (its creator)
@@ -520,10 +522,15 @@ class TermuxGroups:
                 self._print_verify_bar(ev.peer)
             elif change == "verify_finished":
                 pr = self.verify.progress(ev.peer)
+                def names(jids):
+                    # A hundred names is not a line: counts past ten.
+                    return ", ".join(jids) if len(jids) <= 10 else "%d members" % len(jids)
                 p("[group %s] verification finished. Verified: %s.%s%s"
-                  % (ev.peer[:64], ", ".join(pr["verified"]) or "nobody",
-                     (" Excluded -- the passphrase did not match, not in group "
-                      "calls: %s." % ", ".join(pr["excluded"])) if pr["excluded"] else "",
+                  % (ev.peer[:64], names(pr["verified"]) or "nobody",
+                     (" Failed -- the passphrase did not match, one attempt each, "
+                      "not in files or calls: %s (the creator: /group removefailed %s)."
+                      % (names(pr["excluded"]), ev.peer.split("@", 1)[0]))
+                     if pr["excluded"] else "",
                      (" /group call %s -- the verified join automatically."
                       % ev.peer.split("@", 1)[0]) if pr["verified"] else ""))
             elif change == "member_verify_failed":
@@ -1180,7 +1187,8 @@ class TermuxGroups:
                 for m in self.groups.members(arg1):
                     p("[group %s] %s%s  %s  %s"
                       % (arg1, m["jid"], " (you)" if m["me"] else "",
-                         "verified" if m["verified"] else "unverified",
+                         "verified" if m["verified"] else
+                         "verification FAILED" if m.get("failed") else "unverified",
                          m["fingerprint"][:32]))
                 suite = self.groups.suite(arg1)
                 p("[group %s] epoch %d, suite %s" % (
@@ -1205,6 +1213,10 @@ class TermuxGroups:
             elif verb == "remove" and arg1 and arg2:
                 self.groups.remove(arg1, self.contact(arg2))
                 p("[group %s] removal of %s committed" % (arg1, self.contact(arg2)))
+            elif verb == "removefailed" and arg1:
+                gone = self.groups.remove_failed(arg1)
+                p("[group %s] %s" % (arg1, "removed (verification failed): " + ", ".join(gone)
+                                     if gone else "nobody failed verification"))
             elif verb == "rekey" and arg1:
                 self.groups.rekey(arg1)
             elif verb == "leave" and arg1:

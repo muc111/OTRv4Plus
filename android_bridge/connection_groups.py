@@ -181,6 +181,11 @@ class GroupsControlMixin:
     def remove_group_member(self, room: str, member: str) -> Dict[str, Any]:
         return self._group_call(self._app.groups.remove, room, member)
 
+    def remove_failed_group_members(self, room: str) -> Dict[str, Any]:
+        """The creator removes everyone whose verification failed, in one
+        commit (owner, 2026-10-25). `value`: who was removed."""
+        return self._group_call(self._app.groups.remove_failed, room)
+
     def _on_room_not_persistent(self, room: str) -> None:
         """The service will delete this secure group's room when the last
         member leaves. Said on screen: the group would otherwise vanish the
