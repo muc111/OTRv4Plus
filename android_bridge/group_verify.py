@@ -2,6 +2,19 @@
 # Copyright (C) 2025-2026 muc111
 """Group verification: every member proves they know the group's passphrase.
 
+CHANGED 2026-10-25 (owner): the creator, not every pair. Every pair meant
+n(n-1)/2 SMPs -- 4,950 for 100 members, roughly 40,000 room messages that
+every member downloads (~250-300 MB over I2P, hours). Now the group's
+coordinator (its creator: the first MLS leaf; the longest-standing member
+once they have left) alone starts a run and runs one SMP with each member
+who joins it -- 99 for 100 members, minutes. Each success is VOUCHED for to
+the group ({"t": "vouch"}, an MLS application message, so authenticated to
+the coordinator) with the member's group-key fingerprint; a member accepts a
+vouch only from the coordinator and only for the key the group holds for
+that person now. What members trust: the coordinator's word about each
+other, which they already trust with who is in the group at all. The text
+below describes the SMP itself, which is unchanged.
+
 Owner design (2026-10-10): whoever creates a secure group sets a passphrase,
 told to the members out of band (in person, on a call -- never in a chat).
 Any member starts a verification; each member who joins it types the
@@ -149,11 +162,33 @@ class GroupVerify:
                 return None
             return {"run": run.run_id, "starter": run.starter}
 
+    def coordinator(self, room: str) -> str:
+        """Who starts this group's verification (owner, 2026-10-25): its
+        creator, the member at the first leaf of the MLS tree -- the group's
+        own authenticated membership, not the room's say-so. Once the creator
+        has left, the longest-standing member, so a group never loses the
+        ability to be verified. "" when the group cannot be read."""
+        ids = self._member_ids(room)
+        return ids[0] if ids else ""
+
+    def may_start(self, room: str) -> bool:
+        """Whether this device may START a run (anyone may JOIN one)."""
+        return bool(self._me()) and self._me() == self.coordinator(room)
+
     def start(self, room: str, secret: Optional[bytearray] = None) -> str:
-        """Start a verification (or join the one that is running) with
-        `secret`, or the passphrase set at creation. Returns the run id."""
+        """Start a verification (the coordinator only) or join the one that
+        is running, with `secret`, or the passphrase set at creation.
+        Returns the run id."""
         with self._lock:
             run = self._live(room)
+            if run is None and not self.may_start(room):
+                if secret is not None:
+                    _zero(secret)
+                # Everyone is verified already (the creator's vouches, or
+                # verified invitations): there is nothing left to join.
+                if self.all_verified(room):
+                    return ""
+                raise ValueError("only_the_creator_starts")
             if secret is None:
                 preset = self._preset.get(room)
                 if preset is None:
@@ -176,12 +211,13 @@ class GroupVerify:
             run.ready.add(self._me())
             run_id = run.run_id
         if fresh:
-            self._emit(GroupChanged(peer=room, change="verify_started",
+            # Ours: said to us, but not announced as somebody else's request.
+            self._emit(GroupChanged(peer=room, change="verify_begun",
                                     detail=self._me()))
         # "start" every time, not only for a new run: a member who missed it
         # (added since, or whose copy was replaced) learns of it here, and
         # one who knows it ignores it.
-        self._send(room, {"t": "start", "run": run_id})
+        self._send(room, {"t": "start", "run": run_id, "by": run.starter})
         self._send(room, {"t": "ready", "run": run_id})
         self._pair_up(room)
         return run_id
@@ -288,7 +324,9 @@ class GroupVerify:
                 c in "0123456789abcdef" for c in run_id):
             return
         if kind in ("start", "ready"):
-            run = self._reconcile(room, sender, run_id)
+            by = msg.get("by")
+            run = self._reconcile(room, sender, run_id,
+                                  by if isinstance(by, str) and by else sender)
             if run is None or kind == "start":
                 return
         else:
@@ -310,11 +348,14 @@ class GroupVerify:
             self._pair_up(room)
         elif kind == "smp" and msg.get("to") == self._me():
             self._on_step(room, run, sender, msg)
+        elif kind == "vouch":
+            self._on_vouch(room, sender, run, msg)
 
     #: At most one re-announcement of our run per room in this many seconds.
     REANNOUNCE_SECONDS = 10.0
 
-    def _reconcile(self, room: str, sender: str, run_id: str) -> Optional[_Run]:
+    def _reconcile(self, room: str, sender: str, run_id: str,
+                   by: str = "") -> Optional[_Run]:
         """Settle which run the room is in, given `sender` speaks of
         `run_id` ("start" or "ready"). Returns the run when it is that one.
 
@@ -332,6 +373,11 @@ class GroupVerify:
             run = self._live(room)
             if run is not None and run.run_id == run_id:
                 return run
+            # A run is adopted only if the coordinator started it: a member
+            # starting their own is not followed (an older build that sends
+            # no "by" is taken as its sender, so its creator's runs still are).
+            if (by or sender) != self.coordinator(room):
+                return None
             if run is not None and run.run_id < run_id:
                 now = self._clock()
                 if now - run.reannounced_at >= self.REANNOUNCE_SECONDS:
@@ -343,7 +389,7 @@ class GroupVerify:
                 secret = bytearray(run.secret) if run is not None and run.secret is not None else None
                 if run is not None:
                     self._end(run)
-                new = _Run(run_id=run_id, starter=sender, started_at=self._clock(),
+                new = _Run(run_id=run_id, starter=by or sender, started_at=self._clock(),
                            announced=set(self._member_ids(room)))
                 self._runs[room] = new
                 result = new
@@ -352,7 +398,8 @@ class GroupVerify:
                 else:
                     emit_started = True
         if reannounce is not None:
-            self._send(room, {"t": "start", "run": reannounce.run_id})
+            self._send(room, {"t": "start", "run": reannounce.run_id,
+                              "by": reannounce.starter})
             if reannounce.secret is not None:
                 self._send(room, {"t": "ready", "run": reannounce.run_id})
             return None
@@ -374,7 +421,7 @@ class GroupVerify:
             run.announced |= members
             if not new:
                 return
-        self._send(room, {"t": "start", "run": run.run_id})
+        self._send(room, {"t": "start", "run": run.run_id, "by": run.starter})
         self._send(room, {"t": "ready", "run": run.run_id})
 
     def _member_ids(self, room: str) -> list:
@@ -386,15 +433,17 @@ class GroupVerify:
     # -- the pairs ----------------------------------------------------------
 
     def _pair_up(self, room: str) -> None:
-        """Start SMP with each ready member we lead (the lower address
-        starts, so each pair runs once)."""
+        """The coordinator starts SMP with each member who joined; nobody
+        else starts any (see the module docstring)."""
         me = self._me()
+        if me != self.coordinator(room):
+            return
         with self._lock:
             run = self._live(room)
             if run is None or run.secret is None:
                 return
             todo = [p for p in sorted(run.ready)
-                    if p != me and me < p and p not in run.smp
+                    if p != me and p not in run.smp
                     and run.result.get(p) != "verified"
                     and run.failures.get(p, 0) < self.MAX_FAILURES]
         for peer in todo:
@@ -424,6 +473,8 @@ class GroupVerify:
             if step == 1:
                 if not have_secret or run.failures.get(peer, 0) >= self.MAX_FAILURES:
                     return                 # we have not joined: nothing to answer
+                if peer != self.coordinator(room):
+                    return                 # only the coordinator verifies with us
                 smp = self._new_smp(room, run, peer, initiator=False)
                 with self._lock:
                     run.smp[peer] = smp
@@ -473,6 +524,8 @@ class GroupVerify:
             run.result[peer] = "verified"
             self._took(run, peer)
         self._groups.mark_member_verified(room, peer)
+        if self._me() == self.coordinator(room):
+            self._vouch(room, run)
         self._emit(GroupChanged(peer=room, change="verify_progress"))
         self._maybe_finish(room, run)
 
@@ -488,6 +541,49 @@ class GroupVerify:
             except Exception:
                 pass
         self._emit(GroupChanged(peer=room, change="member_verify_failed", detail=peer))
+        if self._me() == self.coordinator(room):
+            self._vouch(room, run)
+        self._emit(GroupChanged(peer=room, change="verify_progress"))
+        self._maybe_finish(room, run)
+
+    def _vouch(self, room: str, run: _Run) -> None:
+        """The coordinator tells the group who is verified (with the group
+        key each was verified on) and whose passphrase did not match. The
+        whole list each time, so a member who joined late learns everyone."""
+        verified = []
+        try:
+            for m in self._groups.members(room):
+                if m["verified"] and not m["me"]:
+                    verified.append([m["jid"], m["fingerprint"]])
+        except Exception:
+            return
+        with self._lock:
+            failed = sorted(j for j, r in run.result.items() if r == "failed")
+        self._send(room, {"t": "vouch", "run": run.run_id, "ok": verified,
+                          "failed": failed, "by": self._me()})
+
+    def _on_vouch(self, room: str, sender: str, run: _Run, msg: Dict[str, Any]) -> None:
+        """A member's side: accept the coordinator's word, key by key."""
+        if sender != self.coordinator(room):
+            return
+        me = self._me()
+        ok = msg.get("ok")
+        if isinstance(ok, list):
+            for item in ok[:4096]:
+                if (isinstance(item, list) and len(item) == 2
+                        and all(isinstance(x, str) for x in item)
+                        and item[0] not in (me, sender)
+                        and len(item[1]) <= 256):
+                    if self._groups.mark_member_verified(room, item[0], expected_fp=item[1]):
+                        with self._lock:
+                            run.result[item[0]] = "verified"
+        failed = msg.get("failed")
+        if isinstance(failed, list):
+            with self._lock:
+                for jid in failed[:4096]:
+                    if isinstance(jid, str) and jid not in (me, sender) \
+                            and run.result.get(jid) != "verified":
+                        run.result[jid] = "failed"
         self._emit(GroupChanged(peer=room, change="verify_progress"))
         self._maybe_finish(room, run)
 

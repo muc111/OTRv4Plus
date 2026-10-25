@@ -96,7 +96,8 @@ class GroupsControlMixin:
 
     def group_verify_state(self, room: str) -> Dict[str, Any]:
         """{"members": {jid: verified|failed|running|waiting|not_verified},
-        "all_verified": bool, "started_by": jid of a run we have not joined}."""
+        "all_verified": bool, "started_by": jid of a run we have not joined,
+        "coordinator": who starts verifying, "can_start": whether we may}."""
         def go():
             v = self._app.group_verify
             pending = v.pending(room)
@@ -104,7 +105,8 @@ class GroupsControlMixin:
             return {"members": v.status(room), "all_verified": v.all_verified(room),
                     "started_by": pending["starter"] if pending else "",
                     "active": pr["active"], "done": pr["done"], "total": pr["total"],
-                    "eta": pr["eta"], "excluded": pr["excluded"]}
+                    "eta": pr["eta"], "excluded": pr["excluded"],
+                    "coordinator": v.coordinator(room), "can_start": v.may_start(room)}
         return self._group_call(go)
 
     def set_group_call_auto_join(self, allowed: bool) -> Dict[str, Any]:

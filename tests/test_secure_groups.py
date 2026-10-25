@@ -1309,9 +1309,10 @@ def test_the_app_says_who_still_needs_smp():
 
 
 class TestGroupVerification:
-    """Owner design (2026-10-10): the creator sets a group passphrase; a
-    verification runs SMP between every pair of members with it; whoever
-    typed it wrong stays out of group calls."""
+    """Owner design (2026-10-10, revised 2026-10-25): the creator starts a
+    verification and sets the passphrase; each member runs the full SMP with
+    the creator, who vouches for each success; whoever typed it wrong stays
+    out of files, locations, voice notes and calls."""
 
     def _verifiers(self, members):
         from android_bridge.group_verify import GroupVerify
@@ -1382,12 +1383,10 @@ class TestGroupVerification:
             for o in others:
                 assert self._verified(m, o.jid), (m.jid, o.jid)
 
-    def test_a_newcomer_after_the_run_ended_starts_one_and_is_heard(self):
-        """Device test (2026-10-11): the phones had verified each other (their
-        run had ended); the laptop, invited back, typed /smp and nobody was
-        asked -- it had joined a leftover run from its old copy and announced
-        only "ready" for it, which the phones ignored as unknown. Any word of
-        a run we do not know now asks our user to join it."""
+    def test_a_newcomer_after_the_run_ended_is_verified_when_the_creator_starts_again(self):
+        """Owner (2026-10-25): only the group's creator starts a verification.
+        A member added after the last run ended cannot start one; the
+        creator's next run asks them, and everyone ends verified."""
         from android_bridge.group_verify import GroupVerify
         w, (a, b) = _group(2)
         va, vb = self._verifiers([a, b])
@@ -1398,39 +1397,85 @@ class TestGroupVerification:
         vc = GroupVerify(c.groups, emit=c.events.append)
         w.pair(a.jid, c.jid)
         _invite(w, a.jid, c.jid)
-        # A leftover run on the laptop that nobody else knows of.
-        w.room.drop_next = 10**6
-        vc.start(ROOM, bytearray(b"correct horse battery"))
-        w.room.drop_next = 0
-        a.events.clear()
-        b.events.clear()
-        vc.start(ROOM, bytearray(b"correct horse battery"))   # /smp again
-        assert va.pending(ROOM) is not None and vb.pending(ROOM) is not None
-        assert "verify_started" in a.changes() and "verify_started" in b.changes()
+        assert va.coordinator(ROOM) == a.jid and vc.coordinator(ROOM) == a.jid
+        assert vc.may_start(ROOM) is False
+        with pytest.raises(ValueError, match="only_the_creator_starts"):
+            vc.start(ROOM, bytearray(b"correct horse battery"))
+        c.events.clear()
         va.start(ROOM, bytearray(b"correct horse battery"))
+        assert vc.pending(ROOM) is not None and "verify_started" in c.changes()
         vb.start(ROOM, bytearray(b"correct horse battery"))
+        vc.start(ROOM, bytearray(b"correct horse battery"))
         for m, others in ((a, (b, c)), (b, (a, c)), (c, (a, b))):
             for o in others:
                 assert self._verified(m, o.jid), (m.jid, o.jid)
 
-    def test_two_runs_at_once_become_one(self):
-        """Two runs nobody else had heard of: the lower id wins everywhere, a
-        member who already typed the passphrase moves over with it, and
-        everyone ends verified."""
+    def test_a_run_not_started_by_the_creator_is_not_followed(self):
+        """A member's own run (an older build that let anyone start) is not
+        adopted by the others: nobody is asked, and the creator's run is."""
+        import json
         w, (a, b, c) = _group(3, levels={"bob@x.i2p": SecurityState.ENCRYPTED,
                                          "carol@x.i2p": SecurityState.ENCRYPTED})
         va, vb, vc = self._verifiers([a, b, c])
-        w.room.drop_next = 10**6
+        forged = json.dumps({"t": "start", "run": "f" * 32})
+        va._on_control(ROOM, c.jid, True, forged)
+        vb._on_control(ROOM, c.jid, True, forged)
+        assert va.pending(ROOM) is None and vb.pending(ROOM) is None
+        # The creator's run is followed by everyone.
         va.start(ROOM, bytearray(b"correct horse battery"))
-        vc.start(ROOM, bytearray(b"correct horse battery"))
-        w.room.drop_next = 0
-        assert va._runs[ROOM].run_id != vc._runs[ROOM].run_id
-        vc.start(ROOM, bytearray(b"correct horse battery"))   # announces again
-        va.start(ROOM, bytearray(b"correct horse battery"))
+        assert vb.pending(ROOM) is not None and vc.pending(ROOM) is not None
         vb.start(ROOM, bytearray(b"correct horse battery"))
+        vc.start(ROOM, bytearray(b"correct horse battery"))
         for m, others in ((a, (b, c)), (b, (a, c)), (c, (a, b))):
             for o in others:
                 assert self._verified(m, o.jid), (m.jid, o.jid)
+
+    def test_the_creator_verifies_each_member_and_vouches_for_them(self):
+        """Owner (2026-10-25): every pair meant 4,950 SMPs for 100 members --
+        hours over I2P. The creator runs the full SMP with each member and
+        vouches for each success; nobody else runs one."""
+        lv = {"bob@x.i2p": SecurityState.ENCRYPTED, "carol@x.i2p": SecurityState.ENCRYPTED,
+              "dave@x.i2p": SecurityState.ENCRYPTED}
+        w, members = _group(4, levels=lv)
+        verifiers = self._verifiers(members)
+        sent = []
+        for m, v in zip(members, verifiers):
+            real = v._send
+            def spy(room, msg, _real=real, _who=m.jid):
+                sent.append((_who, dict(msg)))
+                _real(room, msg)
+            v._send = spy
+        a = members[0]
+        verifiers[0].start(ROOM, bytearray(b"correct horse battery"))
+        for v in verifiers[1:]:
+            v.start(ROOM, bytearray(b"correct horse battery"))
+        smp = [(who, msg["to"]) for who, msg in sent if msg.get("t") == "smp"]
+        assert smp and all(a.jid in pair for pair in smp), smp
+        assert len({frozenset(p) for p in smp}) == 3, "one SMP per member, with the creator"
+        for m in members:
+            for o in members:
+                if o is not m:
+                    assert self._verified(m, o.jid), (m.jid, o.jid)
+        assert any(msg.get("t") == "vouch" for who, msg in sent if who == a.jid)
+        assert not any(msg.get("t") == "vouch" for who, msg in sent if who != a.jid)
+
+    def test_a_vouch_counts_only_from_the_creator_and_for_the_held_key(self):
+        import json
+        lv = {"bob@x.i2p": SecurityState.ENCRYPTED, "carol@x.i2p": SecurityState.ENCRYPTED}
+        w, (a, b, c) = _group(3, levels=lv)
+        va, vb, vc = self._verifiers([a, b, c])
+        va.start(ROOM, bytearray(b"correct horse battery"))
+        run = vb._runs[ROOM]
+        carol_fp = b.groups.member_fingerprint(ROOM, c.jid)
+        # From carol about herself: not the creator, ignored.
+        vb._on_vouch(ROOM, c.jid, run, {"ok": [[c.jid, carol_fp]]})
+        assert not self._verified(b, c.jid)
+        # From the creator, for a key the group does not hold: binds nothing.
+        vb._on_vouch(ROOM, a.jid, run, {"ok": [[c.jid, "00" * 32]]})
+        assert not self._verified(b, c.jid)
+        # From the creator, for the held key: verified.
+        vb._on_vouch(ROOM, a.jid, run, {"ok": [[c.jid, carol_fp]]})
+        assert self._verified(b, c.jid)
 
     def test_a_short_passphrase_is_refused(self):
         w, (a, b) = _group(2)

@@ -971,18 +971,28 @@ class SecureGroups:
             return bytes(self._need().member_fingerprint(
                 room.encode(), member.encode())).hex()
 
-    def mark_member_verified(self, room: str, member: str) -> None:
+    def mark_member_verified(self, room: str, member: str,
+                             expected_fp: Optional[str] = None) -> bool:
         """A group verification (shared-passphrase SMP over the member's
-        current group key) succeeded with `member`."""
+        current group key) succeeded with `member` -- ours, or vouched for
+        by the group's creator. With `expected_fp` (a vouch), only if that is
+        the key the group holds for them now: a vouch for a replaced key binds
+        nothing. Returns whether `member` is now verified."""
         with self._lock:
             client = self._need()
-            fp = bytes(client.member_fingerprint(room.encode(), member.encode())).hex()
+            try:
+                fp = bytes(client.member_fingerprint(room.encode(), member.encode())).hex()
+            except ValueError:
+                return False                 # not a member (any more)
+            if expected_fp is not None and expected_fp.lower() != fp:
+                return False
             before = self._bound.get(room, {}).get(member)
             self._bound.setdefault(room, {})[member] = (fp, True)
             if before != (fp, True):
                 self.save()
         if before != (fp, True):
             self._emit(GroupChanged(peer=room, change="member_verified", detail=member))
+        return True
 
     def set_file_handler(self, fn: Optional[Callable[[str, str, bool, str], None]]) -> None:
         self._file_handler = fn
