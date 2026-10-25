@@ -935,15 +935,22 @@ class OtrConnectionService : Service() {
     private fun startDraining() {
         if (drainer?.isActive == true) return
         drainer = scope.launch {
+            var tick = 0L
             while (isActive) {
+                // Slower with the app in the background (DrainPace): the
+                // 500 ms pace kept the phone out of deep sleep.
+                val visible = alerts.uiVisible
+                val inCall = chat.anyCall()
                 withContext(Dispatchers.IO) {
-                    runCatching { core.connectionStatus() }.getOrNull()
-                        ?.let { chat.applyConnection(it) }
-                        ?: chat.noteLinkFailure("status")
-                    runCatching { core.contacts() }.getOrNull()
-                        ?.let { chat.applyRoster(it) }
-                    runCatching { core.eventsDropped() }.getOrNull()
-                        ?.let { chat.applyDropped(it) }
+                    if (DrainPace.readsState(tick, visible, inCall)) {
+                        runCatching { core.connectionStatus() }.getOrNull()
+                            ?.let { chat.applyConnection(it) }
+                            ?: chat.noteLinkFailure("status")
+                        runCatching { core.contacts() }.getOrNull()
+                            ?.let { chat.applyRoster(it) }
+                        runCatching { core.eventsDropped() }.getOrNull()
+                            ?.let { chat.applyDropped(it) }
+                    }
                     runCatching { core.drainEvents() }.getOrDefault(emptyList())
                         .forEach { event ->
                             // handle() returns whether a NEW message was
@@ -968,7 +975,8 @@ class OtrConnectionService : Service() {
                                 event.change == "call_ringing") announceCall(group = true)
                         }
                 }
-                delay(DRAIN_INTERVAL_MS)
+                tick++
+                delay(DrainPace.intervalMs(visible, inCall))
             }
         }
     }
@@ -1581,7 +1589,6 @@ class OtrConnectionService : Service() {
          * emitted on the transport's asyncio loop thread and pulled from here,
          * so this is what decides how quickly a message appears.
          */
-        const val DRAIN_INTERVAL_MS = 500L
 
         /** Start the service and ask it to connect. */
         fun start(context: Context, jid: String, password: String,

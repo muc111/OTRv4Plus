@@ -94,3 +94,12 @@ def test_a_slow_bridge_is_not_mistaken_for_no_router():
 def test_sign_out_forgets_the_phones_router():
     stop = _fn(SERVICE, "fun stopConnection(")
     assert "externalSamSeen = false" in stop
+
+
+def test_the_drain_slows_in_the_background():
+    """Battery (owner, 2026-10-25): the 500 ms pass, four calls into Python,
+    ran with the screen off too. DrainPaceTest runs the rule."""
+    drain = _fn(SERVICE, "private fun startDraining()")
+    assert "DrainPace.readsState(tick, visible, inCall)" in drain
+    assert "delay(DrainPace.intervalMs(visible, inCall))" in drain
+    assert "DRAIN_INTERVAL_MS" not in drain

@@ -834,7 +834,7 @@ class TestAnIncomingCallRingsThePhone:
 
     def test_the_drain_acts_on_ring_changes(self, service):
         drain = service[service.index("if (chat.handle(event)) soundForMessage(event)"):]
-        drain = drain[:drain.index("delay(DRAIN_INTERVAL_MS)")]
+        drain = drain[:drain.index("delay(DrainPace.intervalMs(visible, inCall))")]
         assert "chat.takeRingChanges()" in drain
         assert "announceCall()" in drain and "cancelCallNotification()" in drain
 
