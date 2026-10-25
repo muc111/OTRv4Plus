@@ -56,12 +56,15 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 use pyo3::exceptions::PyValueError;
 
+// ed448-goldilocks-plus 0.18 (RUSTSEC-2026-0387 moved it off crypto-bigint
+// 0.5): `WideScalarBytes` replaces the generic-array type, the generator
+// multiply is `group::Group`'s, and the RNG is the one the rest of the core
+// uses. Same arithmetic; `cross_version` below pins it.
 use ed448_goldilocks_plus::{
-    Scalar, EdwardsPoint, CompressedEdwardsY,
-    elliptic_curve::generic_array::GenericArray,
-    elliptic_curve::ops::MulByGenerator,
-    rand_core::{RngCore, OsRng},
+    Scalar, EdwardsPoint, CompressedEdwardsY, WideScalarBytes,
+    elliptic_curve::group::Group,
 };
+use rand::{RngCore, rngs::OsRng};
 
 use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
 use subtle::ConstantTimeEq;
@@ -98,7 +101,7 @@ fn scalar_from_le57_mod_q(le57: &[u8]) -> Scalar {
     debug_assert_eq!(le57.len(), ED448_SCALAR_BYTES);
     let mut wide = [0u8; 114];
     wide[..ED448_SCALAR_BYTES].copy_from_slice(le57);
-    let arr = GenericArray::clone_from_slice(&wide);
+    let arr = WideScalarBytes::from(wide);
     Scalar::from_bytes_mod_order_wide(&arr)
 }
 
@@ -230,7 +233,7 @@ fn derive_ephemeral_scalar(seed: &[u8], msg: &[u8]) -> Scalar {
     // reduction which carried a ~2^-10 bias.
     let mut wide = [0u8; 114];
     shake256_multi(&[b"OTRv4-ringsig-nonce-v1", &prefix, &rnd, msg], &mut wide);
-    let arr = GenericArray::clone_from_slice(&wide);
+    let arr = WideScalarBytes::from(wide);
     let s = Scalar::from_bytes_mod_order_wide(&arr);
 
     prefix.zeroize();
@@ -395,7 +398,7 @@ fn random_scalar() -> Scalar {
     // is at most ~2^-446).
     let mut wide = [0u8; 114];
     OsRng.fill_bytes(&mut wide);
-    let arr = GenericArray::clone_from_slice(&wide);
+    let arr = WideScalarBytes::from(wide);
     let s = Scalar::from_bytes_mod_order_wide(&arr);
     wide.zeroize();
     s
@@ -660,5 +663,53 @@ mod audit_identity_point {
         let a2 = encode_point(&EdwardsPoint::mul_by_generator(&derive_signing_scalar(&[0x22u8; 57])));
         let sig = ring_sign_bytes(&[0x11u8; 57], &victim(), &a2, b"m").unwrap();
         assert!(ring_verify_bytes(&victim(), &a2, b"m", &sig));
+    }
+}
+
+/// Cross-version vectors, captured from the ed448-goldilocks-plus 0.16 build
+/// before the move to 0.18 (RUSTSEC-2026-0387). A ring signature made by the
+/// apps already in people's hands must still verify, and keys derived from a
+/// seed must not change: either would break deniable authentication with
+/// every peer who has not updated.
+#[cfg(test)]
+mod cross_version {
+    use super::*;
+
+    fn unhex(s: &str) -> Vec<u8> {
+        s.as_bytes().chunks(2)
+            .map(|c| u8::from_str_radix(std::str::from_utf8(c).unwrap(), 16).unwrap())
+            .collect()
+    }
+
+    const A1: &str = "2601850dc77aaf141e065b2fe83ecfe08b6c15ba930886e9f111b6f0fd8f9f246b167e0398f957df61c9cead939cdf5bc9fe43c9432f3b0e00";
+    const A2: &str = "1e5a931edbcc43df9f6daa6bde44bb1a33f014501ee2f8c4cc6c694113d95832e657f72ad9d1f02f3b87d0599e7cd43ddc6f26bcc4a7c20680";
+    const SIG: &str = "7a42b983ab4d866014fffacc082bacf22f1bf710c97c610ea18f7b99525b739cc2785c45f0f36812c6f7ba144a57898e3fc5cb5f97bb753b004cfde5a0002338d5c324bb74e36a090187506875913c155a90ebdfd0b78fdf2d973242cdb7c94305cfc30c4a3271cd74775f5b8e745cb826001a0aa8bf29e01f6636e4cbcadcd0e3bbd7454b8589282637156a5d06b1cd2c9f6e72f43cc979144c3dfa45d324d0520e01b1004f55ff822400895f18df35c15980c87282059751bb4d005cbe9d34bccf17aa1aab4d482edfae44dbdb32ebc111805a0e3bd76edaf7121d19e17deae1583500";
+    const MSG: &[u8] = b"OTRv4 ring sig golden vector";
+
+    #[test]
+    fn keys_from_a_seed_are_unchanged() {
+        assert_eq!(public_key_from_seed(&[0x42u8; 57]).to_vec(), unhex(A1));
+        assert_eq!(public_key_from_seed(&[0x37u8; 57]).to_vec(), unhex(A2));
+        assert_eq!(scalar_to_le57(&derive_signing_scalar(&[0x42u8; 57])).to_vec(),
+                   unhex("af8d9517c0146bf9e2be75b7ac1945907087d7c611ea024069eca451d559c89544282982b9ff79b586ba2e0f4cb861e78ad4f01a706d3d1600"));
+    }
+
+    #[test]
+    fn reduction_mod_q_is_unchanged() {
+        assert_eq!(scalar_to_le57(&scalar_from_le57_mod_q(&[0xffu8; 57])).to_vec(),
+                   unhex("ff33ec9e52b5f51c72abc2e9c835f64c7abf25a744d992c4ee5870d70c02000000000000000000000000000000000000000000000000000000"));
+    }
+
+    #[test]
+    fn a_signature_from_the_earlier_build_still_verifies() {
+        let (a1, a2, sig) = (unhex(A1), unhex(A2), unhex(SIG));
+        assert!(ring_verify_bytes(&a1, &a2, MSG, &sig));
+        assert!(!ring_verify_bytes(&a1, &a2, b"another message", &sig));
+    }
+
+    #[test]
+    fn a_new_signature_verifies_against_the_same_keys() {
+        let sig = ring_sign_bytes(&[0x42u8; 57], &unhex(A1), &unhex(A2), MSG).unwrap();
+        assert!(ring_verify_bytes(&unhex(A1), &unhex(A2), MSG, &sig));
     }
 }

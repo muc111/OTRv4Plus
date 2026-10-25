@@ -119,7 +119,7 @@ AUDIT_HANDOFF.md):
 
 | Primitive | Crate / version | Used for |
 |---|---|---|
-| Ed448 | ed448-goldilocks-plus 0.16.0 | profile signatures, ring signature |
+| Ed448 | ed448-goldilocks-plus 0.16.0 (0.18.1 since 2026-10-25, RUSTSEC-2026-0387) | profile signatures, ring signature |
 | X448 | x448 0.6.0 | DAKE (×3), ratchet DH, voice |
 | ML-KEM-1024 | pqcrypto-mlkem 0.1.1 (PQClean) | DAKE, brace rotation, SMP binding, voice |
 | ML-DSA-87 | pqcrypto-mldsa 0.1.2 (PQClean) | DAKE3 (initiator), SMP steps |
@@ -128,7 +128,7 @@ AUDIT_HANDOFF.md):
 | HMAC-SHA3-512 | hmac 0.12.1 | SMP binding, DAKE MAC |
 | HKDF-SHA256/512 | hkdf 0.12.4 | voice, container |
 | Argon2id | argon2 0.5.3 | SMP 0x03, container passphrase |
-| 3072-bit MODP | crypto-bigint 0.5.5 (CT exp), num-bigint 0.4.6 (VT scalar ops) | SMP |
+| 3072-bit MODP | crypto-bigint 0.5.5 (CT exp; 0.7.8 since 2026-10-25, RUSTSEC-2026-0387), num-bigint 0.4.6 (VT scalar ops) | SMP |
 | MLS | openmls 0.9.0 (own HPKE) | groups |
 
 `cargo audit` reports 0 vulnerabilities in 333 crates. The unmaintained

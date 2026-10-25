@@ -1,6 +1,6 @@
 [package]
 name        = "otrv4_core"
-version     = "0.13.1"
+version     = "0.13.2"
 edition     = "2021"
 authors     = ["OTRv4+ contributors"]
 description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
@@ -171,12 +171,12 @@ otrv4-mls        = { path = "mls", optional = true }
 #          format differs in domain-separator constants.
 num-bigint    = { version = "0.4",   optional = true, features = ["rand"] }
 num-traits    = { version = "0.2",   optional = true }
-# v10.7.6 (Phase 5.4): constant-time modular exponentiation for SMP.
-# Already present transitively (pulled in by the pqcrypto stack); promoted to
-# a direct dependency here.  0.5.x is the version already resolved in the
-# tree, so this adds no new compile.  DynResidue gives constant-time modpow,
-# closing the num-bigint modpow timing side-channel in the SMP ZKPs.
-crypto-bigint = { version = "0.5",   optional = true }
+# v10.7.6 (Phase 5.4): constant-time modular exponentiation for SMP
+# (FixedMontyForm, formerly DynResidue), closing the num-bigint modpow timing
+# side-channel in the SMP ZKPs. 0.7.8 since 2026-10-25: RUSTSEC-2026-0387
+# found secret-dependent branches in 0.5's subtraction, division and
+# Montgomery multiplication. Same values (smp::tests::mod_exp_matches_*).
+crypto-bigint = { version = "0.7.8", optional = true }
 getrandom     = { version = "0.2",   optional = true }
 x448          = { version = "0.6",   optional = true }
 
@@ -201,7 +201,7 @@ argon2        = { version = "0.5",   optional = true, default-features = false, 
 # It sits after [dependencies] rather than inside it because a second
 # [dependencies] header would be a duplicate key.
 [dependencies.ed448-goldilocks-plus]
-version          = "0.16"
+version          = "0.18.1"
 optional         = true
 default-features = false
 features         = ["alloc", "signing", "pkcs8"]

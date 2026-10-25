@@ -18,7 +18,7 @@ proposed by this document.
 |---|---|---|---|
 | ML-KEM-1024 (FIPS 203) | `pqcrypto-mlkem` 0.1.1 (PQClean portable) | `mlkem.rs`, `dake.rs` | ek/ct/ss bytes |
 | ML-DSA-87 (FIPS 204) | `pqcrypto-mldsa` 0.1.2 | `mldsa.rs` | sig bytes |
-| Ed448 | `ed448-goldilocks-plus` 0.16.0 | `key_handles.rs`, `ring_sig.rs` | **handle only** |
+| Ed448 | `ed448-goldilocks-plus` 0.18.1 (0.16.0 before 2026-10-25) | `key_handles.rs`, `ring_sig.rs` | **handle only** |
 | X448 | `x448` 0.6.0 | `key_handles.rs`, `voice.rs` | **handle only** |
 | AES-256-GCM | `aes-gcm` 0.10.3 | `aead.rs`, `voice.rs`, `filetransfer.rs` | ciphertext |
 | SHAKE-256 KDF | `sha3` 0.10.9 | `kdf.rs` | nothing |

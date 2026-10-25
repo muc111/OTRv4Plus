@@ -55,4 +55,17 @@ ignore = [
   "RUSTSEC-2026-0329",  # libcrux-hmac-drbg 0.0.1
   "RUSTSEC-2026-0330",  # libcrux-kem 0.0.9
   "RUSTSEC-2026-0331",  # libcrux-kem 0.0.9
+  # TIMING VARIABILITY in crypto-bigint 0.5 (subtraction, division, Montgomery
+  # multiplication), FIXED IN WHAT WE BUILD (2026-10-25). The SMP's
+  # constant-time modexp (src/smp.rs) moved to crypto-bigint 0.7.8 and Ed448
+  # (src/ring_sig.rs, src/dake.rs, mls/src/provider.rs) to
+  # ed448-goldilocks-plus 0.18.1, which is on 0.7 too; values are pinned by
+  # smp::tests::mod_exp_matches_reference_* and ring_sig::cross_version.
+  # 0.5.5 stays in Cargo.lock only through openmls 0.9's optional reference
+  # providers (openmls_rust_crypto, hpke-rs-rust-crypto,
+  # openmls_basic_credential -> p256/p384/k256 -> elliptic-curve 0.13), never
+  # enabled, as for the libcrux entries above: `cargo tree -e all --features
+  # mls --target all -i crypto-bigint@0.5.5` prints nothing. Remove when
+  # openmls moves those providers to elliptic-curve 0.14.
+  "RUSTSEC-2026-0387",  # crypto-bigint 0.5.5 (locked, not built)
 ]

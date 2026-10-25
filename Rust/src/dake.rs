@@ -1780,7 +1780,7 @@ mod profile_tests {
         // Pure Ed448 verification with A = identity reduces to [S]B == R,
         // which anyone can satisfy. The check refuses the key before that.
         use ed448_goldilocks_plus::{EdwardsPoint, Scalar,
-            elliptic_curve::ops::MulByGenerator};
+            elliptic_curve::group::Group};
         let ident: [u8; 57] = EdwardsPoint::IDENTITY.compress().0;
         let mut body = vec![4u8, 1, 4];
         body.extend_from_slice(&ident);

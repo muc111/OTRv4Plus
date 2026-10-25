@@ -47,7 +47,7 @@ sha3 = "0.10"
 # The classical halves of the hybrid suite (docs/MLS_SECURITY_HARDENING.md §2):
 # the core's X448 (DAKE, voice) and Ed448 (identity keys) crates.
 x448 = "0.6"
-ed448-goldilocks-plus = { version = "0.16", default-features = false, features = ["alloc", "signing", "pkcs8"] }
+ed448-goldilocks-plus = { version = "0.18.1", default-features = false, features = ["alloc", "signing", "pkcs8"] }
 getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
 thiserror = "1.0"

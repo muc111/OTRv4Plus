@@ -436,7 +436,9 @@ class TestTheManifestsParseUnderAStrictTomlParser:
         with open(os.path.join(ROOT, "Rust", "Cargo.toml"), "rb") as fh:
             cargo = tomllib.load(fh)
         ed448 = cargo["dependencies"]["ed448-goldilocks-plus"]
-        assert ed448["version"] == "0.16"
+        # 0.18.1 since 2026-10-25 (RUSTSEC-2026-0387: off crypto-bigint 0.5);
+        # the form and the features are what this test is about.
+        assert ed448["version"] == "0.18.1"
         assert ed448["optional"] is True
         assert ed448["default-features"] is False
         assert ed448["features"] == ["alloc", "signing", "pkcs8"]

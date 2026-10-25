@@ -79,7 +79,7 @@ is roughly what Haveno does with `monero-wallet-rpc`.
 
 | Module | Lines | Primitives |
 |---|---:|---|
-| `smp.rs` | 2415 | MODP-3072 Schnorr ZKP, constant-time `modpow` via `crypto-bigint` `DynResidue`, Argon2id stretch, ML-KEM-1024 + ML-DSA-87 binding |
+| `smp.rs` | 2415 | MODP-3072 Schnorr ZKP, constant-time `modpow` via `crypto-bigint` `DynResidue` (0.7 `FixedMontyForm` since 2026-10-25), Argon2id stretch, ML-KEM-1024 + ML-DSA-87 binding |
 | `ratchet.rs` | 1425 | Double ratchet, skipped-key cache, MKmac revelation and cross-check |
 | `dake.rs` | 1314 | X448 + ML-KEM-1024 + ML-DSA-87 interactive DAKE |
 | `voice.rs` | 937 | HKDF-SHA512 key schedule, AES-256-GCM media, epoch roots |
@@ -90,7 +90,7 @@ is roughly what Haveno does with `monero-wallet-rpc`.
 | `smp_vault.rs` | 248 | Write-only passphrase vault |
 | `mlkem.rs` / `mldsa.rs` / `aead.rs` / `kdf.rs` / `header.rs` | 637 | FIPS 203 / FIPS 204 / AES-256-GCM / SHAKE-256 |
 
-**Curve families present: Ed448 and X448 only** (`ed448-goldilocks-plus 0.16`,
+**Curve families present: Ed448 and X448 only** (`ed448-goldilocks-plus 0.18.1`, 0.16 before 2026-10-25,
 `x448 0.6`). There is **no Ed25519 and no curve25519-dalek anywhere in the tree**
 — I checked `Cargo.lock` directly. Monero is Ed25519. Adding it is not extending
 an existing primitive; it is a second curve family with its own scalar

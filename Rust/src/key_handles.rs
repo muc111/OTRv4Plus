@@ -35,8 +35,9 @@ use ed448_goldilocks_plus::{
     SigningKey,
     VerifyingKey,
     Signature,
-    rand_core::{RngCore, OsRng},
 };
+// ed448-goldilocks-plus 0.18 no longer re-exports rand_core 0.6's OsRng.
+use rand::{RngCore, rngs::OsRng};
 
 use zeroize::Zeroize;
 use std::convert::TryFrom;

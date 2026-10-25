@@ -79,8 +79,12 @@ use rand::rngs::OsRng;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
-use crypto_bigint::{U3072, Encoding};
-use crypto_bigint::modular::runtime_mod::{DynResidue, DynResidueParams};
+// crypto-bigint 0.7 (RUSTSEC-2026-0387: 0.5's subtraction, division and
+// Montgomery multiplication could branch on secret values). FixedMontyForm is
+// 0.5's DynResidue renamed; the arithmetic and every value are the same
+// (mod_exp_matches_reference_* below).
+use crypto_bigint::{U3072, Odd};
+use crypto_bigint::modular::{FixedMontyForm, FixedMontyParams};
 
 use pqcrypto_traits::kem::{
     PublicKey  as KemPublicKey,
@@ -197,8 +201,10 @@ static SMP_PRIME_CT: LazyLock<U3072> = LazyLock::new(|| {
     U3072::from_be_slice(&be)
 });
 
-static SMP_MONTY: LazyLock<DynResidueParams<48>> = LazyLock::new(|| {
-    DynResidueParams::new(&*SMP_PRIME_CT)
+// LIMBS from the type, not 48: a 32-bit target (armeabi-v7a) has 96 limbs.
+static SMP_MONTY: LazyLock<FixedMontyParams<{ U3072::LIMBS }>> = LazyLock::new(|| {
+    let modulus = Odd::new(*SMP_PRIME_CT).into_option().expect("the SMP prime is odd");
+    FixedMontyParams::new(modulus)
 });
 
 fn pad_be_384(raw: &[u8]) -> [u8; 384] {
@@ -717,7 +723,7 @@ impl SmpState {
         Self::fixed_bytes(val, SMP_PRIME_BYTES)
     }
 
-    /// Constant-time modular exponentiation via crypto-bigint DynResidue.
+    /// Constant-time modular exponentiation via crypto-bigint FixedMontyForm.
     fn mod_exp(
         base:    &num_bigint::BigUint,
         exp_bytes: &[u8],
@@ -725,7 +731,7 @@ impl SmpState {
     ) -> num_bigint::BigUint {
         let base_ct = Self::biguint_to_u3072(base);
         let exp_ct  = U3072::from_be_slice(&pad_be_384(exp_bytes));
-        let base_m  = DynResidue::new(&base_ct, *SMP_MONTY);
+        let base_m  = FixedMontyForm::new(&base_ct, &SMP_MONTY);
         let res_m   = base_m.pow(&exp_ct);
         Self::u3072_to_biguint(&res_m.retrieve())
     }
@@ -740,7 +746,7 @@ impl SmpState {
     }
 
     fn u3072_to_biguint(v: &U3072) -> num_bigint::BigUint {
-        num_bigint::BigUint::from_bytes_be(&v.to_be_bytes())
+        num_bigint::BigUint::from_bytes_be(v.to_be_bytes().as_ref())
     }
 
     fn zkp_challenge(version: u8, commitment: &[u8], statement: &[u8]) -> num_bigint::BigUint {
@@ -1916,7 +1922,7 @@ mod tests {
     fn smp_prime_ct_matches_bigint() {
         let from_bigint = pad_be_384(&SMP_PRIME.to_bytes_be());
         let from_ct     = SMP_PRIME_CT.to_be_bytes();
-        assert_eq!(from_bigint, from_ct,
+        assert_eq!(from_bigint.as_slice(), from_ct.as_ref(),
             "SMP_PRIME_CT and SMP_PRIME disagree - modexp modulus is wrong");
     }
 
@@ -1939,6 +1945,25 @@ mod tests {
             &num_bigint::BigUint::from_bytes_be(&exp_bytes), &SMP_PRIME,
         );
         assert_eq!(got, want, "constant-time mod_exp diverged from reference");
+    }
+
+    // ── 3b. The same against the reference at the edges, so a change of the
+    //    constant-time backend (RUSTSEC-2026-0387: crypto-bigint 0.5 -> 0.7)
+    //    cannot change any SMP value on the wire.
+    #[test]
+    fn mod_exp_matches_reference_at_the_edges() {
+        let p = &*SMP_PRIME;
+        let one = num_bigint::BigUint::from(1u8);
+        let bases = [num_bigint::BigUint::from(2u8), p - &one, p - 2u8,
+                     num_bigint::BigUint::from_bytes_be(&[0x5Au8; 383])];
+        let exps: [Vec<u8>; 5] = [vec![0u8], vec![1u8], SMP_ORDER.to_bytes_be(),
+                                  (p - 2u8).to_bytes_be(), vec![0xFFu8; 384]];
+        for b in &bases {
+            for e in &exps {
+                let want = b.modpow(&num_bigint::BigUint::from_bytes_be(e), p);
+                assert_eq!(SmpState::mod_exp(b, e, p), want);
+            }
+        }
     }
 
     // ── 4. mod_inv: a · a^-1 ≡ 1 (mod p) ────────────────────────────────────
