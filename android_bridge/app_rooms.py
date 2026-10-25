@@ -159,6 +159,10 @@ class RoomChatMixin:
             return
         groups = self._groups
         secure = groups is not None and groups.is_secure(room)
+        if secure:
+            # A group this device holds now: any earlier "no keys" verdict
+            # was history that arrived before the keys did.
+            self._keyless_groups.discard(room)
         if secure and body.startswith(self.ENTRY_REQUEST_PREFIX):
             self._entry_requested(room, body, timestamp, own, item)
             return
@@ -180,6 +184,16 @@ class RoomChatMixin:
             # joined, or its saved state was lost). Its ciphertext is never
             # shown as a message, and the room is never treated as plain:
             # sending into it is refused (`send_user_text`).
+            #
+            # Not while the keys may still come (device report, 2026-10-25:
+            # the banner said "no keys" over a working, padlocked group). The
+            # room replays its history on join, before the Welcome is
+            # processed, and before the groups open at sign-in; that
+            # ciphertext is dropped quietly, and the verdict waits for a
+            # message that arrives once the groups are open and no join is
+            # pending.
+            if groups is None or not groups.is_open or groups.awaiting_welcome(room):
+                return
             if room not in self._keyless_groups:
                 self._keyless_groups.add(room)
                 self._emit(ErrorOccurred(peer=room, code="group_keys_missing"))

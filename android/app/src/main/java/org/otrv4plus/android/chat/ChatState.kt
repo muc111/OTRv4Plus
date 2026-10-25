@@ -800,6 +800,9 @@ class ChatState(
     fun callState(jid: String): CallState =
         callStates[bare(jid)] ?: CallState.IDLE
 
+    /** Whether any call is in progress (ringing, connecting or live). */
+    fun anyCall(): Boolean = callStates.values.any { it != CallState.IDLE && it != CallState.ENDED }
+
     /** Who is calling us right now (RINGING is only ever incoming), for a
      *  prompt that shows whichever screen is open. */
     fun ringingPeers(): List<String> =
@@ -971,6 +974,12 @@ class ChatState(
                 clearGroupInvite(room)
                 deleteConversation(room)
             }
+        }
+        // The group works now: a "no keys" banner for it, raised by history
+        // replayed before the keys arrived, is no longer true.
+        if (event.change in setOf("created", "joined", "synced") &&
+            notice == GroupText.failure("group_keys_missing", room)) {
+            notice = null
         }
         GroupText.describe(event)?.let { note(it) }
     }
