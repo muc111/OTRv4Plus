@@ -59,8 +59,11 @@ def test_bad_requests_never_reach_the_server():
 
 def test_a_ban_goes_to_the_server_and_its_refusal_comes_back():
     t = _Transport()
-    assert _controller(t).moderate("ban", "Bob@X.i2p", days=7, reason="spam")["ok"]
-    assert t.calls == [("ban", "bob@x.i2p", 7, "spam")]
+    # Permanent only (owner, 2026-10-25): days other than 0 never reach the server.
+    timed = _controller(t).moderate("ban", "Bob@X.i2p", days=7, reason="spam")
+    assert timed["code"] == "bad_request" and t.calls == []
+    assert _controller(t).moderate("ban", "Bob@X.i2p", days=0, reason="spam")["ok"]
+    assert t.calls == [("ban", "bob@x.i2p", 0, "spam")]
     refused = _controller(_Transport(refused=True)).moderate("ban", "alice@x.i2p", days=0)
     assert not refused["ok"] and refused["code"] == "moderation_refused"
     assert refused["detail"] == "An admin cannot be banned."

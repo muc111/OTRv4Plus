@@ -197,7 +197,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Ask to join | Rooms: three sections (your encrypted groups; encrypted groups on the server; plain rooms, marked not encrypted). Ask to join on a group you are not in: a member sees "… asks to join" with Invite / Dismiss; Invite sends the invitation. New encrypted groups offer no password | rc.114 |
 | Sign-in retries | Sign in with the built-in router: the attempts count should be lower and "sign-in" shorter than before | rc.115 |
 | People only | People tab: no rooms (nothing @conference.…), only accounts | rc.116 |
-| Rooms list and bans | Rooms tab lists rooms again (Look again if it has not answered). As the admin, after installing mod_otrv4plus_moderation: another person's profile shows Moderation; ban for 1 day, they are signed out and their app says until when; Unban lets them back. Hidden rooms show on the admin's Rooms tab | rc.117 |
+| Rooms list and bans | Rooms tab lists rooms again (Look again if it has not answered). As the admin, after installing mod_otrv4plus_moderation: another person's profile shows Moderation; ban for 1 day, they are signed out and their app says until when; Unban lets them back (timed bans removed in rc.174: permanent only). Hidden rooms show on the admin's Rooms tab | rc.117 |
 | No transit | Built-in router: sign-in as fast as rc.117, and less battery over a day with the app left running | rc.118 |
 | Regressions | Fresh install, built-in router: no red line while it sets up, however many tries. Rooms: Delete as creator and as admin removes the room; as a member only Leave; a refusal says why. Group header and Rooms say MLS+ | rc.119 |
 | Admin delete | After updating mod_otrv4plus_moderation on the server: as the admin, Delete a room someone else made (Rooms tab); it disappears for everyone | rc.120 |
@@ -229,6 +229,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Notification tap (rc.171) | Tap the message notification: the app opens on the chat list and asks whether to view the message from that sender; View opens it, Not now leaves it closed. With two senders waiting, Not now moves on to the other. | rc.171 |
 | Desktop file viewer (rc.172) | Desktop app: click Open on a received picture: File tab shows it (Fit, +/−), Metadata lists EXIF and GPS as the phone does, Hidden content reports appended data; Save to… writes a copy. A PDF shows its Metadata and Hidden tabs. | rc.172 |
 | Group invite to desktop (rc.173) | From the phone, invite the desktop account to an encrypted group: the desktop shows a notification (Group invitation) and a Join card under Rooms. If another copy of the app holds the account, the desktop says so. | rc.173 |
+| Permanent bans (rc.174) | As the admin, after re-running prosody/install-server-limits.sh: another person's profile shows Moderation with Ban permanently and Unban only; Ban signs them out and their app says they are banned; Unban lets them back; the account stays in user:list throughout. | rc.174 |
 
 ## ⚠️ Known limits
 

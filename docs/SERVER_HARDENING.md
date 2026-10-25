@@ -114,16 +114,16 @@ commands, offered to nobody else:
 
 | Command | What it does |
 |---|---|
-| Ban an account | For 1 to 3650 days, or permanently (0). The account's sessions close at once, and every sign-in is refused until the ban ends. Admins and yourself cannot be banned. |
+| Ban an account | Permanently: the account's sessions close at once, and every sign-in is refused until an admin lifts the ban. Timed bans were removed (2026-10-25); a timed ban stored by an earlier build still ends on its date. A ban never deletes or changes the account. Admins and yourself cannot be banned. |
 | Lift a ban | The account can sign in again straight away. |
 | Ban status | Whether an account is banned, and until when. |
 | List all rooms | Every room on the rooms service, hidden ones included. |
 | Destroy a room | Any room on the rooms service. The app uses it when the server refuses an admin's ordinary Delete because it does not count the admin as owner of other people's rooms (check: in `prosodyctl shell`, `room:get_affiliation("admin@…")` is `nil`). |
 
 In the app, an admin sees **Moderation (server admin)** on other people's
-profiles (Ban for N days, Ban permanently, Unban), and every room,
-hidden ones marked, on the Rooms tab. A banned person's app says until when
-and stops trying. Bans are kept in Prosody's storage, so they survive a
+profiles (Ban permanently, Unban), and every room,
+hidden ones marked, on the Rooms tab. A banned person's app says they are
+banned and stops trying. Bans are kept in Prosody's storage, so they survive a
 restart; each is logged at `warn` in `prosody.err`.
 
 The one command above installs and enables it. If the rooms service is not

@@ -1,8 +1,8 @@
 -- SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 -- Copyright (C) 2025-2026 muc111
 --
--- mod_otrv4plus_moderation: server admins ban accounts for a number of days
--- or for good, lift a ban, see every room on the server -- hidden ones
+-- mod_otrv4plus_moderation: server admins ban accounts permanently, lift a
+-- ban, see every room on the server -- hidden ones
 -- included -- and destroy any room.
 -- Owner (2026-10-17): "Alice should be able to ban any user on
 -- their user profile ... for set amount of days or Perm ban or unban ...
@@ -22,6 +22,12 @@
 -- Prosody's storage (store "otrv4plus_bans"), so they survive a restart.
 -- An admin cannot be banned, and nobody can ban themself.
 --
+-- PERMANENT ONLY (owner, 2026-10-25). A timed ban was followed by the account
+-- disappearing from the server ("c@" banned for one day, gone from
+-- `user:list` a week later). Nothing here deletes an account, but the owner
+-- chose bans that last until an admin lifts them, so "days" other than 0 is
+-- refused. A timed ban stored by an earlier build still ends on its date.
+--
 --   otrv4plus_muc_host = "conference.<this host>"  -- for "List all rooms"
 
 local jid = require "util.jid";
@@ -37,7 +43,6 @@ local host_sessions = prosody.hosts[host].sessions;
 local muc_host = module:get_option_string("otrv4plus_muc_host", "conference." .. host);
 
 local NS = "https://otrv4plus.i2p/protocol/admin#";
-local MAX_DAYS = 3650;
 
 -- Through Prosody's roles where it has them (0.12+/13: get_jid_role), so the
 -- server stops warning "Usage of legacy is_admin() API, which will be
@@ -115,7 +120,7 @@ local ban_form = dataforms_new {
 	title = "Ban an account";
 	{ name = "FORM_TYPE", type = "hidden", value = NS .. "ban-user" };
 	account_field;
-	{ name = "days", type = "text-single", label = "Days (0 = permanent)", value = "0" };
+	{ name = "days", type = "hidden", value = "0" };
 	{ name = "reason", type = "text-single", label = "Reason (only admins see it)" };
 };
 
@@ -136,11 +141,11 @@ local ban_handler = adhoc_simple(ban_form, function (fields, err, data)
 		return { status = "completed", error = { message = "There is no such account." } };
 	end
 	local days = tonumber(fields.days or "0");
-	if not days or days < 0 or days > MAX_DAYS or days ~= math.floor(days) then
+	if days ~= 0 then
 		return { status = "completed",
-			error = { message = "Days must be a whole number from 0 (permanent) to " .. MAX_DAYS .. "." } };
+			error = { message = "Only permanent bans are supported; lift the ban with Unban." } };
 	end
-	local until_ = days == 0 and 0 or (os.time() + days * 86400);
+	local until_ = 0;
 	bans:set(node, { ["until"] = until_, by = actor, at = os.time(),
 		reason = (fields.reason or ""):sub(1, 200) });
 	local closed = close_sessions(node, ban_text(until_));

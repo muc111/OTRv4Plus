@@ -326,16 +326,15 @@ private fun IdentitySection(model: ChatViewModel, own: Boolean, jid: String,
 }
 
 /**
- * Ban [jid] for some days or for good, or lift the ban (owner, 2026-10-17).
- * Every action asks first; the server refuses a ban on an admin or on
- * ourselves, and says so here.
+ * Ban [jid] permanently, or lift the ban (owner, 2026-10-17; permanent only
+ * since 2026-10-25). Every action asks first; the server refuses a ban on an
+ * admin or on ourselves, and says so here.
  */
 @Composable
 private fun ModerationSection(model: ChatViewModel, jid: String) {
     val text = org.otrv4plus.android.chat.ModerationText
     LaunchedEffect(jid) { model.loadModeration(jid) }
-    var daysTyped by remember(jid) { mutableStateOf("7") }
-    var confirmDays by remember(jid) { mutableStateOf<Int?>(null) }
+    var confirmBan by remember(jid) { mutableStateOf(false) }
     var confirmUnban by remember(jid) { mutableStateOf(false) }
     val m = model.moderation
     val busy = model.moderationBusy
@@ -349,42 +348,25 @@ private fun ModerationSection(model: ChatViewModel, jid: String) {
     m?.said?.takeIf { it.isNotBlank() && m.outcome.ok }?.let {
         Text(it, style = MaterialTheme.typography.bodySmall)
     }
-    val days = text.days(daysTyped)
-    Row(verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedTextField(
-            value = daysTyped,
-            onValueChange = { daysTyped = it.filter(Char::isDigit).take(4) },
-            label = { Text("Days") },
-            singleLine = true,
-            enabled = !busy,
-            keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                keyboardType = androidx.compose.ui.text.input.KeyboardType.Number),
-            modifier = Modifier.width(96.dp),
-        )
-        OutlinedButton(enabled = !busy && days != null, onClick = { confirmDays = days }) {
-            Text("Ban for ${days ?: "…"} days", color = MaterialTheme.colorScheme.error)
-        }
-    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(enabled = !busy, onClick = { confirmDays = 0 }) {
+        OutlinedButton(enabled = !busy, onClick = { confirmBan = true }) {
             Text("Ban permanently", color = MaterialTheme.colorScheme.error)
         }
         if (m?.banned == true) {
             Button(enabled = !busy, onClick = { confirmUnban = true }) { Text("Unban") }
         }
     }
-    confirmDays?.let { d ->
+    if (confirmBan) {
         AlertDialog(
-            onDismissRequest = { confirmDays = null },
-            title = { Text(if (d == 0) "Ban permanently?" else "Ban for $d days?") },
-            text = { Text(text.confirm(jid, d)) },
+            onDismissRequest = { confirmBan = false },
+            title = { Text("Ban permanently?") },
+            text = { Text(text.confirm(jid)) },
             confirmButton = {
-                TextButton(onClick = { confirmDays = null; model.moderate(jid, "ban", d) }) {
+                TextButton(onClick = { confirmBan = false; model.moderate(jid, "ban", 0) }) {
                     Text("Ban", color = MaterialTheme.colorScheme.error)
                 }
             },
-            dismissButton = { TextButton(onClick = { confirmDays = null }) { Text("Cancel") } },
+            dismissButton = { TextButton(onClick = { confirmBan = false }) { Text("Cancel") } },
         )
     }
     if (confirmUnban) {

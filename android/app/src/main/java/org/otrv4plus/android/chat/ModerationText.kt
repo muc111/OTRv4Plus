@@ -9,9 +9,9 @@ import java.util.Locale
 import java.util.TimeZone
 
 /**
- * What the Moderation section on a profile says (owner, 2026-10-17: ban an
- * account "for set amount of days or Perm ban or unban ... for server admin /
- * mod use only. No one else should see it"). Shown only to an account the
+ * What the Moderation section on a profile says (owner, 2026-10-17: "Perm ban
+ * or unban ... for server admin / mod use only. No one else should see it";
+ * timed bans removed 2026-10-25). Shown only to an account the
  * SERVER lists its admin commands to; the server
  * (prosody/mod_otrv4plus_moderation.lua) runs every ban. Plain Kotlin, so
  * `ModerationTextTest` runs it.
@@ -21,15 +21,9 @@ object ModerationText {
     const val TITLE = "Moderation (server admin)"
 
     const val NOTE =
-        "Only you, as this server's admin, see this. A ban signs them out at " +
-            "once and refuses every sign-in until it ends. It cannot be used " +
-            "on another admin or on yourself."
-
-    const val MAX_DAYS = 3650
-
-    /** The number typed for "Ban for … days", or null when it is not 1..MAX_DAYS. */
-    fun days(typed: String): Int? =
-        typed.trim().toIntOrNull()?.takeIf { it in 1..MAX_DAYS }
+        "Only you, as this server's admin, see this. A ban is permanent: it " +
+            "signs them out at once and refuses every sign-in until you lift it " +
+            "with Unban. It cannot be used on another admin or on yourself."
 
     fun utc(epochSeconds: Long): String =
         SimpleDateFormat("yyyy-MM-dd HH:mm 'UTC'", Locale.ROOT).apply {
@@ -45,7 +39,8 @@ object ModerationText {
         else -> "Banned until ${utc(m.until)}."
     }
 
-    fun confirm(jid: String, days: Int): String =
-        if (days == 0) "Ban $jid permanently? They are signed out now and cannot sign in again until you lift the ban."
-        else "Ban $jid for $days day${if (days == 1) "" else "s"}? They are signed out now and cannot sign in until it ends."
+    /** Bans are permanent only (owner, 2026-10-25); "until" above is for a
+     *  timed ban an earlier build stored, which still ends on its date. */
+    fun confirm(jid: String): String =
+        "Ban $jid permanently? They are signed out now and cannot sign in again until you lift the ban."
 }

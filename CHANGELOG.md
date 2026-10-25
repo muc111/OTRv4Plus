@@ -4,6 +4,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.174 — 2026-10-24 — Permanent bans only (core 0.13.1)
+
+- Bans are permanent only (owner's choice). The profile's Moderation section
+  has Ban permanently and Unban; "Ban for N days" is gone. The bridge and the
+  server module (`mod_otrv4plus_moderation`) refuse a timed ban too. A timed
+  ban stored by an earlier build still ends on its date. Re-run
+  `prosody/install-server-limits.sh` on the server to install the module.
+- The module's test harness now fails if a ban ever deletes an account or
+  changes its password: nothing in the ban path does either.
+
 ## Android 0.7.0-experimental.rc.173 — 2026-10-24 — Group invitations never lost in silence; desktop notifies them (core 0.13.1)
 
 - Group invitations are no longer lost in silence. When an account's

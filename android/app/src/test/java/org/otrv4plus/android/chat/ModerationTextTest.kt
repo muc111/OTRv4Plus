@@ -6,7 +6,6 @@ import org.otrv4plus.android.bridge.Moderation
 import org.otrv4plus.android.bridge.RoomOutcome
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNull
 
 class ModerationTextTest {
 
@@ -23,12 +22,12 @@ class ModerationTextTest {
     }
 
     @Test
-    fun `days are a whole number from 1 to ten years`() {
-        assertEquals(7, ModerationText.days(" 7 "))
-        assertNull(ModerationText.days("0"))
-        assertNull(ModerationText.days("-2"))
-        assertNull(ModerationText.days("3651"))
-        assertNull(ModerationText.days("seven"))
+    fun `a ban is permanent and says so`() {
+        // Owner, 2026-10-25: permanent bans only.
+        assertEquals("Ban c@x.i2p permanently? They are signed out now and cannot sign in " +
+                     "again until you lift the ban.", ModerationText.confirm("c@x.i2p"))
+        kotlin.test.assertTrue("permanent" in ModerationText.NOTE)
+        kotlin.test.assertFalse("days" in ModerationText.NOTE)
     }
 
     @Test

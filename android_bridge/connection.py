@@ -1088,7 +1088,7 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
     def moderate(self, op: str, account: str = "", days: int = 0,
                  reason: str = "") -> Dict[str, Any]:
         """Server admins only, and the SERVER enforces it: "status", "ban"
-        (days 0 = permanent), "unban" or "rooms" (every room, hidden ones
+        (permanent; days must be 0), "unban" or "rooms" (every room, hidden ones
         too). See transport.moderation."""
         if op not in ("status", "ban", "unban", "rooms"):
             return {"ok": False, "code": "bad_request", "detail": "unknown operation",
@@ -1102,9 +1102,10 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             days = int(days)
         except (TypeError, ValueError):
             days = -1
-        if op == "ban" and not 0 <= days <= 3650:
+        # Permanent only (owner, 2026-10-25); the server refuses days too.
+        if op == "ban" and days != 0:
             return {"ok": False, "code": "bad_request",
-                    "detail": "Days must be from 0 (permanent) to 3650.", "value": None}
+                    "detail": "Only permanent bans are supported.", "value": None}
         result = self._muc_call("moderation", op, account, days, str(reason or ""))
         value = result.get("value") or {}
         if result.get("ok") and value.get("refused"):
