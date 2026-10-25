@@ -111,8 +111,8 @@ sudo apt install -y git && git clone -b dev https://github.com/muc111/OTRv4Plus.
 sudo apt install -y git && git clone -b main https://github.com/muc111/OTRv4Plus.git ~/OTRv4Plus && bash ~/OTRv4Plus/desktop/install.sh
 ```
 
-Both ends of a conversation need the same branch (`dev` refuses `main`'s older
-protocol). Already have the clone? `bash ~/OTRv4Plus/desktop/install.sh`.
+Both ends of a conversation need the same protocol: `main` has v2 since
+2026-10-25, and a clone from before that is refused by `dev` and the APK. Already have the clone? `bash ~/OTRv4Plus/desktop/install.sh`.
 Running it again later pulls the branch you are on and rebuilds; keys and
 settings in `~/.otrv4plus` stay. Switch branch with
 `git fetch origin dev && git checkout dev` (or `git checkout main`), then run it again.

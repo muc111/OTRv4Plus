@@ -124,7 +124,7 @@ Secure groups use **MLS+** through OpenMLS, with every primitive from the same R
 | Branch | What it is |
 |---|---|
 | `dev` | Newest. The Android test APK on the Releases page is built from it. |
-| `main` | The last stable release. Older protocol: the current APK and `dev` refuse it. |
+| `main` | Stable: `dev` once tested on devices, merged now and then, so it can be behind. Has protocol v2 since 2026-10-25; a `main` clone older than that is refused by the current APK. |
 
 `git pull` stays on your branch. Switch a clone: `git fetch origin dev && git checkout dev` (or `git checkout main`), then build again.
 

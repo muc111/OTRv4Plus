@@ -92,7 +92,7 @@ business, that is the wrong side of the trade however useful it is.
 | `android_bridge/transport.py` | `register_account()`, and `_enable_registration` on the client. |
 | `android_bridge/connection.py` | `register()`, and the `registered` stage. |
 | `bridge/ChaquopyOtrCore.kt` | `register()`, returning `RegistrationOutcome`. |
-| `ConnectionViewModel.kt` | `register()`, off the main thread, refused while connected. |
+| `ConnectionViewModel.kt` | `register()`: hands Create account to the connection service (router first, then sign-in), refused while connected. |
 | `ui/ConnectScreen.kt` | **Log in** and **Create account**. |
 
 Three properties are load-bearing.
