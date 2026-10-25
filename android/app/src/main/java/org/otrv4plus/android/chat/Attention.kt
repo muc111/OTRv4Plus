@@ -25,6 +25,7 @@ object Attention {
     enum class Kind(val text: String) {
         VERIFICATION("Verification requested"),
         GROUP_INVITE("Group invitation"),
+        GROUP_VERIFY("Group verification started"),
         PASSWORD_NEEDED("A group needs its password"),
         ENTRY_REQUEST("Someone asks to join a group"),
     }
@@ -36,6 +37,9 @@ object Attention {
         is OtrEvent.SmpProgressed ->
             if (event.progress.state == SmpState.SECRET_REQUIRED) Kind.VERIFICATION else null
         is OtrEvent.GroupInvited -> Kind.GROUP_INVITE
+        // The creator started verifying a group: every member is asked for
+        // the passphrase (owner, 2026-10-25). Our own start is "verify_begun".
+        is OtrEvent.GroupChanged -> if (event.change == "verify_started") Kind.GROUP_VERIFY else null
         // History replays old requests on every sign-in: banner, no buzz.
         is OtrEvent.GroupEntryRequested -> if (event.live) Kind.ENTRY_REQUEST else null
         else -> null

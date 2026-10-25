@@ -280,7 +280,6 @@ private fun EncryptedGroupsSection(
         Text(RoomSections.MLS_PLUS_NOTE, style = MaterialTheme.typography.bodySmall,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
         var groupName by rememberSaveable { mutableStateOf("") }
-        var groupPassphrase by remember { mutableStateOf("") }
         OutlinedTextField(
             value = groupName,
             onValueChange = { groupName = it },
@@ -295,32 +294,15 @@ private fun EncryptedGroupsSection(
             enabled = busy == null,
             modifier = Modifier.fillMaxWidth(),
         )
-        OutlinedTextField(
-            value = groupPassphrase,
-            onValueChange = { groupPassphrase = it },
-            label = { Text("Group passphrase (for verifying members)") },
-            supportingText = {
-                Text("8+ characters. Tell the members in person or on a call, " +
-                     "never in a chat. Members type it to verify; only verified " +
-                     "members are in group calls. Never stored or sent.",
-                     style = MaterialTheme.typography.bodySmall)
-            },
-            singleLine = true,
-            enabled = busy == null,
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth(),
-        )
+        // No passphrase here (owner, 2026-10-25): the creator sets it when
+        // they start verifying, from the group's chat.
         Button(
-            enabled = busy == null && groupName.isNotBlank() && nick.isNotBlank() &&
-                (groupPassphrase.isEmpty() || groupPassphrase.length >= 8),
-            onClick = {
-                model.createSecure(groupName.trim(), nick.trim(), groupPassphrase)
-                groupPassphrase = ""
-            },
+            enabled = busy == null && groupName.isNotBlank() && nick.isNotBlank(),
+            onClick = { model.createSecure(groupName.trim(), nick.trim(), "") },
         ) { Text("Create encrypted group") }
         Text("Invite members from the group once it is made. It needs no " +
-                 "password: nobody can read it without an invitation.",
+                 "password: nobody can read it without an invitation. To verify " +
+                 "the members, press Verify group in the group's chat.",
              style = MaterialTheme.typography.bodySmall)
     }
     deleting?.let { group ->

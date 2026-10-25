@@ -68,6 +68,7 @@ class TestARequestNamesNobody:
         src = _read("chat", "Attention.kt")
         texts = re.findall(r'[A-Z_]+\("([^"]+)"\)', src)
         assert texts == ["Verification requested", "Group invitation",
+                         "Group verification started",
                          "A group needs its password",
                          "Someone asks to join a group"]
 

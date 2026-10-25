@@ -77,8 +77,10 @@ Working now:
   decoded by Skia only when you click **Open** on it (never on arrival),
   from a transient decrypted copy that is deleted when the viewer closes.
 * **Encrypted groups**, working the same way as the Android app:
-  * **Verify group**, using the shared passphrase, with progress and a
-    time estimate;
+  * **Verify group**: the group's creator starts it and sets the
+    passphrase then; each member types it and runs the full OTRv4+ SMP
+    with the creator, who vouches for each success (minutes, not hours,
+    for a large group); progress and a time estimate;
   * **Call the group** once members are verified;
   * when someone calls: **Join**;
   * during a call: **Pause** and **Hang up**;

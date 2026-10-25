@@ -471,11 +471,19 @@ internal fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                                 withMic("call")
                             }
                         }
+                        // The creator starts verifying, from here; everyone
+                        // else joins the run they start (owner, 2026-10-25).
                         if (!verify.allVerified) {
-                            OutlinedButton(onClick = { asking = true }) {
-                                Text(if (verify.startedBy.isNotEmpty())
-                                         "Join the verification (${verify.startedBy})"
-                                     else "Verify group")
+                            when {
+                                verify.startedBy.isNotEmpty() ->
+                                    OutlinedButton(onClick = { asking = true }) {
+                                        Text("Join the verification (${verify.startedBy})")
+                                    }
+                                verify.canStart ->
+                                    OutlinedButton(onClick = { asking = true }) { Text("Verify group") }
+                                !verify.active && verify.coordinator.isNotEmpty() ->
+                                    Text(org.otrv4plus.android.chat.GroupText.waitingForCreator(verify.coordinator),
+                                         style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -483,7 +491,7 @@ internal fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
             }
         }
     }
-    if (asking) GroupPassphrasePrompt(model, jid) { asking = false }
+    if (asking) GroupPassphrasePrompt(model, jid, starting = verify.startedBy.isEmpty()) { asking = false }
 }
 
 /**
@@ -492,18 +500,16 @@ internal fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
  * (not in the ViewModel, not in saved state).
  */
 @Composable
-internal fun GroupPassphrasePrompt(model: ChatViewModel, jid: String, close: () -> Unit) {
+internal fun GroupPassphrasePrompt(model: ChatViewModel, jid: String, starting: Boolean,
+                                   close: () -> Unit) {
     var passphrase by remember { mutableStateOf("") }
     run {
         AlertDialog(
             onDismissRequest = { passphrase = ""; close() },
-            title = { Text("Verify the group") },
+            title = { Text(if (starting) "Verify the group" else "Join the verification") },
             text = {
                 Column {
-                    Text("Type the group passphrase. Every member who types the same " +
-                         "one is verified with you; anyone else is left out of group " +
-                         "calls. If you created this group with a passphrase, you can " +
-                         "leave this empty.",
+                    Text(org.otrv4plus.android.chat.GroupText.passphrasePrompt(starting),
                          style = MaterialTheme.typography.bodySmall)
                     OutlinedTextField(
                         value = passphrase,

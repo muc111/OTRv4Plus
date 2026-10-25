@@ -143,12 +143,14 @@ object GroupText {
         "reinvited" -> "${event.detail} invited you again to ${event.room}, which this " +
             "phone is already in. Accept only if the group stopped working here: " +
             "this phone's copy is replaced with the current one."
-        "member_verified" -> "${event.detail} is verified in ${event.room}: group calls " +
-            "with them are possible."
+        "member_verified" -> "${event.detail} is verified in ${event.room}: files, " +
+            "locations, voice notes and calls with them are possible."
         "held_change" -> "A change to ${event.room} is landing: your message waits and " +
             "goes, encrypted, right after."
-        "verify_started" -> "${event.detail} started verifying ${event.room} with the " +
-            "group passphrase. Open the group and type it to join."
+        "verify_started" -> "${event.detail} started verifying ${event.room}. Open the " +
+            "group and type the passphrase they told you to be verified."
+        "verify_begun" -> "Verifying ${event.room}: every member is asked for the " +
+            "passphrase. Those who type the same one are verified."
         "member_verify_failed" -> "${event.detail}: the group passphrases did not " +
             "match. Not verified, and not in group calls."
         "group_verified" -> "Every member of ${event.room} is verified. You can call the group."
@@ -162,6 +164,21 @@ object GroupText {
         } else null
         else -> null
     }
+
+    /** Verification is the creator's to start (owner, 2026-10-25). */
+    fun waitingForCreator(creator: String): String =
+        "Not verified yet. $creator, who created this group, starts verifying it; " +
+            "you are asked for the passphrase then. Until you are verified: text only " +
+            "(no files, locations, voice notes or calls)."
+
+    /** The passphrase dialog: the creator chooses it, members type it. */
+    fun passphrasePrompt(starting: Boolean): String =
+        if (starting) "Choose the group passphrase and tell it to the members yourself " +
+            "(in person or on a call, never in a chat). Each member is asked for it; " +
+            "everyone who types the same one is verified, and can send files, " +
+            "locations, voice notes and calls in the group."
+        else "Type the passphrase the group's creator told you. If it matches, you are " +
+            "verified with every member who typed it too."
 
     fun refusal(code: String, room: String): String = when (code) {
         "inviter_fingerprint_mismatch" ->
@@ -221,6 +238,8 @@ object GroupText {
             "suite and cannot take new members. Create a new group to add people."
         "commit_pending" -> "Waiting for the room to confirm a group change. Try again shortly."
         "passphrase_needed" -> "Type the group passphrase to verify the group."
+        "only_the_creator_starts" -> "Only the group's creator starts verifying it. " +
+            "You are asked for the passphrase when they do."
         "passphrase_too_short" -> "The group passphrase must be 8 characters or more."
         "no_verified_member" -> "Nobody in this group is verified yet: verify the group first."
         "call_in_progress" -> "You are already in a group call."

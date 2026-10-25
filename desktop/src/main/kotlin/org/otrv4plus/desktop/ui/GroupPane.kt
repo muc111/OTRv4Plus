@@ -130,7 +130,9 @@ fun GroupBar(model: AppModel, room: String) {
                                     model.callPath, model.callPathSecondsLeft))
                             }
                         }
-                        if (!verify.allVerified) {
+                        // The creator starts verifying; everyone else joins the
+                        // run they start (owner, 2026-10-25).
+                        if (!verify.allVerified && (verify.startedBy.isNotEmpty() || verify.canStart)) {
                             OutlinedButton(onClick = { asking = true }) {
                                 Icon(Icons.Filled.VerifiedUser, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
@@ -138,13 +140,16 @@ fun GroupBar(model: AppModel, room: String) {
                                          "Join the verification (${verify.startedBy})"
                                      else "Verify group")
                             }
+                        } else if (!verify.allVerified && !verify.active && verify.coordinator.isNotEmpty()) {
+                            Text(org.otrv4plus.android.chat.GroupText.waitingForCreator(verify.coordinator),
+                                 style = MaterialTheme.typography.labelSmall)
                         }
                     }
                 }
             }
         }
     }
-    if (asking) GroupPassphraseDialog(onDone = { phrase ->
+    if (asking) GroupPassphraseDialog(starting = verify.startedBy.isEmpty(), onDone = { phrase ->
         asking = false
         if (phrase != null) model.startGroupVerify(room, phrase)
     })
@@ -152,16 +157,14 @@ fun GroupBar(model: AppModel, room: String) {
 
 /** The group passphrase: lives in this dialog only, and is dropped with it. */
 @Composable
-private fun GroupPassphraseDialog(onDone: (String?) -> Unit) {
+private fun GroupPassphraseDialog(starting: Boolean, onDone: (String?) -> Unit) {
     var passphrase by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = { passphrase = ""; onDone(null) },
-        title = { Text("Verify the group") },
+        title = { Text(if (starting) "Verify the group" else "Join the verification") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Type the group passphrase. Every member who types the same one is " +
-                     "verified with you; anyone else is left out of group calls. If you " +
-                     "created this group with a passphrase, you can leave this empty.",
+                Text(org.otrv4plus.android.chat.GroupText.passphrasePrompt(starting),
                      style = MaterialTheme.typography.bodyMedium)
                 OutlinedTextField(passphrase, { passphrase = it }, singleLine = true,
                                   label = { Text("Group passphrase") },

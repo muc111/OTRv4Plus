@@ -4,6 +4,23 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.179 — 2026-10-24 — Group verification by the creator; one-tap message (core 0.13.1)
+
+- **Group verification, simpler and fast for large groups.** No passphrase
+  when a group is made (Android, desktop, terminal). The group's creator
+  presses **Verify group** in its chat and chooses the passphrase then;
+  every member is notified and asked for it. Each member runs the full
+  OTRv4+ SMP (4 steps, hybrid ML-KEM-1024 + ML-DSA-87 + ZKP, Argon2id) with
+  the creator, who vouches for each success to the group, bound to the
+  member's group key: 99 SMPs for 100 members (minutes) instead of 4,950
+  between every pair (hours over I2P). Verified members are labelled; files,
+  locations, voice notes and calls stay between verified members only.
+  Members cannot start a run; once the creator has left, the longest-standing
+  member starts it.
+- **Message an online person in one tap.** Writing to someone who is online
+  but not a contact sends the contact request for you; the message waits,
+  encrypted only, and goes as soon as they accept.
+
 ## Android 0.7.0-experimental.rc.178 — 2026-10-24 — Contacts in the Welcome room count as online (core 0.13.1)
 
 - People and "Invite people online" (Android and desktop 0.14.2): a contact

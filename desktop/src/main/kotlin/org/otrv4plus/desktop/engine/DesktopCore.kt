@@ -407,6 +407,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
             active = v["active"].flag(), done = v["done"].asInt(), total = v["total"].asInt(),
             etaSeconds = v["eta"].asInt(),
             excluded = (v["excluded"] as? JsonArray).orEmpty().map { it.asStr() },
+            coordinator = v.str("coordinator"), canStart = v["can_start"].flag(),
         )
     }
 

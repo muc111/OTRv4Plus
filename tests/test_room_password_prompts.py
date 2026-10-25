@@ -45,7 +45,8 @@ def test_a_new_encrypted_group_gets_no_room_password():
     assert 'c.createSecureGroup(jid, "", passphrase)' in create
     assert "password" not in create.split(")", 1)[0]
     screen = _read(A, "ui", "RoomsScreen.kt")
-    assert "model.createSecure(groupName.trim(), nick.trim(), groupPassphrase)" in screen
+    # No passphrase at creation either: the creator sets it when verifying.
+    assert 'model.createSecure(groupName.trim(), nick.trim(), "")' in screen
     # The password option is under the plain rooms only.
     assert screen.index("RoomSections.PLAIN_TITLE") < screen.index("var protect")
 

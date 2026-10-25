@@ -30,6 +30,15 @@ class AttentionTest {
                      Attention.of(OtrEvent.GroupInvited(bob, room, verified = true)))
     }
 
+    // Owner (2026-10-25): the creator starts verifying, and every member is
+    // asked -- by a notification too. Our own start ("verify_begun") is not.
+    @Test fun theCreatorStartingAVerificationNeedsEveryMember() {
+        assertEquals(Attention.Kind.GROUP_VERIFY,
+                     Attention.of(OtrEvent.GroupChanged(room, "verify_started", 0, bob)))
+        assertNull(Attention.of(OtrEvent.GroupChanged(room, "verify_begun", 0, "me@x.i2p")))
+        assertNull(Attention.of(OtrEvent.GroupChanged(room, "verify_progress", 0, "")))
+    }
+
     @Test fun theTextNamesNobodyAndNothing() {
         for (kind in Attention.Kind.values()) {
             for (leak in listOf("bob", "otrv4plus", "design", "@")) {

@@ -897,6 +897,10 @@ data class GroupVerifyState(
     val etaSeconds: Int = 0,
     /** Members whose passphrase did not match: not in group calls. */
     val excluded: List<String> = emptyList(),
+    /** Who starts this group's verification: its creator (owner, 2026-10-25). */
+    val coordinator: String = "",
+    /** Whether this device is the one that may start it. */
+    val canStart: Boolean = false,
 )
 
 /** A secure group's call, as the engine has it. */

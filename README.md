@@ -212,10 +212,10 @@ IRC (defaults to `irc.postman.i2p` over I2P; `-s irc.libera.chat` for TLS):
 /help             every command
 ```
 
-Encrypted group chat (XMPP): `/group create mls3` (then its passphrase),
-`/group invite mls3 bob`, `y` to join, then just type; `/group verify mls3`
-checks every member, then `/group call mls3` or `/sendfile` (to the group).
-App: Rooms, "Create end-to-end encrypted group"; Verify, Call, Send a file.
+Encrypted group chat (XMPP): `/group create mls3`, `/group invite mls3 bob`,
+`y` to join, then just type; the creator's `/group verify mls3` sets the
+passphrase and checks every member, then `/group call mls3` or `/sendfile`.
+App: Rooms, "Create encrypted group"; the creator presses Verify group in its chat.
 Building on musl (Alpine), every option and all commands: [docs/TECHNICAL.md](docs/TECHNICAL.md).
 
 ## Documentation

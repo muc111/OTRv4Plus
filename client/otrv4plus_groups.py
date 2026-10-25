@@ -1383,6 +1383,7 @@ class TermuxGroups:
             self._print("[group %s] %s" % (room[:64], {
                 "passphrase_too_short": "the passphrase must be 8 characters or more",
                 "passphrase_too_long": "the passphrase is too long",
+                "only_the_creator_starts": "only the group's creator starts verifying it",
             }.get(str(exc), str(exc))))
             return
         finally:
@@ -1396,6 +1397,11 @@ class TermuxGroups:
         set at creation, or asked for now."""
         if not self.groups.is_secure(room):
             self._print("[group] %s is not one of your secure groups" % room[:64])
+            return
+        if self.verify.pending(room) is None and not self.verify.may_start(room):
+            self._print("[group %s] only the group's creator (%s) starts verifying it; "
+                        "you are asked for the passphrase when they do"
+                        % (room[:64], self.verify.coordinator(room)[:64]))
             return
         if self.verify.has_passphrase(room) and self.verify.pending(room) is None:
             try:
@@ -1423,7 +1429,11 @@ class TermuxGroups:
             self._leave_muc(room)
             raise
         self._activate(room)
-        self._ask_passphrase(room, creating=True)
+        # No passphrase at creation (owner, 2026-10-25): the creator sets it
+        # when they start verifying, once the members have joined.
+        self._print("[group %s] created. Invite members, then /group verify %s "
+                    "(or /smp in the group) to set the passphrase and verify them"
+                    % (room[:64], room.split("@", 1)[0]))
 
     async def _accept(self, room: str) -> None:
         """Join the room, then answer the invitation over OTRv4+."""

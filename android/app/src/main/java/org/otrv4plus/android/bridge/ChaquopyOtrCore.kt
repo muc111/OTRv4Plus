@@ -563,6 +563,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             total = int("total"),
             etaSeconds = int("eta"),
             excluded = excluded,
+            coordinator = entry(value, "coordinator"),
+            canStart = flag(value, "can_start"),
         )
     }
 

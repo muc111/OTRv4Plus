@@ -1312,16 +1312,18 @@ class TestVerifyingTheGroupWithItsPassphrase:
         async def go():
             await _otr_all(w)
             await w.a.cmd("/group create " + short)
-            assert w.a.lines("set the group passphrase now")
-            assert w.a.client.dispatch_line(None, "correct horse battery") is True
-            assert w.a.lines("passphrase set")
+            # No passphrase at creation (owner, 2026-10-25): set at /group verify.
+            assert not w.a.lines("set the group passphrase now")
+            assert w.a.lines("/group verify " + short)
             await w.a.cmd("/group invite %s %s" % (short, w.b.jid.split("@")[0]))
             await w.server.pump()
             assert w.b.client.dispatch_line(None, "y") is True       # join
             await _settle()
             await w.server.pump()
             assert w.b.groups.groups.is_secure(ROOM)
-            await w.a.cmd("/group verify " + short)                 # preset: no prompt
+            await w.a.cmd("/group verify " + short)                 # the creator sets it now
+            assert w.a.lines("type the group passphrase")
+            assert w.a.client.dispatch_line(None, "correct horse battery") is True
             await w.server.pump()
             assert w.b.lines("started verifying the group")
             assert w.b.client.dispatch_line(None, "y") is True
@@ -1351,13 +1353,13 @@ class TestVerifyingTheGroupWithItsPassphrase:
         async def go():
             await _otr_all(w)
             await w.a.cmd("/group create " + short)
-            assert w.a.client.dispatch_line(None, "correct horse battery") is True
             await w.a.cmd("/group invite %s %s" % (short, w.b.jid.split("@")[0]))
             await w.server.pump()
             assert w.b.client.dispatch_line(None, "y") is True
             await _settle()
             await w.server.pump()
             await w.a.cmd("/group verify " + short)
+            assert w.a.client.dispatch_line(None, "correct horse battery") is True
             await w.server.pump()
             assert w.b.client.dispatch_line(None, "y") is True
             assert w.b.client.dispatch_line(None, "correct horse battery") is True
