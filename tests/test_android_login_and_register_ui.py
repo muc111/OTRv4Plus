@@ -151,11 +151,11 @@ class TestTheRegistrationResultIsItsOwnThing:
     def test_a_success_says_the_account_was_created(self, connect):
         assert "Account created" in connect
 
-    def test_a_success_says_what_to_do_next(self, connect):
-        """It ends with nobody signed in, which looks like a failure unless
-        the screen says otherwise."""
-        assert "Log in" in connect
-        assert re.search(r"press Log in", connect)
+    def test_a_success_signs_in_and_does_not_ask_for_log_in(self, connect):
+        """Owner (2026-10-25): create the account, then sign in by itself.
+        "Now press Log in" is gone; the sign-in progress follows instead."""
+        assert not re.search(r"press Log in", connect)
+        assert "model.cancelRegister()" in connect
 
     def test_a_failure_shows_the_sentence_python_chose(self, connect):
         assert "it.detail" in connect
@@ -272,17 +272,33 @@ class TestTheViewModelPath:
     def test_register_exists(self, model):
         assert "fun register(" in model
 
-    def test_it_does_not_go_through_the_service(self, model):
-        """There is no session at the end of it, so there is nothing for a
-        foreground service to hold up."""
+    def test_it_goes_through_the_service_which_finds_the_router(self, model):
+        """Owner (2026-10-25): registration ran outside the service, so it never
+        started the built-in router and failed "could not reach the server"
+        whenever the I2P app was not running. It is handed to the service, which
+        chooses and waits for the router as Log in does."""
         block = body_of(model, "fun register(")
-        assert "OtrConnectionService.start" not in block
+        assert "OtrConnectionService.start(" in block and "register = true" in block
+        assert "c.register(" not in block, "no registration from the screen any more"
 
-    def test_it_runs_off_the_main_thread(self, model):
-        block = body_of(model, "fun register(")
-        assert "Dispatchers.IO" in block, (
-            "a blocking JNI call on the main thread is an ANR, and this one "
-            "builds an I2P tunnel")
+    def test_the_service_waits_for_the_router_then_registers_then_signs_in(self):
+        svc = code_of(os.path.join(UI, "connection", "OtrConnectionService.kt"))
+        reg = body_of(svc, "private suspend fun registerWhenReachable()")
+        assert "withContext(Dispatchers.IO)" in reg, "a blocking JNI call off the main thread"
+        assert reg.index("chooseRouter()") < reg.index("core.register(password)")
+        assert reg.index("prepareConnection(jid.trim(), server.trim(), samPort = samPort)") \
+            < reg.index("core.register(password)")
+        assert "RegisterRetry.again(" in reg
+        start = body_of(svc, "private fun startRegistration()")
+        ok = start[start.index("if (out.ok)"):]
+        assert ok.index("credentials.save(") < ok.index("startConnection()")
+        assert "registration = out" in start[start.index("} else {"):]
+
+    def test_credentials_are_saved_only_once_the_account_exists(self):
+        svc = code_of(os.path.join(UI, "connection", "OtrConnectionService.kt"))
+        start = svc[svc.index("ACTION_START ->"):]
+        branch = start[start.index("if (register) {"):start.index("return START_NOT_STICKY", start.index("if (register) {"))]
+        assert "credentials.save" not in branch and "startRegistration()" in branch
 
     def test_it_is_refused_while_connected(self, model):
         """`prepareConnection` replaces the core's controller. Doing that

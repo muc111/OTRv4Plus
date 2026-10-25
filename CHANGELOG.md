@@ -4,6 +4,19 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.175 — 2026-10-24 — Create account finds the router first, then signs in (core 0.13.1)
+
+- Create account works without the I2P app. It used to run from the
+  Connect screen, outside the connection service, so it never started the
+  built-in router or used its SAM port: with no I2P app running it failed at
+  once with "Could not reach the server". It now takes Log in's route: the
+  phone's I2P app if its SAM bridge answers, otherwise the built-in router,
+  started and waited for. Only then is the account requested, tried again
+  (5 s, 10 s, 20 s, then every 30 s, up to 10 minutes) while the server is
+  not yet reached; anything the server answers (name taken, refused,
+  CAPTCHA) is shown at once. Once the account exists it signs in by itself.
+  Cancel stops it and keeps the router warm.
+
 ## Android 0.7.0-experimental.rc.174 — 2026-10-24 — Permanent bans only (core 0.13.1)
 
 - Bans are permanent only (owner's choice). The profile's Moderation section

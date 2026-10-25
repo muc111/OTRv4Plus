@@ -183,9 +183,8 @@ fun ConnectScreen(
 
             // SECOND, and an outlined button rather than a filled one: almost
             // every press here is a login; account creation happens once.
-            // It deliberately does NOT then sign in (ConnectionController.
-            // register): a registration that worked and a login that did not
-            // stay two outcomes.
+            // It finds or starts the I2P router first, as Log in does, and
+            // signs in once the account exists (owner, 2026-10-25).
             OutlinedButton(
                 enabled = canSubmit,
                 onClick = {
@@ -213,7 +212,10 @@ fun ConnectScreen(
 
         // Only while an attempt is actually running. The one control that is
         // not disabled by `busy`, because `busy` is the state it gets out of.
-        if (model.connecting) {
+        // Not while Create account runs: the service is in CONNECTING then
+        // too, and its own line (below) says what is happening.
+        val registering = busy?.startsWith("Creating the account") == true
+        if (model.connecting && !registering) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(model.connectingLabel, style = MaterialTheme.typography.bodySmall)
             model.routerLabel?.let {
@@ -226,6 +228,9 @@ fun ConnectScreen(
         busy?.let {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(it, style = MaterialTheme.typography.bodySmall)
+            if (registering) {
+                TextButton(onClick = { model.cancelRegister() }) { Text("Cancel") }
+            }
         }
 
         ConnectOutcome(model)
@@ -468,12 +473,6 @@ private fun ConnectOutcome(model: ConnectionViewModel) {
                     else MaterialTheme.colorScheme.error,
         )
         Text(it.detail, style = MaterialTheme.typography.bodySmall)
-        if (it.ok) {
-            Text(
-                "Now press Log in with the same details.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-        }
     }
 
     model.identityChange?.let { change ->

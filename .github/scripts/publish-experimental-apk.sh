@@ -230,6 +230,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Desktop file viewer (rc.172) | Desktop app: click Open on a received picture: File tab shows it (Fit, +/−), Metadata lists EXIF and GPS as the phone does, Hidden content reports appended data; Save to… writes a copy. A PDF shows its Metadata and Hidden tabs. | rc.172 |
 | Group invite to desktop (rc.173) | From the phone, invite the desktop account to an encrypted group: the desktop shows a notification (Group invitation) and a Join card under Rooms. If another copy of the app holds the account, the desktop says so. | rc.173 |
 | Permanent bans (rc.174) | As the admin, after re-running prosody/install-server-limits.sh: another person's profile shows Moderation with Ban permanently and Unban only; Ban signs them out and their app says they are banned; Unban lets them back; the account stays in user:list throughout. | rc.174 |
+| Create account (rc.175) | Fresh install, I2P app not running: Create account shows Creating the account with the built-in router starting, retries while it warms up, then signs in by itself; a taken name says so at once; Cancel stops it. | rc.175 |
 
 ## ⚠️ Known limits
 

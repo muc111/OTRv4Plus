@@ -278,6 +278,24 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     routerLabel = it.routerLabel()
                     bundledRouterUpMs = it.bundledRouterUpMs()
                     connectTiming = it.lastConnectTiming
+                    // Create account (OtrConnectionService.startRegistration):
+                    // its progress while it runs, its outcome once, if it failed.
+                    // Until the service has picked the request up, the line stays
+                    // (and the buttons stay off): a tick in between is not "done".
+                    if (it.registering) {
+                        registerPendingSince = 0L
+                        busy = org.otrv4plus.android.connection.RegisterRetry.progress(
+                            it.registerAttempt, routerLabel)
+                    } else if (busy?.startsWith("Creating the account") == true &&
+                               (registerPendingSince == 0L ||
+                                System.currentTimeMillis() - registerPendingSince > REGISTER_PICKUP_MS)) {
+                        busy = null
+                        registerPendingSince = 0L
+                    }
+                    it.takeRegistration()?.let { r ->
+                        registration = r
+                        if (r.code == "server_identity_changed") loadIdentityChange()
+                    }
                 }
                 // Even with no service bound: the handover deadline in
                 // LoginProgress expires on the clock, and nothing would
@@ -328,20 +346,19 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Create an account, and do not sign in.
+     * Create an account, then sign in as it (owner, 2026-10-25).
      *
-     * Unlike [connect] this does NOT go through the service. There is no
-     * session at the end of it, so there is nothing for a foreground service
-     * to hold up: the stream is opened, the account is created, and the stream
-     * is given back. The user then presses Log in like anybody else.
+     * Through the service, like [connect], because the service is what
+     * finds or starts the I2P router: this used to run here, outside it, and
+     * so never reached the server without the I2P app already running. The
+     * service chooses the router, waits for it, registers (trying again while
+     * the route warms up, [org.otrv4plus.android.connection.RegisterRetry])
+     * and, once the account exists, signs in. [registration] is set only when
+     * it did not work; success shows as the sign-in itself.
      *
-     * Refused while connected. [ChaquopyOtrCore.prepareConnection] replaces
-     * the core's controller, and doing that under a live session would leave
-     * the service holding a connection nothing could any longer disconnect.
+     * Refused while connected: the service is holding a live session.
      */
     fun register(jid: String, password: String, server: String = "") {
-        val c = core ?: return
-        if (busy != null) return
         if (status.connected) {
             registration = RegistrationOutcome(
                 ok = false, code = "already_connected",
@@ -350,20 +367,22 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         }
         error = null
         registration = null
-        busy = "Creating the account..."
-        viewModelScope.launch {
-            val got = withContext(Dispatchers.IO) {
-                runCatching {
-                    c.prepareConnection(jid.trim(), server.trim())
-                    c.register(password)
-                }
-            }
-            got.onSuccess {
-                registration = it
-                if (it.code == "server_identity_changed") loadIdentityChange()
-            }.onFailure { error = it.javaClass.simpleName }
-            busy = null
-        }
+        connectionFailure = null
+        busy = org.otrv4plus.android.connection.RegisterRetry.progress(1, null)
+        registerPendingSince = System.currentTimeMillis()
+        revision++
+        OtrConnectionService.start(getApplication(), jid.trim(), password,
+                                   server.trim(), register = true)
+    }
+
+    /** When Create account was pressed and the service has not yet said it runs; 0: not waiting. */
+    private var registerPendingSince = 0L
+
+    /** Stop Create account (and keep the built-in router warm, as Cancel does). */
+    fun cancelRegister() {
+        busy = null
+        registerPendingSince = 0L
+        OtrConnectionService.stop(getApplication(), keepRouter = true)
     }
 
     private fun loadIdentityChange() {
@@ -534,6 +553,9 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
+        /** How long a pressed Create account may wait for the service to pick it up. */
+        private const val REGISTER_PICKUP_MS = 10_000L
+
         /** How often to read the service's state. Cheap: it is in-process. */
         const val POLL_MS = 500L
 

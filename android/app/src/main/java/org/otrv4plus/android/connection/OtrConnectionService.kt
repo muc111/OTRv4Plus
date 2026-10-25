@@ -349,6 +349,8 @@ class OtrConnectionService : Service() {
                 val account = intent.getStringExtra(EXTRA_JID).orEmpty()
                 val secret = intent.getStringExtra(EXTRA_PASSWORD).orEmpty()
                 val explicit = account.isNotBlank()
+                // Create account: register first, sign in only once it worked.
+                val register = explicit && intent.getBooleanExtra(EXTRA_REGISTER, false)
                 // Read once. `load()` decrypts, and asking twice would mean
                 // the decision and the credentials could come from different
                 // reads of the vault.
@@ -399,6 +401,11 @@ class OtrConnectionService : Service() {
                     // bridge also resolves as the JID's domain, by name.
                     if (SignIn.choiceFor(chosen.jid) == SignIn.Choice.CUSTOM)
                         SignIn.domainOf(chosen.jid) else ""
+                }
+                if (register) {
+                    // Saved only once the account exists (startRegistration).
+                    startRegistration()
+                    return START_NOT_STICKY
                 }
                 if (explicit) {
                     // Remembered so a reconnect -- or a restart of this
@@ -587,6 +594,97 @@ class OtrConnectionService : Service() {
         worker = scope.launch { connectLoop() }
     }
 
+    // ── Create account ──────────────────────────────────────────────────────
+
+    /** Create account is running: the router being chosen or waited for, or the request. */
+    @Volatile
+    var registering: Boolean = false
+        private set
+
+    /** Which try is running (RegisterRetry), for the progress line. */
+    @Volatile
+    var registerAttempt: Int = 0
+        private set
+
+    @Volatile
+    private var registration: org.otrv4plus.android.bridge.RegistrationOutcome? = null
+
+    /** The finished Create account's outcome, handed over once (then null). */
+    fun takeRegistration(): org.otrv4plus.android.bridge.RegistrationOutcome? =
+        registration.also { registration = null }
+
+    /**
+     * Create the account, then sign in as it (owner, 2026-10-25).
+     *
+     * Registration used to run from the screen, outside this service, so it
+     * never started the built-in router or used its SAM port: with no I2P app
+     * running it failed at once with "Could not reach the server" -- the first
+     * thing a new tester tries. Now it takes the same route as Log in: the
+     * phone's I2P app if its SAM bridge answers, otherwise the built-in router,
+     * started and waited for (`chooseRouter`). Only then is the account
+     * requested, tried again while the route is still warming
+     * ([RegisterRetry]); once the server confirms it, the credentials are
+     * remembered and the usual sign-in starts.
+     */
+    private fun startRegistration() {
+        if (worker?.isActive == true || registering) return
+        registration = null
+        registering = true
+        registerAttempt = 0
+        enter(LinkPhase.CONNECTING, "creating the account")
+        worker = scope.launch {
+            val out = registerWhenReachable()
+            registering = false
+            worker = null
+            runCatching {
+                core.note("service", "register", if (out.ok) "info" else "warning", out.code)
+            }
+            if (out.ok) {
+                runCatching { credentials.save(Credentials(jid, password)) }
+                startConnection()
+            } else {
+                registration = out
+                // The router keeps running, as after a failed Log in.
+                idle()
+            }
+        }
+    }
+
+    private suspend fun registerWhenReachable(): org.otrv4plus.android.bridge.RegistrationOutcome {
+        // A Sign out still tearing down finishes first (see connectLoop).
+        pendingTeardown?.join()
+        val started = System.currentTimeMillis()
+        var attempt = 0
+        while (true) {
+            attempt++
+            registerAttempt = attempt
+            val result = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!initialised || !core.isInitialized) {
+                        val init = core.initialize()
+                        if (!init.ok) throw IllegalStateException("init_failed")
+                        initialised = true
+                    }
+                    val samPort = chooseRouter()
+                    core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
+                    core.register(password)
+                }
+            }
+            val out = result.getOrElse {
+                org.otrv4plus.android.bridge.RegistrationOutcome(
+                    ok = false, code = codeOf(it),
+                    detail = "The account could not be created (${codeOf(it)}).")
+            }
+            val builtIn = routerState == RouterChoice.State.RUNNING ||
+                routerState == RouterChoice.State.JOINING
+            if (out.ok || !RegisterRetry.again(out.code, attempt,
+                                               System.currentTimeMillis() - started, builtIn)) {
+                return out
+            }
+            delay(RegisterRetry.delayMs(attempt))
+        }
+    }
+
     /** How long the last connection took (ConnectTiming), for the Connect screen. */
     @Volatile
     var lastConnectTiming: ConnectTiming.Result? = null
@@ -649,6 +747,7 @@ class OtrConnectionService : Service() {
         if (explicit) reconnect.onUserDisconnect()
         worker?.cancel()
         worker = null
+        registering = false
         watcher?.cancel()
         watcher = null
         enter(LinkPhase.DISCONNECTING,
@@ -1440,6 +1539,9 @@ class OtrConnectionService : Service() {
         const val EXTRA_JID = "jid"
         const val EXTRA_PASSWORD = "password"
 
+        /** Create the account first, then sign in (startRegistration). */
+        const val EXTRA_REGISTER = "register"
+
         /** The route, or absent for the JID's own domain. Not a secret. */
         const val EXTRA_SERVER = "server"
 
@@ -1464,12 +1566,13 @@ class OtrConnectionService : Service() {
 
         /** Start the service and ask it to connect. */
         fun start(context: Context, jid: String, password: String,
-                  server: String = "") {
+                  server: String = "", register: Boolean = false) {
             val intent = Intent(context, OtrConnectionService::class.java)
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_JID, jid)
                 .putExtra(EXTRA_PASSWORD, password)
                 .putExtra(EXTRA_SERVER, server)
+                .putExtra(EXTRA_REGISTER, register)
             ContextCompat.startForegroundService(context, intent)
         }
 
