@@ -899,7 +899,8 @@ data class GroupVerifyState(
     val excluded: List<String> = emptyList(),
     /** Who starts this group's verification: its creator (owner, 2026-10-25). */
     val coordinator: String = "",
-    /** Whether this device is the one that may start it. */
+    /** Whether this device is the group's creator: it starts verifying, and
+     *  only it removes members (owner, 2026-10-25). */
     val canStart: Boolean = false,
 )
 
@@ -1166,6 +1167,9 @@ data class GroupMember(
     val me: Boolean,
     val verified: Boolean,
     val bound: Boolean,
+    /** Their one verification attempt failed on this key (the passphrase
+     *  did not match): the creator may remove them. */
+    val failed: Boolean = false,
 )
 
 /** A bridge failure. Carries a code, never engine exception text. */

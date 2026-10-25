@@ -629,6 +629,12 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    /** The creator removes everyone whose verification failed, in one commit. */
+    fun removeFailedGroupMembers(room: String): RoomOutcome {
+        val result = call("remove_failed_group_members", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
     /** Send this phone's group key to each member; the detail says who needs SMP. */
     fun verifyGroupMembers(room: String): RoomOutcome {
         val result = call("verify_group_members", room) ?: return notPrepared()
@@ -657,6 +663,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     me = entry(item, "me") == "True",
                     verified = entry(item, "verified") == "True",
                     bound = entry(item, "bound") == "True",
+                    failed = entry(item, "failed") == "True",
                 )
             }
         }

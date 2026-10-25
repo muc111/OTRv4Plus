@@ -90,6 +90,18 @@ object GroupText {
             "only its real owner can accept it. Do you know them?"
 
     /** "2 of 4 verified · about 1 min 30 s left · excluded: c@x (wrong passphrase)" */
+    /** "verified=a,b;excluded=c" as counts: a hundred names is not a line. */
+    fun verifyFinished(room: String, detail: String): String {
+        fun count(key: String): Int = detail.split(";")
+            .firstOrNull { it.startsWith("$key=") }?.substringAfter("=")
+            ?.split(",")?.count { it.isNotBlank() } ?: 0
+        val verified = count("verified")
+        val failed = count("excluded")
+        return "Verification of $room finished: $verified verified" +
+            if (failed > 0) ", $failed failed (the passphrase did not match). " +
+                "The group's creator can remove them from the members list." else "."
+    }
+
     fun verifyProgress(done: Int, total: Int, etaSeconds: Int,
                        members: Map<String, String>, excluded: List<String>): String {
         if (total <= 0) return "Starting the group verification… (a minute or two over I2P)"
@@ -103,9 +115,24 @@ object GroupText {
         }
         if (running > 0) parts += "$running checking"
         if (waiting > 0) parts += "$waiting not joined yet"
-        if (excluded.isNotEmpty()) {
-            parts += "excluded (wrong passphrase, not in calls): ${excluded.joinToString()}"
-        }
+        // A count, not names: a hundred names is not a line (owner, 2026-10-25).
+        if (excluded.isNotEmpty()) parts += "${excluded.size} failed (wrong passphrase)"
+        return parts.joinToString(" · ")
+    }
+
+    /** Someone not yet verified who has not had their one attempt: only
+     *  then is there anything to verify (owner, 2026-10-25: once). */
+    fun leftToVerify(members: Map<String, String>): Boolean =
+        members.values.any { it != "verified" && it != "failed" }
+
+    /** Between runs: "Verified: 97 of 100 · 2 failed · 1 not verified yet". */
+    fun verifiedSoFar(members: Map<String, String>): String {
+        val verified = members.count { it.value == "verified" }
+        val failed = members.count { it.value == "failed" }
+        val rest = members.size - verified - failed
+        val parts = mutableListOf("Verified: $verified of ${members.size}")
+        if (failed > 0) parts += "$failed failed"
+        if (rest > 0) parts += "$rest not verified yet"
         return parts.joinToString(" · ")
     }
 
@@ -152,10 +179,10 @@ object GroupText {
         "verify_begun" -> "Verifying ${event.room}: every member is asked for the " +
             "passphrase. Those who type the same one are verified."
         "member_verify_failed" -> "${event.detail}: the group passphrases did not " +
-            "match. Not verified, and not in group calls."
+            "match. One attempt each: not verified, so no files, locations, voice notes " +
+            "or calls with them. The group's creator can remove them."
         "group_verified" -> "Every member of ${event.room} is verified. You can call the group."
-        "verify_finished" -> "Verification of ${event.room} finished: " +
-            event.detail.replace("verified=", "verified ").replace(";excluded=", "; excluded ") + "."
+        "verify_finished" -> verifyFinished(event.room, event.detail)
         "call_ringing" -> "${event.detail} is calling the group ${event.room}."
         "held" -> "${event.room} is still syncing: your messages wait until the " +
             "group is back in sync (a few seconds), then go encrypted."
@@ -240,6 +267,7 @@ object GroupText {
         "passphrase_needed" -> "Type the group passphrase to verify the group."
         "only_the_creator_starts" -> "Only the group's creator starts verifying it. " +
             "You are asked for the passphrase when they do."
+        "only_the_creator_removes" -> "Only the group's creator removes members."
         "passphrase_too_short" -> "The group passphrase must be 8 characters or more."
         "no_verified_member" -> "Nobody in this group is verified yet: verify the group first."
         "call_in_progress" -> "You are already in a group call."

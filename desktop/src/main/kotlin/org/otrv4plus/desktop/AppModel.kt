@@ -1073,6 +1073,9 @@ class AppModel(
     fun hangupGroupCall() = groupAction("Hang up") { core.hangupGroupCall() }
     fun removeGroupMember(room: String, member: String) =
         groupAction("Remove") { core.removeGroupMember(room, member) }
+    /** The creator removes everyone whose one verification attempt failed. */
+    fun removeFailedGroupMembers(room: String) =
+        groupAction("Remove who failed") { core.removeFailedGroupMembers(room) }
     fun leaveSecureGroup(room: String) = groupAction("Leave") { core.leaveSecureGroup(room) }
     fun deleteSecureGroup(room: String) = groupAction("Delete") { core.deleteSecureGroup(room) }
 

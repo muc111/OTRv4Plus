@@ -13,6 +13,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -41,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.chat.GroupText
 import org.otrv4plus.desktop.AppModel
@@ -105,9 +108,7 @@ fun GroupBar(model: AppModel, room: String) {
                                                       verify.members, verify.excluded),
                              style = MaterialTheme.typography.labelSmall)
                     } else if (verify.members.isNotEmpty() && !verify.allVerified) {
-                        val notYet = verify.members.filterValues { it != "verified" }
-                        Text("Verified: ${verify.members.count { it.value == "verified" }} of " +
-                             "${verify.members.size} (not verified: ${notYet.keys.joinToString()})",
+                        Text(GroupText.verifiedSoFar(verify.members),
                              style = MaterialTheme.typography.labelSmall)
                     } else if (verify.allVerified) {
                         Text("Every member is verified.", style = MaterialTheme.typography.labelSmall,
@@ -132,7 +133,8 @@ fun GroupBar(model: AppModel, room: String) {
                         }
                         // The creator starts verifying; everyone else joins the
                         // run they start (owner, 2026-10-25).
-                        if (!verify.allVerified && (verify.startedBy.isNotEmpty() || verify.canStart)) {
+                        val left = GroupText.leftToVerify(verify.members)
+                        if (left && (verify.startedBy.isNotEmpty() || verify.canStart)) {
                             OutlinedButton(onClick = { asking = true }) {
                                 Icon(Icons.Filled.VerifiedUser, null, Modifier.size(18.dp))
                                 Spacer(Modifier.width(6.dp))
@@ -140,7 +142,7 @@ fun GroupBar(model: AppModel, room: String) {
                                          "Join the verification (${verify.startedBy})"
                                      else "Verify group")
                             }
-                        } else if (!verify.allVerified && !verify.active && verify.coordinator.isNotEmpty()) {
+                        } else if (left && !verify.active && verify.coordinator.isNotEmpty()) {
                             Text(org.otrv4plus.android.chat.GroupText.waitingForCreator(verify.coordinator),
                                  style = MaterialTheme.typography.labelSmall)
                         }
@@ -179,52 +181,109 @@ private fun GroupPassphraseDialog(starting: Boolean, onDone: (String?) -> Unit) 
     )
 }
 
-/** Members, invites and the way out: the side panel of a secure group. */
+/** Members, invites and the way out: the side panel of a secure group.
+ *  A lazy list in sections with counts and search (GroupRoster): a group can
+ *  have 100 members (owner, 2026-10-25). Remove is the creator's, and asks. */
 @Composable
 fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifier) {
+    val roster = org.otrv4plus.android.chat.GroupRoster
     var invitee by remember(room) { mutableStateOf("") }
     var picking by remember(room) { mutableStateOf(false) }
     var ending by remember(room) { mutableStateOf("") }
-    ScrollColumn(modifier.fillMaxHeight().padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 4.dp),
-           verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("Members", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
-        val members = model.groupMembers[room].orEmpty()
-        if (members.isEmpty()) {
-            Text("Reading the group…", style = MaterialTheme.typography.bodySmall,
-                 color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
-        for (m in members) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Avatar(m.jid, image = model.avatar(m.jid), size = 28)
-                Spacer(Modifier.width(8.dp))
-                Text(GroupText.memberLine(m.jid, m.me, m.verified, m.bound),
-                     style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f),
-                     color = if (m.verified) VerifiedBlue else MaterialTheme.colorScheme.onSurface)
-                if (!m.me) TextButton(onClick = { model.removeGroupMember(room, m.jid) }) { Text("Remove") }
+    var query by remember(room) { mutableStateOf("") }
+    var removing by remember(room) { mutableStateOf<List<String>>(emptyList()) }
+    val members = model.groupMembers[room].orEmpty()
+    val verify = model.groupVerify(room)
+    val failed = roster.failed(members, verify.members)
+    LazyColumn(modifier.fillMaxHeight().padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 4.dp),
+               verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        item(key = "title") {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Members", style = MaterialTheme.typography.titleSmall,
+                     color = MaterialTheme.colorScheme.primary)
+                Text(roster.summary(members, verify.members), style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (verify.canStart && failed.isNotEmpty()) {
+                    OutlinedButton(onClick = { removing = failed }) {
+                        Text(roster.removeFailedButton(failed.size), color = MaterialTheme.colorScheme.error)
+                    }
+                }
+                if (members.size >= roster.SEARCH_FROM) {
+                    OutlinedTextField(query, { query = it }, singleLine = true,
+                                      placeholder = { Text("Search members") },
+                                      modifier = Modifier.fillMaxWidth())
+                }
             }
         }
-        HorizontalDivider()
-        OutlinedTextField(invitee, { invitee = it }, singleLine = true,
-                          label = { Text("Invite a contact (address)") }, modifier = Modifier.fillMaxWidth())
-        Text("Invitations go over your encrypted OTRv4+ conversation with them; " +
-             "the room never sees them.", style = MaterialTheme.typography.labelSmall,
-             color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = { model.inviteToGroup(room, invitee); invitee = "" },
-                   enabled = invitee.contains('@')) { Text("Invite over OTRv4+") }
-            TextButton(onClick = { picking = true }) { Text("Invite people online…") }
-        }
-        if (picking) GroupInviteDialog(model, room) { picking = false }
-        HorizontalDivider()
-        TextButton(onClick = { model.verifyGroupMembers(room) }) { Text("Verify members (for calls)") }
-        TextButton(onClick = { ending = "leave" }) { Text("Leave group") }
-        // Only the group's creator (its room's owner) or a server admin can
-        // delete it, so only they see this (owner, 2026-10-16).
-        if (model.chat.canDeleteRoom(room)) {
-            TextButton(onClick = { ending = "delete" }) {
-                Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+        for (section in roster.sections(members, verify.members, query, verify.canStart)) {
+            item(key = "h:" + section.title) {
+                Text(section.title, style = MaterialTheme.typography.labelLarge,
+                     modifier = Modifier.padding(top = 6.dp),
+                     color = if (section.rows.first().status == org.otrv4plus.android.chat.GroupRoster.Status.FAILED)
+                         MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            items(section.rows, key = { "m:" + it.jid }) { row ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Avatar(row.jid, image = model.avatar(row.jid), size = 24)
+                    Spacer(Modifier.width(8.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(row.name, style = MaterialTheme.typography.bodySmall, maxLines = 1,
+                             overflow = TextOverflow.Ellipsis,
+                             color = if (row.status == org.otrv4plus.android.chat.GroupRoster.Status.VERIFIED) VerifiedBlue
+                                     else MaterialTheme.colorScheme.onSurface)
+                        Text(row.jid, style = MaterialTheme.typography.labelSmall, maxLines = 1,
+                             overflow = TextOverflow.Ellipsis,
+                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (row.canRemove) TextButton(onClick = { removing = listOf(row.jid) }) { Text("Remove") }
+                }
             }
         }
+        item(key = "end") {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                HorizontalDivider()
+                OutlinedTextField(invitee, { invitee = it }, singleLine = true,
+                                  label = { Text("Invite a contact (address)") },
+                                  modifier = Modifier.fillMaxWidth())
+                Text("Invitations go over your encrypted OTRv4+ conversation with them; " +
+                     "the room never sees them.", style = MaterialTheme.typography.labelSmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { model.inviteToGroup(room, invitee); invitee = "" },
+                           enabled = invitee.contains('@')) { Text("Invite over OTRv4+") }
+                    TextButton(onClick = { picking = true }) { Text("Invite people online…") }
+                }
+                HorizontalDivider()
+                TextButton(onClick = { model.verifyGroupMembers(room) }) { Text("Verify members (for calls)") }
+                TextButton(onClick = { ending = "leave" }) { Text("Leave group") }
+                // Only the group's creator (its room's owner) or a server admin can
+                // delete it, so only they see this (owner, 2026-10-16).
+                if (model.chat.canDeleteRoom(room)) {
+                    TextButton(onClick = { ending = "delete" }) {
+                        Text("Delete group for everyone", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+        }
+    }
+    if (picking) GroupInviteDialog(model, room) { picking = false }
+    if (removing.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { removing = emptyList() },
+            title = { Text(if (removing.size == 1) "Remove this member?" else "Remove who failed?") },
+            text = { Text(roster.removeConfirm(removing)) },
+            confirmButton = {
+                Button(onClick = {
+                    if (removing == failed) model.removeFailedGroupMembers(room)
+                    else removing.forEach { model.removeGroupMember(room, it) }
+                    removing = emptyList()
+                }, colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error,
+                                                        contentColor = MaterialTheme.colorScheme.onError)) {
+                    Text("Remove")
+                }
+            },
+            dismissButton = { TextButton(onClick = { removing = emptyList() }) { Text("Cancel") } },
+        )
     }
     if (ending.isNotEmpty()) {
         val delete = ending == "delete"

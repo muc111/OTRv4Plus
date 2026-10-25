@@ -392,6 +392,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun deleteSecureGroup(room: String) = controller("delete_secure_group", "room" to room)
     fun removeGroupMember(room: String, member: String) =
         controller("remove_group_member", "room" to room, "member" to member)
+    fun removeFailedGroupMembers(room: String) =
+        controller("remove_failed_group_members", "room" to room)
     fun verifyGroupMembers(room: String) = controller("verify_group_members", "room" to room)
     fun pauseGroupCall() = controller("pause_group_call")
     fun setGroupCallAutoJoin(allowed: Boolean) =
@@ -425,7 +427,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         val r = controller("group_members", "room" to room)
         val members = (r.value as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }.map { m ->
             GroupMember(jid = m.str("jid"), fingerprint = m.str("fingerprint"),
-                        me = m["me"].flag(), verified = m["verified"].flag(), bound = m["bound"].flag())
+                        me = m["me"].flag(), verified = m["verified"].flag(), bound = m["bound"].flag(),
+                        failed = m["failed"].flag())
         }
         return r to members
     }

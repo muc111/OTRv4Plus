@@ -512,6 +512,13 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** The creator removes everyone whose one verification attempt failed. */
+    fun removeFailedGroupMembers(room: String) {
+        groupCall("Removing who failed verification", onOk = { refreshGroupMembers(room) }) {
+            it.removeFailedGroupMembers(room)
+        }
+    }
+
     fun refreshGroupMembers(room: String) {
         val c = core ?: return
         viewModelScope.launch {

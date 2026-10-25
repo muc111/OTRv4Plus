@@ -300,69 +300,124 @@ internal fun GroupInviteDialog(model: ChatViewModel, room: String, onDone: () ->
 }
 
 /**
- * Members of a secure group, each with whether you have verified their key,
- * and an invite field. Invitations go over an encrypted OTRv4+ conversation
- * with the person invited; the room never sees them.
+ * A secure group's members: one summary line under the chat, and the list in
+ * a sheet -- search, sections by verification with counts, one short row
+ * each (GroupRoster). Owner (2026-10-25): "these groups could have 100 users
+ * so clean display is needed"; the inline list pushed the chat off the
+ * screen. Remove is the creator's only, and asks first.
  */
 @Composable
 internal fun SecureGroupPanel(model: ChatViewModel, jid: String) {
-    var shown by androidx.compose.runtime.saveable.rememberSaveable(jid) {
-        androidx.compose.runtime.mutableStateOf(false)
-    }
-    var invitee by androidx.compose.runtime.saveable.rememberSaveable(jid) {
-        androidx.compose.runtime.mutableStateOf("")
-    }
-    var picking by androidx.compose.runtime.saveable.rememberSaveable(jid) {
-        androidx.compose.runtime.mutableStateOf(false)
-    }
+    var shown by rememberSaveable(jid) { mutableStateOf(false) }
+    val verify = model.groupVerifyState(jid)
+    val members = model.groupMembers(jid)
+    // Read when the chat opens, and again as verification moves.
+    LaunchedEffect(jid, verify.members) { model.refreshGroupMembers(jid) }
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text("Group members", style = MaterialTheme.typography.labelMedium,
-             modifier = Modifier.weight(1f))
-        TextButton(onClick = {
-            shown = !shown
-            if (shown) model.refreshGroupMembers(jid)
-        }) { Text(if (shown) "Hide" else "Show") }
+        Text(org.otrv4plus.android.chat.GroupRoster.summary(members, verify.members),
+             style = MaterialTheme.typography.labelMedium, maxLines = 1,
+             overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        TextButton(onClick = { shown = true; model.refreshGroupMembers(jid) }) { Text("Members") }
     }
-    if (!shown) return
-    Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp)) {
-        for (m in model.groupMembers(jid)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    org.otrv4plus.android.chat.GroupText.memberLine(
-                        m.jid, m.me, m.verified, m.bound),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.weight(1f),
-                )
-                if (!m.me) {
-                    TextButton(onClick = { model.removeGroupMember(jid, m.jid) }) {
-                        Text("Remove")
+    if (shown) GroupMembersSheet(model, jid, members, verify) { shown = false }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun GroupMembersSheet(model: ChatViewModel, jid: String,
+                               members: List<org.otrv4plus.android.bridge.GroupMember>,
+                               verify: org.otrv4plus.android.bridge.GroupVerifyState,
+                               onDismiss: () -> Unit) {
+    val roster = org.otrv4plus.android.chat.GroupRoster
+    var query by rememberSaveable(jid) { mutableStateOf("") }
+    var invitee by rememberSaveable(jid) { mutableStateOf("") }
+    var picking by rememberSaveable(jid) { mutableStateOf(false) }
+    var removing by remember(jid) { mutableStateOf<List<String>>(emptyList()) }
+    val failed = roster.failed(members, verify.members)
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+            Text(roster.summary(members, verify.members), style = MaterialTheme.typography.titleMedium)
+            if (verify.canStart && failed.isNotEmpty()) {
+                OutlinedButton(onClick = { removing = failed },
+                               modifier = Modifier.padding(top = 6.dp)) {
+                    Text(roster.removeFailedButton(failed.size), color = MaterialTheme.colorScheme.error)
+                }
+            }
+            if (members.size >= roster.SEARCH_FROM) {
+                OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                                  singleLine = true, placeholder = { Text("Search members") })
+            }
+            LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                for (section in roster.sections(members, verify.members, query, verify.canStart)) {
+                    item(key = "h:" + section.title) {
+                        Text(section.title, Modifier.padding(top = 12.dp, bottom = 4.dp),
+                             style = MaterialTheme.typography.labelLarge,
+                             color = if (section.rows.first().status == org.otrv4plus.android.chat.GroupRoster.Status.FAILED)
+                                 MaterialTheme.colorScheme.error
+                             else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    items(section.rows, key = { "m:" + it.jid }) { row ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(row.name, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                     style = MaterialTheme.typography.bodyMedium)
+                                Text(row.jid, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                     style = MaterialTheme.typography.labelSmall,
+                                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            if (row.canRemove) {
+                                TextButton(onClick = { removing = listOf(row.jid) }) { Text("Remove") }
+                            }
+                        }
+                    }
+                }
+                item(key = "invite") {
+                    Column(Modifier.padding(top = 12.dp)) {
+                        HorizontalDivider()
+                        OutlinedTextField(
+                            value = invitee,
+                            onValueChange = { invitee = it },
+                            label = { Text("Invite a contact (user name or address)") },
+                            singleLine = true,
+                            // An address, so no auto-capital: "B@otrv4plus.i2p" was stored as
+                            // the invitee and B's answer, from "b@...", was dropped as
+                            // uninvited (device test). The bridge folds case too.
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            TextButton(
+                                enabled = invitee.isNotBlank(),
+                                onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
+                            ) { Text("Invite over OTRv4+") }
+                            TextButton(onClick = { picking = true }) { Text("Invite people online…") }
+                        }
+                        GroupEndButtons(model, jid)
+                        Spacer(Modifier.padding(12.dp))
                     }
                 }
             }
         }
-        androidx.compose.material3.OutlinedTextField(
-            value = invitee,
-            onValueChange = { invitee = it },
-            label = { Text("Invite a contact (user name or address)") },
-            singleLine = true,
-            // An address, so no auto-capital: "B@otrv4plus.i2p" was stored as
-            // the invitee and B's answer, from "b@...", was dropped as
-            // uninvited (device test). The bridge folds case too.
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-            modifier = Modifier.fillMaxWidth(),
+    }
+    if (picking) GroupInviteDialog(model, jid) { picking = false }
+    if (removing.isNotEmpty()) {
+        AlertDialog(
+            onDismissRequest = { removing = emptyList() },
+            title = { Text(if (removing.size == 1) "Remove this member?" else "Remove who failed?") },
+            text = { Text(roster.removeConfirm(removing)) },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (removing == failed && removing.size > 1) model.removeFailedGroupMembers(jid)
+                    else removing.forEach { model.removeGroupMember(jid, it) }
+                    removing = emptyList()
+                }) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { removing = emptyList() }) { Text("Cancel") } },
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            TextButton(
-                enabled = invitee.isNotBlank(),
-                onClick = { model.inviteToGroup(jid, invitee); invitee = "" },
-            ) { Text("Invite over OTRv4+") }
-            TextButton(onClick = { picking = true }) { Text("Invite people online…") }
-        }
-        if (picking) GroupInviteDialog(model, jid) { picking = false }
-        GroupEndButtons(model, jid)
     }
 }
 
@@ -450,9 +505,7 @@ internal fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                                  verify.members, verify.excluded),
                              style = MaterialTheme.typography.labelSmall)
                     } else if (verify.members.isNotEmpty() && !verify.allVerified) {
-                        val notYet = verify.members.filterValues { it != "verified" }
-                        Text("Verified: ${verify.members.count { it.value == "verified" }} of " +
-                             "${verify.members.size} (not verified: ${notYet.keys.joinToString()})",
+                        Text(org.otrv4plus.android.chat.GroupText.verifiedSoFar(verify.members),
                              style = MaterialTheme.typography.labelSmall)
                     }
                     if (!model.groupCallAllowed(jid)) {
@@ -473,7 +526,9 @@ internal fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                         }
                         // The creator starts verifying, from here; everyone
                         // else joins the run they start (owner, 2026-10-25).
-                        if (!verify.allVerified) {
+                        // Once each (owner, 2026-10-25): nothing to offer when
+                        // everyone is verified or has had their attempt.
+                        if (org.otrv4plus.android.chat.GroupText.leftToVerify(verify.members)) {
                             when {
                                 verify.startedBy.isNotEmpty() ->
                                     OutlinedButton(onClick = { asking = true }) {
