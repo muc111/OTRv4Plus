@@ -235,6 +235,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Constant-time crates and online list (rc.177) | Verify (SMP) a contact on an older build and on this one: both succeed. Desktop People tab lists Android users who are online, and Invite people online lists them. Rejoin an encrypted group: no 'no keys' banner while it works. | rc.177 |
 | Online contacts (rc.178) | Phone and desktop signed in as two accounts that are contacts: each lists the other as online in People, and Invite people online offers them. | rc.178 |
 | Group verify and one-tap message (rc.179) | Create a group (no passphrase asked); as the creator press Verify group in its chat and set the passphrase; each member is notified, types it and is labelled verified. A member sees 'starts verifying' instead of the button. Message an online non-contact: the request goes, the message follows on accept. | rc.179 |
+| Groups and New chat | Verification happens once per member and the creator can remove whoever failed; a clean members list for big groups; New chat lists who is online | rc.180 |
 
 ## ⚠️ Known limits
 

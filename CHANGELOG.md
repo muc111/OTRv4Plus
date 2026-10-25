@@ -4,7 +4,39 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.179 — 2026-10-24 — Group verification by the creator; one-tap message (core 0.13.1)
+## Android 0.7.0-experimental.rc.180 — 2026-10-25 — Verify once, creator removes who failed; members view for 100; New chat lists who is online (core 0.13.2)
+
+Owner requests (2026-10-25): verification happens once and whoever got the
+passphrase wrong can be removed by the creator; the members view works for a
+100-member group; New chat lists who is online.
+
+- **Group verification happens once per member.** Each member key gets one
+  SMP with the creator. A failure is recorded against that key on both sides,
+  kept across restarts, and never retried. That also means the passphrase
+  can't be guessed by retrying. When everyone is verified or failed, the run
+  ends and its passphrase is zeroed. Invited again (a new key), a member gets
+  a new attempt.
+- **Only the creator removes members.** The bridge refuses anyone else
+  (`only_the_creator_removes`). The creator gets "Remove N who failed
+  verification": one commit for all of them, and it asks first. The terminal
+  client has `/group removefailed <room>`.
+- **Members view for big groups** (Android and desktop): one summary line
+  under the chat ("100 members · 97 verified · 2 failed · 1 not verified
+  yet"). The list itself is in a sheet (desktop: a lazy side panel), with
+  search, sections (failed, checking, not verified, verified, you) with
+  counts, and a short row each. Remove appears on the creator's screen only.
+  No line names every member any more: progress, "finished" and "verified so
+  far" are counts. Shared rules: `GroupRoster` (GroupRosterTest).
+- **New chat lists who is online** (Android): the roster, the Welcome room
+  and the server's own list. One tap opens an OTRv4+ chat, and a non-contact
+  is sent the contact request at the same time. The search box also takes an
+  address or a user name. `NewChat` (NewChatTest).
+- Tests: `test_group_verify_once.py` (real MLS and SMP: recorded, no second
+  attempt, survives a restart, creator-only removal, a failure claimed by
+  anyone else or for another key is ignored), `test_group_members_view.py`,
+  `test_new_chat_lists_who_is_online.py`.
+
+## Android 0.7.0-experimental.rc.179 — 2026-10-25 — Group verification by the creator; one-tap message (core 0.13.2)
 
 - **Group verification, simpler and fast for large groups.** No passphrase
   when a group is made (Android, desktop, terminal). The group's creator

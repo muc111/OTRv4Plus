@@ -80,12 +80,16 @@ Working now:
   * **Verify group**: the group's creator starts it and sets the
     passphrase then; each member types it and runs the full OTRv4+ SMP
     with the creator, who vouches for each success (minutes, not hours,
-    for a large group); progress and a time estimate;
+    for a large group); progress and a time estimate. One attempt per
+    member: whoever's passphrase did not match stays unverified, and the
+    creator can remove them all at once ("Remove N who failed verification");
   * **Call the group** once members are verified;
   * when someone calls: **Join**;
   * during a call: **Pause** and **Hang up**;
-  * a members panel showing each member's verified state, plus invite
-    over OTRv4+, remove, verify members, leave, and delete for everyone.
+  * a members panel that stays readable at 100 members: a summary line,
+    search, sections by verification with counts; invite over OTRv4+,
+    remove (the creator only, and it asks), verify members, leave, and
+    delete for everyone.
 * **People**: contacts and subscription requests.
 * **Rooms**: join a room, create an encrypted MLS group, accept group
   invites.
