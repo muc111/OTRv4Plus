@@ -94,6 +94,17 @@ class TestTheFactsAreTheSameFacts:
 
 
 class TestOpeningAndClosing:
+    def test_a_zoomed_picture_can_be_moved(self):
+        """Device report (2026-10-25): zoomed in, the picture could not be
+        scrolled down or across. A desktop scroll area takes the wheel only."""
+        zoom = VIEWER[VIEWER.index("private fun ZoomableImage("):VIEWER.index("private fun TextBody(")]
+        assert "detectDragGestures" in zoom and "across.dispatchRawDelta(-drag.x)" in zoom
+        assert "down.dispatchRawDelta(-drag.y)" in zoom
+        assert "VerticalScrollbar(rememberScrollbarAdapter(down)" in zoom
+        assert "HorizontalScrollbar(rememberScrollbarAdapter(across)" in zoom
+        assert ".verticalScroll(down)" in zoom and ".horizontalScroll(across)" in zoom
+        assert "down.scrollTo(down.maxValue / 2)" in zoom
+
     def test_a_received_line_has_open(self):
         assert "if (model.canOpenLine(m)) {" in PANE
         # The received-file line is a SYSTEM line: its branch returns early,

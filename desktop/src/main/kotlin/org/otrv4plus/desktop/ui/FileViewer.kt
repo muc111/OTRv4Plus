@@ -2,7 +2,12 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.desktop.ui
 
+import androidx.compose.foundation.HorizontalScrollbar
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.VerticalScrollbar
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.rememberScrollbarAdapter
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -34,9 +39,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -253,8 +260,34 @@ private fun ZoomableImage(bitmap: ImageBitmap) {
             val density = LocalDensity.current
             val w = with(density) { (bitmap.width * zoom).toDp() }
             val h = with(density) { (bitmap.height * zoom).toDp() }
-            Box(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState())) {
-                Image(bitmap, "Received image", Modifier.size(w, h), contentScale = ContentScale.FillBounds)
+            // Device report (2026-10-25): zoomed in, the picture could not be
+            // moved. A desktop scroll area answers the wheel only (Shift for
+            // across), never a mouse drag, and showed no bars. Now: drag to
+            // pan, both scroll bars, and each zoom step stays centred.
+            val down = rememberScrollState()
+            val across = rememberScrollState()
+            LaunchedEffect(zoom) {
+                withFrameNanos { }            // the new size is laid out first
+                down.scrollTo(down.maxValue / 2)
+                across.scrollTo(across.maxValue / 2)
+            }
+            Box(Modifier.fillMaxSize()) {
+                Box(Modifier.fillMaxSize()
+                        .pointerInput(zoom) {
+                            detectDragGestures { change, drag ->
+                                change.consume()
+                                across.dispatchRawDelta(-drag.x)
+                                down.dispatchRawDelta(-drag.y)
+                            }
+                        }
+                        .verticalScroll(down)
+                        .horizontalScroll(across)) {
+                    Image(bitmap, "Received image", Modifier.size(w, h), contentScale = ContentScale.FillBounds)
+                }
+                VerticalScrollbar(rememberScrollbarAdapter(down),
+                                  Modifier.align(Alignment.CenterEnd).fillMaxHeight())
+                HorizontalScrollbar(rememberScrollbarAdapter(across),
+                                    Modifier.align(Alignment.BottomStart).fillMaxWidth())
             }
         }
     }
