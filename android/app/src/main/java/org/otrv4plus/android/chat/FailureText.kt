@@ -51,6 +51,7 @@ object FailureText {
         "protocol_send_failed" to "A message to this contact could not be sent. Try again.",
         "decrypt_failed" to "A message from this contact could not be decrypted.",
         // Owner, 2026-10-24: a 1:1 message is never sent unencrypted.
+        "waiting_for_contact" to "Not sent yet: they are not a contact, so a contact request was sent. Your message waits, and goes encrypted (OTRv4+) as soon as they accept.",
         "plaintext_refused" to "Not sent yet: this contact's app is not offering OTRv4+ encryption right now. Your message waits and goes only once an encrypted session is up; it is never sent unencrypted.",
         // A2: the same identity without, or with another, post-quantum key is
         // what an attacker able to forge the classical key looks like.

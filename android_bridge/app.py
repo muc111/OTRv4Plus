@@ -227,6 +227,8 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
         self._keyless_groups: set = set()
         #: peer -> rooms to invite them to once OTRv4+ with them is up.
         self._invite_after_otr: Dict[str, List[str]] = {}
+        #: Non-contacts a message has sent a contact request to (once each).
+        self._message_requested: set = set()
         #: Handshake durations (seconds): per peer and overall, for the ETA.
         self._hs_started: Dict[str, float] = {}
         self._hs_history: Dict[str, List[float]] = {}
@@ -763,6 +765,23 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
                               "this contact's app does not support OTRv4+")
         return "waiting_for_otr"
 
+    def _ask_to_add_for_message(self, peer: str) -> None:
+        """One-tap Message to someone online who is not a contact (owner,
+        2026-10-25). Without a subscription their presence never reaches us,
+        so OTRv4+ would never start and the line would wait for ever. Ask to
+        add them, once: when they accept, presence, the session and the
+        waiting line follow (`_auto_start`, `_flush_outbox`). Never plaintext,
+        and never a second request for the same person."""
+        if peer in self._message_requested or self._sees_presence_of(peer):
+            return
+        try:
+            self._transport.add_contact(peer)
+        except Exception:
+            return
+        self._message_requested.add(peer)
+        _TRACE.record("otr", "message_needs_contact", "info", jid=peer)
+        self._emit(ErrorOccurred(peer=peer, code="waiting_for_contact"))
+
     def _sees_presence_of(self, peer: str) -> bool:
         """Whether the roster lets us see *peer*'s presence (subscription
         to or both), so their capability can be learnt."""
@@ -1206,7 +1225,10 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
                         pass
                 return self.SEND_QUEUED
             if capability in ("checking", "unknown", "offline"):
-                return self.SEND_QUEUED if self._hold(peer, body, message_id, reply_to) else self.SEND_FAILED
+                if not self._hold(peer, body, message_id, reply_to):
+                    return self.SEND_FAILED
+                self._ask_to_add_for_message(peer)
+                return self.SEND_QUEUED
             # Confirmed online without OTRv4+. Owner, 2026-10-24: a 1:1
             # message is NEVER sent in the clear -- it used to be, labelled,
             # and a capability check that misjudged a real OTRv4+ phone sent

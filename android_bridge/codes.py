@@ -62,6 +62,7 @@ CODES: Dict[str, Tuple[str, str]] = {
     "otrv4plus_offline": ("otr", "the contact is offline"),
     "otrv4plus_checking": ("otr", "still asking the contact's device what it supports"),
     "otrv4plus_unavailable": ("otr", "the contact's client does not speak OTRv4Plus"),
+    "waiting_for_contact": ("otr", "1:1 message held: a contact request was sent, the session starts when they accept"),
     "plaintext_refused": ("otr", "1:1 message held: the contact's client offers no OTRv4+, and nothing is ever sent unencrypted"),
     # -- verification (app_smp.py) -------------------------------------------
     "smp_not_encrypted": ("smp", "verification needs an encrypted session first"),

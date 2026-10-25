@@ -192,6 +192,7 @@ class WipeMixin:
         except Exception as exc:
             report["errors"].append("sync_cursor:%s" % type(exc).__name__)
         getattr(self, "_invite_after_otr", {}).clear()
+        getattr(self, "_message_requested", set()).clear()
 
         calls = self._calls_bridge
         if calls is not None:
