@@ -4,6 +4,35 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.177 — 2026-10-24 — Security: constant-time crates (RUSTSEC-2026-0387); group banner; desktop online list (core 0.13.1)
+
+- **Security (Rust core 0.13.2): RUSTSEC-2026-0387.** crypto-bigint 0.5 could
+  branch on secret values in operations meant to be constant-time, including
+  Montgomery multiplication, which the SMP's modular exponentiation uses on
+  the secret exponents. The SMP now uses crypto-bigint 0.7.8, and Ed448
+  (profile and ring signatures, MLS) ed448-goldilocks-plus 0.18.1, which is
+  on 0.7 too. Nothing on the wire changes: SMP values are checked against an
+  independent implementation at the edges, Ed448 against the RFC 8032
+  vectors, and a ring signature made by the previous build still verifies
+  (`ring_sig::cross_version`). Older apps keep talking to this one.
+- Encrypted groups: the "this device has no keys for it" banner no longer
+  appears over a group that works. The room's history, replayed on join
+  before the keys arrived, was taken as proof of no keys, and the verdict
+  stuck; it now waits until the groups are open and no join is pending, is
+  dropped once the group works, and the banner is taken down when the group
+  joins or syncs.
+- Desktop 0.14.1: People and "Invite people online" list who is online, as
+  on Android (the Welcome room's people and the server's own list). The
+  desktop only ever listed contacts before.
+- Desktop: **Open** now shows on a received file's line. The line is a
+  system line, and the button had been added only to ordinary bubbles, so
+  the in-app viewer (0.14.0) could not be reached.
+- Battery (Android): the connection service read the engine every 500 ms
+  with the screen off as well, four calls into Python each time, and the
+  phone never reached deep sleep. In the background it now reads events
+  every 2 s and the roster and link status every 30 s; on screen, and
+  during a call, it stays at 500 ms.
+
 ## Android 0.7.0-experimental.rc.176 — 2026-10-24 — One router decision for create account and sign-in (core 0.13.1)
 
 - One router decision for Create account, Log in, and the sign-in after a

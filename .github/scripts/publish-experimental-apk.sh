@@ -232,6 +232,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Permanent bans (rc.174) | As the admin, after re-running prosody/install-server-limits.sh: another person's profile shows Moderation with Ban permanently and Unban only; Ban signs them out and their app says they are banned; Unban lets them back; the account stays in user:list throughout. | rc.174 |
 | Create account (rc.175) | Fresh install, I2P app not running: Create account shows Creating the account with the built-in router starting, retries while it warms up, then signs in by itself; a taken name says so at once; Cancel stops it. | rc.175 |
 | Router choice (rc.176) | With i2pd or the I2P app running: Create account, then the sign-in that follows, both use it (no built-in router starts). With neither running: the built-in router starts for Create account and the sign-in keeps using it. | rc.176 |
+| Constant-time crates and online list (rc.177) | Verify (SMP) a contact on an older build and on this one: both succeed. Desktop People tab lists Android users who are online, and Invite people online lists them. Rejoin an encrypted group: no 'no keys' banner while it works. | rc.177 |
 
 ## ⚠️ Known limits
 
