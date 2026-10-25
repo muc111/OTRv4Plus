@@ -53,6 +53,21 @@ class OnlineUsersTest {
         assertEquals(emptyList(), online(s), "unknown presence was shown as online")
     }
 
+    // Device report (2026-10-25): alice (desktop) and charlie (phone) were
+    // contacts and both in the Welcome room; each listed the other offline,
+    // and "Invite people online" said nobody was. The room's presence wins.
+    @Test
+    fun `a contact in the Welcome room is online even when roster presence says offline`() {
+        val s = state(contact(alice, PeerPresence.OFFLINE), contact(bob, PeerPresence.OFFLINE))
+        s.applyWelcome(org.otrv4plus.android.bridge.WelcomeView(
+            org.otrv4plus.android.bridge.WelcomeView.JOINED, "otrv4plus-welcome@conference.otrv4plus.i2p",
+            "non_anonymous", listOf(alice), 0))
+        assertEquals(listOf(alice), online(s).map { it.jid })
+        assertEquals(1, GroupInvitePicker.candidates(s.directory(), emptyList(), me).size)
+        s.applyWelcome(org.otrv4plus.android.bridge.WelcomeView.NONE)
+        assertEquals(emptyList(), online(s), "left the room: offline again")
+    }
+
     @Test
     fun `nobody is online while our own stream is down`() {
         val s = state(contact(alice, PeerPresence.ONLINE))

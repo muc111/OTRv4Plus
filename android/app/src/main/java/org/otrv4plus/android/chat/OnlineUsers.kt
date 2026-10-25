@@ -124,7 +124,14 @@ object OnlineUsers {
             val relation = when (c.presence) {
                 Presence.PENDING -> Relation.PENDING
                 Presence.ONLINE -> Relation.ADDED_ONLINE
-                Presence.OFFLINE -> Relation.ADDED_OFFLINE
+                // In the Welcome room right now (or on the server's own list)
+                // is online, whatever the roster says (device report,
+                // 2026-10-25: alice and charlie, contacts, both in the room,
+                // each listed the other as offline -- and "Invite people
+                // online" said nobody was). Contact presence is not always
+                // shared both ways; the room's presence is the server's.
+                Presence.OFFLINE -> if (jid in discovered) Relation.ADDED_ONLINE
+                                    else Relation.ADDED_OFFLINE
                 // The server says they are online though presence is not
                 // shared with us: that is its answer, so it is shown.
                 Presence.UNKNOWN -> if (jid in discovered) Relation.ADDED_ONLINE

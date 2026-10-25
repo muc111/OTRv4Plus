@@ -4,6 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.178 — 2026-10-24 — Contacts in the Welcome room count as online (core 0.13.1)
+
+- People and "Invite people online" (Android and desktop 0.14.2): a contact
+  who is in the OTRv4Plus Welcome room is listed online even when the
+  roster's presence says offline. Contacts whose presence was not shared
+  both ways were shown offline while both sides sat in the room, so the
+  picker said nobody was online (alice on the desktop, charlie on the
+  phone, both in the room). Leaving the room makes them offline again.
+
 ## Android 0.7.0-experimental.rc.177 — 2026-10-24 — Security: constant-time crates (RUSTSEC-2026-0387); group banner; desktop online list (core 0.13.1)
 
 - **Security (Rust core 0.13.2): RUSTSEC-2026-0387.** crypto-bigint 0.5 could
