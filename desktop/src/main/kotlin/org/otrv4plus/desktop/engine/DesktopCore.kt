@@ -352,6 +352,30 @@ class DesktopCore(private val engine: Engine) : OtrCore {
         val r = runCatching { call("blocked_contacts") as? JsonObject }.getOrNull() ?: return emptyList<String>() to false
         return names(r["value"]) to r["supported"].asBool()
     }
+    /**
+     * The Welcome room every app joins after sign-in, and the people it shows
+     * (local state, no network). With [discoverOnlineUsers], what "online"
+     * means on Android -- the desktop never asked, so it listed contacts only
+     * and Android users never appeared (owner report, 2026-10-25).
+     */
+    fun welcomeDirectory(): org.otrv4plus.android.bridge.WelcomeView = runCatching {
+        val v = call("welcome_directory") as JsonObject
+        org.otrv4plus.android.bridge.WelcomeView(
+            state = v.str("state").ifBlank { org.otrv4plus.android.bridge.WelcomeView.NOT_CONNECTED },
+            room = v.str("room"), anonymity = v.str("anonymity").ifBlank { "unknown" },
+            people = names(v["people"]), hidden = v["hidden"].asInt())
+    }.getOrDefault(org.otrv4plus.android.bridge.WelcomeView.NONE)
+
+    /** Who the server says is online (XEP-0133, if it offers it to us); null when the ask failed. */
+    fun discoverOnlineUsers(): org.otrv4plus.android.bridge.OnlineDiscovery? {
+        val o = controller("discover_online_users")
+        if (!o.ok) return null
+        val v = o.value as? JsonObject ?: return null
+        return org.otrv4plus.android.bridge.OnlineDiscovery(
+            v.str("mechanism").ifBlank { org.otrv4plus.android.bridge.OnlineDiscovery.NONE },
+            names(v["users"]))
+    }
+
     fun createSecureGroup(room: String) = controller("create_secure_group", "room" to room, "password" to "")
     fun acceptGroupInvite(room: String, password: String = "") =
         controller("accept_group_invite", "room" to room, "password" to password)

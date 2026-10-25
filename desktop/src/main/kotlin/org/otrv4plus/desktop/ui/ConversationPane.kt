@@ -496,12 +496,18 @@ private fun Messages(model: AppModel, jid: String, isRoom: Boolean, modifier: Mo
 @Composable
 private fun Bubble(m: Message, isRoom: Boolean, model: AppModel) {
     if (m.security == SecurityLabel.SYSTEM) {
-        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(m.body, style = MaterialTheme.typography.labelSmall,
                  color = MaterialTheme.colorScheme.onSurfaceVariant,
                  modifier = Modifier.clip(RoundedCornerShape(8.dp))
                      .background(MaterialTheme.colorScheme.surfaceVariant)
                      .padding(horizontal = 10.dp, vertical = 4.dp))
+            // A received file's line IS a system line ("Received photo.jpg"),
+            // so its Open lives here (device report, 2026-10-25: the viewer
+            // never showed -- the button was only on ordinary bubbles).
+            if (model.canOpenLine(m)) {
+                TextButton(onClick = { model.openLine(m) }) { Text("Open") }
+            }
         }
         return
     }

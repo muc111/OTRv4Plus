@@ -248,6 +248,8 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
  *  (owner, 2026-10-16). Each person still gets their own OTRv4+ invitation. */
 @Composable
 private fun GroupInviteDialog(model: AppModel, room: String, onDone: () -> Unit) {
+    // Fresh when opened: the Welcome room and the server's list (AppModel.refreshOnline).
+    androidx.compose.runtime.LaunchedEffect(room) { model.refreshOnline(force = true) }
     val picker = org.otrv4plus.android.chat.GroupInvitePicker
     val people = model.groupInviteCandidates(room)
     val ticked = androidx.compose.runtime.remember(room) {

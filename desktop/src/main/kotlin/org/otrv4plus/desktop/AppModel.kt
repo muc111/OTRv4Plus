@@ -194,6 +194,10 @@ class AppModel(
         }
         if (open != null && chat.isSecureRoom(open) && tick % 4 == 1) refreshGroup(open)
         if (tick % 10 == 3) refreshAvatars()
+        // Who is online, as on Android: the Welcome room's people (local,
+        // every 10 s) and the server's list (every 2 minutes).
+        if (tick % 20 == 11) refreshWelcome()
+        if (tick % 240 == 13) refreshOnline()
         if (tick % 20 == 7) runCatching { refreshBlocked() }
         if (tick % 4 == 0) {
             transfers = withContext(Dispatchers.IO) { core.transfers() }
@@ -982,6 +986,35 @@ class AppModel(
 
     /** Ask the members of an encrypted group we are not in to invite us. */
     fun requestGroupEntry(room: String) = outcome { core.requestGroupEntry(room.trim()) }
+
+    // -- who is online (ChatState.directory: roster + Welcome room + server list) --
+
+    private fun refreshWelcome() {
+        if (!chat.canSend()) return
+        ui.launch {
+            chat.applyWelcome(withContext(Dispatchers.IO) { core.welcomeDirectory() })
+            changed()
+        }
+    }
+
+    private var discovering = false
+
+    /**
+     * Ask the server who is online. [force]: from a screen the user opened
+     * (Invite people online, People), so it is fresh. A failed ask keeps the
+     * last answer rather than claiming nobody is online.
+     */
+    fun refreshOnline(force: Boolean = false) {
+        if (!chat.canSend() || discovering) return
+        discovering = true
+        ui.launch {
+            val found = withContext(Dispatchers.IO) { core.discoverOnlineUsers() }
+            discovering = false
+            if (found != null) chat.applyDiscovery(found)
+            if (force) chat.applyWelcome(withContext(Dispatchers.IO) { core.welcomeDirectory() })
+            changed()
+        }
+    }
 
     /** Online people not yet in [room] (owner, 2026-10-16: tick and invite). */
     fun groupInviteCandidates(room: String): List<org.otrv4plus.android.chat.GroupInvitePicker.Candidate> =

@@ -62,8 +62,14 @@ private fun PaneTitle(text: String, action: @Composable () -> Unit = {}) {
 fun PeoplePane(model: AppModel) {
     @Suppress("UNUSED_VARIABLE") val r = model.revision
     var adding by remember { mutableStateOf(false) }
+    // Who is online, fresh when the tab opens (as Android's People screen).
+    androidx.compose.runtime.LaunchedEffect(Unit) { model.refreshOnline(force = true) }
     Column(Modifier.fillMaxSize()) {
-        PaneTitle("People") { Button(onClick = { adding = true }) { Text("Add contact") } }
+        PaneTitle("People") {
+            OutlinedButton(onClick = { model.refreshOnline(force = true) }) { Text("Look again") }
+            Spacer(Modifier.width(8.dp))
+            Button(onClick = { adding = true }) { Text("Add contact") }
+        }
         for (req in model.chat.pendingSubscriptions) {
             Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
                 Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {

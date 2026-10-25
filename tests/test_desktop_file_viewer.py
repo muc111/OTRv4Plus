@@ -96,6 +96,11 @@ class TestTheFactsAreTheSameFacts:
 class TestOpeningAndClosing:
     def test_a_received_line_has_open(self):
         assert "if (model.canOpenLine(m)) {" in PANE
+        # The received-file line is a SYSTEM line: its branch returns early,
+        # so Open must be inside it (device report, 2026-10-25).
+        system = PANE[PANE.index("if (m.security == SecurityLabel.SYSTEM) {"):]
+        system = system[:system.index("        return\n")]
+        assert "model.canOpenLine(m)" in system and "model.openLine(m)" in system
         assert "model.openLine(m)" in PANE
         assert "FileViewerDialog(container = file.path" in PANE
 
