@@ -667,6 +667,12 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    /** "Make Group Deniable" (F4): see SecureGroups.make_deniable. */
+    fun makeGroupDeniable(room: String): RoomOutcome {
+        val result = call("make_group_deniable", room) ?: return notPrepared()
+        return outcomeOf(result)
+    }
+
     fun leaveSecureGroup(room: String): RoomOutcome {
         val result = call("leave_secure_group", room) ?: return notPrepared()
         return outcomeOf(result)

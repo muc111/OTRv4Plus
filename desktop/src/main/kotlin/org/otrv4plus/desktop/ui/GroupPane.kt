@@ -255,6 +255,9 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
                 }
                 HorizontalDivider()
                 TextButton(onClick = { model.verifyGroupMembers(room) }) { Text("Verify members (for calls)") }
+                TextButton(onClick = { ending = "deniable" }) {
+                    Text(org.otrv4plus.android.crypto.GroupDeniable.ACTION)
+                }
                 TextButton(onClick = { ending = "leave" }) { Text("Leave group") }
                 // Only the group's creator (its room's owner) or a server admin can
                 // delete it, so only they see this (owner, 2026-10-16).
@@ -285,7 +288,18 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
             dismissButton = { TextButton(onClick = { removing = emptyList() }) { Text("Cancel") } },
         )
     }
-    if (ending.isNotEmpty()) {
+    if (ending == "deniable") {
+        val text = org.otrv4plus.android.crypto.GroupDeniable
+        AlertDialog(
+            onDismissRequest = { ending = "" },
+            title = { Text(text.TITLE) },
+            text = { Text(text.BODY) },
+            confirmButton = {
+                Button(onClick = { model.makeGroupDeniable(room); ending = "" }) { Text(text.CONFIRM) }
+            },
+            dismissButton = { TextButton(onClick = { ending = "" }) { Text("Cancel") } },
+        )
+    } else if (ending.isNotEmpty()) {
         val delete = ending == "delete"
         AlertDialog(
             onDismissRequest = { ending = "" },

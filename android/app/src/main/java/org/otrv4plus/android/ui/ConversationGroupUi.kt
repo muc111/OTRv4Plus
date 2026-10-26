@@ -605,6 +605,9 @@ internal fun GroupEndButtons(model: ChatViewModel, jid: String) {
     // Group calls are among verified members only: this sends our key to each
     // member over OTRv4+; SMP with a member (in their chat) completes it.
     TextButton(onClick = { model.verifyGroupMembers(jid) }) { Text("Verify members (for calls)") }
+    TextButton(onClick = { asking = "deniable" }) {
+        Text(org.otrv4plus.android.crypto.GroupDeniable.ACTION)
+    }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TextButton(onClick = { asking = "leave" }) { Text("Leave group") }
         if (model.canDeleteGroup(jid)) {
@@ -613,7 +616,18 @@ internal fun GroupEndButtons(model: ChatViewModel, jid: String) {
             }
         }
     }
-    if (asking.isNotEmpty()) {
+    if (asking == "deniable") {
+        val text = org.otrv4plus.android.crypto.GroupDeniable
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { asking = "" },
+            title = { Text(text.TITLE) },
+            text = { Text(text.BODY) },
+            confirmButton = {
+                TextButton(onClick = { model.makeGroupDeniable(jid); asking = "" }) { Text(text.CONFIRM) }
+            },
+            dismissButton = { TextButton(onClick = { asking = "" }) { Text("Cancel") } },
+        )
+    } else if (asking.isNotEmpty()) {
         val delete = asking == "delete"
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { asking = "" },

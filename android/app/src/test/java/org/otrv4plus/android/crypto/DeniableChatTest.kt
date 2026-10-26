@@ -93,4 +93,28 @@ class DeniableChatTest {
     @Test fun `the dialog says the history goes`() {
         assertTrue("history is deleted from this device" in DeniableChat.BODY)
     }
+
+    // ── groups (F4) ─────────────────────────────────────────────────────────
+
+    @Test fun `the group words describe the mechanism and claim nothing more`() {
+        val all = listOf(GroupDeniable.ACTION, GroupDeniable.TITLE, GroupDeniable.BODY,
+                         GroupDeniable.outcome(true, "ok"), GroupDeniable.outcome(false, "x"))
+        assertTrue(all.none { "deniable messaging" in it.lowercase() })
+        assertTrue("not been independently reviewed" in GroupDeniable.BODY)
+        assertTrue("stay encrypted" in GroupDeniable.BODY)
+        assertTrue("stays secret" in GroupDeniable.BODY, "says the new key is not published")
+        assertTrue("history is deleted from this device" in GroupDeniable.BODY)
+    }
+
+    @Test fun `made deniable the group's history goes and refused nothing goes`() {
+        val room = "team@conference.otrv4plus.i2p"
+        val disk = Disk()
+        val (chat, store) = process(disk)
+        say(store, "r1", room)
+        GroupDeniable.apply(false, "commit_pending", chat, room)
+        assertEquals(1, store.messages(room).size)
+        val said = GroupDeniable.apply(true, "ok", chat, room)
+        assertTrue("history was deleted" in said, said)
+        assertTrue(store.messages(room).isEmpty())
+    }
 }

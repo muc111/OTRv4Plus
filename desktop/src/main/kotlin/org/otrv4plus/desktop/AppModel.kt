@@ -1104,6 +1104,15 @@ class AppModel(
     fun removeFailedGroupMembers(room: String) =
         groupAction("Remove who failed") { core.removeFailedGroupMembers(room) }
     fun leaveSecureGroup(room: String) = groupAction("Leave") { core.leaveSecureGroup(room) }
+    /** F4: a new signing key here, and our earlier ones published. */
+    fun makeGroupDeniable(room: String) {
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.makeGroupDeniable(room) }
+            chat.note(org.otrv4plus.android.crypto.GroupDeniable.apply(r.ok, r.code, chat, room))
+            if (chat.isSecureRoom(room)) refreshGroup(room)
+            changed()
+        }
+    }
     fun deleteSecureGroup(room: String) = groupAction("Delete") { core.deleteSecureGroup(room) }
 
     /**

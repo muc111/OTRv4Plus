@@ -529,6 +529,22 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** F4: a new signing key here, and our earlier ones published. */
+    fun makeGroupDeniable(room: String) {
+        val c = core ?: return
+        val state = this.state ?: return
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { c.makeGroupDeniable(room) }.getOrElse {
+                    org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "")
+                }
+            }
+            state.note(org.otrv4plus.android.crypto.GroupDeniable.apply(
+                outcome.ok, outcome.code, state, room))
+            revision++
+        }
+    }
+
     /** Forget the group's keys on this phone and leave its room. */
     fun leaveSecureGroup(room: String) {
         groupCall("Leaving $room") { it.leaveSecureGroup(room) }

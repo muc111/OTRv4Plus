@@ -52,3 +52,40 @@ object DeniableChat {
         return outcome(result)
     }
 }
+
+/**
+ * "Make Group Deniable" (F4, docs/MLS_SECURITY_HARDENING.md §1) for a secure group: a new signing key
+ * for us in the group, then our earlier ones published to its members
+ * (epochal signatures). Shared by the phone and the desktop;
+ * `DeniableChatTest`. Like [DeniableChat], it describes the mechanism and
+ * claims nothing more.
+ */
+object GroupDeniable {
+
+    const val ACTION = "Make Group Deniable…"
+    const val TITLE = "Make this group deniable?"
+    const val CONFIRM = "Make deniable"
+
+    const val BODY =
+        "Gives you a new signing key in this group, then publishes your earlier " +
+            "ones to its members, so any member could have signed what they " +
+            "signed. New messages are signed with the new key, which stays " +
+            "secret. Messages stay encrypted. Earlier keys are also published " +
+            "by themselves some minutes after each automatic key change. This " +
+            "group's history is deleted from this device. This mechanism has " +
+            "not been independently reviewed yet."
+
+    fun outcome(ok: Boolean, code: String): String =
+        if (ok) "A new signing key is being set up; your earlier ones are published " +
+            "as soon as it is in place, and this group's history was deleted from " +
+            "this device."
+        else org.otrv4plus.android.chat.GroupText.outcome(code)
+            ?: "The group could not be made deniable ($code)."
+
+    /** What both apps do with the answer: on success the group's history goes. */
+    fun apply(ok: Boolean, code: String, chat: org.otrv4plus.android.chat.ChatState,
+              room: String): String {
+        if (ok) chat.clearHistory(room)
+        return outcome(ok, code)
+    }
+}
