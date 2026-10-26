@@ -86,7 +86,8 @@ pub struct Release {
     pub seed: [u8; 32],
 }
 
-fn context(group_hash: &[u8; 32], epoch_id: u64) -> Vec<u8> {
+/// The FIPS 204 context string of every signature for (group, epoch).
+pub fn context(group_hash: &[u8; 32], epoch_id: u64) -> Vec<u8> {
     let mut ctx = CONTEXT_LABEL.to_vec();
     ctx.extend_from_slice(group_hash);
     ctx.extend_from_slice(&epoch_id.to_be_bytes());
@@ -108,9 +109,27 @@ fn key_from_seed(seed: &B32) -> ExpandedSigningKey<MlDsa87> {
 fn sign_with(sk: &ExpandedSigningKey<MlDsa87>, ctx: &[u8], message: &[u8]) -> Vec<u8> {
     let mut rnd = [0u8; 32];
     getrandom::getrandom(&mut rnd).expect("OS randomness");
-    let rnd = B32::from(rnd);
+    fips204_sign(sk, ctx, message, &rnd)
+}
+
+/// The one signing path, with the randomiser explicit: FIPS 204 Algorithm 2
+/// (ML-DSA.Sign, pure, with context). Every signature here, the holder's
+/// and a forger's, is made by this function, so it is what the NIST ACVP
+/// sigGen vectors check (tests/conformance.rs). Exposed for those vectors
+/// and for the byte-identity proof (tests/proofs.rs); production signing
+/// must take `rnd` from the OS, as `sign` does.
+pub fn fips204_sign(sk: &ExpandedSigningKey<MlDsa87>, ctx: &[u8], message: &[u8],
+                    rnd: &[u8; 32]) -> Vec<u8> {
+    assert!(ctx.len() <= 255, "FIPS 204: |ctx| <= 255");
+    let rnd = B32::from(*rnd);
     let sig = sk.sign_internal(&[&[0u8], &[ctx.len() as u8], ctx, message], &rnd);
     sig.encode().to_vec()
+}
+
+/// FIPS 204 ML-DSA.KeyGen_internal from a 32-byte seed: what a release
+/// lets anyone run. Checked against the ACVP keyGen vectors.
+pub fn key_from_release_seed(seed: &[u8; 32]) -> ExpandedSigningKey<MlDsa87> {
+    key_from_seed(&B32::from(*seed))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -192,18 +211,37 @@ pub fn sign(sk: &SecretKey, message: &[u8]) -> EpochSignature {
     EpochSignature { epoch_id: sk.epoch_id, bytes: sign_with(&sk.sk, &ctx, message) }
 }
 
+impl SecretKey {
+    /// `sign`, with the randomiser given: for the byte-identity proof only.
+    pub fn sign_with_rnd(&self, message: &[u8], rnd: &[u8; 32]) -> EpochSignature {
+        let ctx = context(&self.group_hash, self.epoch_id);
+        EpochSignature { epoch_id: self.epoch_id, bytes: fips204_sign(&self.sk, &ctx, message, rnd) }
+    }
+
+    /// The holder's expanded key, to compare with what a release rebuilds.
+    pub fn expanded(&self) -> &ExpandedSigningKey<MlDsa87> {
+        &self.sk
+    }
+}
+
 /// verify(pk, message, signature) -> bool: the ML-DSA-87 signature under
 /// `pk`, in `pk`'s group and epoch. Says nothing about group membership
 /// (`verify_group_binding`) or release (`verify_unreleased`).
 pub fn verify(pk: &PublicKey, message: &[u8], sig: &EpochSignature) -> bool {
-    if sig.epoch_id != pk.epoch_id {
+    sig.epoch_id == pk.epoch_id
+        && fips204_verify(&pk.vk, &context(&pk.group_hash, pk.epoch_id), message, &sig.bytes)
+}
+
+/// The one verification path: FIPS 204 Algorithm 3 (ML-DSA.Verify, pure,
+/// with context) over the encoded signature. Checked against the NIST ACVP
+/// sigVer vectors. Malformed input is a rejection, never a panic.
+pub fn fips204_verify(vk: &VerifyingKey<MlDsa87>, ctx: &[u8], message: &[u8], sig: &[u8]) -> bool {
+    if ctx.len() > 255 {
         return false;
     }
-    let Ok(enc) = EncodedSignature::<MlDsa87>::try_from(sig.bytes.as_slice()) else {
-        return false;
-    };
+    let Ok(enc) = EncodedSignature::<MlDsa87>::try_from(sig) else { return false };
     let Some(sig) = Signature::<MlDsa87>::decode(&enc) else { return false };
-    pk.vk.verify_with_context(message, &context(&pk.group_hash, pk.epoch_id), &sig)
+    vk.verify_with_context(message, ctx, &sig)
 }
 
 /// Whether `pk` was registered by a holder of this group epoch's
@@ -246,6 +284,23 @@ impl ReleaseBoard {
         let sk = key_from_seed(&seed);
         let ctx = context(&r.group_hash, epoch_id);
         Some(EpochSignature { epoch_id, bytes: sign_with(&sk, &ctx, message) })
+    }
+
+    /// `forge_with_released_key`, with the randomiser given: for the
+    /// byte-identity proof only.
+    pub fn forge_with_rnd(&self, member: &[u8], epoch_id: u64, message: &[u8], rnd: &[u8; 32])
+        -> Option<EpochSignature>
+    {
+        let r = self.released.get(&(member.to_vec(), epoch_id))?;
+        let sk = key_from_seed(&B32::from(r.seed));
+        let ctx = context(&r.group_hash, epoch_id);
+        Some(EpochSignature { epoch_id, bytes: fips204_sign(&sk, &ctx, message, rnd) })
+    }
+
+    /// The key a third party rebuilds from a release.
+    pub fn rebuild(&self, member: &[u8], epoch_id: u64) -> Option<ExpandedSigningKey<MlDsa87>> {
+        let r = self.released.get(&(member.to_vec(), epoch_id))?;
+        Some(key_from_seed(&B32::from(r.seed)))
     }
 
     /// Like an attacker who holds the release of `released_epoch` and

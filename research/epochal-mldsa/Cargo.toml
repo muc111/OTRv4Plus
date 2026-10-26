@@ -14,3 +14,13 @@ ml-dsa = { version = "=0.1.1", features = ["zeroize"] }
 sha3 = "0.10"
 getrandom = "0.2"
 zeroize = "1"
+
+[dev-dependencies]
+# The evidence (tests/conformance.rs, tests/proofs.rs, tests/properties.rs):
+# NIST ACVP vectors are JSON; PQClean is an implementation independent of
+# RustCrypto's, the same crate and version otrv4_core uses.
+serde_json = "1"
+hex = "0.4"
+pqcrypto-mldsa = { version = "=0.1.2", default-features = false, features = ["std"] }
+pqcrypto-traits = "0.3"
+proptest = { version = "1", default-features = false, features = ["std"] }
