@@ -219,6 +219,35 @@ parse `num_versions` to locate it; the offset is not fixed.
 `num_versions` MUST be in the range 1..8 inclusive. A value of 0 or > 8 MUST
 cause the message to be rejected.
 
+### 3.1 One identity per account (F2)
+
+The ClientProfile travels in DAKE1 in a message body the XMPP server relays,
+so the identity key in it is visible to the server and to every peer. An
+identity MUST therefore belong to exactly one account: two accounts presenting
+the same Ed448 or ML-DSA identity key can be linked by anyone who sees a DAKE
+from each. The fingerprint stays `SHA3-512(Ed448 identity public key)`, a
+public value; it is not re-derived from the account name, because a derived
+display value would change only what people compare, not the key on the wire.
+
+- **Identity not persisted** (the Android and desktop apps: one identity per
+  process). The identity generated at start-up is taken by the first account
+  a connection is prepared for. A connection prepared for a different account
+  first replaces it: new Ed448 and ML-DSA identities from the same generation
+  code, the old handles zeroized in Rust, every session and handshake of the
+  old identity ended (§5.8), in-memory trust pins discarded. This happens
+  before any byte is sent as the new account. The same account again keeps
+  its identity.
+- **Identity persisted** (the terminal client). One sealed record per
+  account, named `identity.<h>.sealed` with
+  `h = hex(SHA3-256("OTRv4+ identity record v1" || 0x00 || lowercase bare JID))[0..32]`,
+  so the file name does not contain the JID. Sealing is unchanged (Rust,
+  device DEK). The single record from before this rule is kept by the first
+  account to sign in afterwards; any other account starts with a new
+  identity.
+
+A device fingerprint is shown only once a login has succeeded, and never
+across an account switch (docs/SECURITY_ISSUES.md U1, F2).
+
 ---
 
 ## 4. Deniable Authenticated Key Exchange (DAKE)

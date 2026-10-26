@@ -14,7 +14,9 @@ Status vocabulary:
 | ID | Title | Severity | Status |
 |----|-------|----------|--------|
 | L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED (mechanism; 2026-10-26)** -- an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`. Residual: the retirement rule wants formal expert review, and until then no "deniable messaging" claim is made; first contact stays trust-on-first-use |
-| U1 | Signed out, About -> back reached the signed-in chat list, and the device's identity fingerprint could be read before any login | Medium (privacy: device-account binding) | **RESOLVED** (2026-10-26) -- the bridge withholds the fingerprint until a login succeeds (`OtrApp.local_fingerprint`, security details, the desktop host's start-up message); Android shows only public screens while signed out and About goes back to sign-in; sign-out keeps nothing to navigate back to; the desktop and terminal show no fingerprint before login. `tests/test_u1_signed_out_surfaces.py`, `AuthGateTest`. Residual: the identity is per device, so two accounts signed in on one device show peers the same fingerprint (see U1) |
+| U1 | Signed out, About -> back reached the signed-in chat list, and the device's identity fingerprint could be read before any login | Medium (privacy: device-account binding) | **RESOLVED** (2026-10-26) -- the bridge withholds the fingerprint until a login succeeds (`OtrApp.local_fingerprint`, security details, the desktop host's start-up message); Android shows only public screens while signed out and About goes back to sign-in; sign-out keeps nothing to navigate back to; the desktop and terminal show no fingerprint before login. `tests/test_u1_signed_out_surfaces.py`, `AuthGateTest`. Its residual (one identity shared by accounts) is resolved by F2 |
+| F2 | Two accounts used one after the other in one app process (Android, desktop) or on one machine (terminal) presented the same long-term identity key, which every DAKE1 carries past the server: the accounts could be linked | Medium (privacy) | **RESOLVED** (2026-10-26) -- one identity per account (SPEC §3.1): a non-persisted identity is replaced, old handles zeroized in Rust, when a connection is prepared for a different account, before any byte is sent as it; the terminal keeps one sealed record per account, named by a hash. Key generation and sealing unchanged. `tests/test_f2_per_account_identity.py` |
+| N1 | The route chosen from the server name (route.py) was followed by the code written to follow it, but not enforced on the process: a library, a mistyped flag or a new feature could open another socket or resolve a name | Medium (anonymity) | **RESOLVED for the app's own code** (2026-10-26) -- a process-wide audit hook (`otrv4plus_egress`) enforces the route from the gate every sign-in, account creation and server test passes first: on I2P and Tor only loopback and the configured bridge are reachable and nothing is resolved; no `.i2p` or `.onion` name reaches DNS on any route. `tests/test_n1_network_isolation.py`. Residual: the bundled i2pd is a separate process with its own reseed and router links; not yet confirmed by a device packet capture |
 | M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
 | G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **RESOLVED** (2026-10-24) -- `tests/test_dake_timeout.py`; `test_08_dake_timeout` no longer an expected failure |
 | G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **RESOLVED** (2026-10-24) -- one copy, `tests/otrv4_testlib.py`; `tests/test_dake_timeout.py::test_there_is_one_test_library` |
@@ -189,12 +191,130 @@ this repository. A device check is listed in the release notes.
 
 ### Residual
 
-The identity key is per DEVICE (the engine keeps it under the app's home),
-not per account. Two accounts signed in one after the other on the same
-device therefore show their peers the same fingerprint, which links the two
-accounts for anyone who talks to both. Fixing that means one identity per
-account (with its own trust pins); that is a separate change, proposed rather
-than made here.
+Resolved by F2. (As first written, this said the identity was per device. It
+was per app process on Android and desktop -- `OTRConfig()` does not persist
+it -- and per machine in the terminal client; either way two accounts could
+share one.)
+
+---
+
+## F2 — One identity per account
+
+**Status: RESOLVED, 2026-10-26.**
+
+### What was wrong
+
+The fingerprint is `SHA3-512(Ed448 identity public key)`, and that public key,
+with the pinned ML-DSA key, travels in the ClientProfile of every DAKE1 -- an
+`?OTRv4` message body the XMPP server relays and can read (on I2P there is no
+TLS at all). On Android and the desktop the engine's identity is not persisted
+and lives as long as the process; the terminal client keeps one sealed
+identity for the machine. Two accounts used one after the other therefore
+presented one key, linking them for the server and for any peer of both.
+
+### Why not a derived fingerprint
+
+Proposed first: show `KDF(device key || username)` as the fingerprint. It was
+not done: it would change only the string people compare, while the server and
+every peer still see the same raw key in DAKE1. A residual marked resolved by
+it would have been a false claim.
+
+### The fix (SPEC §3.1)
+
+- **Android, desktop** (identity per process): `OtrApp.bind_identity_account`
+  runs in `controller_for`, which every sign-in and account creation calls,
+  before anything is sent. The first account takes the start-up identity,
+  which nobody has seen; another account gets new Ed448 and ML-DSA identities
+  (`EnhancedSessionManager.rotate_identity`, the same generation code), the old
+  handles zeroized in Rust, every session and handshake of the old identity
+  ended deniably (L1), in-memory pins discarded. The fingerprint stays dark
+  until the new account's own login (U1).
+- **Terminal** (persistent identity): one sealed record per account,
+  `identity.<h>.sealed`, `h` a domain-separated SHA3-256 of the bare JID, so
+  the JID is not in the file name. The record from before is kept by the
+  first account to sign in afterwards, so its contacts see no key change.
+
+Key generation and sealing are unchanged; only which account an identity
+belongs to is. The fingerprint is a hash of a public key: no private or
+seed material crosses from Rust.
+
+### Regression gate
+
+`tests/test_f2_per_account_identity.py`: rotation gives a new key and zeroizes
+the old handles; the old identity's sessions and pins go; a persisted identity
+is never rotated; **two accounts in one process present different keys in
+DAKE1, as the peer sees them**; the same account on two devices has two keys;
+the same account again keeps its key; a switch hides the old fingerprint until
+the new login; junk never rotates; every connection binds before anything is
+sent; the terminal's records are per account, named by hash, the old record
+claimed once, and two accounts load two real identities while one account
+keeps its own across runs. Also `VerificationTest` (the About text says each
+account has its own identity).
+
+---
+
+## N1 — The route is enforced on the whole process
+
+**Status: RESOLVED for the app's own code, 2026-10-26.**
+
+### The rules
+
+| Server name | Route | May reach | Name resolution |
+|-------------|-------|-----------|-----------------|
+| `*.i2p`, `*.b32.i2p` | I2P over SAM | loopback and the configured SAM bridge only | none (the router resolves `.i2p` names, inside I2P) |
+| `*.onion` | Tor SOCKS5 | loopback and the configured SOCKS port only | none (the name travels inside SOCKS CONNECT) |
+| anything else | TLS, certificate and hostname checked | any | DNS (SRV first) |
+| every route | | never a `.i2p` / `.onion` name directly | never a `.i2p` / `.onion` name |
+
+`android_bridge.route` chose this from the name before; nothing enforced it.
+Now `otrv4plus_egress` installs a CPython audit hook (PEP 578) that refuses
+`socket.connect`, `sendto`, `sendmsg` and every resolver call (forward and
+reverse) that the active route does not allow. A refusal is an `OSError`; it
+cannot be bypassed from Python, libraries included. slixmpp's aiodns (c-ares,
+which resolves outside Python's socket layer) is switched off on the I2P and
+Tor routes, and the APK does not ship it at all. The rule is entered in the
+route gate that sign-in, account creation and the server test all pass first,
+so no authentication or registration byte goes out before it; sign-out leaves
+it. The terminal client enters it before opening any tunnel, and refuses
+`--no-i2p` for an `.i2p` server rather than sending the name to a resolver.
+
+**Router choice stays localhost-only.** A local I2P app's SAM bridge on
+127.0.0.1:7656 is preferred (SAM HELLO probe, loopback only); otherwise the
+bundled router, whose SAM listens on 127.0.0.1 only. No LAN address, scan or
+discovery is tried. A SAM bridge elsewhere is used only when typed into the
+desktop's connection settings, must be an IP address (a name would need DNS),
+and the screen warns that SAM has no authentication.
+
+### Regression gate
+
+`tests/test_n1_network_isolation.py`: the rule's table for every route;
+hidden names refused on every route; an explicit bridge elsewhere must be an IP
+and is the only exception; real `connect`, `sendto`, `getaddrinfo`,
+`gethostbyname`, `gethostbyaddr` and asyncio lookups refused on I2P and Tor;
+`.i2p` lookups refused on clearnet; aiodns off on hidden routes; the rule in
+force before the bridge is even probed, for `.i2p`, `.b32.i2p` and `.onion`;
+a hostname bridge refused before any lookup; sign-in, account creation and the
+server test all pass the gate first; **the whole SAM path, through the Android
+transport and the real forwarder against a scripted SAM bridge, touches only
+loopback and resolves nothing**; the Kotlin probe asks only 127.0.0.1:7656,
+with no LAN or discovery code; the bundled router listens on loopback with its
+HTTP, proxy, control and UPnP interfaces off; sign-out stops it and leaves the
+route; the APK carries the rule and no networking library beyond slixmpp and
+PySocks. Also `test_i2p_naming_no_dns.py`, `test_tor_transport.py`,
+`test_tls_follows_transport.py`, `test_route_parity.py`.
+
+### Scope and residuals
+
+- **The bundled router is its own process.** i2pd reseeds over HTTPS on its
+  first start (resolving the reseed hosts through the system resolver) and
+  then talks to other I2P routers over UDP/TCP: that is I2P working, and it
+  never carries the server's name. None of it happens when a local I2P app on
+  127.0.0.1:7656 is used. The rule above binds the app's own code.
+- **Not yet confirmed by a device capture.** A PCAPdroid capture of an `.i2p`
+  account should show only the router's peer traffic (and its reseed, on a
+  first start) and no port 53 from the app. Listed in the release notes.
+- Android's own services (for example the location provider behind a shared
+  position) are the system's, not the app's.
 
 ---
 
