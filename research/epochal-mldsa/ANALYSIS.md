@@ -202,8 +202,33 @@ authenticated deniably:
 
 ## 6. The tests, against the claim
 
-`cargo test --offline --release` in `research/epochal-mldsa` (17 tests, all
-passing):
+The evidence is `tools/prove.sh`. It writes **RESULTS.md**, the record of
+its last run, and CI's `Research` workflow re-runs it on every change here.
+It covers:
+
+- `tests/conformance.rs`: FIPS 204 conformance of the three primitive
+  paths (seed to key, hedged signing with a context, verification) against
+  NIST ACVP vectors. `vectors/extract_acvp.py` regenerates the vectors from
+  a pinned ACVP-Server commit, byte for byte. The same vectors also run
+  through PQClean, so the independent verifier is itself checked.
+- `tests/proofs.rs`:
+  - P1: a forger's signature is byte-identical to the holder's for the
+    same randomiser, so the two are identically distributed;
+  - P2: PQClean accepts holder and forger signatures alike, and rejects
+    every cross-epoch forgery;
+  - P3: the derivation follows §2's formulas, with known answers;
+  - an export of public data only, for OpenSSL (`vectors/verify_openssl.py`).
+- `tests/properties.rs`: C1-C3 and the binding as properties over
+  generated chains, epoch counts, release sets and messages (fixed
+  generator seed; 256 cases each, 4096 in the deep run).
+- `tools/mutants.py`: eleven mutants, each breaking one rule. Every one
+  must make the suite fail. The first run found two checks no test
+  covered: a signature's declared epoch, and a group state labelled with
+  another epoch. The two tests in `tests/epochal.rs` that close them are
+  listed below.
+- `examples/bench.rs`: medians, for §5 and §7.
+
+`tests/epochal.rs`, the claim tests:
 
 | Test | Shows |
 |---|---|
@@ -224,10 +249,14 @@ passing):
 | `h2_after_release_handshakes_alice_never_ran_verify_as_hers` | §1a: **the fact of communication** is forgeable after release, including the peer's identity |
 | `h3_the_release_does_not_reach_the_next_epoch_s_handshakes` | §1a: contained |
 | `limitation_a_long_term_certificate_of_the_epoch_key_stays_evidence` | **asserts the limit**: a long-term certificate of `pk_N` re-attributes what it binds |
+| `a_signature_whose_declared_epoch_is_not_its_key_s_is_refused` | the declared epoch cannot say another epoch (found by mutation) |
+| `a_key_binds_only_to_a_group_state_of_its_own_epoch_even_with_the_same_authenticator` | the binding does not rest on per-epoch authenticators alone (found by mutation) |
 
 Test 2 shows forgeability **by verification**: the forged signature passes
-every check a verifier can run. Whether a judge would also accept that the
-release happened is outside what code can test.
+every check a verifier can run. P1 shows more: a forgery is not just
+accepted, it is distributed exactly as the holder's signatures are. Whether
+a judge would also accept that the release happened is outside what code
+can test. RESULTS.md ends with the list of what the run does not show.
 
 ## 7. Recommendation
 
@@ -260,8 +289,8 @@ Cost if integrated, measured on this prototype's code paths:
 - 32 B per release.
 - One new state per member and group: the chain state plus unreleased seeds
   (32 B each).
-- In the codebase, about 300-500 lines of Rust (this prototype: about 310
-  lines of library, 260 of tests): a new keying layer under the
+- In the codebase, about 300-500 lines of Rust (this prototype: about 360
+  lines of library, 840 of tests): a new keying layer under the
   MLS provider, or under the DAKE. Plus a release schedule and verifier
   state ("refuse epochs whose release has been seen") on every client, and a
   wire format.

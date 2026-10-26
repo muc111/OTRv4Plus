@@ -31,3 +31,9 @@ def test_python_has_no_path_filter():
     text = open(os.path.join(ROOT, ".github", "workflows", "python.yml"), encoding="utf-8").read()
     on = text[text.index("\non:"):text.index("\npermissions:")]
     assert "paths:" not in on
+
+
+def test_the_research_evidence_runs_when_the_prototype_changes():
+    watched = _paths("research.yml")
+    for dep in ("research/epochal-mldsa/**", ".github/workflows/research.yml"):
+        assert dep in watched, "research.yml does not run when %s changes" % dep

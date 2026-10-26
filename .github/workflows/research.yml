@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# The epochal ML-DSA-87 research prototype (research/epochal-mldsa): every
+# piece of its evidence, re-run where anyone can read the log.
+#
+# tools/prove.sh re-downloads the NIST ACVP vectors at the pinned commit and
+# checks they match the committed extract, runs every test, a deep property
+# run, the OpenSSL cross-check on public data and the mutation checks, and
+# writes RESULTS.md. That file is uploaded as an artifact. The job also
+# fails if the committed RESULTS.md reports a different test count from
+# this run, so the committed record cannot fall behind the tests.
+#
+# Not part of the app or any release; nothing here builds the APK.
+name: Research
+
+on:
+  push:
+    branches: [main, dev, "claude/**"]
+    paths:
+      - "research/epochal-mldsa/**"
+      - ".github/workflows/research.yml"
+  pull_request:
+    paths:
+      - "research/epochal-mldsa/**"
+      - ".github/workflows/research.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prove:
+    name: Epochal ML-DSA-87 prototype, full evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: research/epochal-mldsa
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ML-DSA in `cryptography` needs its bundled OpenSSL to be 3.5 or later.
+      - name: Install the OpenSSL verifier
+        run: pip install "cryptography==50.0.2"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            research/epochal-mldsa/target
+          key: cargo-research-${{ hashFiles('research/epochal-mldsa/Cargo.lock') }}
+          restore-keys: cargo-research-
+
+      - name: Fetch the locked dependencies
+        run: cargo fetch --locked
+
+      - name: Run the evidence
+        run: PYTHON=python tools/prove.sh "$RUNNER_TEMP/RESULTS.md"
+
+      - name: The committed RESULTS.md has this run's test count
+        run: |
+          count() { grep -oE '^\*\*[0-9]+ tests passed' "$1"; }
+          echo "this run: $(count "$RUNNER_TEMP/RESULTS.md")   committed: $(count RESULTS.md)"
+          [ "$(count "$RUNNER_TEMP/RESULTS.md")" = "$(count RESULTS.md)" ]
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: epochal-mldsa-RESULTS
+          path: ${{ runner.temp }}/RESULTS.md
+          if-no-files-found: ignore
