@@ -181,6 +181,16 @@ class GroupsControlMixin:
     def remove_group_member(self, room: str, member: str) -> Dict[str, Any]:
         return self._group_call(self._app.groups.remove, room, member)
 
+    def answer_entry_request(self, room: str, requester: str, accept: bool) -> Dict[str, Any]:
+        """The creator's Accept or Deny to "X asks to join" (owner,
+        2026-10-25). Accept: `code` as invite_to_group's. Deny: `value` is
+        the seconds before the requester can be shown asking again."""
+        result = self._group_call(self._app.answer_entry_request, room, requester, bool(accept))
+        if result.get("ok") and accept and result.get("value") in ("waiting_for_otr",
+                                                                   "waiting_for_contact"):
+            result["code"] = result["value"]
+        return result
+
     def remove_failed_group_members(self, room: str) -> Dict[str, Any]:
         """The creator removes everyone whose verification failed, in one
         commit (owner, 2026-10-25). `value`: who was removed."""

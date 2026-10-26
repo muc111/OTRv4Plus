@@ -62,11 +62,30 @@ class RoomChatMixin:
     #: Replayed history older than this is not shown at all.
     ENTRY_REQUEST_MAX_AGE = 24 * 3600.0
 
+    #: The creator denied a request: the requester's next one is not shown
+    #: for 15 minutes, doubling with every denial (owner, 2026-10-25: "to
+    #: stop pests who keep spamming request to join").
+    ENTRY_DENY_FIRST = 15 * 60.0
+    #: Doubling stops here (15 min x 2^12, about 42 days): no overflow.
+    ENTRY_DENY_MAX_DOUBLINGS = 12
+
+    @classmethod
+    def entry_wait(cls, denials: int) -> float:
+        """Seconds a requester denied `denials` times waits: 15, 30, 60 min..."""
+        if denials <= 0:
+            return 0.0
+        return cls.ENTRY_DENY_FIRST * (2 ** min(denials - 1, cls.ENTRY_DENY_MAX_DOUBLINGS))
+
     def _entry_requested(self, room: str, body: str, timestamp: float,
                          own: bool, item: Any) -> None:
         """A request to be invited (ENTRY_REQUEST_PREFIX + {"jid": ...}).
-        Shown to members as an address and two buttons; nothing happens
-        unless one of them taps Invite."""
+
+        Owner (2026-10-25): it is the CREATOR's to answer -- the prompt and
+        the notification go to them, and nobody else is asked. A request the
+        creator has already answered, or one from someone still waiting out
+        a denial, is not shown. One from the room's history (we were away
+        when it came) is shown too, and asked about: it is still waiting.
+        Nothing happens unless the creator taps Accept."""
         if own:
             return
         try:
@@ -84,7 +103,21 @@ class RoomChatMixin:
             return
         if jid == self._own_bare():
             return
+        groups = self._groups
+        if groups is None or groups.coordinator(room) != self._own_bare():
+            return                      # the creator answers, nobody else
+        try:
+            if any(m["jid"] == jid for m in groups.members(room)):
+                return                  # already in
+        except Exception:
+            return
         now = self._clock()
+        denials, denied_at = groups.entry_denial(room, jid)
+        if denials:
+            if timestamp and timestamp <= denied_at:
+                return                  # the request that was denied, replayed
+            if now < denied_at + self.entry_wait(denials):
+                return                  # still waiting out the denial
         live = item is None or getattr(item, "source", "live") == "live"
         if not live and timestamp and now - timestamp > self.ENTRY_REQUEST_MAX_AGE:
             return
@@ -93,6 +126,25 @@ class RoomChatMixin:
             return
         self._entry_seen[key] = now
         self._emit(GroupEntryRequested(peer=room, requester=jid, live=live))
+
+    def answer_entry_request(self, room: str, requester: str, accept: bool) -> Any:
+        """The creator's answer. Accept: the ordinary OTRv4+ invitation
+        (invite_when_ready's code). Deny: one more denial, and the seconds
+        the requester's next request waits before it is shown."""
+        room = self.canonical_peer(room)
+        jid = self.canonical_peer(requester)
+        groups = self._groups
+        if groups is None:
+            raise GroupError("groups_unavailable")
+        if groups.coordinator(room) != self._own_bare():
+            raise GroupError("only_the_creator_admits")
+        # Answered: a new request after the wait is a new question.
+        self._entry_seen.pop((room, jid), None)
+        if accept:
+            groups.clear_entry_denial(room, jid)
+            return self.invite_when_ready(room, jid)
+        denials = groups.deny_entry(room, jid, self._clock())
+        return int(self.entry_wait(denials))
 
     def note_room_rejected(self, room: str, condition: str = "") -> None:
         """The server bounced a message we sent to `room`. For a secure group

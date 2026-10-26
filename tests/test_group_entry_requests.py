@@ -5,7 +5,7 @@ instead of the password ... password protection is for plaintext rooms").
 
 An encrypted group is invite-only. Someone outside steps into its room for a
 moment, posts ONE request carrying their address and leaves; members see
-"X asks to join" with Invite and Dismiss. These tests drive the real app gate
+"X asks to join"; the creator answers Accept, Deny or Later. These drive the real app gate
 and the controller with a fake transport.
 """
 import json
@@ -47,10 +47,15 @@ class _Wire(Transport):
 
 
 class _Groups:
-    """Just enough of SecureGroups: ROOM is ours; nothing else is shown."""
+    """Just enough of SecureGroups: ROOM is ours and we created it (its
+    first member); the denials book as SecureGroups keeps it (the real one
+    is driven in test_join_request_creator_decides)."""
 
     def __init__(self):
         self.bodies = []
+        self.creator = "me@example.test"
+        self.member_jids = ["me@example.test", "carol@example.test"]
+        self.denied = {}
 
     def is_secure(self, room):
         return room == ROOM
@@ -58,6 +63,23 @@ class _Groups:
     def on_room_body(self, room, nick, body, timestamp, own=False):
         self.bodies.append(body)
         return True
+
+    def coordinator(self, room):
+        return self.creator if room == ROOM else ""
+
+    def members(self, room):
+        return [{"jid": j} for j in self.member_jids]
+
+    def entry_denial(self, room, jid):
+        return tuple(self.denied.get((room, jid), (0, 0.0)))
+
+    def deny_entry(self, room, jid, at):
+        count = self.denied.get((room, jid), (0, 0.0))[0] + 1
+        self.denied[(room, jid)] = (count, at)
+        return count
+
+    def clear_entry_denial(self, room, jid):
+        self.denied.pop((room, jid), None)
 
 
 def _manager():
@@ -213,3 +235,87 @@ def test_a_password_room_says_to_ask_a_member():
 def test_the_desktop_host_offers_it():
     from desktop_bridge.host import CONTROLLER_OPS
     assert CONTROLLER_OPS["request_group_entry"] == ("room",)
+
+
+# -- the creator decides (owner, 2026-10-25) -----------------------------------
+#
+# "No notification came to creator of the room where a new user asked to join
+# ... notification and prompt asks creator if user can join group then up to
+# creator to accept or deny and if denied that user cannot try again for
+# 15mins. If denied again x2 so 30mins and keep going x2."
+
+def test_only_the_creator_is_asked(app):
+    app._groups.creator = "carol@example.test"           # someone else made it
+    app.receive_room_message(ROOM, "bob", _ask("bob@example.test"))
+    assert _asks(app) == []
+
+
+def test_someone_already_in_the_group_is_not_asked_about(app):
+    app.receive_room_message(ROOM, "carol", _ask("carol@example.test"))
+    assert _asks(app) == []
+
+
+def test_a_request_from_history_is_still_asked_about(app):
+    """The creator was away when it came: it is waiting on them all the same."""
+    recent = types.SimpleNamespace(source="history", action="")
+    app.receive_room_message(ROOM, "bob", _ask("bob@example.test"),
+                             timestamp=app.clock[0] - 3600, item=recent)
+    assert _asks(app) == [(ROOM, "bob@example.test", False)]
+
+
+def test_the_wait_doubles_with_every_denial():
+    minutes = [OtrApp.entry_wait(n) / 60 for n in range(0, 6)]
+    assert minutes == [0, 15, 30, 60, 120, 240]
+    assert OtrApp.entry_wait(10_000) == OtrApp.entry_wait(OtrApp.ENTRY_DENY_MAX_DOUBLINGS + 1)
+
+
+def test_denied_they_are_not_shown_for_15_then_30_minutes(app):
+    bob = "bob@example.test"
+    app.receive_room_message(ROOM, "bob", _ask(bob))
+    assert app.answer_entry_request(ROOM, bob, False) == 15 * 60
+    for wait in (15 * 60, 30 * 60):
+        app.clock[0] += wait - 1
+        app.receive_room_message(ROOM, "bob", _ask(bob))
+        assert len(_asks(app)) == 1 + (wait == 30 * 60), "still waiting: not shown"
+        app.clock[0] += 1
+        app.receive_room_message(ROOM, "bob", _ask(bob))
+        assert _asks(app)[-1] == (ROOM, bob, True), "the wait is over: asked again"
+        assert app.answer_entry_request(ROOM, bob, False) == 2 * wait
+
+
+def test_the_denied_request_replayed_from_history_is_not_asked_again(app):
+    bob = "bob@example.test"
+    sent_at = app.clock[0] - 60
+    old = types.SimpleNamespace(source="history", action="")
+    app.receive_room_message(ROOM, "bob", _ask(bob), timestamp=sent_at, item=old)
+    app.answer_entry_request(ROOM, bob, False)
+    app.clock[0] += 2 * 3600                              # long past the wait
+    app.receive_room_message(ROOM, "bob", _ask(bob), timestamp=sent_at, item=old)
+    assert len(_asks(app)) == 1
+
+
+def test_accept_invites_and_forgives(app, monkeypatch):
+    bob = "bob@example.test"
+    invited = []
+    monkeypatch.setattr(app, "invite_when_ready", lambda room, peer: invited.append((room, peer)) or "sent")
+    app.answer_entry_request(ROOM, bob, False)
+    assert app.answer_entry_request(ROOM, bob, True) == "sent"
+    assert invited == [(ROOM, bob)]
+    assert app._groups.entry_denial(ROOM, bob) == (0, 0.0)
+
+
+def test_only_the_creator_answers(app):
+    from android_bridge.groups import GroupError
+    app._groups.creator = "carol@example.test"
+    with pytest.raises(GroupError) as exc:
+        app.answer_entry_request(ROOM, "bob@example.test", False)
+    assert exc.value.code == "only_the_creator_admits"
+
+
+def test_the_controller_and_the_desktop_offer_the_answer():
+    from desktop_bridge.host import CONTROLLER_OPS
+    assert CONTROLLER_OPS["answer_entry_request"] == ("room", "requester", "accept")
+    c = ConnectionController.__new__(ConnectionController)
+    c._app = types.SimpleNamespace(answer_entry_request=lambda r, q, a: 1800)
+    out = c.answer_entry_request(ROOM, "bob@example.test", False)
+    assert out["ok"] and out["value"] == 1800

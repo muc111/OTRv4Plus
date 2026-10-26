@@ -99,6 +99,7 @@ CONTROLLER_OPS: Dict[str, tuple] = {
     "verify_group_members": ("room",),
     "remove_group_member": ("room", "member"),
     "remove_failed_group_members": ("room",),
+    "answer_entry_request": ("room", "requester", "accept"),
     "delete_secure_group": ("room",),
     # Avatars arrive as PIXELS (RGBA, base64 text) decoded by the bounded
     # decoder in android_bridge/avatar.py: no image decoder in the GUI reads

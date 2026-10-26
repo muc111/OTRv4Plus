@@ -503,6 +503,10 @@ class SecureGroups:
         #: that key: one attempt per key (owner, 2026-10-25), kept until the
         #: creator removes them; a new key (invited again) starts clean.
         self._failed: Dict[str, Dict[str, str]] = {}
+        #: room -> {jid: [denials, last denied at]}: the creator's "Deny" to a
+        #: request to join (owner, 2026-10-25), kept so a pest's next request
+        #: waits 15 minutes, doubling with each denial (OtrApp.entry_wait).
+        self._entry_denied: Dict[str, Dict[str, list]] = {}
         #: room -> {message id: MLS identity of its author}, bounded, memory
         #: only (the UI keeps the author with each stored message).
         self._authors: Dict[str, "collections.OrderedDict[str, str]"] = {}
@@ -730,6 +734,8 @@ class SecureGroups:
             "bound": {r: {j: [fp, bool(v)] for j, (fp, v) in m.items()}
                       for r, m in self._bound.items()},
             "failed": {r: dict(m) for r, m in self._failed.items() if m},
+            "entry_denied": {r: {j: [int(v[0]), float(v[1])] for j, v in m.items()}
+                             for r, m in self._entry_denied.items() if m},
             "invites": {r: [i.peer, i.fingerprint, i.at, i.accepted]
                         for r, i in self._invites.items()},
             "outgoing": [[r, p, o.at] for (r, p), o in self._outgoing.items()],
@@ -779,6 +785,8 @@ class SecureGroups:
 
         each("bound", lambda kv: self._bound.setdefault(str(kv[0]), {}).update(
             {str(j): (str(v[0]), bool(v[1])) for j, v in kv[1].items()}))
+        each("entry_denied", lambda kv: self._entry_denied.setdefault(str(kv[0]), {}).update(
+            {str(j): [int(v[0]), float(v[1])] for j, v in kv[1].items()}))
         each("failed", lambda kv: self._failed.setdefault(str(kv[0]), {}).update(
             {str(j): str(fp) for j, fp in kv[1].items()}))
         each("invites", lambda kv: self._invites.__setitem__(str(kv[0]), _Invite(
@@ -906,6 +914,7 @@ class SecureGroups:
             self._pending_binding.clear()
             self._bound.clear()
             self._failed.clear()
+            self._entry_denied.clear()
             self._reassembler.clear()
             self._unconfirmed.clear()
             self._since_rekey.clear()
@@ -1028,6 +1037,27 @@ class SecureGroups:
             book[member] = fp
             self.save()
         return True
+
+    def entry_denial(self, room: str, jid: str) -> Tuple[int, float]:
+        """How often the creator denied `jid`'s request to join, and when
+        last: (0, 0.0) for never."""
+        with self._lock:
+            held = self._entry_denied.get(room, {}).get(jid)
+            return (int(held[0]), float(held[1])) if held else (0, 0.0)
+
+    def deny_entry(self, room: str, jid: str, at: float) -> int:
+        """One more denial of `jid`, at `at`. Returns how many now."""
+        with self._lock:
+            book = self._entry_denied.setdefault(room, {})
+            count = int(book.get(jid, [0, 0.0])[0]) + 1
+            book[jid] = [count, float(at)]
+            self.save()
+            return count
+
+    def clear_entry_denial(self, room: str, jid: str) -> None:
+        with self._lock:
+            if self._entry_denied.get(room, {}).pop(jid, None) is not None:
+                self.save()
 
     def coordinator(self, room: str) -> str:
         """The group's creator: the member at the first MLS leaf (the
@@ -2005,6 +2035,7 @@ class SecureGroups:
             self._need().forget_group(room.encode())
             self._bound.pop(room, None)
             self._failed.pop(room, None)
+            self._entry_denied.pop(room, None)
             self.save()
         self._emit(GroupChanged(peer=room, change="left"))
 
@@ -2017,7 +2048,7 @@ class SecureGroups:
             if client is None or self._wiped or not client.has_group(room.encode()):
                 return False
             client.forget_group(room.encode())
-            for book in (self._bound, self._failed, self._syncing, self._held, self._unconfirmed,
+            for book in (self._bound, self._failed, self._entry_denied, self._syncing, self._held, self._unconfirmed,
                          self._queued_kps, self._since_rekey, self._activity):
                 book.pop(room, None)
             self.save()
@@ -2217,6 +2248,7 @@ class SecureGroups:
                                     detail=inv.peer)
             self._bound.pop(room, None)
             self._failed.pop(room, None)
+            self._entry_denied.pop(room, None)
             self._activity.pop(room, None)
             self._queued_kps.pop(room, None)
             self.save()
