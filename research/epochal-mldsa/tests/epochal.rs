@@ -144,6 +144,29 @@ fn at_the_boundary_a_receiver_refuses_a_released_epoch() {
             "after the release it may be a forgery, so it is refused");
 }
 
+#[test]
+fn a_signature_whose_declared_epoch_is_not_its_key_s_is_refused() {
+    // The context already binds the epoch cryptographically; the declared
+    // epoch_id is what a receiver files the signature under (and checks
+    // releases against). It must not be able to say another epoch.
+    let (s, pks) = alice(2);
+    let mut sig = sign(s.signing_key(1).unwrap(), b"filed under 1");
+    assert!(verify(&pks[0], b"filed under 1", &sig));
+    sig.epoch_id = 2;
+    assert!(!verify(&pks[0], b"filed under 1", &sig), "under its own key, declared as 2");
+}
+
+#[test]
+fn a_key_binds_only_to_a_group_state_of_its_own_epoch_even_with_the_same_authenticator() {
+    // Defence in depth: MLS gives each epoch its own authenticator, but the
+    // binding must not rest on that alone. A state labelled with another
+    // epoch is refused even if its authenticator were reused.
+    let (_s, pks) = alice(1);
+    let mut relabelled = epoch(1);
+    relabelled.epoch_id = 2;
+    assert!(!verify_group_binding(&pks[0], &relabelled));
+}
+
 // ── what it does NOT give (ANALYSIS §1, §7): asserted, so it is not claimed ──
 
 #[test]
