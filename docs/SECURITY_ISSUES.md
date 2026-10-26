@@ -13,7 +13,8 @@ Status vocabulary:
 
 | ID | Title | Severity | Status |
 |----|-------|----------|--------|
-| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **OPEN (claim only)** -- the all-zeros mechanism is fixed and proven end to end (`tests/test_mac_revelation_end_to_end.py`: the published key re-MACs a forgery of the real message). What stays open is the *formal* deniability claim, which needs expert review; do not claim it. Re-checked 2026-09-28. |
+| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED (mechanism; 2026-10-26)** -- an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`. Residual: the retirement rule wants formal expert review, and until then no "deniable messaging" claim is made; first contact stays trust-on-first-use |
+| U1 | Signed out, About -> back reached the signed-in chat list, and the device's identity fingerprint could be read before any login | Medium (privacy: device-account binding) | **RESOLVED** (2026-10-26) -- the bridge withholds the fingerprint until a login succeeds (`OtrApp.local_fingerprint`, security details, the desktop host's start-up message); Android shows only public screens while signed out and About goes back to sign-in; sign-out keeps nothing to navigate back to; the desktop and terminal show no fingerprint before login. `tests/test_u1_signed_out_surfaces.py`, `AuthGateTest`. Residual: the identity is per device, so two accounts signed in on one device show peers the same fingerprint (see U1) |
 | M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
 | G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **RESOLVED** (2026-10-24) -- `tests/test_dake_timeout.py`; `test_08_dake_timeout` no longer an expected failure |
 | G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **RESOLVED** (2026-10-24) -- one copy, `tests/otrv4_testlib.py`; `tests/test_dake_timeout.py::test_there_is_one_test_library` |
@@ -30,80 +31,170 @@ Status vocabulary:
 
 ## L1 — MAC-key revelation reveals all-zeros
 
-**Status: OPEN. Do not claim deniability.**
+**Status: RESOLVED (the mechanism), 2026-10-26. Do not claim deniable
+messaging until the retirement rule has had expert review.**
 
-### Current behaviour
+### What was wrong, last
 
-OTR's published design has a participant reveal old MAC keys once they can no
-longer be used to authenticate anything. Once revealed, any third party could
-have forged a transcript with them, so a transcript stops being evidence of who
-said what. That is the mechanism behind OTR's deniability property.
+The all-zeros placeholder was fixed on 2026-09-28: the receiver's MAC key
+(MKmac, OTRv4 §4.4.2) was revealed in its next message. Three things still
+stood between that and a claim this file can mark resolved:
 
-In this codebase the revelation machinery is present in the wire format —
-`OTRv4DataMessage` carries a `revealed_mac_keys` list, encoded with a length
-prefix and decoded on receipt (`otrv4+.py`, `compute_mac` / `verify_mac`
-region) — but what gets revealed is all-zeros rather than the real prior MAC
-keys. The prior audit recorded this as item L1 and classified it as a design
-decision awaiting a call.
+1. **Premature revelation.** At every DH ratchet step the ratchet also queued
+   the MAC key of the last message it had SENT. The peer could still be waiting
+   for that message, or holding it as a skipped key.
+2. **No retirement on deletion or close.** A message that never arrived had
+   its MAC key published by nobody, even after its skipped key was evicted;
+   and nothing was published when a session ended. Past 50 queued keys the
+   oldest were wiped without ever being published.
+3. **The boundary.** Retired keys crossed to Python as a list of `bytes`.
 
-### Expected OTR behaviour
+### The rule (SPEC §5.8)
 
-Old MAC keys, once retired, are published so that forgery by a third party
-becomes possible and the transcript loses evidentiary value.
+A MAC key is retired only when nothing can be verified with it any more:
 
-### Impact
+- **R1** its message was received and authenticated (the replay cache then
+  refuses a second copy);
+- **R2** its message never arrived and the skipped message key is deleted:
+  evicted at `MAX_MESSAGE_KEYS` (2000, the existing bound), or at close;
+- **R3** close (`retire_all`): R2 for every skipped key still held, after which
+  the ratchet decrypts nothing.
 
-The **deniability** property is not achieved. Nothing else is weakened:
-confidentiality, integrity, forward secrecy, post-compromise security and
-authentication are unaffected, because none of them depends on revelation.
+A sender never retires the key of a message it sent: only the receiver knows
+when that message is finished with. DH steps use no MAC key, and no key from a
+chain position not yet used is ever retired. This is the four-part predicate
+the issue asked for: not a current receiving key; no skipped key depends on
+it (each MAC key depends only on its own message key); the peer's one message
+that used it has been received (R1) or can never be (R2, R3); and no DH step
+depends on it.
 
-The practical risk is therefore not cryptographic but representational — a
-claim of deniability in product or marketing material would be false. Note that
-the ring signature *does* provide participation deniability for the handshake
-(a 1-of-2 OR proof: either ring member could have produced it). Transcript
-deniability for message MACs is the part that is missing. Conflating the two
-would be an easy and material mistake.
+### What ships
 
-### Reproduction
+- `Rust/src/ratchet.rs`: a private retired queue (each key boxed, wiped in
+  place as it is written into the field, wiped on drop); `retire_all`;
+  `encrypt_final` (closing messages of up to 2000 keys, repeated until the
+  queue is empty, then the ratchet is closed). The Python result carries only
+  `reveal_field`, the encoded wire field; MKmac stays a `MessageMacKey` handle.
+- A late message from an older chain whose skipped key is still held is
+  decrypted on the skipped path instead of failing as a DH step (it used to
+  be refused, so its key was never retired by receipt).
+- The engine: `close_with_revelation` runs in `_cleanup_resources`, so every
+  path that destroys a ratchet publishes first; `make_deniable`; sign-out,
+  quit and Wipe & Exit close every session with DISCONNECTED;
+  `take_final_revelations` hands the closing messages to the client; an ended
+  session is never reused by a new handshake.
+- The clients send them: Android and desktop (`app_deniable.py`; after each
+  inbound frame, at sign-out, at Wipe & Exit before the transport closes) and
+  the terminal client (`/deniable`, `/quit`). "Make Chat Deniable…" in every
+  established 1:1 chat on Android and desktop, `/deniable [jid]` in the
+  terminal. Offline, the closing messages are dropped; the keys are retired and
+  wiped in Rust all the same.
 
-```python
-# Complete a DAKE, exchange enough messages to retire a MAC key, then inspect
-# the revealed_mac_keys field of an outgoing data message.
-# Observed: the entry is all-zero bytes rather than a prior MAC key.
-```
+### Regression gate
 
-A proper regression test must assert that a revealed key **verifies a prior
-message's MAC** — not merely that the field is non-zero, which a placeholder
-would also satisfy.
+`tests/test_l1_revelation_gate.py`:
 
-### Relevant code paths
+| | Test |
+|-|------|
+| T1 | `TestT1PositiveDeniability::test_a_published_key_forges_a_message_really_observed` |
+| T2 | `TestT2NoPrematureRevelation::test_a_long_conversation_with_loss_and_dh_steps_publishes_nothing_early`, `::test_a_sender_never_publishes_the_key_of_its_own_message`, `::test_the_check_catches_a_transcript_that_reveals_early` (mutation) |
+| T3 | `TestT3SkippedMessages::test_unpublished_while_held_across_a_dh_step_then_published_late`, `::test_a_skipped_key_deleted_at_close_is_published` |
+| T4 | `TestT4Zeroization::test_a_published_key_is_no_longer_held`, `::test_close_leaves_nothing_retired_nothing_skipped_and_no_ratchet` |
+| T5 | `TestT5MakeChatDeniable::test_final_publication_disconnect_and_a_fresh_unlinked_session`, `::test_no_session_no_action` |
+| T6 | `TestT6SignOutWipeQuit::test_every_session_publishes_before_its_keys_go[sign_out]`, `[wipe]`, `::test_the_peers_closing_message_after_our_end_starts_no_handshake`, `::test_offline_the_keys_are_still_retired_and_wiped`, `::test_the_bridge_sends_them_before_the_transport_goes`, `::test_the_bridge_sends_every_message_and_drops_them_offline` |
+| T7 | `TestT7WireCompatibility::test_a_peer_reading_the_field_by_shape_only_accepts_real_keys`, `::test_the_field_is_outside_what_the_mac_covers`, `::test_a_peer_implementing_it_accounts_for_every_key_it_is_shown` |
+| T8 | `TestT8NoMacKeyBytesInPython::test_the_ratchet_hands_over_the_field_and_handles_only`, `::test_a_mac_key_handle_has_no_bytes`, `::test_no_production_path_unpacks_the_field_into_keys`, `::test_the_deniable_paths_move_wire_text_only` |
 
-- `otrv4+.py` — `OTRv4DataMessage.revealed_mac_keys`, its encode/decode, and
-  `compute_mac` / `verify_mac`.
-- `Rust/src/kdf.rs` — `hmac_sha3_512`, `verify_mac`.
-- `Rust/src/ratchet.rs` — where retired MAC keys would be collected.
+Rust: `ratchet::l1_retirement` (R1, no sender reveal across DH steps, skipped
+keys held across a DH step, late old-chain message, R2 eviction, R3 close,
+closed ratchet, T4 wipe, queue bound). The T4 accessor `holds_mac_key` exists
+only in test builds; `tests/test_release_guard.py` asserts a release wheel has
+none. Also `tests/test_mac_revelation_end_to_end.py`, `test_reveal_ordering.py`,
+`test_revealed_mac_crosscheck.py`, and `DeniableChatTest` (the UI words).
 
-### Proposed remediation
+### Residuals
 
-Not scheduled, and deliberately not attempted during Phase 2 — a speculative
-change here risks revealing a key that is still live, which would be far worse
-than the current state. Resolving it needs:
+- **Expert review of the retirement rule** (SPEC §5.8) before any claim of
+  deniable messaging; the button and its text describe the mechanism and say
+  it has not been independently reviewed.
+- The MAC key of the outer OTRv4 MAC is published; AES-GCM, the primary
+  authenticator, is keyed by the message key, which is never published. A
+  third party with a published key can forge the outer MAC of a transcript
+  entry, which is the OTR sense of transcript deniability; it cannot produce a
+  ciphertext the receiver would have decrypted.
+- A message whose outer MAC fails after its AEAD tag verified has its MAC key
+  retired anyway (R1 commits at the AEAD); the replay cache refuses any second
+  copy, so nothing can be verified with it.
+- First contact is trust-on-first-use (A2), and v2's ML-DSA handshake
+  signatures are attributable (SPEC §10.1): participation deniability against
+  a transcript holder is given up there, independently of this item.
 
-1. A decision on whether deniability is a product goal at all.
-2. If yes: define precisely when a MAC key is retired (it must be
-   unambiguously unusable for authentication before it is published).
-3. Collect retired keys in the Rust ratchet, which owns their lifetime.
-4. Reveal them in the existing wire field.
-5. A regression test proving a revealed key verifies an old MAC, plus one
-   proving no key is ever revealed while still in use.
-6. Re-check the interaction with skipped-message-key retention across a DH
-   ratchet (prior audit items L2/L3).
+---
 
-### Until then
+## U1 — Signed-out navigation reached signed-in screens and the device fingerprint
 
-Do not describe the product as offering deniable messaging. "Participation
-deniability in the handshake via a ring signature" is accurate and is a
-different claim.
+**Status: RESOLVED, 2026-10-26.**
+
+### What happened
+
+Device report: signed out (credentials cleared, not wiped), the next launch on
+the sign-in screen, overflow -> About & licences, then back: the app landed on
+the empty chat list, a signed-in surface, and from there the device's identity
+fingerprint could be read. The About screen's back always went to the chat
+list. The desktop sign-in screen also showed the fingerprint, and the desktop
+host announced it in its start-up message, before any login.
+
+Why it matters: the fingerprint is the device's long-term identity key. Read
+before a login, it can later be matched with the server's record of a login
+from this device -- "this device was used by that account".
+
+### The fix
+
+- **The bridge is the gate.** `OtrApp.local_fingerprint()` -- and the
+  `local_fingerprint` of security details, and the desktop host's `ready`
+  message -- is "" until `note_signed_in(account)`, which the connection
+  controller calls only after the server accepted the login. `shutdown`
+  (sign-out), `disconnect`, and Wipe & Exit clear it first.
+- **Android navigation.** Every screen goes through `AuthGate.shown`: while
+  signed out only Sign in, About & licences and Debug render; anything else
+  shows Sign in. About's back (button and swipe) goes to Sign in while signed
+  out. The service's `signedIn` is set only when a connection succeeds and
+  cleared at the account boundary (another account, sign-out, wipe); the
+  view-model clears it at once on Sign out. When sign-out lands, the open
+  chat, the profile shown, the tab and the identity read for the profile are
+  dropped (`SignedOutReset`, `ChatViewModel.forgetIdentity`).
+- **Desktop.** No fingerprint on the sign-in screen; it is read after a login
+  succeeds and cleared before disconnect.
+- **Terminal.** `/identity` withholds the fingerprint until the XMPP session
+  has started (authenticated) and again from `/quit`.
+
+Sign-out remains distinct from Wipe & Exit, which is unchanged.
+
+### Regression gate
+
+`tests/test_u1_signed_out_surfaces.py`:
+
+| | Test |
+|-|------|
+| U1-T1 | `test_u1_t1_about_goes_back_to_sign_in_while_signed_out`; `AuthGateTest` `U1-T1 back from About while signed out is sign-in` |
+| U1-T2 | `test_u1_t2_only_public_screens_render_while_signed_out`, `test_u1_t2_sign_out_keeps_nothing_to_navigate_back_to`, `test_u1_t2_signed_in_means_a_login_succeeded_for_this_account`; `AuthGateTest` `U1-T2 no signed-in screen can be shown while signed out` |
+| U1-T3 | `test_u1_t3_the_bridge_gives_no_fingerprint_while_signed_out`, `test_u1_t3_no_public_screen_reads_a_fingerprint`, `test_u1_t3_the_profile_forgets_what_it_showed` |
+| U1-T4 | `test_u1_t4_the_desktop_host_announces_no_fingerprint_before_login`, `test_u1_t4_the_desktop_screens_show_none_before_login`, `test_u1_t4_the_terminal_withholds_it_until_signed_in` |
+| U1-T5 | `test_u1_t5_a_successful_login_brings_it_back`, `test_u1_t5_only_a_successful_connect_signs_in`, `test_u1_t5_an_address_that_is_not_an_account_signs_nobody_in`; `AuthGateTest` `U1-T5 signed in everything is reachable` |
+| U1-T6 | `test_u1_t6_sign_out_then_another_account`, `test_u1_t6_shutdown_and_wipe_sign_out_first`, `test_u1_t6_the_engine_holds_no_previous_session_for_the_next_account` |
+
+The navigation tests pin the Compose wiring at source level and run the rule
+on the JVM; there is no instrumented (on-device) test of the back stack in
+this repository. A device check is listed in the release notes.
+
+### Residual
+
+The identity key is per DEVICE (the engine keeps it under the app's home),
+not per account. Two accounts signed in one after the other on the same
+device therefore show their peers the same fingerprint, which links the two
+accounts for anyone who talks to both. Fixing that means one identity per
+account (with its own trust pins); that is a separate change, proposed rather
+than made here.
 
 ---
 

@@ -555,14 +555,19 @@ new_chain_key = KDF_1(0x12, chain_key, 32)        // CHAIN_KEY
 ```
 
 The message key is consumed once, by the AEAD of §5.4, and the chain key is then
-overwritten by `new_chain_key`. The third value some KDF call sites destructure
-(a MAC key) is not used on the data path; see §2.2 and §5.4.
+overwritten by `new_chain_key`. Each message also has a MAC key derived from its
+message key alone, `MKmac = KDF_1(0x14, message_key, 64)` (OTRv4 §4.4.2): it keys
+the outer OTRv4 MAC of that one message, and is retired and published by its
+receiver as §5.8 defines.
 
 ### 5.4 Data Message Format and AEAD
 
 Each application message is encrypted under its single-use `message_key` with
-AES-256-GCM (NIST SP 800-38D). GCM is the sole authenticator of a data message:
-there is no separate HMAC on the data path.
+AES-256-GCM (NIST SP 800-38D). GCM is the primary authenticator of a data
+message. The OTRv4 DATA envelope also carries the outer MAC,
+`SHA3-512(MKmac || auth_region)`, over everything from the protocol version to
+the ciphertext; the `revealed_mac_keys` field (§5.8) follows the MAC and is not
+covered by it.
 
 **Header.** The ratchet header is 64 bytes, big-endian:
 
@@ -775,6 +780,66 @@ message as ordinary text and MUST NOT treat the prefix as protocol.
 
 Like the TIP TLV (§5.6.2), this is application-layer and carries no key
 material. An implementation MAY omit it and remain conformant.
+
+---
+
+### 5.8 MAC-Key Retirement and Revelation (L1)
+
+A MAC key authenticates exactly one message (§5.3). Publishing it once nothing
+can be verified with it any more lets anyone forge that message's outer MAC, so
+a transcript of MACs stops being evidence of who wrote what. That is the
+transcript half of deniability; the handshake half is the ring signature (§4.5),
+and §10.1 states what the v2 signatures give up.
+
+**Retirement rule (normative).** A MAC key MAY be retired -- moved into the
+ratchet's private retired queue -- only at one of these points, each of which
+ends every use the key can have:
+
+| | When | Why nothing can be verified with it any more |
+|-|------|-----------------------------------------------|
+| R1 | the message it authenticated has been received and its AEAD tag verified | the receive commit consumed its message key and the replay cache (§5.5) refuses a second copy |
+| R2 | its message never arrived and the stored skipped message key is deleted: evicted at `MAX_MESSAGE_KEYS` (§5.5) or discarded at close | without the message key that message can never be decrypted |
+| R3 | the session closes (`retire_all`) | R2 for every skipped key still held; the ratchet then decrypts nothing more |
+
+A sender MUST NOT retire the MAC key of a message it SENT: only the receiver
+knows when that message is finished with (it may be in flight, or held as a
+skipped key). No MAC key derived from a chain key that has not yet keyed a
+message is ever retired; DH ratchet steps use no MAC key. Until retired, a MAC
+key MUST stay inside the ratchet and MUST NOT appear on the wire or in any
+structure outside it.
+
+This is the four-part predicate of docs/SECURITY_ISSUES.md L1, made exact: a
+key at R1-R3 is not a current receiving key; no skipped key depends on it (each
+MAC key depends only on its own message key); its peer has sent the one
+message that used it and it has been received (R1) or can never be (R2, R3);
+and no DH step depends on any MAC key.
+
+**Publication.** Retired keys are published oldest first in the
+`revealed_mac_keys` field (uint32 count, then 64-byte keys) of outgoing DATA
+messages: at most 50 per ordinary message, at most 2000 (the decoder's limit)
+per closing message. The queue holds at most 4000; past that the oldest is wiped
+unpublished, which loses deniability for that one message and publishes nothing
+early. A key is wiped from the queue as it is written into the field, and the
+field is the only form in which retired keys leave the ratchet.
+
+**Close.** Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's
+DISCONNECTED, an error or expiry: before any session key is destroyed the
+ratchet runs `retire_all`, then encrypts closing messages (`encrypt_final`)
+until the queue is empty, flagged IGNORE_UNREADABLE; when this side ends the
+session the last carries the DISCONNECTED TLV. The ratchet is then closed: it
+encrypts and decrypts nothing more. Without a network the closing messages are
+dropped; the keys are retired and wiped all the same. A new handshake always
+creates a new session: nothing of an ended one -- ratchet, instance tags -- is
+reused, so the new transcript has no cryptographic link to the old one.
+
+**Late messages.** A message from an older chain whose skipped key is still held
+is not a DH ratchet step: it is decrypted on the skipped-key path (R1), which
+authenticates before it consumes anything.
+
+Implementation: `ratchet.rs` (`retire`, `retire_skipped`, `take_reveal_field`,
+`retire_all`, `encrypt_final`), tests `ratchet::l1_retirement` and
+`tests/test_l1_revelation_gate.py`. The rule wants expert review before any
+claim of deniable messaging is made (docs/SECURITY_ISSUES.md L1).
 
 ---
 
