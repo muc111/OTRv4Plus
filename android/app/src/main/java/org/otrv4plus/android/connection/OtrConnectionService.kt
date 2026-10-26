@@ -182,6 +182,16 @@ class OtrConnectionService : Service() {
     var status: ConnectionStatus = ConnectionStatus()
         private set
 
+    /**
+     * U1: the server accepted a login for the bound account, and nothing has
+     * signed it out since. A dropped stream keeps it (the user is still
+     * signed in); a new account, sign-out or Wipe & Exit clears it at the
+     * account boundary. What the UI gates every signed-in screen on.
+     */
+    @Volatile
+    var signedIn: Boolean = false
+        private set
+
     /** A stable code for the last failure, or null. Never exception text. */
     @Volatile
     var failure: String? = null
@@ -472,6 +482,7 @@ class OtrConnectionService : Service() {
      */
     private fun wipeAndExit(deleteAccount: Boolean = false) {
         if (!wipeStarted.compareAndSet(false, true)) return
+        signedIn = false                                          // U1
         WipeAndExit.begin()
         goForeground()
         reconnect.onUserDisconnect()
@@ -713,6 +724,9 @@ class OtrConnectionService : Service() {
      */
     private fun enterAccount(next: AccountScope) {
         if (next == chat.account) return
+        // U1: a different account (or none) is not signed in until its own
+        // login succeeds.
+        signedIn = false
         runCatching {
             // No JID: the trace names nobody, and this event is about a
             // transition rather than about who made it.
@@ -862,6 +876,7 @@ class OtrConnectionService : Service() {
                 }
                 reconnect.onConnected()
                 status = result.getOrNull() ?: ConnectionStatus()
+                signedIn = true                                   // U1: authenticated
                 failure = null
                 enter(LinkPhase.CONNECTED, "the transport reported connected")
                 watchUntilDropped()

@@ -140,7 +140,9 @@ class TrustMixin:
         self._announce_smp_needed(peer)
 
     def show_identity(self):
-        """Everything TOFU depends on, in one screen.
+        """Everything TOFU depends on, in one screen. Only once signed in
+        (U1): the fingerprint is device-binding material, so it is not shown
+        while connecting or after the stream ended unsigned.
 
         Written because "it still asks me to trust the fingerprint" has three
         very different causes -- an older build at one end, a pin that did not
@@ -156,7 +158,10 @@ class TrustMixin:
             print("[identity]   Peers cannot pin a fingerprint that changes every")
             print("[identity]   launch. XMPP should be persistent; if this says")
             print("[identity]   ephemeral you are on a build older than v10.12.0.")
-        print("[identity] your fingerprint: %s" % _fmt_fp(self._local_fp()))
+        if getattr(self, "_signed_in", False):
+            print("[identity] your fingerprint: %s" % _fmt_fp(self._local_fp()))
+        else:
+            print("[identity] your fingerprint: shown once you are signed in")
         try:
             cfg = self.otr.config
             print("[identity] identity record: %s" % getattr(cfg, "identity_path", "?"))

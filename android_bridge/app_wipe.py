@@ -182,6 +182,7 @@ class WipeMixin:
             already = getattr(self, "_crypto_wiped", False)
             self._crypto_wiped = True
             self._wiped = True
+            self._signed_in = False                 # U1
         report: Dict[str, Any] = {"already_wiped": already, "errors": []}
         if already:
             return report

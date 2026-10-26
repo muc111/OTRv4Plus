@@ -250,6 +250,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                 service?.let {
                     phase = it.phase
                     status = it.status
+                    signedIn = it.signedIn
                     // MIRRORED, NOT LATCHED. This was
                     //     it.failure?.let { code -> error = code }
                     // which assigned when the service had a failure and did
@@ -520,8 +521,13 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** U1: a login has succeeded and not been signed out of (the service's). */
+    var signedIn by mutableStateOf(false)
+        private set
+
     /** Sign out: stop, and forget the account and its history. */
     fun logout() {
+        signedIn = false                       // U1: dark at once, not on the next poll
         login.cancelled()
         connectionFailure = null
         revision++

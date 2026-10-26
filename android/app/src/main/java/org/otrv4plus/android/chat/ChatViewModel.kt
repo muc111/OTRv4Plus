@@ -915,6 +915,12 @@ class ChatViewModel : ViewModel() {
     var ownFingerprint by mutableStateOf("")
         private set
 
+    /** U1: signed out -- the identity shown on a profile goes with it. */
+    fun forgetIdentity() {
+        profileIdentity = null
+        ownFingerprint = ""
+    }
+
     fun loadIdentity(jid: String = "") {
         val c = core ?: return
         profileIdentity = null

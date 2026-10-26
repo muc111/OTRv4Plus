@@ -492,6 +492,7 @@ class TestContactsAndDetails:
 
     def test_security_details_contain_no_secrets(self, app):
         a, _, _, _ = app
+        a.note_signed_in("me@example.test")                   # U1: only once signed in
         d = a.security_details("bob")
         blob = repr(d)
         assert SECRET not in blob and PLAINTEXT not in blob
@@ -548,6 +549,8 @@ class TestAgainstTheRealEngine:
 
     def test_real_local_fingerprint_is_non_empty(self, real_app):
         app, engine, _ = real_app
+        assert app.local_fingerprint() == "", "U1: withheld until a login succeeds"
+        app.note_signed_in("me@example.test")
         assert app.local_fingerprint() == engine.get_fingerprint()
         assert app.local_fingerprint()
 

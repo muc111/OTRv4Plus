@@ -230,6 +230,10 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         self._invite_after_otr: Dict[str, List[str]] = {}
         #: Non-contacts a message has sent a contact request to (once each).
         self._message_requested: set = set()
+        #: U1: a login to a concrete account has succeeded on this facade and
+        #: not been signed out of. Until it has, nothing that identifies this
+        #: device -- the identity fingerprint above all -- is handed out.
+        self._signed_in = False
         #: Handshake durations (seconds): per peer and overall, for the ETA.
         self._hs_started: Dict[str, float] = {}
         self._hs_history: Dict[str, List[float]] = {}
@@ -331,6 +335,9 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         that is destroyed below, so ending them later would leave the peer on
         a call nobody is on.
         """
+        # U1: signed out from the first line -- the fingerprint goes dark
+        # before anything else is torn down.
+        self._signed_in = False
         if self._group_calls is not None:
             try:
                 self._group_calls.shutdown()
@@ -520,7 +527,7 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
             security=self.security_state(peer),
             smp=smp_state_from_status(status),
             smp_phase=str(status.get("state", "IDLE")),
-            local_fingerprint=self._safe(self._engine.get_fingerprint, default=""),
+            local_fingerprint=self.local_fingerprint(),
             peer_fingerprint=self._safe(lambda: self._engine.get_peer_fingerprint(peer)),
             trusted=bool(self._safe(lambda: self._engine.is_peer_trusted(peer),
                                     default=False)),

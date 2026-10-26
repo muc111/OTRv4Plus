@@ -117,9 +117,9 @@ class AppModel(
                 screen = Screen.FAILED
                 return@launch
             }
-            fingerprint = withContext(Dispatchers.IO) {
-                runCatching { core.localFingerprint() }.getOrDefault("")
-            }
+            // U1: no fingerprint before a login succeeds -- the engine would
+            // not give one, and none is asked for.
+            fingerprint = ""
             screen = Screen.CONNECT
             runLoop()
         }
@@ -257,6 +257,10 @@ class AppModel(
                 failuresInARow = 0
                 chat.bindAccount(AccountScope.of(account))
                 chat.applyConnection(status)
+                // U1: authenticated, so the device's fingerprint may be shown.
+                fingerprint = withContext(Dispatchers.IO) {
+                    runCatching { core.localFingerprint() }.getOrDefault("")
+                }
                 screen = Screen.MAIN
                 roomService = null
                 // Ready before Join room is pressed; asked again there if not.
@@ -303,6 +307,7 @@ class AppModel(
 
     fun disconnect() {
         ui.launch {
+            fingerprint = ""                                  // U1: dark first
             withContext(Dispatchers.IO) { runCatching { core.disconnect() } }
             chat.bindAccount(AccountScope.NONE)
             screen = Screen.CONNECT

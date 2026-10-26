@@ -451,11 +451,14 @@ class TestWhatWasOnDisk:
         assert app.joined_room_list() == []
 
     def test_a_fresh_launch_afterwards_works_and_is_a_new_identity(self, pair):
+        pair.alice.note_signed_in("alice@example.test")          # U1: signed in to read it
         old_fp = pair.alice.local_fingerprint()
+        assert old_fp
         pair.alice.wipe()
         again = _pair()
         again.alice.start_session(again.bob_jid)
         assert again.alice.security_state(again.bob_jid) is not SecurityState.PLAINTEXT
+        again.alice.note_signed_in("alice@example.test")
         assert again.alice.local_fingerprint() != old_fp
         again.alice.shutdown()
         again.bob.shutdown()

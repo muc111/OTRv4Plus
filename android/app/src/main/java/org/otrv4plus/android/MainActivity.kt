@@ -29,6 +29,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.chat.ChatViewModel
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withTimeoutOrNull
+import org.otrv4plus.android.connection.AuthGate
 import org.otrv4plus.android.ui.AboutScreen
 import org.otrv4plus.android.ui.ArrivalPromptDialog
 import org.otrv4plus.android.ui.ChangePasswordSection
@@ -97,6 +98,28 @@ import org.otrv4plus.android.security.WipeAndExit
 class MainActivity : ComponentActivity() {
 
     private enum class Screen { CONNECT, CONVERSATIONS, CONVERSATION, ROOMS, PEOPLE, ABOUT, DIAGNOSTICS, PROFILE }
+
+    /** U1: the only screens that may show while signed out (AuthGate). */
+    private val PUBLIC_SCREENS = setOf(Screen.CONNECT, Screen.ABOUT, Screen.DIAGNOSTICS)
+
+    /**
+     * U1: the moment sign-out lands, nothing of the signed-in navigation is
+     * kept -- the open chat, the profile shown, the tab, the identity read
+     * for the profile -- so nothing can be navigated back to.
+     */
+    @Composable
+    private fun SignedOutReset(signedIn: Boolean, reset: () -> Unit) {
+        LaunchedEffect(signedIn) { if (!signedIn) reset() }
+    }
+
+    /** About & licences: public. U1: back goes to sign-in, never to the
+     *  chats, while signed out (swipe and the Back button alike). */
+    @Composable
+    private fun AboutRoute(signedIn: Boolean, go: (Screen) -> Unit) {
+        val back = { go(AuthGate.back(signedIn, Screen.CONVERSATIONS, Screen.CONNECT)) }
+        BackHandler(onBack = back)
+        AboutScreen(onBack = back)
+    }
 
     /**
      * Asking for POST_NOTIFICATIONS, which on API 33+ is not optional.
@@ -320,14 +343,12 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                when (screen) {
+                SignedOutReset(connection.signedIn) { openJid = null; profileOf = ""; lastTab = Screen.CONVERSATIONS; chat.forgetIdentity() }
+                when (AuthGate.shown(screen, connection.signedIn, PUBLIC_SCREENS, Screen.CONNECT).also { screen = it }) {
                     Screen.PROFILE -> ProfileRoute(chat, profileOf, back = { screen = profileBack },
                                                    selectTab = ::selectTab, openChat = ::openChat)
 
-                    Screen.ABOUT -> {
-                        BackHandler { screen = Screen.CONVERSATIONS }
-                        AboutScreen(onBack = { screen = Screen.CONVERSATIONS })
-                    }
+                    Screen.ABOUT -> AboutRoute(connection.signedIn) { screen = it }
 
                     Screen.DIAGNOSTICS -> {
                         // Back to where the user came from. Debug is

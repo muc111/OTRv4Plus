@@ -248,5 +248,27 @@ class SmpMixin:
 
     # -- identity --------------------------------------------------------------
 
+    def note_signed_in(self, account: str) -> None:
+        """U1: the server accepted the login for [account]. Called by the
+        connection controller only after authentication, never on an
+        attempt."""
+        if account and "@" in account and not getattr(self, "_wiped", False):
+            self._signed_in = True
+
+    def note_signed_out(self) -> None:
+        """U1: no authenticated session any more (disconnect, sign-out)."""
+        self._signed_in = False
+
+    @property
+    def signed_in(self) -> bool:
+        return bool(getattr(self, "_signed_in", False))
+
     def local_fingerprint(self) -> str:
+        """This device's identity fingerprint -- but only while signed in
+        (U1). Signed out, it is "" on every path: the About screen, the
+        desktop host's start-up message, security details. A fingerprint is
+        device-binding material: one read before login could later be
+        matched to the server's record of a login from this device."""
+        if not self.signed_in:
+            return ""
         return self._safe(self._engine.get_fingerprint, default="")

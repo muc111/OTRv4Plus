@@ -671,6 +671,11 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         keep = getattr(self._app, "keep_call_path_ready", None)
         if keep is not None:
             threading.Thread(target=keep, name="call-path-hold", daemon=True).start()
+        # U1: authenticated now, and only now: the device's fingerprint may
+        # be shown from this point until sign-out.
+        signed_in = getattr(self._app, "note_signed_in", None)
+        if signed_in is not None:
+            signed_in(self._profile.jid.split("/", 1)[0])
         self._last = {"ok": True, "stage": "connected", "code": "ok",
                       "detail": "Connected to %s as %s"
                                 % (self._profile.effective_server,
@@ -904,6 +909,11 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
 
     def disconnect(self) -> Dict[str, Any]:
         """Tear down. Best effort, and always ends at a known state."""
+        # U1: no authenticated session from here; the fingerprint is withheld
+        # until the next login succeeds (note_signed_in).
+        signed_out = getattr(self._app, "note_signed_out", None)
+        if signed_out is not None:
+            signed_out()
         self._release_transport()
         _drop_held_sam()
         self._enter("idle")

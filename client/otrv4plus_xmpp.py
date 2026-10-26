@@ -1054,6 +1054,9 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
     # -------------------------------------------------------------------------
 
     async def _on_start(self, event):
+        # U1: authenticated. The device's fingerprint may be shown from now
+        # on (/identity); before this it is withheld.
+        self._signed_in = True
         # Signed in: the I2P destination that answered becomes the pin (X1).
         confirm = getattr(self, "_confirm_server", None)
         if confirm is not None:
@@ -3286,6 +3289,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        self._signed_in = False                    # U1: the fingerprint goes dark first
 
         self._peer_gone_at.clear()
         task = self._peer_gone_task
