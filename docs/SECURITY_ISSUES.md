@@ -132,6 +132,43 @@ none. Also `tests/test_mac_revelation_end_to_end.py`, `test_reveal_ordering.py`,
   signatures are attributable (SPEC §10.1): participation deniability against
   a transcript holder is given up there, independently of this item.
 
+### The closing messages leave before the connection does (2026-10-26)
+
+Owner: on Wipe & Exit every chat must publish its MAC keys before the wipe.
+The engine already did the cryptographic part. Every MAC key is retired and
+each session's closing message is made before anything is destroyed, and the
+closing messages are sent while the connection is still up. What was **not**
+ensured is that they left the device. `send` only queues a stanza in slixmpp,
+and the teardown then **aborted** the client (Wipe & Exit) or closed the I2P
+tunnel right after slixmpp's non-blocking `disconnect()` (sign-out). With real
+slixmpp, an abort drops a queued stanza.
+
+Now sign-out and Wipe & Exit end the stream properly
+(`XmppTransport._end_stream`):
+1. slixmpp's send queue is drained;
+2. our `</stream:stream>` goes after it;
+3. the server's end is awaited, bounded by `END_OF_STREAM_TIMEOUT`.
+
+An XMPP server answers the end of a stream only after reading everything
+before it, and TCP and I2P streams are ordered. So its answer confirms that
+every closing message reached the server. Wipe & Exit reports this as
+`closing_confirmed`. Gate: `tests/test_closing_messages_arrive.py`, using real
+slixmpp against a scripted server on loopback:
+- an abort drops the message (the old behaviour);
+- the new end of stream delivers it before the end, and waits for a slow
+  server;
+- a server that never answers costs the bound, not a hang;
+- the wipe ends the stream before closing.
+
+Limits:
+- Confirmed **to the server**, not to the peer. A peer who is offline, or
+  whose server does not store messages, may never receive its closing
+  message. No peer is reached offline, either: there the keys are retired and
+  wiped but published nowhere (T7).
+- If the server does not answer within the bound, the wipe carries on.
+  Nothing waits longer than that, and the report says the closing was not
+  confirmed.
+
 ---
 
 ## U1 — Signed-out navigation reached signed-in screens and the device fingerprint

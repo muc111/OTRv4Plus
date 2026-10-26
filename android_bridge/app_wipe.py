@@ -120,6 +120,17 @@ class WipeMixin:
         transport = self._transport
         self._transport = None
         if transport is not None:
+            # L1: end the stream first, so the closing messages sent above are
+            # confirmed received by the server before the connection goes
+            # (`XmppTransport._end_stream`); `close` alone aborts it, and
+            # could drop them. Bounded; reported, never waited on further.
+            report["closing_confirmed"] = False
+            if getattr(transport, "is_connected", False) and hasattr(transport, "close"):
+                try:
+                    transport.disconnect()
+                    report["closing_confirmed"] = bool(getattr(transport, "end_confirmed", False))
+                except Exception:
+                    report["errors"].append("end_of_stream")
             closer = getattr(transport, "close", None) or transport.disconnect
             try:
                 closer()

@@ -129,6 +129,10 @@ class SubscriptionPolicy:
 #: lifecycle callbacks that must return promptly, and a shutdown that blocks
 #: is a worse failure than one that gives up and logs.
 CLOSE_TIMEOUT = 5.0
+#: How long a sign-out or Wipe & Exit waits for the server to answer our end
+#: of stream (`_end_stream`). Bounded: a server or tunnel that never answers
+#: costs this, never a hang.
+END_OF_STREAM_TIMEOUT = 10.0
 
 # Keepalive, with the terminal client's numbers.
 #
@@ -1677,11 +1681,55 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
     async def _disconnect(self) -> None:
         client = self._client
         if client is not None:
-            client.disconnect()
+            if self.is_connected:
+                self.end_confirmed = await self._end_stream(client, END_OF_STREAM_TIMEOUT)
+            else:
+                client.disconnect()
         # The tunnel goes with the session it carried. Leaving it open would
         # hold an I2P lease and a listening local socket for a connection that
         # no longer exists, and the next connect would build a second one.
         self._release_i2p()
+
+    #: Whether the last disconnect was answered by the server (`_end_stream`).
+    end_confirmed = False
+
+    async def _end_stream(self, client, budget: float) -> bool:
+        """End the stream so that what was sent before it is known to have
+        arrived. Loop thread.
+
+        The closing messages that publish a session's MAC keys (L1) are the
+        last stanzas of a sign-out or a Wipe & Exit, and they are only queued
+        when `send` returns. slixmpp's `disconnect()` returns at once, and the
+        tunnel used to be closed right after it (and a wipe aborted the
+        client outright), so the queue and the bytes still in the I2P
+        forwarder could be dropped: the keys retired locally, never published.
+
+        So: the send queue is drained, our `</stream:stream>` goes after it,
+        and we wait for the server's. An XMPP server reads a stream in order
+        and answers the end only after reading everything before it; TCP and
+        an I2P stream are both ordered. Its answer therefore means every stanza
+        sent before ours reached the server. Returns False if that is not
+        confirmed within [budget] (offline, a stalled tunnel): the client is
+        then aborted (or disconnected, if it has no abort), as before."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        try:
+            queue = getattr(client, "waiting_queue", None)
+            if queue is not None:
+                await asyncio.wait_for(queue.join(), budget)
+            client.send_raw(client.stream_footer)
+            await client.wait_until("disconnected", max(0.1, deadline - loop.time()))
+            return True
+        except Exception:
+            for method in ("abort", "disconnect"):
+                fn = getattr(client, method, None)
+                if fn is not None:
+                    try:
+                        fn()
+                    except Exception:
+                        pass
+                    break
+            return False
 
     def roster(self) -> List[Dict[str, Any]]:
         if self._client is None:
