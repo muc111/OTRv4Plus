@@ -329,6 +329,11 @@ class GroupsControlMixin:
         _TRACE.record("groups", "removed_before_delete", "info", members=len(removed))
         return {"ok": True, "code": "ok", "value": removed, "detail": ""}
 
+    def make_group_deniable(self, room: str) -> Dict[str, Any]:
+        """"Make Group Deniable" (F4): a new signing key for us in [room],
+        and our retired ones published once it lands (SecureGroups.make_deniable)."""
+        return self._group_call(self._app.groups.make_deniable, room)
+
     def leave_secure_group(self, room: str) -> Dict[str, Any]:
         """Forget the group's keys here, then leave the room."""
         result = self._group_call(self._app.groups.leave, room)

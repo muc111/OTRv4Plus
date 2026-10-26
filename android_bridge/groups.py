@@ -462,6 +462,11 @@ class SecureGroups:
     #: A self-update in a 4-member group is ~22 KB (8 room fragments).
     AUTO_REKEY_MESSAGES = _env_int("OTRV4PLUS_MLS_REKEY_MESSAGES", 50, 1, 100000)
     AUTO_REKEY_SECONDS = _env_int("OTRV4PLUS_MLS_REKEY_SECONDS", 30 * 60, 60, 30 * 86400)
+    #: F4 (epochal signatures): a signing key a rekey retired is published to
+    #: the group this long after the rekey landed -- by `maintain` -- so what
+    #: it signed can no longer be proven ours. "Make Group Deniable" publishes
+    #: as soon as its rekey lands. Never the key in use.
+    REVEAL_DELAY_SECONDS = _env_int("OTRV4PLUS_MLS_REVEAL_SECONDS", 10 * 60, 0, 30 * 86400)
     #: A member whose leaf has not been refreshed by a commit of theirs for
     #: this long is removed by the next member that notices (owner decision
     #: U1: 72 h, docs/MLS_SECURITY_HARDENING.md §4). Online members refresh at
@@ -526,6 +531,10 @@ class SecureGroups:
         self._unconfirmed: Dict[str, List[Any]] = {}
         #: room -> [messages sent since our last commit, time of that commit].
         self._since_rekey: Dict[str, List[float]] = {}
+        #: room -> when a rekey of ours last retired a key not yet published (F4).
+        self._retired_at: Dict[str, float] = {}
+        #: Rooms whose retired keys go as soon as our rekey lands (F4).
+        self._reveal_now: set = set()
         #: room -> {member identity: when a commit of theirs last refreshed
         #: their leaf (or they joined)} -- what idle removal judges.
         self._activity: Dict[str, Dict[str, float]] = {}
@@ -1940,6 +1949,8 @@ class SecureGroups:
             if room in self._syncing:
                 continue                    # no commit from an old epoch
             self._flush_held(room)
+            if self._publish_due(room):
+                done.append("published:" + room)
             # A removal commit refreshes our path too, so it goes first.
             if self._remove_idle(room):
                 done.append("removed:" + room)
@@ -2045,6 +2056,71 @@ class SecureGroups:
             self.save()
         self._post_commit(room, commit)
 
+    def make_deniable(self, room: str) -> str:
+        """"Make Group Deniable" (F4, epochal signatures): rotate our signing
+        key now, and publish the retired keys -- this one and any earlier --
+        as soon as the rotation comes back from the room. After that, any
+        member could have produced what those keys signed. Returns
+        "rotating". Refused while a change of ours is still on its way."""
+        with self._lock:
+            client = self._need()
+            if not client.has_group(room.encode()):
+                raise GroupError("not_a_group")
+            if client.has_pending_commit(room.encode()) or room in self._unconfirmed:
+                raise GroupError("commit_pending")
+            self._reveal_now.add(room)
+        try:
+            self.rekey(room)
+        except ValueError:
+            with self._lock:
+                self._reveal_now.discard(room)
+            raise GroupError("commit_pending")
+        return "rotating"
+
+    def publish_retired(self, room: str) -> int:
+        """Post our retired signing keys for [room] to the room (F4): one
+        message per few keys, each built and encrypted in Rust -- the private
+        keys never reach Python. Returns how many messages went."""
+        sent = 0
+        while sent < 8:
+            with self._lock:
+                client = self._client
+                if client is None or self._wiped or not client.has_group(room.encode()):
+                    return sent
+                try:
+                    wire = client.reveal_retired(room.encode())
+                except ValueError:
+                    return sent                       # a commit of ours is pending
+                if wire is None:
+                    self._retired_at.pop(room, None)
+                    if sent:
+                        self.save()
+                    break
+            self._post(room, bytes(wire))
+            sent += 1
+        if sent:
+            self._emit(GroupChanged(peer=room, change="keys_published_ours"))
+        return sent
+
+    def _publish_due(self, room: str) -> bool:
+        """`maintain`'s part of F4: publish once REVEAL_DELAY_SECONDS have
+        passed since a rekey of ours retired a key."""
+        with self._lock:
+            client = self._client
+            if client is None or self._wiped:
+                return False
+            try:
+                waiting = int(client.retired_count(room.encode()))
+            except Exception:
+                return False
+            if not waiting:
+                self._retired_at.pop(room, None)
+                return False
+            since = self._retired_at.setdefault(room, self._clock())
+            if self._clock() - since < self.REVEAL_DELAY_SECONDS:
+                return False
+        return self.publish_retired(room) > 0
+
     def leave(self, room: str) -> None:
         """Forget the group and every secret for it, here.
 
@@ -2069,7 +2145,7 @@ class SecureGroups:
                 return False
             client.forget_group(room.encode())
             for book in (self._bound, self._failed, self._entry_denied, self._syncing, self._held, self._unconfirmed,
-                         self._queued_kps, self._since_rekey, self._activity):
+                         self._queued_kps, self._since_rekey, self._activity, self._retired_at):
                 book.pop(room, None)
             self.save()
         self._emit(GroupChanged(peer=room, change="deleted"))
@@ -2148,6 +2224,17 @@ class SecureGroups:
             elif kind == "commit":
                 event = self._on_commit(room, ev)
                 settled = bool(ev.get("ours") or ev.get("dropped_ours"))
+                if ev.get("ours") and any(bytes(who).decode(errors="replace") == self._account
+                                          for who, _old, _new in ev.get("rekeyed") or []):
+                    self._retired_at.setdefault(room, self._clock())
+            elif kind == "keys_revealed":
+                # A member published retired signing keys (F4). Checked in
+                # Rust; only fingerprints come out. Not shown: it happens
+                # after every rekey.
+                published = len(ev.get("fingerprints") or [])
+                event = (GroupChanged(peer=room, change="keys_published",
+                                      detail=bytes(ev["sender"]).decode(errors="replace"))
+                         if published else None)
             else:
                 event = None
         if event is not None:
@@ -2156,6 +2243,9 @@ class SecureGroups:
             self._add_queued(room)
         if kind == "commit":
             self._flush_held(room)
+        if kind == "commit" and ev.get("ours") and room in self._reveal_now:
+            self._reveal_now.discard(room)
+            self.publish_retired(room)
         if vcontrol is not None and self._verify_handler is not None:
             try:
                 self._verify_handler(room, *vcontrol)
