@@ -32,6 +32,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.otrv4plus.android.ui.AboutScreen
 import org.otrv4plus.android.ui.ArrivalPromptDialog
 import org.otrv4plus.android.ui.ChangePasswordSection
+import org.otrv4plus.android.ui.EntryRequestPrompt
 import org.otrv4plus.android.ui.OtrTheme
 import org.otrv4plus.android.ui.ThemeStore
 import org.otrv4plus.android.ui.ConnectScreen
@@ -405,6 +406,8 @@ class MainActivity : ComponentActivity() {
                 // fingerprint alert goes first; a changed key is not the
                 // moment to accept a file.
                 if (chat.fingerprintAlert == null) IncomingFileDialog(chat)
+
+                EntryRequestPrompt(chat, shown = screen != Screen.CONNECT && chat.fingerprintAlert == null)
 
                 // Whose message is waiting, asked only once signed in and
                 // with no key-change alert in front of it.

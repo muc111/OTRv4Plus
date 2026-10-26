@@ -372,11 +372,31 @@ class ChatViewModel : ViewModel() {
         return state?.pendingEntryRequests { room -> groupMembers(room).map { it.jid } }.orEmpty()
     }
 
-    /** Invite: the ordinary OTRv4+ invitation to the address they gave. */
+    /** The creator's answer (owner, 2026-10-25). Accept: the ordinary
+     *  OTRv4+ invitation to the address they gave. Deny: they wait 15
+     *  minutes before asking again, doubling each time (the engine keeps
+     *  the count). Later: hidden until the next sign-in. */
     fun answerEntryRequest(room: String, requester: String, invite: Boolean) {
         state?.clearEntryRequest(room, requester)
         revision++
-        if (invite) inviteToGroup(room, requester)
+        val c = core ?: return
+        viewModelScope.launch {
+            val (outcome, wait) = withContext(Dispatchers.IO) {
+                runCatching { c.answerEntryRequest(room, requester, invite) }.getOrNull()
+                    ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "") to 0)
+            }
+            state?.note(when {
+                !outcome.ok -> GroupText.outcome(outcome.code) ?: outcome.detail
+                invite -> GroupText.outcome(outcome.code) ?: "Invitation sent to $requester over OTRv4+."
+                else -> GroupText.entryDenied(requester, wait)
+            })
+            revision++
+        }
+    }
+
+    fun laterEntryRequest(room: String, requester: String) {
+        state?.clearEntryRequest(room, requester)
+        revision++
     }
 
     fun inviteToGroup(room: String, peer: String) {

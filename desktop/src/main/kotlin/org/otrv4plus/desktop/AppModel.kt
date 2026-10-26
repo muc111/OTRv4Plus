@@ -978,10 +978,26 @@ class AppModel(
     fun entryRequests(): List<OtrEvent.GroupEntryRequested> =
         chat.pendingEntryRequests { room -> groupMembers[room].orEmpty().map { it.jid } }
 
-    /** Invite: the ordinary OTRv4+ invitation to the address they gave. */
+    /** The creator's answer (owner, 2026-10-25): Accept invites over
+     *  OTRv4+; Deny makes them wait 15 minutes, doubling each time. */
     fun answerEntryRequest(room: String, requester: String, invite: Boolean) {
         chat.clearEntryRequest(room, requester)
-        if (invite) inviteToGroup(room, requester) else changed()
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.answerEntryRequest(room, requester, invite) }
+            chat.note(when {
+                !r.ok -> org.otrv4plus.android.chat.GroupText.outcome(r.code) ?: r.detail.ifBlank { r.code }
+                invite -> org.otrv4plus.android.chat.GroupText.outcome(r.code)
+                    ?: "Invitation sent to $requester over OTRv4+."
+                else -> org.otrv4plus.android.chat.GroupText.entryDenied(
+                    requester, (r.value as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull() ?: 0)
+            })
+            changed()
+        }
+    }
+
+    fun laterEntryRequest(room: String, requester: String) {
+        chat.clearEntryRequest(room, requester)
+        changed()
     }
 
     /** Ask the members of an encrypted group we are not in to invite us. */

@@ -631,3 +631,50 @@ internal fun GroupEndButtons(model: ChatViewModel, jid: String) {
         )
     }
 }
+
+/**
+ * The oldest request to join one of our groups, asked of the creator on
+ * whatever screen is open (owner, 2026-10-25: the banner on Chats alone was
+ * missed from inside a chat). Not while signed out, or behind a key alert.
+ */
+@Composable
+fun EntryRequestPrompt(model: ChatViewModel, shown: Boolean) {
+    if (!shown) return
+    model.entryRequests().firstOrNull()?.let { request -> EntryRequestDialog(model, request) }
+}
+
+/**
+ * "X asks to join your group": Accept, Deny or Later, asked of the creator
+ * on any screen (owner, 2026-10-25). Every word comes from [GroupText].
+ */
+@Composable
+internal fun EntryRequestDialog(model: ChatViewModel, request: org.otrv4plus.android.bridge.OtrEvent.GroupEntryRequested) {
+    val text = org.otrv4plus.android.chat.GroupText
+    AlertDialog(
+        onDismissRequest = { model.laterEntryRequest(request.room, request.requester) },
+        title = { Text(text.ENTRY_TITLE) },
+        text = {
+            Column {
+                Text(text.entryRequest(request.requester, request.room),
+                     style = MaterialTheme.typography.bodyMedium,
+                     modifier = Modifier.padding(bottom = 8.dp))
+                Text(text.ENTRY_REQUEST_NOTE, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { model.answerEntryRequest(request.room, request.requester, true) }) {
+                Text(text.ENTRY_ACCEPT)
+            }
+        },
+        dismissButton = {
+            Row {
+                TextButton(onClick = { model.laterEntryRequest(request.room, request.requester) }) {
+                    Text(text.ENTRY_LATER)
+                }
+                TextButton(onClick = { model.answerEntryRequest(request.room, request.requester, false) }) {
+                    Text(text.ENTRY_DENY, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+    )
+}

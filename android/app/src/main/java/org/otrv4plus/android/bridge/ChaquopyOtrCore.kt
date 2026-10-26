@@ -607,6 +607,14 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
 
     /** Ask the members of the encrypted group [room] to invite us
      *  (`ConnectionController.request_group_entry`). */
+    /** The creator's Accept or Deny to "X asks to join". On a denial the
+     *  second value is the seconds before they can be shown asking again. */
+    fun answerEntryRequest(room: String, requester: String, accept: Boolean): Pair<RoomOutcome, Int> {
+        val result = call("answer_entry_request", room, requester, accept) ?: return notPrepared() to 0
+        val wait = if (accept) 0 else runCatching { listValue(result)?.toInt() }.getOrNull() ?: 0
+        return outcomeOf(result) to wait
+    }
+
     fun requestGroupEntry(room: String): RoomOutcome {
         val result = call("request_group_entry", room) ?: return notPrepared()
         return outcomeOf(result)

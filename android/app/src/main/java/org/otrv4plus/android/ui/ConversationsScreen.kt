@@ -381,10 +381,13 @@ private fun AccountBanners(model: ChatViewModel) {
                 Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     TextButton(onClick = {
                         model.answerEntryRequest(request.room, request.requester, true)
-                    }) { Text("Invite") }
+                    }) { Text(org.otrv4plus.android.chat.GroupText.ENTRY_ACCEPT) }
                     TextButton(onClick = {
                         model.answerEntryRequest(request.room, request.requester, false)
-                    }) { Text("Dismiss") }
+                    }) { Text(org.otrv4plus.android.chat.GroupText.ENTRY_DENY) }
+                    TextButton(onClick = {
+                        model.laterEntryRequest(request.room, request.requester)
+                    }) { Text(org.otrv4plus.android.chat.GroupText.ENTRY_LATER) }
                 }
             }
         }

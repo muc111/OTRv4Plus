@@ -143,11 +143,14 @@ fun RoomsPane(model: AppModel) {
                              style = MaterialTheme.typography.bodySmall)
                     }
                     TextButton(onClick = {
+                        model.laterEntryRequest(request.room, request.requester)
+                    }) { Text(org.otrv4plus.android.chat.GroupText.ENTRY_LATER) }
+                    TextButton(onClick = {
                         model.answerEntryRequest(request.room, request.requester, false)
-                    }) { Text("Dismiss") }
+                    }) { Text(org.otrv4plus.android.chat.GroupText.ENTRY_DENY) }
                     Button(onClick = {
                         model.answerEntryRequest(request.room, request.requester, true)
-                    }) { Text("Invite") }
+                    }) { Text(org.otrv4plus.android.chat.GroupText.ENTRY_ACCEPT) }
                 }
             }
         }

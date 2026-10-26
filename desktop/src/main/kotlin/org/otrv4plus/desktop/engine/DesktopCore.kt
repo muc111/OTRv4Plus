@@ -392,6 +392,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun deleteSecureGroup(room: String) = controller("delete_secure_group", "room" to room)
     fun removeGroupMember(room: String, member: String) =
         controller("remove_group_member", "room" to room, "member" to member)
+    fun answerEntryRequest(room: String, requester: String, accept: Boolean) =
+        controller("answer_entry_request", "room" to room, "requester" to requester, "accept" to accept)
     fun removeFailedGroupMembers(room: String) =
         controller("remove_failed_group_members", "room" to room)
     fun verifyGroupMembers(room: String) = controller("verify_group_members", "room" to room)

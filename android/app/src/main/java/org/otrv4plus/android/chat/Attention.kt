@@ -40,8 +40,10 @@ object Attention {
         // The creator started verifying a group: every member is asked for
         // the passphrase (owner, 2026-10-25). Our own start is "verify_begun".
         is OtrEvent.GroupChanged -> if (event.change == "verify_started") Kind.GROUP_VERIFY else null
-        // History replays old requests on every sign-in: banner, no buzz.
-        is OtrEvent.GroupEntryRequested -> if (event.live) Kind.ENTRY_REQUEST else null
+        // Only the creator is told, only of requests still waiting on them --
+        // one from the room's history too: they were away when it came
+        // (owner, 2026-10-25: "no notification came to creator").
+        is OtrEvent.GroupEntryRequested -> Kind.ENTRY_REQUEST
         else -> null
     }
 

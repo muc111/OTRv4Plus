@@ -82,12 +82,32 @@ object GroupText {
 
     /** "bob@x asks to join the encrypted group team@rooms.x." */
     fun entryRequest(requester: String, room: String): String =
-        "$requester asks to join the encrypted group $room."
+        "$requester asks to join your encrypted group $room."
 
-    /** Under every request: what Invite does, and why a false claim is harmless. */
+    /** Under every request: what each answer does (owner, 2026-10-25: the
+     *  creator decides; a denial makes them wait 15 min, doubling). */
     const val ENTRY_REQUEST_NOTE =
-        "Invite sends the usual invitation over OTRv4+ to that address, so " +
-            "only its real owner can accept it. Do you know them?"
+        "Accept sends the usual invitation over OTRv4+ to that address, so only " +
+            "its real owner can join. Deny: they cannot ask again for 15 minutes, " +
+            "then 30, then 60, doubling each time. Do you know them?"
+
+    const val ENTRY_ACCEPT = "Accept"
+    const val ENTRY_DENY = "Deny"
+    const val ENTRY_LATER = "Later"
+    const val ENTRY_TITLE = "Request to join"
+
+    /** "15 minutes", "2 hours", "3 days": a denial's wait. */
+    fun waitText(seconds: Int): String {
+        val minutes = (seconds + 59) / 60
+        return when {
+            minutes < 60 -> "$minutes minute" + if (minutes == 1) "" else "s"
+            minutes < 48 * 60 -> (minutes / 60).let { "$it hour" + if (it == 1) "" else "s" }
+            else -> (minutes / (24 * 60)).let { "$it days" }
+        }
+    }
+
+    fun entryDenied(requester: String, seconds: Int): String =
+        "Denied. $requester cannot ask to join again for ${waitText(seconds)}."
 
     /** "2 of 4 verified · about 1 min 30 s left · excluded: c@x (wrong passphrase)" */
     /** "verified=a,b;excluded=c" as counts: a hundred names is not a line. */
@@ -268,6 +288,7 @@ object GroupText {
         "only_the_creator_starts" -> "Only the group's creator starts verifying it. " +
             "You are asked for the passphrase when they do."
         "only_the_creator_removes" -> "Only the group's creator removes members."
+        "only_the_creator_admits" -> "Only the group's creator answers requests to join."
         "passphrase_too_short" -> "The group passphrase must be 8 characters or more."
         "no_verified_member" -> "Nobody in this group is verified yet: verify the group first."
         "call_in_progress" -> "You are already in a group call."
