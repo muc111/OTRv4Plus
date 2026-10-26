@@ -63,6 +63,7 @@ on:
       - "client/otrv4plus_alias.py"
       - "client/otrv4plus_audio.py"
       - "client/otrv4plus_caps.py"
+      - "client/otrv4plus_egress.py"
       - "client/otrv4plus_coreapi.py"
       - "client/otrv4plus_filetransfer.py"
       - "client/otrv4plus_fragment.py"

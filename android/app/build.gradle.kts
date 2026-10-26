@@ -417,6 +417,9 @@ val syncPythonSources by tasks.registering(Copy::class) {
             //   EOF
             "otrv4plus_address.py",
             "otrv4plus_admin.py",
+            // N1: the process-wide egress rule (sys.addaudithook), imported
+            // by android_bridge.connection at module scope.
+            "otrv4plus_egress.py",
             // The `?OTRv4F|` wire format, shared with the terminal client.
             // android_bridge.transport imports it at module scope, so a
             // missing entry here is an ImportError at launch rather than a

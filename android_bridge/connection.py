@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, List, Optional
 _log = logging.getLogger("otrv4plus.bridge.connection")
 
 import otrv4plus_address as _address
+import otrv4plus_egress as _egress
 import otrv4plus_muc as _muc
 import otrv4plus_registration as _registration
 
@@ -472,6 +473,22 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
                       certificate="checked" if route.verify_certificate
                       else "not used (address authenticates)")
         self._probe_version = ""
+        # N1: the route's rules bind the whole process from here, before any
+        # socket -- sign-in, account creation and the server test alike all
+        # pass this gate first. On I2P and Tor only loopback and the
+        # configured bridge are reachable, and nothing is resolved.
+        if route.kind == _route.TOR:
+            bridge = (getattr(self._profile, "socks_host", "127.0.0.1"),
+                      int(getattr(self._profile, "socks_port", 9050)))
+        else:
+            bridge = (self._profile.sam_host, int(self._profile.sam_port))
+        try:
+            _egress.enter(route.kind, bridge=bridge)
+        except _egress.EgressRefused as exc:
+            _TRACE.record("transport", "bridge_refused", "warning")
+            return SamProbe(False, "bridge_not_local",
+                            "%s. Use 127.0.0.1, or the IP address of the "
+                            "machine running the bridge." % exc)
         if route.kind == _route.CLEARNET_TLS:
             # No local component to check: DNS, TCP and TLS are the attempt.
             # The prober is NOT called (a test pins this).

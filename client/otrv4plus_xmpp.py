@@ -3692,6 +3692,11 @@ def _choose_transport(args):
                  "one: I2P uses the SAM bridge, Tor uses SOCKS5. Layering "
                  "them is not a supported configuration and guessing which "
                  "you meant could send traffic the wrong way.")
+    if args.no_i2p and server_b32.endswith(".i2p"):
+        sys.exit("[transport] %s is an I2P address but --no-i2p was given. "
+                 "Refusing: without I2P there is no route to it, and trying "
+                 "anyway would send the name to your resolver (N1)."
+                 % server_b32)
     if args.no_tor and server_b32.endswith(".onion"):
         sys.exit("[transport] %s is an onion address but --no-tor was given. "
                  "Refusing: without Tor there is no route to it, and trying "
@@ -3880,6 +3885,17 @@ def _sam_failed(e, args):
 def _open_connection(client, args, server_b32, use_i2p, use_tor):
     """Open the tunnel the transport needs and connect through it. Fails closed."""
     loop = client.loop
+    # N1: the route's rules for the whole process, before any socket. On
+    # I2P and Tor only loopback and the configured bridge are reachable and
+    # nothing is resolved; no .i2p or .onion name ever reaches DNS.
+    import otrv4plus_egress as _egress
+    kind = "i2p_sam" if use_i2p else "tor" if use_tor else "clearnet_tls"
+    bridge = ((args.sam_host, args.sam_port) if use_i2p
+              else (args.socks_host, args.socks_port) if use_tor else None)
+    try:
+        _egress.enter(kind, bridge=bridge)
+    except _egress.EgressRefused as exc:
+        sys.exit("[transport] %s" % exc)
 
     if use_i2p:
         # Remembered after a successful connection, so the 52-character b32 is

@@ -123,6 +123,13 @@ fun ConnectScreen(model: AppModel) {
                          "127.0.0.1:7656 through qrexec; leave these as they are.",
                          style = MaterialTheme.typography.bodySmall,
                          color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    // N1: a SAM bridge has no authentication. One off this
+                    // machine is used only when typed here, and only by IP.
+                    val host = model.samHost.trim().lowercase()
+                    if (host.isNotEmpty() && host != "localhost" && !host.startsWith("127.") && host != "::1") {
+                        Text(SAM_ELSEWHERE_WARNING, style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.error)
+                    }
                 }
                 Button(onClick = { go() }, enabled = ready,
                        modifier = Modifier.fillMaxWidth().height(48.dp)) {
@@ -162,3 +169,10 @@ fun ConnectScreen(model: AppModel) {
         }
     }
 }
+
+
+/** N1: shown under a SAM host that is not this machine. */
+internal const val SAM_ELSEWHERE_WARNING =
+    "A SAM bridge on another machine has no password: anyone who can reach it " +
+        "can use it, and it sees which I2P destinations you connect to. Use only " +
+        "one you run yourself, given by its IP address (a name would need DNS)."

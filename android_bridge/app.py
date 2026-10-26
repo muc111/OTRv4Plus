@@ -381,6 +381,12 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         # L1: every session's closing messages, before the transport goes.
         self._send_final_revelations()
         self.disconnect()
+        # N1: no account, no route: the next sign-in sets its own.
+        try:
+            import otrv4plus_egress
+            otrv4plus_egress.leave()
+        except Exception:
+            pass
 
     @property
     def wiped(self) -> bool:

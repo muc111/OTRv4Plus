@@ -133,3 +133,19 @@ try:
         _otrv4_mod.SMPEngine = _smp_compat.SMPEngine
 except Exception as _e:
     print(f"[conftest] Warning: could not inject SMPEngine: {_e}")
+
+
+
+import pytest as _pytest_n1
+
+
+@_pytest_n1.fixture(autouse=True)
+def _egress_route_reset():
+    """N1: the egress rule is process-wide, as in the app. A test that signs
+    in over I2P must not leave the next test on the I2P rules -- production
+    resets it at every sign-in and sign-out; the suite resets it per test."""
+    yield
+    import sys as _sys
+    mod = _sys.modules.get("otrv4plus_egress")
+    if mod is not None:
+        mod.leave()
