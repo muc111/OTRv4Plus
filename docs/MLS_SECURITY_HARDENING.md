@@ -55,14 +55,48 @@ the property comes from the protocol, not from a library bug.
 **Done in M2 (rc.27):** 1 and 2. Each KeyPackage carries its own key, which
 becomes our key in the group it brings us into; creating a group makes a
 fresh one; every self-update (manual, after 50 messages, or 30 minutes,
-whichever first) replaces it, and the old private key is dropped when the
-commit lands (`Rust/mls/src/client.rs`). The commit is signed with the old
+whichever first) replaces it, and (until F4, below) the old private key was
+dropped when the commit landed (`Rust/mls/src/client.rs`). The commit is signed with the old
 key, so the core reports `rekeyed: (identity, old fp, new fp)` only for a
 key replaced by its owner's own update -- never for a new leaf under an
 old name -- and the bridge carries an SMP binding across exactly those.
 The inviter's current fingerprint also travels with the Welcome over
 OTRv4+, so a rotation between invite and Welcome does not fail the join.
-3 (publication) remains deferred (decision D1).
+3 (publication) was deferred (decision D1) until the owner decided it on
+2026-10-26. It is now done: see **Done in F4** below.
+
+**Done in F4 (2026-10-26): retired signing keys are published (epochal
+signatures).** A key a self-update retires is no longer dropped when the
+commit lands. Rust keeps it, sealed with the MLS state, and publishes it to
+the group:
+- automatically, `REVEAL_DELAY_SECONDS` (10 minutes) after the rekey landed,
+  from `maintain`;
+- at once after "Make Group Deniable", which rekeys first.
+
+The publication is one MLS application message built and encrypted in Rust.
+It carries the public and private halves of up to four retired keys. A
+receiver's Rust checks each pair before reporting it as `keys_revealed`,
+with fingerprints only:
+- the private half must sign for its public half;
+- none may be the sender's current key.
+
+The private halves never reach Python or Kotlin. A published key cannot sign
+into the group any more. The rotation commit is earlier in room order, so
+every member replaced the key in the tree before the publication reached
+them, and a message signed with it does not verify. The current key is
+never published. The message sits behind the group-verification control
+prefix, so a client from before F4 drops it without showing it. Gate:
+- `retired_key_tests` in `Rust/mls/src/client.rs` (publication reaches the
+  members; the published key forges a signature its public key accepts but
+  cannot sign into the group; a current or mismatched key is refused;
+  survives a restart, bounded, published in batches);
+- `tests/test_f4_group_key_publication.py`.
+
+What it does not do: a member who records traffic and leaks it **before**
+the publication holds signatures made by a key that was private at the
+time. The window is the rekey period (at most 50 messages or 30 minutes)
+plus the delay. The construction has not been independently reviewed, and
+the app says so.
 
 Even with all three, a member who records traffic **before** rotation holds
 signatures made by a key that was then private. Full OTRv4-style
