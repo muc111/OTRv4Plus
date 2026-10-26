@@ -2,6 +2,11 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.desktop.ui
 
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -63,7 +68,8 @@ fun MainScreen(model: AppModel, onWipe: () -> Unit) {
             RailItem(model, AppModel.Tab.PEOPLE, Icons.Filled.People, "People",
                      badge = model.chat.pendingSubscriptions.size)
             RailItem(model, AppModel.Tab.ROOMS, Icons.Filled.Groups, "Rooms",
-                     badge = model.chat.pendingGroupInvites.size)
+                     badge = model.chat.pendingGroupInvites.size,
+                     flashing = model.unseenInvites())
             RailItem(model, AppModel.Tab.SETTINGS, Icons.Filled.Settings, "Settings")
         }
         VerticalDivider()
@@ -148,18 +154,37 @@ private fun OtherSessionsBanner(model: AppModel) {
 
 @Composable
 private fun RailItem(model: AppModel, tab: AppModel.Tab, icon: androidx.compose.ui.graphics.vector.ImageVector,
-                     label: String, badge: Int = 0) {
+                     label: String, badge: Int = 0, flashing: Int = 0) {
+    // [flashing]: things on this tab not seen yet (InviteAttention). The tab
+    // pulses and says how many, so it is noticed from any other tab.
+    val pulse = if (flashing > 0) {
+        val transition = rememberInfiniteTransition(label = "rail-$label")
+        val alpha by transition.animateFloat(
+            initialValue = 0.85f, targetValue = 0.15f, label = "rail-$label-alpha",
+            animationSpec = infiniteRepeatable(tween(650), RepeatMode.Reverse))
+        alpha
+    } else 0f
     NavigationRailItem(
         selected = model.tab == tab,
         onClick = { model.tab = tab },
         icon = {
-            Box {
+            Box(Modifier.clip(CircleShape)
+                .background(MaterialTheme.colorScheme.error.copy(alpha = pulse))
+                .padding(4.dp)) {
                 Icon(icon, label)
-                if (badge > 0) Box(Modifier.align(Alignment.TopEnd).size(8.dp).clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.error))
+                if (flashing > 0) {
+                    Text("$flashing", Modifier.align(Alignment.TopEnd).clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error)
+                        .padding(horizontal = 4.dp),
+                        color = MaterialTheme.colorScheme.onError,
+                        style = MaterialTheme.typography.labelSmall)
+                } else if (badge > 0) {
+                    Box(Modifier.align(Alignment.TopEnd).size(8.dp).clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.error))
+                }
             }
         },
-        label = { Text(label) },
+        label = { Text(if (flashing > 0) "$label · new" else label) },
     )
 }
 

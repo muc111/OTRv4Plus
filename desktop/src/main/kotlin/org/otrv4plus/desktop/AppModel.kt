@@ -73,6 +73,12 @@ class AppModel(
     var screen by mutableStateOf(Screen.STARTING)
         private set
     var tab by mutableStateOf(Tab.CHATS)
+
+    private val inviteAttention = InviteAttention()
+
+    /** Group invitations not on screen yet: the Rooms tab flashes for them. */
+    fun unseenInvites(): Int =
+        inviteAttention.unseen(chat.pendingGroupInvites.map { it.room }, tab == Tab.ROOMS)
     var theme by mutableStateOf(ThemeTokens.DEFAULT)
     var startupFailure by mutableStateOf("")
         private set
