@@ -88,6 +88,7 @@ CODES: Dict[str, Tuple[str, str]] = {
     "room_message_rejected": ("room", "the server rejected a room message"),
     "room_plaintext_refused": ("room", "a plaintext message in a secure room was refused"),
     "group_invite_failed": ("group", "the group invitation could not be sent"),
+    "group_removal_unconfirmed": ("group", "Delete removed everyone but the room did not confirm it in time; nothing deleted yet"),
     "group_joining": ("group", "still joining the group; try again shortly"),
     "group_keys_missing": ("group", "no keys for this group on this device"),
     "group_send_failed": ("group", "a group message could not be sent"),

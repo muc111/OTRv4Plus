@@ -2012,6 +2012,26 @@ class SecureGroups:
             self.save()
         self._post_commit(room, commit)
 
+    def is_creator(self, room: str) -> bool:
+        """Whether this account is the group's creator (`coordinator`)."""
+        return bool(self._account) and self.coordinator(room) == self._account
+
+    def remove_everyone(self, room: str) -> List[str]:
+        """Every other member removed, in one commit: the first step of the
+        creator deleting the group (owner, 2026-10-26: "must remove everyone
+        from group before deletion"). Each member's copy then ends by MLS --
+        its keys open nothing posted afterwards -- not only by the room
+        going away. Creator only (`remove_many`). Returns who."""
+        others = sorted(m["jid"] for m in self.members(room) if m["jid"] != self._account)
+        self.remove_many(room, others)
+        return others
+
+    def commit_confirmed(self, room: str) -> bool:
+        """No commit of ours for [room] is still waiting to come back from
+        the room (`_post_commit`)."""
+        with self._lock:
+            return room not in self._unconfirmed
+
     def remove_failed(self, room: str) -> List[str]:
         """Remove everyone whose verification failed, in one commit."""
         failed = sorted(m["jid"] for m in self.members(room) if m.get("failed"))

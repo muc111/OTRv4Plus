@@ -7,10 +7,23 @@ A mixin of ConnectionController (connection.py), which the apps call; it
 forwards to OtrApp's groups (groups.py) on the worker."""
 from __future__ import annotations
 
+import time
 from typing import Any, Dict
 
 from .groups import GroupError as GroupErrorAlias
 from .trace import TRACE as _TRACE
+
+
+def _wait_for(done, seconds: float, step: float = 0.1) -> bool:
+    """Poll [done] until it is true or [seconds] pass. Not on the transport's
+    loop thread: what it waits for arrives there."""
+    deadline = time.monotonic() + seconds
+    while True:
+        if done():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(step)
 
 
 class GroupsControlMixin:
@@ -241,10 +254,30 @@ class GroupsControlMixin:
             except Exception:
                 pass
 
+    #: How long Delete waits for the removal of every member to come back
+    #: from the room before it destroys the room.
+    REMOVE_BEFORE_DELETE_SECONDS = 30.0
+
+    REMOVAL_UNCONFIRMED = ("Everyone was removed from the group, but the room has "
+                           "not confirmed it yet, so the group was not deleted. "
+                           "Try Delete again in a moment.")
+
     def delete_secure_group(self, room: str) -> Dict[str, Any]:
-        """Delete a secure group for everyone: destroy its room (the service
-        allows only the owner, the group's creator), which tells the members
-        in it; one who was away finds it gone on return. Then our copy goes."""
+        """Delete a secure group for everyone.
+
+        Owner (2026-10-26): "must remove everyone from group before
+        deletion". The creator first removes every other member, in one MLS
+        commit, and waits until it comes back from the room -- so the members
+        in the room have it and their copies end (`removed_us`). Only then is
+        the room destroyed (the service allows only its owner, the creator),
+        which tells whoever is still in it; a member who was away finds it
+        gone on return. Then our copy goes. If the removal is not confirmed
+        in time nothing is deleted yet and Delete says so; trying again
+        re-sends it. Someone other than the creator (a server admin) can only
+        destroy the room."""
+        first = self._remove_everyone_first(room)
+        if first is not None and not first.get("ok"):
+            return first
         result = self.destroy_room(room, "secure group deleted")
         if result.get("ok"):
             self._on_room_destroyed(room)
@@ -262,6 +295,39 @@ class GroupsControlMixin:
             result = dict(result, ok=True, code="ok",
                           detail="The group's room was already gone; removed here.")
         return result
+
+    def _remove_everyone_first(self, room: str):
+        """The creator's removal of every member before a delete. None when
+        it does not apply (not a secure group of ours, or not its creator)."""
+        groups = getattr(getattr(self, "_app", None), "groups", None)
+        if groups is None:
+            return None
+        try:
+            if not groups.is_secure(room) or not groups.is_creator(room):
+                return None
+        except Exception:
+            return None
+
+        def confirmed():
+            return groups.commit_confirmed(room)
+
+        if not confirmed():
+            # An earlier commit -- a removal from a Delete that timed out --
+            # is still out: it goes first, again.
+            groups.resend_pending_commit(room, "delete")
+            if not _wait_for(confirmed, self.REMOVE_BEFORE_DELETE_SECONDS):
+                return {"ok": False, "code": "group_removal_unconfirmed", "value": None,
+                        "detail": self.REMOVAL_UNCONFIRMED}
+        try:
+            removed = groups.remove_everyone(room)
+        except GroupErrorAlias as exc:
+            return {"ok": False, "code": exc.code, "value": None,
+                    "detail": exc.detail or exc.code}
+        if removed and not _wait_for(confirmed, self.REMOVE_BEFORE_DELETE_SECONDS):
+            return {"ok": False, "code": "group_removal_unconfirmed", "value": removed,
+                    "detail": self.REMOVAL_UNCONFIRMED}
+        _TRACE.record("groups", "removed_before_delete", "info", members=len(removed))
+        return {"ok": True, "code": "ok", "value": removed, "detail": ""}
 
     def leave_secure_group(self, room: str) -> Dict[str, Any]:
         """Forget the group's keys here, then leave the room."""
