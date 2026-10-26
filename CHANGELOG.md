@@ -4,6 +4,40 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.182 — 2026-10-26 — MAC keys retired by an exact rule, Make Chat Deniable; signed out means signed out (core 0.13.2)
+
+Security issues L1 and U1 (docs/SECURITY_ISSUES.md), both closed with
+regression gates.
+
+- **L1: MAC keys are retired and published by an exact rule** (SPEC §5.8).
+  A message's MAC key is published by its receiver once it has received and
+  authenticated the message, or once the stored key for a message that never
+  arrived is deleted, or when the session closes. A sender never publishes the
+  key of its own message any more. Until then, a DH ratchet step published the
+  key of our last sent message, which the peer might still be waiting for. The
+  keys cross from the Rust ratchet only as the encoded wire field, and each is
+  wiped as it leaves.
+- **Make Chat Deniable…** in every established one-to-one chat (Android ⋮
+  menu, desktop header; `/deniable` in the terminal). It publishes every MAC key
+  of the session, ends it, and starts a new session that has no link to the old
+  one. The mechanism has not been independently reviewed yet, and the app says
+  so.
+- **Every session closes the same way** at sign-out, Wipe & Exit, quit, when
+  the peer ends it, and on error, before any key is wiped. Without a network the
+  keys are still retired and wiped.
+- A late message from an older chain whose key is still held is now decrypted
+  instead of failing. A new handshake never reuses an ended session. A peer's
+  closing message that arrives after our side has ended is dropped quietly, and
+  no longer starts a handshake.
+- **U1: signed out means signed out.** About & licences now goes back to
+  sign-in, not to the chat list, and no signed-in screen shows while signed
+  out. The device's identity fingerprint is withheld until a login succeeds:
+  Android, the desktop (no longer on its sign-in screen) and the terminal
+  (`/identity`). Sign-out drops the open chat, profile and identity shown.
+- Tests: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`,
+  `tests/test_u1_signed_out_surfaces.py` (U1-T1..T6), `AuthGateTest`,
+  `DeniableChatTest`.
+
 ## Android 0.7.0-experimental.rc.181 — 2026-10-26 — The creator answers requests to join; desktop zoom pans (core 0.13.2)
 
 Device reports (2026-10-25): the creator was not told that someone asked to

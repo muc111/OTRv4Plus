@@ -237,6 +237,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Group verify and one-tap message (rc.179) | Create a group (no passphrase asked); as the creator press Verify group in its chat and set the passphrase; each member is notified, types it and is labelled verified. A member sees 'starts verifying' instead of the button. Message an online non-contact: the request goes, the message follows on accept. | rc.179 |
 | Groups and New chat | Verification happens once per member and the creator can remove whoever failed; a clean members list for big groups; New chat lists who is online | rc.180 |
 | Join requests | The creator is asked on any screen and can Accept, Deny or Later; a denied person waits 15 minutes, doubling each time | rc.181 |
+| Sign-out and About | Signed out, About goes back to sign-in and the device fingerprint is not shown anywhere until you sign in; Make Chat Deniable in a 1:1 chat ends the session and starts a new one | rc.182 |
 
 ## ⚠️ Known limits
 
