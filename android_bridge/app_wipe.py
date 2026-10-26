@@ -136,6 +136,8 @@ class WipeMixin:
                 closer()
             except Exception:
                 report["errors"].append("transport")
+        # Kept for re-sending (L1); nothing is sent after this.
+        getattr(self, "_unconfirmed_closings", []).clear()
         self._connection = ConnectionState.DISCONNECTED
 
         self._presence.forget_all()

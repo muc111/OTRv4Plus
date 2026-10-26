@@ -1693,6 +1693,42 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
     #: Whether the last disconnect was answered by the server (`_end_stream`).
     end_confirmed = False
 
+    #: How long `confirm_received` waits for the server's answer.
+    CONFIRM_TIMEOUT_S = 15.0
+
+    def confirm_received(self, timeout: float = CONFIRM_TIMEOUT_S) -> bool:
+        """Whether our server has received everything sent so far, the stream
+        staying up: Make Chat Deniable's closing messages (L1).
+
+        slixmpp's send queue is drained, then a XEP-0199 ping goes to our own
+        server and its answer is awaited. A server reads a stream in order
+        and answers an IQ only after every stanza before it, so the answer
+        means those stanzas arrived. False when it is not confirmed in
+        [timeout], when there is no stream, or when no ping can be sent --
+        here, unlike the keepalive, not knowing is never read as yes."""
+        client = self._client
+        if client is None or self._closed or not self.is_connected:
+            return False
+        try:
+            return bool(self._run(self._confirm_received(client, timeout), timeout + 5))
+        except Exception:
+            return False
+
+    async def _confirm_received(self, client, budget: float) -> bool:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + budget
+        try:
+            queue = getattr(client, "waiting_queue", None)
+            if queue is not None:
+                await asyncio.wait_for(queue.join(), budget)
+            ping = client["xep_0199"]
+            return bool(await _ping.round_trip(
+                ping, client.boundjid.host, max(0.1, deadline - loop.time())))
+        except _CANCELLED:
+            raise
+        except Exception:
+            return False
+
     async def _end_stream(self, client, budget: float) -> bool:
         """End the stream so that what was sent before it is known to have
         arrived. Loop thread.

@@ -2062,14 +2062,19 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         """L1: send the closing messages the engine built as sessions ended
         (each publishes retired MAC keys). Dropped when not connected: the
         keys are retired and wiped in Rust regardless. Never raises."""
+        return self._send_closings(self._take_final_revelations())
+
+    def _take_final_revelations(self):
         take = getattr(self.otr, "take_final_revelations", None)
         if take is None:
-            return 0
-        sent = 0
+            return []
         try:
-            waiting = take()
+            return list(take())
         except Exception:
-            return 0
+            return []
+
+    def _send_closings(self, waiting) -> int:
+        sent = 0
         for peer, wire in waiting:
             try:
                 if self.is_connected():
@@ -2091,12 +2096,56 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         if not done:
             print("[otr] no encrypted session with %s to end" % _sanitise(peer, 128))
             return
-        sent = self._send_final_revelations()
+        waiting = self._take_final_revelations()
+        sent = self._send_closings(waiting)
         self._encrypted.discard(peer)
         self._last_dake1.pop(peer, None)
-        print("[otr] %s: this session's MAC keys were published (%d message%s); "
-              "starting a new session" % (_sanitise(peer, 128), sent, "" if sent == 1 else "s"))
+        print("[otr] %s: publishing this session's MAC keys (%d message%s); waiting "
+              "for your server to confirm" % (_sanitise(peer, 128), sent, "" if sent == 1 else "s"))
+        asyncio.run_coroutine_threadsafe(self._confirm_then_restart(peer, waiting), self.loop)
+
+    #: Make Chat Deniable (L1): how long the server has to confirm the
+    #: closing messages, and how often they are sent again if it does not.
+    CLOSING_CONFIRM_S = 15.0
+    CLOSING_RETRY_S = 30.0
+    CLOSING_TRIES = 5
+
+    async def _server_confirms(self, budget):
+        """Whether our server has received everything sent so far: the send
+        queue drained, then a XEP-0199 ping answered (a server answers an IQ
+        only after every stanza before it). Not knowing is never yes."""
+        import otrv4plus_ping
+        try:
+            await asyncio.wait_for(self.waiting_queue.join(), budget)
+            return bool(await otrv4plus_ping.round_trip(
+                self.plugin["xep_0199"], self.boundjid.host, budget))
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return False
+
+    async def _confirm_then_restart(self, peer, waiting):
+        """The new session starts once the server has confirmed the closing
+        messages; if it does not, it starts anyway (the old one is closed)
+        and they are sent again until it does, CLOSING_TRIES times."""
+        name = _sanitise(peer, 128)
+        confirmed = await self._server_confirms(self.CLOSING_CONFIRM_S)
+        if confirmed:
+            print("[otr] %s: your server confirmed the published keys; starting a "
+                  "new session" % name)
+        else:
+            print("[otr] %s: the session is closed and its keys retired, but your "
+                  "server has not confirmed the message that publishes them yet; "
+                  "sending it again in the background" % name)
         self.start_otr(peer)
+        for _ in range(self.CLOSING_TRIES if not confirmed else 0):
+            await asyncio.sleep(self.CLOSING_RETRY_S)
+            self._send_closings(waiting)
+            if await self._server_confirms(self.CLOSING_CONFIRM_S):
+                print("[otr] %s: your server confirmed the published keys" % name)
+                return
+        if not confirmed:
+            print("[otr] %s: still not confirmed; the keys stay retired" % name)
 
     def start_otr(self, peer):
         # Recorded BEFORE anything can fail. From here on this conversation
@@ -2630,10 +2679,12 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             "                       just type (/to alice, /to mls3)\n"
             "  /otr [jid]           start OTR session (DAKE); a user name\n"
             "                       alone is enough (/otr bob)\n"
-            "  /deniable [jid]      publish this chat's MAC keys (anyone could\n"
-            "                       then have forged its messages), end the\n"
-            "                       session and start a new one (not yet\n"
-            "                       independently reviewed)\n"
+            "  /deniable [jid]      publish this chat's MAC keys once your\n"
+            "                       server confirms (a copy then no longer\n"
+            "                       proves who wrote what; it does not hide\n"
+            "                       that you talked), end the session and\n"
+            "                       start a new one. Deniability pending\n"
+            "                       external audit\n"
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
             "  /smp                 verify this session — prompts (hidden) for\n"
