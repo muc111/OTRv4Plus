@@ -41,6 +41,11 @@ records: they describe the code as it was when they were written.
 - [SECURITY_ISSUES.md](SECURITY_ISSUES.md): tracked security issues
 - [DENIABILITY_LAYERS.md](DENIABILITY_LAYERS.md): what each deniability mechanism denies and still proves (for reviewers)
 - [PQC_DECISIONS.md](PQC_DECISIONS.md): post-quantum choices for the deniability work, with rationale
+- [AUDIT_SUMMARY.md](AUDIT_SUMMARY.md): the audit and hardening pass of 2026-10-26, what it removed and what it fixed
+- [AUDIT_CLAIM_MATRIX.md](AUDIT_CLAIM_MATRIX.md): every protection claimed, its code, its test, its residual
+- [AUDIT_TEST_INTEGRITY.md](AUDIT_TEST_INTEGRITY.md): what each claim test shows, with mutation results
+- [AUDIT_THREAT_MODEL.md](AUDIT_THREAT_MODEL.md): the threat model walked against the code
+- [CRYPTOGRAPHER_QUESTIONS.md](CRYPTOGRAPHER_QUESTIONS.md): the questions only a cryptographer can answer
 
 ## Test plans
 
