@@ -85,6 +85,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/connection/Startup.kt",
     "org/otrv4plus/android/crypto/CallAlert.kt",
     "org/otrv4plus/android/crypto/CallUi.kt",
+    "org/otrv4plus/android/crypto/DeniableChat.kt",
     "org/otrv4plus/android/crypto/EncryptionLauncher.kt",
     "org/otrv4plus/android/crypto/EncryptionProvider.kt",
     "org/otrv4plus/android/crypto/EncryptionSelector.kt",

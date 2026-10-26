@@ -283,6 +283,12 @@ internal fun ConversationMenu(model: ChatViewModel, jid: String, onOpenProfile: 
                     DropdownMenuItem(text = { Text("Profile") },
                                      onClick = { model.conversationMenu = false; onOpenProfile(jid) })
                 }
+                // L1: in every established 1:1 OTRv4+ chat.
+                if (org.otrv4plus.android.crypto.DeniableChat.offered(
+                        model.conversation(jid).security, isRoom = false)) {
+                    DropdownMenuItem(text = { Text(org.otrv4plus.android.crypto.DeniableChat.ACTION) },
+                                     onClick = { model.conversationMenu = false; model.askDeniable = jid })
+                }
                 if (model.blockingSupported) {
                     if (model.isBlocked(jid)) {
                         DropdownMenuItem(text = { Text("Unblock") },
@@ -295,7 +301,21 @@ internal fun ConversationMenu(model: ChatViewModel, jid: String, onOpenProfile: 
                 }
             }
         }
+        model.askDeniable?.takeIf { it == jid }?.let { MakeDeniableDialog(model, it) }
     }
+}
+
+/** "Make this chat deniable?": every word from [DeniableChat]. */
+@Composable
+internal fun MakeDeniableDialog(model: ChatViewModel, jid: String) {
+    val text = org.otrv4plus.android.crypto.DeniableChat
+    AlertDialog(
+        onDismissRequest = { model.askDeniable = null },
+        title = { Text(text.TITLE) },
+        text = { Text(text.BODY) },
+        confirmButton = { TextButton(onClick = { model.makeChatDeniable(jid) }) { Text(text.CONFIRM) } },
+        dismissButton = { TextButton(onClick = { model.askDeniable = null }) { Text("Cancel") } },
+    )
 }
 
 /** Above a one-to-one chat: its security, the handshake, calls and files,

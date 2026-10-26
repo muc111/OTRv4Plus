@@ -66,6 +66,7 @@ object FailureText {
         "group_send_failed" to "The message could not be sent to the group. Try again.",
         "group_invite_failed" to "The invitation could not be sent. Try again.",
         "group_remove_failed" to "The member could not be removed. Try again.",
+        "dake_generate_failed" to "A new encrypted session could not be started. Open the chat to try again.",
         "group_welcome_send_failed" to "An invitation could not be delivered. Invite them again.",
         "group_signal_unencrypted" to "A group control message arrived unencrypted and was refused.",
         "room_plaintext_refused" to "An unencrypted message in this encrypted group was refused.",

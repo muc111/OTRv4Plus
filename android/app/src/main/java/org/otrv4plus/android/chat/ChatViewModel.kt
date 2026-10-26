@@ -394,6 +394,22 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** The chat a "Make Chat Deniable?" question is open for, or null. */
+    var askDeniable by mutableStateOf<String?>(null)
+
+    /** L1: publish this session's MAC keys, end it, start a fresh one. */
+    fun makeChatDeniable(jid: String) {
+        askDeniable = null
+        val c = core ?: return
+        viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) {
+                runCatching { c.makeChatDeniable(jid) }.getOrDefault("no_session")
+            }
+            state?.note(org.otrv4plus.android.crypto.DeniableChat.outcome(result))
+            revision++
+        }
+    }
+
     fun laterEntryRequest(room: String, requester: String) {
         state?.clearEntryRequest(room, requester)
         revision++

@@ -1162,6 +1162,15 @@ class AppModel(
     }
 
     /** [report]: "spam" also reports them to the server's operator. */
+    /** L1: publish this session's MAC keys, end it, start a fresh one. */
+    fun makeChatDeniable(jid: String) {
+        ui.launch {
+            val result = withContext(Dispatchers.IO) { core.makeChatDeniable(jid) }
+            chat.note(org.otrv4plus.android.crypto.DeniableChat.outcome(result))
+            changed()
+        }
+    }
+
     fun block(jid: String, report: String = "") {
         ui.launch {
             val r = withContext(Dispatchers.IO) { core.blockContact(jid, report) }

@@ -91,6 +91,13 @@ class WipeMixin:
         # can wait on the network. See `wipe_crypto`.
         crypto = self.wipe_crypto()
         report["errors"].extend(crypto.get("errors", []))
+        # L1: the engine retired and wiped every MAC key before destroying
+        # each session; the closing messages that publish them go now, while
+        # the transport is still up. Best effort, never waited on.
+        try:
+            self._send_final_revelations()
+        except Exception:
+            report["errors"].append("final_revelation")
         report.update({k: v for k, v in crypto.items()
                        if k not in ("errors", "already_wiped")})
 

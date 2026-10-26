@@ -1269,6 +1269,16 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         runCatching { requireApp().callAttr("ensure_otr", peer).toString() }
             .getOrDefault("unknown")
 
+    /**
+     * "Make Chat Deniable" (L1, SPEC §5.8): publish every MAC key of the
+     * session with [peer], end it, and start a fresh one. "made_deniable" or
+     * "no_session". No key material crosses: the engine sends the closing
+     * messages itself.
+     */
+    fun makeChatDeniable(peer: String): String =
+        runCatching { requireApp().callAttr("make_chat_deniable", peer).toString() }
+            .getOrDefault("no_session")
+
     /** Where an OTRv4+ handshake with [peer] has got to. No key material. */
     fun handshakeStatus(peer: String): org.otrv4plus.android.crypto.HandshakeUi.Status =
         runCatching {

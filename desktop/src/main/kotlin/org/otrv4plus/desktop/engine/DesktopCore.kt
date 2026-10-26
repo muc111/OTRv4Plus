@@ -148,6 +148,10 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun ensureOtr(peer: String): String =
         runCatching { call("ensure_otr", "peer" to peer).asStr() }.getOrDefault("unknown")
 
+    /** "Make Chat Deniable" (L1): see ChaquopyOtrCore.makeChatDeniable. */
+    fun makeChatDeniable(peer: String): String =
+        runCatching { call("make_chat_deniable", "peer" to peer).asStr() }.getOrDefault("no_session")
+
     fun handshakeStatus(peer: String): HandshakeUi.Status = runCatching {
         val v = call("handshake_status", "peer" to peer) as JsonObject
         HandshakeUi.Status(

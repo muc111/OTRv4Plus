@@ -37,6 +37,7 @@ import otrv4plus_actions as _actions
 from .trace import TRACE as _TRACE
 from .app_base import BridgeError, _log, _new_message_id, redacting_logger  # noqa: F401
 from .app_calls import CallsMixin
+from .app_deniable import DeniableMixin
 from .app_files import FilesMixin
 from .app_rooms import RoomChatMixin
 from .app_smp import SmpMixin
@@ -170,7 +171,7 @@ def _is_otr_frame(text: str) -> bool:
     on the wire (owner, 2026-10-24: never plaintext between 1:1 users)."""
     return isinstance(text, str) and text.startswith("?OTRv4")
 
-class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
+class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, DeniableMixin):
     """Typed facade over EnhancedSessionManager + Transport."""
 
     def __init__(self, engine: Any, transport: Optional[Transport] = None,
@@ -370,6 +371,8 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
             self._engine.clear_all_sessions("shutdown")
         except Exception:
             _log.warning("session teardown reported a problem")
+        # L1: every session's closing messages, before the transport goes.
+        self._send_final_revelations()
         self.disconnect()
 
     @property
@@ -1308,7 +1311,11 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin):
                 result = self._engine.handle_incoming_message(peer, payload)
         except Exception:
             self._emit(ErrorOccurred(peer=peer, code="decrypt_failed"))
+            self._send_final_revelations()
             return None
+        # L1: a session this frame ended (the peer's DISCONNECTED, an error)
+        # publishes what it retired.
+        self._send_final_revelations()
 
         if result is None:
             self._report_pq_refusal(peer)

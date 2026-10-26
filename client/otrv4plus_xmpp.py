@@ -70,6 +70,7 @@ USAGE:
 
 COMMANDS:
     /otr [jid]            start an OTR session (DAKE)
+    /deniable [jid]       publish the session's MAC keys, end it, start afresh
     y / n                 answer the trust-fingerprint prompt
     <passphrase>          answer the SMP passphrase prompt
     /smp                  verify this session (prompts for the passphrase,
@@ -1518,7 +1519,11 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                 meta = None
         except Exception as e:
             print(f"[otr error] from {peer}: {e}")
+            self._send_final_revelations()
             return
+        # L1: a session this frame ended (the peer's DISCONNECTED, an error)
+        # publishes the MAC keys it retired.
+        self._send_final_revelations()
 
         if heavy:
             import time as _t
@@ -2024,6 +2029,46 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             self._outbox.pop(peer, None)
         if sent:
             print(f"[queued] {sent} waiting message(s) sent, encrypted")
+
+    def _send_final_revelations(self) -> int:
+        """L1: send the closing messages the engine built as sessions ended
+        (each publishes retired MAC keys). Dropped when not connected: the
+        keys are retired and wiped in Rust regardless. Never raises."""
+        take = getattr(self.otr, "take_final_revelations", None)
+        if take is None:
+            return 0
+        sent = 0
+        try:
+            waiting = take()
+        except Exception:
+            return 0
+        for peer, wire in waiting:
+            try:
+                if self.is_connected():
+                    self.send_otr_fragmented(peer, wire)
+                    sent += 1
+            except Exception:
+                pass
+        return sent
+
+    def make_deniable(self, peer):
+        """/deniable: publish every MAC key of the session with [peer], tell
+        them it has ended, forget it, and start a fresh session -- one with
+        no cryptographic link to the transcript anyone can now forge."""
+        try:
+            done = self.otr.make_deniable(peer)
+        except Exception as exc:
+            print("[otr] could not make the chat deniable: %s" % _sanitise(str(exc), 80))
+            return
+        if not done:
+            print("[otr] no encrypted session with %s to end" % _sanitise(peer, 128))
+            return
+        sent = self._send_final_revelations()
+        self._encrypted.discard(peer)
+        self._last_dake1.pop(peer, None)
+        print("[otr] %s: this session's MAC keys were published (%d message%s); "
+              "starting a new session" % (_sanitise(peer, 128), sent, "" if sent == 1 else "s"))
+        self.start_otr(peer)
 
     def start_otr(self, peer):
         # Recorded BEFORE anything can fail. From here on this conversation
@@ -2557,6 +2602,10 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             "                       just type (/to alice, /to mls3)\n"
             "  /otr [jid]           start OTR session (DAKE); a user name\n"
             "                       alone is enough (/otr bob)\n"
+            "  /deniable [jid]      publish this chat's MAC keys (anyone could\n"
+            "                       then have forged its messages), end the\n"
+            "                       session and start a new one (not yet\n"
+            "                       independently reviewed)\n"
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
             "  /smp                 verify this session — prompts (hidden) for\n"
@@ -2841,6 +2890,14 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             else:
                 asyncio.ensure_future(groups.command(lstrip[len("/group"):].strip()))
             return True
+
+        # --- L1: publish this session's MAC keys and start afresh ---
+        elif lstrip == "/deniable" or lstrip.startswith("/deniable "):
+            target = _expand(self, lstrip[len("/deniable"):].strip()) if " " in lstrip else peer
+            if target:
+                self.make_deniable(target)
+            else:
+                print("no --peer set; use /deniable <jid>")
 
         # --- OTR ---
         elif lstrip == "/otr":
@@ -3283,6 +3340,9 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                 self.otr.clear_all_sessions("xmpp client shutdown")
         except Exception:
             pass
+        # L1: every session ended deniably above; its closing messages go
+        # now, while the stream is still up (dropped if it is not).
+        self._send_final_revelations()
 
         # 3. Wipe ephemeral channel log (key zeroed + .enc files deleted)
         try:

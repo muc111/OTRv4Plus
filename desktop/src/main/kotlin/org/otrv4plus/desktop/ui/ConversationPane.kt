@@ -84,6 +84,7 @@ import org.otrv4plus.android.chat.RoomPeople
 import org.otrv4plus.android.chat.VoiceNotes
 import org.otrv4plus.android.chat.VoiceSheet
 import org.otrv4plus.android.crypto.CallUi
+import org.otrv4plus.android.crypto.DeniableChat
 import org.otrv4plus.android.crypto.HandshakeUi
 import org.otrv4plus.android.crypto.SecurityLevel
 import org.otrv4plus.android.crypto.TransferUi
@@ -275,6 +276,7 @@ private fun Header(model: AppModel, jid: String, isRoom: Boolean, onMembers: (()
                 )
             }
         }
+        if (DeniableChat.offered(c.security, isRoom)) DeniableButton(model, jid)
         if (onMembers != null) {
             TextButton(onClick = onMembers) {
                 Icon(Icons.Filled.Groups, null, Modifier.size(18.dp)); Spacer(Modifier.width(6.dp))
@@ -903,5 +905,26 @@ private fun VerificationProgress(model: AppModel, jid: String) {
         else LinearProgressIndicator(progress = { fraction }, modifier = Modifier.fillMaxWidth())
         Text(Verification.progressLabel(step, total), style = MaterialTheme.typography.labelSmall,
              color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+
+/** L1: "Make Chat Deniable…" in an established 1:1 chat, asked first. */
+@Composable
+private fun DeniableButton(model: AppModel, jid: String) {
+    var asking by remember(jid) { mutableStateOf(false) }
+    TextButton(onClick = { asking = true }) { Text(DeniableChat.ACTION) }
+    if (asking) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { asking = false },
+            title = { Text(DeniableChat.TITLE) },
+            text = { Text(DeniableChat.BODY) },
+            confirmButton = {
+                TextButton(onClick = { asking = false; model.makeChatDeniable(jid) }) {
+                    Text(DeniableChat.CONFIRM)
+                }
+            },
+            dismissButton = { TextButton(onClick = { asking = false }) { Text("Cancel") } },
+        )
     }
 }

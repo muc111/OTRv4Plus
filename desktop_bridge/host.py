@@ -131,6 +131,7 @@ APP_OPS: Dict[str, tuple] = {
     "trust_peer": ("peer", "fingerprint"),
     "otr_capability": ("peer",),
     "ensure_otr": ("peer",),
+    "make_chat_deniable": ("peer",),
     "handshake_status": ("peer",),
     "start_session": ("peer",),
     "send_user_text": ("peer", "body", "message_id", "reply_to"),
