@@ -173,10 +173,10 @@ CI on the pushed head of `dev`:
 
 | Workflow | Result |
 |---|---|
-| Android (assembleDebug, assembleRelease, unit tests) | CI_ANDROID |
-| Desktop (install, flow test, screens) | CI_DESKTOP |
-| Python (the suite) | CI_PYTHON |
-| Research (the prototype's prove.sh) | CI_RESEARCH |
+| Android (assembleDebug, assembleRelease, unit tests) | **success** on `dfeec16`: unit tests, assembleDebug, assembleRelease, both ABIs' core and router ([run 40376935225](https://github.com/muc111/OTRv4Plus/actions/runs/40376935225)) |
+| Desktop (install, flow test, screens) | **success** on `dfeec16`: Compose build, flow test, screens, and desktop/install.sh on a clean Ubuntu 24.04 ([run 40376935475](https://github.com/muc111/OTRv4Plus/actions/runs/40376935475)) |
+| Python (the suite) | **success** on `dfeec16` ([run 40376935364](https://github.com/muc111/OTRv4Plus/actions/runs/40376935364)) |
+| Research (the prototype's prove.sh) | **success** on `24dfadc`, the last change under research/ ([run 40362508728](https://github.com/muc111/OTRv4Plus/actions/runs/40362508728)); its path filter did not fire for this pass |
 
 ## Owner decisions
 
