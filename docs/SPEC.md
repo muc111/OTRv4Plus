@@ -877,6 +877,19 @@ dropped; the keys are retired and wiped all the same. A new handshake always
 creates a new session: nothing of an ended one -- ratchet, instance tags -- is
 reused, so the new transcript has no cryptographic link to the old one.
 
+**Confirmation.** A closing message counts as published only once the
+sender's own server has confirmed receiving it. A server reads a stream in
+order and answers in order, so either of two answers confirms everything sent
+before it:
+- the server's end of stream, after ours (sign-out, Wipe & Exit);
+- the answer to a XEP-0199 ping (Make Chat Deniable, where the stream stays
+  up).
+
+Make Chat Deniable starts the new session only after asking. A closing
+message not confirmed is kept and sent again until it is, or until the
+client gives it up. A client MUST NOT report the keys as published before
+confirmation. Confirmation is by the sender's server, not by the peer.
+
 **Late messages.** A message from an older chain whose skipped key is still held
 is not a DH ratchet step: it is decrypted on the skipped-key path (R1), which
 authenticates before it consumes anything.

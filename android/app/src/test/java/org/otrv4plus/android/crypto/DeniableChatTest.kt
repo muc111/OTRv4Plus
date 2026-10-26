@@ -26,12 +26,31 @@ class DeniableChatTest {
         assertFalse(DeniableChat.offered(SecurityState.ENCRYPTED, isRoom = true))
     }
 
-    @Test fun `the words describe the mechanism and claim nothing more`() {
+    @Test fun `the words claim what the tests show and no more`() {
         val all = listOf(DeniableChat.ACTION, DeniableChat.TITLE, DeniableChat.BODY,
-                         DeniableChat.outcome("made_deniable"), DeniableChat.outcome("no_session"))
+                         DeniableChat.outcome("made_deniable"),
+                         DeniableChat.outcome("made_deniable_unconfirmed"),
+                         DeniableChat.outcome("no_session"))
+        // Qualified, never bare: pending the external audit.
+        assertTrue("Deniability pending external audit" in DeniableChat.BODY)
         assertTrue(all.none { "deniable messaging" in it.lowercase() })
-        assertTrue("not been independently reviewed" in DeniableChat.BODY)
+        // What is deniable: who wrote what, in a copy someone else holds.
+        assertTrue("no longer proves who wrote what" in DeniableChat.BODY)
+        // What is NOT: having talked (the handshake's ML-DSA signatures, SPEC §10.1).
+        assertTrue("does not hide that you two talked" in DeniableChat.BODY)
         assertTrue("stay encrypted" in DeniableChat.BODY)
+        // Confirmed only when the server said so; otherwise it says it is not.
+        assertTrue("confirms it received them first" in DeniableChat.BODY)
+        assertTrue("confirmed" in DeniableChat.outcome("made_deniable"))
+        assertTrue("not yet confirmed" in DeniableChat.outcome("made_deniable_unconfirmed"))
+    }
+
+    @Test fun `unconfirmed the history still goes because the session is closed either way`() {
+        val disk = Disk()
+        val (chat, store) = process(disk)
+        say(store, "a1", alice)
+        DeniableChat.apply("made_deniable_unconfirmed", chat, alice)
+        assertTrue(store.messages(alice).isEmpty())
     }
 
     // ── the history goes with the session (owner, 2026-10-26) ───────────────
@@ -100,7 +119,8 @@ class DeniableChatTest {
         val all = listOf(GroupDeniable.ACTION, GroupDeniable.TITLE, GroupDeniable.BODY,
                          GroupDeniable.outcome(true, "ok"), GroupDeniable.outcome(false, "x"))
         assertTrue(all.none { "deniable messaging" in it.lowercase() })
-        assertTrue("not been independently reviewed" in GroupDeniable.BODY)
+        assertTrue("Pending external audit" in GroupDeniable.BODY)
+        assertTrue("copied before they are published stays signed" in GroupDeniable.BODY)
         assertTrue("stay encrypted" in GroupDeniable.BODY)
         assertTrue("stays secret" in GroupDeniable.BODY, "says the new key is not published")
         assertTrue("history is deleted from this device" in GroupDeniable.BODY)

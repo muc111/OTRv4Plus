@@ -13,7 +13,7 @@ Status vocabulary:
 
 | ID | Title | Severity | Status |
 |----|-------|----------|--------|
-| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED (mechanism; 2026-10-26)** -- an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`. Residual: the retirement rule wants formal expert review, and until then no "deniable messaging" claim is made; first contact stays trust-on-first-use |
+| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED (2026-10-26); "deniability pending external audit", of what was said only** -- an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`, `tests/test_deniability_wire_audit.py` (an outsider re-MACs every line from the wire alone), `tests/test_deniable_confirmation.py` (the server confirms the closing messages before the new session). Residual: the retirement rule wants formal expert review, and until then no "deniable messaging" claim is made; first contact stays trust-on-first-use |
 | U1 | Signed out, About -> back reached the signed-in chat list, and the device's identity fingerprint could be read before any login | Medium (privacy: device-account binding) | **RESOLVED** (2026-10-26) -- the bridge withholds the fingerprint until a login succeeds (`OtrApp.local_fingerprint`, security details, the desktop host's start-up message); Android shows only public screens while signed out and About goes back to sign-in; sign-out keeps nothing to navigate back to; the desktop and terminal show no fingerprint before login. `tests/test_u1_signed_out_surfaces.py`, `AuthGateTest`. Its residual (one identity shared by accounts) is resolved by F2 |
 | F2 | Two accounts used one after the other in one app process (Android, desktop) or on one machine (terminal) presented the same long-term identity key, which every DAKE1 carries past the server: the accounts could be linked | Medium (privacy) | **RESOLVED** (2026-10-26) -- one identity per account (SPEC §3.1): a non-persisted identity is replaced, old handles zeroized in Rust, when a connection is prepared for a different account, before any byte is sent as it; the terminal keeps one sealed record per account, named by a hash. Key generation and sealing unchanged. `tests/test_f2_per_account_identity.py` |
 | F3 | After F2, every sign-in on Android and the desktop showed a new fingerprint (identity per process): contacts were warned of a key change at each restart and verification had to be redone | Medium (usability of TOFU) | **RESOLVED** (2026-10-26) -- each account's random identity is kept per install, sealed in Rust, on Android also in the Keystore vault (SPEC §3.1): the same account on the same install keeps its fingerprint; accounts stay unlinkable. `tests/test_f3_stable_account_identity.py`. Residual: kept on the phone between runs, so code running as the app on an unlocked phone can use it |
@@ -35,8 +35,58 @@ Status vocabulary:
 
 ## L1 — MAC-key revelation reveals all-zeros
 
-**Status: RESOLVED (the mechanism), 2026-10-26. Do not claim deniable
-messaging until the retirement rule has had expert review.**
+**Status: RESOLVED, 2026-10-26. What may be said (owner decision,
+2026-10-26): "deniability pending external audit" -- of what was said in a
+one-to-one chat, never of having talked -- worded as `DeniableChat` has it
+and no stronger. The external audit of the retirement rule is still owed.**
+
+### What the claim rests on, and what it does not cover
+
+The claim is that a copy of a closed chat held by someone else -- the
+contact's, or a recording of the traffic -- does not prove who wrote what.
+It rests on four things, each with a test:
+
+1. **Symmetric authentication.** Every message is authenticated with keys
+   both sides hold (SPEC §10.1), so either party could have produced any
+   message in the transcript.
+2. **Every line's MAC key goes on the wire.** It is sent in the
+   `revealed_mac_keys` field, after the MAC and outside the ciphertext, so
+   anyone can read it without a key. `tests/test_deniability_wire_audit.py`
+   is an outsider holding only the frames two real apps sent. For every line,
+   in both directions, it finds a revealed key that re-MACs it. That
+   includes a line lost on the way and one delivered out of order, whichever
+   side pressed the button. No key is on the wire before its message was
+   delivered. Nothing revealed authenticates the new session. A negative
+   control shows the last lines stay provable if the closing messages are
+   lost.
+3. **The closing messages are known to have arrived.** Make Chat Deniable
+   waits until our server confirms it received them before the new session
+   starts. The server answers a XEP-0199 ping only after reading everything
+   before it. Wipe & Exit and sign-out end the stream and wait for the
+   server's end. Unconfirmed closing messages are kept, and sent again until
+   the server confirms them (Android, desktop, terminal). The app says when
+   they are not yet confirmed. Gate: `tests/test_deniable_confirmation.py`
+   (real slixmpp against a scripted server), `tests/test_closing_messages_arrive.py`.
+4. **The rule itself** (SPEC §5.8): `tests/test_l1_revelation_gate.py`
+   (T1-T8) and `ratchet::l1_retirement`.
+
+**Not covered, and said so in the app:**
+- **Having talked.** The v2 handshake's ML-DSA-87 signatures are
+  attributable under long-term keys (SPEC §10.1), so a transcript shows that
+  both took part. The confirmation text says "It does not hide that you two
+  talked".
+- **Delivery to the contact.** The server's confirmation is the furthest the
+  app can know. A contact who never comes back online may never receive
+  their copy of the keys. The keys are on our server and on the wire either
+  way.
+- **The second closing.** Each side publishes the keys of what it received,
+  so complete coverage needs the contact's app to close too. It does as soon
+  as it reads our closing message (the audit covers both sides). A contact
+  whose app never closes keeps the MAC keys of what we sent unrevealed. That
+  copy is still not proof against us, by point 1.
+- **Unconfirmed when the app closes.** The re-sending lives in memory. If the
+  app is closed before the server confirms, those keys are retired and wiped
+  but never published.
 
 ### What was wrong, last
 
