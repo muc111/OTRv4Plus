@@ -4,6 +4,39 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.186 — 2026-10-26 — One-to-one deniability, pending external audit: confirmed publication, audited from the wire (core 0.13.2)
+
+**One-to-one chats: deniability of what was said, pending external audit**
+(security issue L1). "Pending external audit" is how the app now describes
+it, and it claims no more than the tests below show.
+
+- **Make Chat Deniable waits for your server to confirm** that it received
+  the closing messages publishing the keys, before the new session starts.
+  An XMPP server answers a ping only after reading everything sent before
+  it. If the server doesn't answer, the app says so, keeps the closing
+  messages, and sends them again until the server confirms. That includes
+  when you were offline at the press, or your contact was. Android, the
+  desktop and the terminal (`/deniable`) all behave this way.
+- **Audited from the wire.** A new test acts as an outsider holding only the
+  frames two real apps sent: no keys. After Make Chat Deniable (or
+  sign-out), it finds on the wire the key that re-authenticates every line,
+  in both directions. That includes a line lost on the way and one that
+  arrived out of order. No key appears before its message was delivered,
+  and nothing published authenticates the new session. A control test
+  shows the last lines stay provable if the closing messages never arrive,
+  which is why the app now waits for the server.
+- **What it does not cover, and the app says so:** that you talked. Starting
+  a session is signed with ML-DSA-87, and that signature can be traced to
+  you (SPEC §10.1). Confirmation comes from your server, not from your
+  contact. Closing messages still unconfirmed when the app closes are not
+  sent later.
+- Groups: the Make Group Deniable text now also says anything copied before
+  the keys are published stays signed, and that it is pending external
+  audit.
+- Tests: `tests/test_deniability_wire_audit.py`,
+  `tests/test_deniable_confirmation.py` (real slixmpp against a scripted
+  server), `DeniableChatTest`.
+
 ## Android 0.7.0-experimental.rc.185 — 2026-10-26 — Group invitations recover from a lost handshake; group signing keys published; deniable chats delete their history (core 0.13.2)
 
 - **Group invitations that never arrived.** An invitation waits for OTRv4+
