@@ -87,6 +87,15 @@ It rests on four things, each with a test:
 - **Unconfirmed when the app closes.** The re-sending lives in memory. If the
   app is closed before the server confirms, those keys are retired and wiped
   but never published.
+- **Forgery cuts both ways.** Once the keys are public, anyone holding the
+  traffic can produce lines whose MAC verifies for that closed session,
+  including someone fabricating "evidence" against you. The transcript then
+  proves neither your authorship nor that a fabrication is not yours. That is
+  the property; the remaining risk is a reader who does not know the keys
+  were published. MAC release does not touch the handshake's ML-DSA
+  signature, which is why "that you talked" stays provable. The research
+  prototype `research/epochal-mldsa` (not in the app) tests whether epochal
+  ML-DSA keys can close that gap; see its ANALYSIS.md.
 
 ### What was wrong, last
 

@@ -1,0 +1,16 @@
+[package]
+name = "epochal-mldsa"
+version = "0.0.1"
+edition = "2021"
+publish = false
+license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
+description = "Research prototype: epochal ML-DSA-87 signatures for OTRv4Plus (see ANALYSIS.md). Not part of any release."
+
+# Standalone: not a member of the Rust/ workspace, not built by CI.
+[workspace]
+
+[dependencies]
+ml-dsa = { version = "=0.1.1", features = ["zeroize"] }
+sha3 = "0.10"
+getrandom = "0.2"
+zeroize = "1"
