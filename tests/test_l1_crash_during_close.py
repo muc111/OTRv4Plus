@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -111,6 +112,9 @@ class TestCrashDuringClose:
         assert killed["oracle"], "the close had keys to publish"
 
     def test_no_mac_key_is_on_disk_after_the_kill(self, killed):
+        """Raw, hex, or inside a closing frame written as wire text (base64,
+        where a key is not findable as a substring; audit 2026-10-26: the
+        raw-and-hex check alone let a persisted frame through)."""
         hits = []
         for base, _dirs, files in os.walk(killed["home"]):
             for name in files:
@@ -119,6 +123,11 @@ class TestCrashDuringClose:
                 for k in killed["oracle"]:
                     if k in data or k.hex().encode() in data:
                         hits.append(name)
+                for frame in re.findall(rb"\?OTRv4 [A-Za-z0-9_\-=]+\.?", data):
+                    msg = W._data(frame.decode("ascii"))
+                    keys = [bytes(k) for k in (msg.revealed_mac_keys if msg else [])]
+                    if any(k in killed["oracle"] for k in keys):
+                        hits.append(name + " (a closing frame)")
         assert hits == [], "a MAC key reached the disk: %r" % hits
 
     def test_the_next_launch_holds_no_key_and_re_sends_nothing(self, killed, monkeypatch):

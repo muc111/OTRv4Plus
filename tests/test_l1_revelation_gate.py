@@ -120,7 +120,11 @@ def _chat(a, b, t, rounds, lose=()):
 # ── T1 ───────────────────────────────────────────────────────────────────────
 
 class TestT1PositiveDeniability:
-    def test_a_published_key_forges_a_message_really_observed(self, monkeypatch):
+    # Named for what it shows (audit 2026-10-26): the published key lets a
+    # third party put a valid OUTER MAC on an altered copy of a message it
+    # observed. It does not make a message the receiver would decrypt; the
+    # residual test below asserts that.
+    def test_a_published_key_lets_anyone_mac_an_altered_copy_of_an_observed_message(self, monkeypatch):
         a, b = _pair(monkeypatch)
         observed = _send(a, B, "what was really said")
         assert b.handle_incoming_message(A, observed) == b"what was really said"
@@ -135,6 +139,51 @@ class TestT1PositiveDeniability:
         forged.mac = forged.compute_mac(published)
         assert forged.verify_mac(published)
         assert forged.ciphertext != _frame(observed).ciphertext
+
+    def test_residual_the_receiver_refuses_a_frame_only_the_outer_mac_was_forged_for(self, monkeypatch):
+        """SECURITY_ISSUES.md L1, residual: the published key forges the
+        outer MAC only. AES-GCM is keyed by the message key, never
+        published, so a forgery is refused -- at the position the observed
+        message used (a replay) and at the next one (the AEAD tag) -- and
+        the session is not disturbed by it."""
+        a, b = _pair(monkeypatch)
+        observed = _send(a, B, "what was really said")
+        assert b.handle_incoming_message(A, observed) == b"what was really said"
+        [key] = [k for k in _published(_send(b, A, "ok")) if _verifies(k, observed)]
+        published = core.MessageMacKey.from_revealed(key)
+        for bump in (0, 1):
+            forged = _frame(observed)
+            forged.message_id += bump
+            forged.ciphertext = b"something the sender never sent" + bytes(16)
+            forged.mac = forged.compute_mac(published)
+            assert forged.verify_mac(published), "the outer MAC itself is valid"
+            wire = "?OTRv4 " + base64.urlsafe_b64encode(forged.encode()).decode().rstrip("=") + "."
+            assert b.handle_incoming_message(A, wire) is None, "refused, at position +%d" % bump
+        assert b.handle_incoming_message(A, _send(a, B, "genuine")) == b"genuine", \
+            "the forgery consumed nothing the genuine message needed"
+
+
+class TestL1Residuals:
+    """Residuals docs/SECURITY_ISSUES.md L1 names, asserted so they are not
+    hidden (audit 2026-10-26)."""
+
+    def test_residual_an_altered_outer_mac_costs_the_message_and_its_key_is_published(self, monkeypatch):
+        """R1 commits at the AEAD tag. An attacker who alters only the outer
+        MAC of a genuine message gets it refused; the genuine copy is then a
+        replay, refused too; its MAC key is retired and published although
+        the message was never accepted. Nothing can be verified with that
+        key any more, which is why it is retired
+        (docs/CRYPTOGRAPHER_QUESTIONS.md Q1 asks whether that holds in every
+        interleaving). The session carries on."""
+        a, b = _pair(monkeypatch)
+        genuine = _send(a, B, "genuine")
+        frame = _frame(genuine)
+        frame.mac = bytes([frame.mac[0] ^ 0xFF]) + frame.mac[1:]
+        altered = "?OTRv4 " + base64.urlsafe_b64encode(frame.encode()).decode().rstrip("=") + "."
+        assert b.handle_incoming_message(A, altered) is None
+        assert b.handle_incoming_message(A, genuine) is None, "now a replay"
+        assert any(_verifies(k, genuine) for k in _published(_send(b, A, "r"))), "published"
+        assert b.handle_incoming_message(A, _send(a, B, "next")) == b"next"
 
 
 # ── T2 ───────────────────────────────────────────────────────────────────────
@@ -208,7 +257,11 @@ class TestT3SkippedMessages:
 
 # ── T4 ───────────────────────────────────────────────────────────────────────
 
-class TestT4Zeroization:
+class TestT4PublishedKeysAreNotHeld:
+    # Renamed from TestT4Zeroization (audit 2026-10-26): it shows a published
+    # key is no longer held by the ratchet, through the test-build accessor.
+    # That its bytes were overwritten is the zeroize-on-drop of the queue's
+    # boxes (ratchet.rs, RetiredKey), not observable from here.
     def test_a_published_key_is_no_longer_held(self, monkeypatch):
         a, b = _pair(monkeypatch)
         rust = b.get_session(A).ratchet._rust
@@ -238,7 +291,10 @@ class TestT4Zeroization:
 # ── T5 ───────────────────────────────────────────────────────────────────────
 
 class TestT5MakeChatDeniable:
-    def test_final_publication_disconnect_and_a_fresh_unlinked_session(self, monkeypatch):
+    # Renamed (audit 2026-10-26): "unlinked" was broader than the test --
+    # it shows the new session shares no key with the old one; both
+    # handshakes are signed by the same identities (SPEC §10.1).
+    def test_final_publication_disconnect_and_a_fresh_session_sharing_no_key(self, monkeypatch):
         a, b = _pair(monkeypatch)
         history = []
         for i in range(3):
@@ -309,6 +365,22 @@ class TestT6SignOutWipeQuit:
             assert any(_verifies(k, got[peer]) for k in keys)
             assert DM.FLAG_IGNORE_UNREADABLE & _frame(mine[-1]).flags
 
+    @pytest.mark.parametrize("ending", ["terminate", "failure"])
+    def test_a_session_ending_by_termination_or_failure_publishes_too(self, monkeypatch, ending):
+        """SPEC §5.8 Close: "an error or expiry" closes the same way. These
+        two paths reach the publication only through `_cleanup_resources`
+        (audit 2026-10-26: removing that call failed no test)."""
+        a, b = _pair(monkeypatch)
+        got = _send(a, B, "m")
+        b.handle_incoming_message(A, got)
+        session = b.get_session(A)
+        if ending == "terminate":
+            session.terminate("test")
+        else:
+            session._cleanup_failed_session()
+        finals = [w for _p, w in b.take_final_revelations()]
+        assert any(_verifies(k, got) for w in finals for k in _published(w))
+
     def test_the_peers_closing_message_after_our_end_starts_no_handshake(self, monkeypatch):
         """Bob answers Alice's DISCONNECTED by publishing his own keys. By then
         Alice has no session: the frame is IGNORE_UNREADABLE, so it is dropped
@@ -348,7 +420,10 @@ class TestT6SignOutWipeQuit:
             < term.index("self._send_final_revelations()\n", term.index('clear_all_sessions("xmpp client shutdown")'))
         assert callable(OtrApp._send_final_revelations)
 
-    def test_the_bridge_sends_every_message_and_drops_them_offline(self, monkeypatch):
+    # Renamed (audit 2026-10-26): it never tested an offline transport, and
+    # the bridge no longer drops closing messages offline -- it keeps them
+    # (tests/test_deniable_confirmation.py::test_offline_at_the_press_they_go_when_it_is_back).
+    def test_the_bridge_sends_each_closing_message_once(self, monkeypatch):
         from android_bridge.app import OtrApp
         a, b, c, _got = _three(monkeypatch)
         a.clear_all_sessions("logout")

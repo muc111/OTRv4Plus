@@ -1,13 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
-"""Make Chat Deniable waits until the server confirms the closing messages.
+"""Make Chat Deniable asks the server to confirm the closing messages.
 
 Owner (2026-10-26): add the confirmation Wipe & Exit and sign-out have to
 Make Chat Deniable. The keys are only published once the closing messages
 that carry them are on the wire (tests/test_deniability_wire_audit.py shows
 what is lost if they are not). Here the stream stays up, so the proof is a
 XEP-0199 ping to our own server after them: a server answers an IQ only after
-reading every stanza before it. Unconfirmed ones are kept and sent again.
+reading every stanza before it. Unconfirmed ones are kept and sent again,
+up to CLOSING_MAX_TRIES times, while the app runs. The new session does not
+wait for a "yes": it starts once the server was asked, confirmed or not, and
+the app says which (audit 2026-10-26).
 """
 from __future__ import annotations
 
@@ -103,7 +106,11 @@ def _pair(answer=True):
     return wire, alice, bob
 
 
-def test_the_new_session_starts_only_after_the_server_confirmed():
+# Renamed (audit 2026-10-26): it shows the order -- closing messages, the
+# question, then the new handshake -- for a server that answers. It does not
+# show that an unanswered question stops the new session; the residual test
+# below shows that it does not.
+def test_the_new_session_starts_after_the_server_is_asked():
     wire, alice, bob = _pair()
     W._talk(wire, alice, bob, W.SCRIPT[:4])
     n = len(wire.frames)
@@ -115,6 +122,20 @@ def test_the_new_session_starts_only_after_the_server_confirmed():
     assert after and all(W._data(wire.frames[i][2]) is None for i in after[:1]), \
         "what follows is the new handshake, not data"
     assert alice._closings() == [], "confirmed: nothing kept"
+
+
+def test_residual_unconfirmed_the_new_session_starts_anyway_and_the_app_says_so():
+    """No answer within the budget: the old session is closed and its keys
+    retired either way, the new session starts, and the result says the
+    publication is not confirmed (DeniableChat.outcome shows that)."""
+    wire, alice, bob = _pair(answer=False)
+    W._talk(wire, alice, bob, W.SCRIPT[:4])
+    n = len(wire.frames)
+    assert alice.make_chat_deniable(W.BOB) == "made_deniable_unconfirmed"
+    [asked_at] = alice._transport.asked
+    after = [i for i in range(asked_at, len(wire.frames)) if wire.frames[i][0] == W.ALICE]
+    assert asked_at > n and after, "asked, then the new handshake went anyway"
+    assert alice._closings(), "the closing messages are kept for re-sending"
 
 
 def test_unconfirmed_it_says_so_keeps_them_and_sends_them_again():

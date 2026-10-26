@@ -2,10 +2,10 @@
 # Copyright (C) 2025-2026 muc111
 """Make Chat Deniable, audited from the wire: what an outsider can do.
 
-The claim (owner, 2026-10-26: "we want to be able to say we have
-deniability pending external audit ... so we don't over claim") is about a
-transcript someone ELSE holds: the peer's copy, or a recording of the
-traffic. So this test is that someone. It holds every frame two real apps put
+The mechanism is meant for a transcript someone ELSE holds: the peer's
+copy, or a recording of the traffic. No deniability property is claimed for
+it (docs/SECURITY_ISSUES.md L1, RESOLVED-CODE); this shows what the wire
+carries. So this test is that someone. It holds every frame two real apps put
 on the wire -- nothing else, no key from either app -- and checks, after
 Make Chat Deniable, what the property needs:
 
@@ -188,6 +188,24 @@ def test_every_line_in_both_directions_has_its_mac_key_on_the_wire():
     assert missing == [], "lines whose MAC is still evidence: %r" % missing
 
 
+def test_every_line_is_covered_across_dh_steps(monkeypatch):
+    """The scripts above stay on the handshake's chains (the first DH step
+    comes after 100 messages). Here a step every 3 messages, bursts both
+    ways: the first message of every new DH chain is covered as well.
+    Audit 2026-10-26: without this, removing R1 for that message (the
+    receive step's retirement) failed no test."""
+    monkeypatch.setattr(otr.OTRConstants, "REKEY_INTERVAL", 3)
+    wire, alice, bob = _pair()
+    script = [(who, "%s%d" % (who, i)) for i, who in enumerate("aaaabbbbbaabbbaaaaab")]
+    lines = _talk(wire, alice, bob, script)
+    assert len(lines) == len(script)
+    steps = alice._engine.get_session(BOB).ratchet._dh_epoch
+    assert steps >= 3, "DH steps happened (%d)" % steps
+    assert alice.make_chat_deniable(BOB, restart=False).startswith("made_deniable")
+    _keys, missing = _audit(wire, lines)
+    assert missing == [], "lines still provable across DH steps: %r" % missing
+
+
 def test_a_lost_and_an_out_of_order_line_are_covered_too():
     wire, alice, bob = _pair()
     lines = _talk(wire, alice, bob, SCRIPT[:3])
@@ -252,10 +270,27 @@ def test_the_peer_ending_it_publishes_what_the_peer_received():
     assert missing == []
 
 
+def test_residual_a_peer_that_never_closes_leaves_our_lines_provable():
+    """SECURITY_ISSUES.md L1, "The second closing": each side publishes the
+    keys of what it RECEIVED. Alice presses it; Bob's app never reads her
+    closing message, so it never closes. Bob's lines are covered by Alice's
+    closing message. Alice's last line, which Bob received after he last
+    sent anything, keeps its MAC key in Bob's ratchet, unpublished: exactly
+    that line stays provable."""
+    wire, alice, bob = _pair()
+    lines = _talk(wire, alice, bob, SCRIPT + [("a", "nine")])
+    last = lines[-1]
+    wire.hold = lambda frm, to, body: frm == ALICE   # on the wire, never read
+    alice.make_chat_deniable(BOB, restart=False)
+    assert wire.held, "Alice's closing messages are on the wire, unread"
+    _keys, missing = _audit(wire, lines)
+    assert missing == [last], "only the line after Bob's last message: %r" % missing
+
+
 def test_the_audit_sees_it_when_the_closing_messages_are_lost():
     """Negative control: drop every frame from the press on. The lines stay
-    provable -- which is why Make Chat Deniable now waits for the server to
-    confirm the closing messages, and re-sends them until it does."""
+    provable -- which is why Make Chat Deniable now asks the server to
+    confirm the closing messages, and re-sends the unconfirmed ones."""
     wire, alice, bob = _pair()
     lines = _talk(wire, alice, bob, SCRIPT)
     n = len(wire.frames)

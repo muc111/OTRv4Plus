@@ -492,11 +492,14 @@ fn mldsa_keygen() -> Result<(Vec<u8>, SecretBytes<MLDSA_PRV_SIZE>)> {
     Ok((pk_bytes, SecretBytes::new(arr)))
 }
 
-/// Sign with ML-DSA-87 using pq_binding_key as the context string.
-/// The context is prepended to the message before signing so that
-/// signatures produced under different binding keys cannot be confused.
-/// This is equivalent to the ML-DSA-87 context API without requiring
-/// pqcrypto_mldsa to expose a context-parameter interface.
+/// Sign with ML-DSA-87, binding pq_binding_key into the signed message.
+/// The binding key is prepended to the message before signing (pure
+/// ML-DSA, empty FIPS 204 context), so signatures produced under different
+/// binding keys cannot be confused. This is domain separation in the
+/// message, NOT the FIPS 204 context: that is encoded as
+/// `0 || len(ctx) || ctx || M`, and pqcrypto-mldsa 0.1.2 does offer it
+/// (`detached_sign_ctx`). Changing to it would change the wire (audit
+/// 2026-10-26; docs/CRYPTOGRAPHER_QUESTIONS.md Q7).
 fn mldsa_sign_with_context(
     sk_bytes: &[u8],
     message:  &[u8],
@@ -2188,6 +2191,34 @@ mod tests {
         assert!(ok, "matching secret must verify (PQ hybrid)");
         assert!(a.is_verified());
         assert!(b.is_verified());
+    }
+
+    // ── PQC_DECISIONS.md (e): SMP's ML-DSA-87 keys are made fresh for each
+    //    run, on both sides, so its signatures attribute to no long-term key.
+    #[test]
+    fn pq_smp_each_run_signs_with_fresh_ml_dsa_keys() {
+        let run = || {
+            let (sid, fp_a, fp_b) = (b"sid-fresh-0001".as_slice(), b"fp-a".as_slice(), b"fp-b".as_slice());
+            let mut a = SmpState::new(true);
+            let mut b = SmpState::new(false);
+            a.set_secret(b"same secret", sid, fp_a, fp_b);
+            let m1 = a.generate_smp1(None).expect("smp1");
+            let ka = a.pq.mldsa_pk.clone().expect("initiator key");
+            b.set_secret(b"same secret", sid, fp_b, fp_a);
+            b.process_smp1_generate_smp2(&m1).expect("smp2");
+            let kb = b.pq.mldsa_pk.clone().expect("responder key");
+            assert_eq!(b.pq.peer_mldsa_pk.as_deref(), Some(ka.as_slice()), "sent in SMP1");
+            (ka, kb)
+        };
+        let (a1, b1) = run();
+        let (a2, b2) = run();
+        let all = [&a1, &b1, &a2, &b2];
+        for (i, x) in all.iter().enumerate() {
+            assert_eq!(x.len(), MLDSA_PUB_SIZE);
+            for y in &all[i + 1..] {
+                assert_ne!(x, y, "a key reused across runs or sides");
+            }
+        }
     }
 
     // ── 8. Hybrid PQ SMP mismatched secret must fail ──────────────────────────

@@ -1309,6 +1309,37 @@ mod retired_key_tests {
         assert!(b.process(G, &wire).is_err());
     }
 
+    /// The F4 residual, asserted (MLS_SECURITY_HARDENING §1): release does
+    /// not reach back. A signature someone checked while the key was secret
+    /// checks exactly as well after the key is published; what changes is
+    /// only that others can now make ones that check too.
+    #[test]
+    fn residual_a_signature_checked_before_release_still_checks_after_it() {
+        let (mut a, mut b) = pair();
+        let before = copy_of(&a.signers[G]);
+        let captured = Signer::sign(&before, b"said while the key was secret").unwrap();
+        assert!(composite_verify(before.public(), b"said while the key was secret", &captured).is_ok());
+        rotate(&mut a, &mut b);
+        let wire = a.reveal_retired(G).unwrap().expect("published");
+        assert!(matches!(b.process(G, &wire).unwrap(), Event::KeysRevealed { .. }));
+        assert!(composite_verify(before.public(), b"said while the key was secret", &captured).is_ok(),
+                "the capture verifies as it did; release cannot undo that");
+    }
+
+    /// The F4 residual, asserted: the publication is a group message,
+    /// encrypted to the members, so the set that can forge is the members
+    /// who received it. A client outside the group cannot read it.
+    #[test]
+    fn residual_only_the_groups_members_receive_the_published_key() {
+        let (mut a, mut b) = pair();
+        let mut outsider = MlsClient::new(b"mallory");
+        outsider.create_group(b"elsewhere@conference.example.i2p").unwrap();
+        rotate(&mut a, &mut b);
+        let wire = a.reveal_retired(G).unwrap().expect("published");
+        assert!(outsider.process(G, &wire).is_err(), "not a member: nothing to read");
+        assert!(matches!(b.process(G, &wire).unwrap(), Event::KeysRevealed { .. }));
+    }
+
     #[test]
     fn a_key_in_use_or_a_mismatched_pair_is_not_accepted() {
         let (mut a, mut b) = pair();
@@ -1329,6 +1360,13 @@ mod retired_key_tests {
                 "the sender's current key is never accepted as retired");
         assert!(revealed_fingerprints(&body(&[(current.public(), other.secret())]), None).is_empty(),
                 "a private half that does not sign for the public half");
+        // The Ed448 half right, the ML-DSA-87 half another key's: `from_parts`
+        // checks only the Ed448 half, so this is `is_consistent`'s case
+        // (audit 2026-10-26: removing that check failed no test before).
+        let ed = crate::provider::ED448_SEED_BYTES;
+        let spliced = [&current.secret()[..ed], &other.secret()[ed..]].concat();
+        assert!(revealed_fingerprints(&body(&[(current.public(), &spliced)]), None).is_empty(),
+                "an ML-DSA half that does not sign for its public half");
         let good = body(&[(other.public(), other.secret())]);
         assert_eq!(revealed_fingerprints(&good, now), vec![fingerprint(other.public())]);
         assert!(revealed_fingerprints(&good[..good.len() - 1], now).is_empty(), "truncated");
