@@ -771,6 +771,12 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
                 return not expired()
             except Exception:
                 return True
+        if live is None:
+            # The engine tells us nothing: one WE started is running while
+            # it is young, so every send does not start it over again.
+            started = self._hs_started.get(peer)
+            return started is not None and (
+                time.monotonic() - started < self.HANDSHAKE_STALL_SECONDS)
         return False
 
     #: A handshake half-open this long is stalled (the DAKE engine's own

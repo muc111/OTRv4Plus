@@ -165,7 +165,12 @@ class TestSendUserText:
         keep the text in a queue of its own, dropped at handshake end."""
         app, engine, transport = build()
         app.send_user_text(PEER, "hello")
-        assert engine.calls == [], "handle_outgoing_message was asked"
+        # The session is started: the engine is asked for a DAKE1 (an empty
+        # body). The text itself is never handed to it. (This asserted no
+        # call at all, which held only because this fake has no
+        # `has_session`, so the start failed quietly.)
+        assert engine.calls == [(PEER, "")], "the session was not started"
+        assert all("hello" not in body for _p, body in engine.calls)
         assert all("hello" not in body for _p, body in transport.sent)
 
     def test_several_messages_all_wait_in_order(self):
