@@ -11,13 +11,29 @@
 //!     brought us in, or when we created the group -- so a member cannot be
 //!     linked across groups by key;
 //!   * every self-update replaces it (`self_update_with_new_signer`), so a
-//!     key signs only until our next rekey; the old private key is dropped
-//!     (zeroized) once the new one is in the group;
+//!     key signs only until our next rekey; the old private key is retired
+//!     once the new one is in the group, and later published (below);
 //!   * forgetting a group drops its key.
 //!
 //! A rotation is authenticated by the OLD key (the commit is signed with it),
 //! so a member that had bound our old key over OTRv4+ carries the binding to
 //! the new one: `Event::Commit::rekeyed`.
+//!
+//! RETIRED KEYS ARE PUBLISHED (F4, epochal signatures)
+//! ===================================================
+//! Rotation alone leaves every signature verifiable for ever: a transcript
+//! someone keeps still proves who wrote what. So a key a rotation retires is
+//! not dropped at once. It is kept, sealed with the rest of this state, until
+//! `reveal_retired` publishes its private half to the group in one group
+//! message -- after which any member could have produced any signature it
+//! made, while the keys in use now stay secret. A published key cannot sign
+//! into the group any more: the rotation commit is earlier in room order, so
+//! every member has replaced it in the tree before the publication reaches
+//! them, and a message signed with it does not verify in a later epoch. A
+//! publication received is checked (each private half must sign for its
+//! public half, and none may be a key the sender uses now) and reported as
+//! `Event::KeysRevealed` with fingerprints only; the private halves are
+//! wiped here, never handed out.
 //!
 //! This is the whole security surface of OTRv4Plus group chat. Callers --
 //! the Python transport, via `otrv4_core` -- hand in wire bytes and a group
@@ -60,6 +76,17 @@ const STATE_VERSION_1: u8 = 1;
 /// KeyPackages we made and nobody has used yet: each holds its own key.
 /// Older ones are forgotten (an invitation that old has expired anyway).
 const MAX_KP_SIGNERS: usize = 16;
+/// Retired signing keys kept per group until published (F4). Older ones go
+/// unpublished, wiped, if a member stays offline through more rotations.
+const MAX_RETIRED: usize = 16;
+/// Retired keys per publication: one message stays a few room pieces long.
+const MAX_REVEAL_PER_MESSAGE: usize = 4;
+/// The start of a publication of retired signing keys (F4). Never shown:
+/// `process` reports it as `Event::KeysRevealed`. Behind the group
+/// verification control prefix (`\x00OTRv4GV1:`) on purpose: a client from
+/// before F4 hands such a message to its verification handler, which drops
+/// anything that is not its JSON, rather than showing it as a line of text.
+pub const REVEAL_MAGIC: &[u8] = b"\x00OTRv4GV1:OTRv4+ MLS retired signing keys v1\x00";
 /// The caller's own state sealed alongside ours (bindings, pending work).
 pub const MAX_APP_DATA: usize = 1 << 20;
 const STATE_KDF_INFO: &[u8] = b"OTRv4Plus MLS sealed state v1";
@@ -82,6 +109,8 @@ struct StateOut<'a> {
                   Option<&'a serde_bytes::Bytes>, Option<SignerOut<'a>>)>,
     storage: &'a serde_bytes::Bytes,
     app_data: &'a serde_bytes::Bytes,
+    /// (group, a retired signing key's public, private): F4.
+    retired: Vec<(&'a serde_bytes::Bytes, &'a serde_bytes::Bytes, &'a serde_bytes::Bytes)>,
 }
 
 #[derive(serde::Deserialize)]
@@ -95,6 +124,9 @@ struct StateIn {
                   Option<SignerIn>)>,
     storage: serde_bytes::ByteBuf,
     app_data: serde_bytes::ByteBuf,
+    /// Absent in state sealed before F4.
+    #[serde(default)]
+    retired: Vec<(serde_bytes::ByteBuf, serde_bytes::ByteBuf, serde_bytes::ByteBuf)>,
 }
 
 /// Version 1: one signing key for the whole client.
@@ -146,6 +178,51 @@ pub fn fingerprint(signature_public_key: &[u8]) -> Vec<u8> {
     Sha384::digest(signature_public_key).to_vec()
 }
 
+/// The fingerprints of the keys in a publication of retired signing keys
+/// (F4) that check out: each private half signs for its public half, and none
+/// is [current], the key the sender uses now. Anything malformed yields none.
+/// Every private half read is wiped when this returns.
+fn revealed_fingerprints(body: &[u8], current: Option<&[u8]>) -> Vec<Vec<u8>> {
+    fn take<'b>(body: &'b [u8], at: &mut usize, n: usize) -> Option<&'b [u8]> {
+        let end = at.checked_add(n)?;
+        let out = body.get(*at..end)?;
+        *at = end;
+        Some(out)
+    }
+    fn length(body: &[u8], at: &mut usize) -> Option<usize> {
+        let raw = take(body, at, 4)?;
+        let n = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        (n <= 16 << 10).then_some(n)
+    }
+    let mut at = 0usize;
+    let Some(raw) = take(body, &mut at, 2) else { return Vec::new() };
+    let count = u16::from_be_bytes([raw[0], raw[1]]) as usize;
+    if count == 0 || count > MAX_REVEAL_PER_MESSAGE {
+        return Vec::new();
+    }
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let Some(n) = length(body, &mut at) else { return Vec::new() };
+        let Some(public) = take(body, &mut at, n) else { return Vec::new() };
+        let public = public.to_vec();
+        let Some(n) = length(body, &mut at) else { return Vec::new() };
+        let Some(secret) = take(body, &mut at, n) else { return Vec::new() };
+        let secret = Zeroizing::new(secret.to_vec());
+        if current == Some(public.as_slice()) {
+            continue;                    // a key in use now is not retired
+        }
+        let fp = fingerprint(&public);
+        match SignatureKeyPair::from_parts(public, secret) {
+            Some(key) if key.is_consistent() => out.push(fp),
+            _ => {}
+        }
+    }
+    if at != body.len() {
+        return Vec::new();
+    }
+    out
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum MlsError {
     #[error("this MLS state was wiped")]
@@ -187,6 +264,9 @@ pub enum Event {
              rekeyed: Vec<(Vec<u8>, Vec<u8>, Vec<u8>)> },
     /// A standalone proposal was queued (not used by this client, accepted).
     Proposal,
+    /// A member published retired signing keys (F4): the fingerprints of
+    /// those that checked out. The private halves are wiped, never returned.
+    KeysRevealed { sender: Vec<u8>, fingerprints: Vec<Vec<u8>> },
 }
 
 struct Pending {
@@ -205,6 +285,9 @@ pub struct MlsClient {
     kp_signers: Vec<SignatureKeyPair>,
     groups: HashMap<Vec<u8>, MlsGroup>,
     pending: HashMap<Vec<u8>, Pending>,
+    /// group -> our signing keys a rotation retired, oldest first, until
+    /// `reveal_retired` publishes them (F4).
+    retired: HashMap<Vec<u8>, Vec<SignatureKeyPair>>,
     app_data: Zeroizing<Vec<u8>>,
     wiped: bool,
 }
@@ -264,9 +347,60 @@ impl MlsClient {
             kp_signers: Vec::new(),
             groups: HashMap::new(),
             pending: HashMap::new(),
+            retired: HashMap::new(),
             app_data: Zeroizing::new(Vec::new()),
             wiped: false,
         }
+    }
+
+    /// Keep a key a rotation retired, for `reveal_retired` (F4).
+    fn retire(&mut self, group_id: &[u8], key: SignatureKeyPair) {
+        let list = self.retired.entry(group_id.to_vec()).or_default();
+        list.push(key);
+        if list.len() > MAX_RETIRED {
+            let excess = list.len() - MAX_RETIRED;
+            list.drain(..excess);                      // dropped: zeroized
+        }
+    }
+
+    /// How many retired signing keys of ours wait to be published here.
+    pub fn retired_count(&self, group_id: &[u8]) -> usize {
+        self.retired.get(group_id).map_or(0, |l| l.len())
+    }
+
+    /// Publish our retired signing keys in this group (F4): one group
+    /// message, signed with the key in use now and encrypted to the members,
+    /// carrying the oldest MAX_REVEAL_PER_MESSAGE retired keys' public and
+    /// private halves. None when there are none. Refused while one of our
+    /// commits is pending (as `encrypt`). The keys published are dropped
+    /// here; the caller posts the message to the room.
+    pub fn reveal_retired(&mut self, group_id: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.live()?;
+        self.refuse_if_pending(group_id)?;
+        let count = self.retired_count(group_id).min(MAX_REVEAL_PER_MESSAGE);
+        if count == 0 {
+            return Ok(None);
+        }
+        let keys = &self.retired[group_id][..count];
+        let need = REVEAL_MAGIC.len() + 2
+            + keys.iter().map(|k| 8 + k.public().len() + k.secret().len()).sum::<usize>();
+        let mut plain = Zeroizing::new(Vec::with_capacity(need));
+        plain.extend_from_slice(REVEAL_MAGIC);
+        plain.extend_from_slice(&(count as u16).to_be_bytes());
+        for key in keys {
+            plain.extend_from_slice(&(key.public().len() as u32).to_be_bytes());
+            plain.extend_from_slice(key.public());
+            plain.extend_from_slice(&(key.secret().len() as u32).to_be_bytes());
+            plain.extend_from_slice(key.secret());
+        }
+        let (provider, signer, group) = self.group_and_signer(group_id)?;
+        let msg = group.create_message(provider, signer, &plain)
+            .map_err(|_| MlsError::Failed("encrypt"))?;
+        let out = out_bytes(&msg)?;
+        if let Some(list) = self.retired.get_mut(group_id) {
+            list.drain(..count);                       // dropped: zeroized
+        }
+        Ok(Some(out))
     }
 
     fn live(&self) -> Result<()> {
@@ -569,11 +703,15 @@ impl MlsClient {
                 let epoch = group.epoch().as_u64();
                 let mut rekeyed = Vec::new();
                 if let Some(new_signer) = p.new_signer {
-                    // The new key is in the group: the old one goes (zeroized).
+                    // The new key is in the group. The old one is retired:
+                    // kept until `reveal_retired` publishes it (F4).
                     let old = self.signers.insert(group_id.to_vec(), new_signer);
-                    if let (Some(old), Some(new)) = (old, self.signers.get(group_id)) {
-                        rekeyed.push((self.identity.clone(), fingerprint(old.public()),
-                                      fingerprint(new.public())));
+                    if let Some(old) = old {
+                        if let Some(new) = self.signers.get(group_id) {
+                            rekeyed.push((self.identity.clone(), fingerprint(old.public()),
+                                          fingerprint(new.public())));
+                        }
+                        self.retire(group_id, old);
                     }
                 }
                 return Ok(Event::Commit { epoch, ours: true, welcome: p.welcome,
@@ -598,7 +736,15 @@ impl MlsClient {
         };
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(m) => {
-                Ok(Event::Application { sender, plaintext: Zeroizing::new(m.into_bytes()) })
+                let plaintext = Zeroizing::new(m.into_bytes());
+                if plaintext.starts_with(REVEAL_MAGIC) {
+                    let current = sender_leaf.and_then(|i| group.member_at(i))
+                        .map(|member| member.signature_key);
+                    let fingerprints = revealed_fingerprints(
+                        &plaintext[REVEAL_MAGIC.len()..], current.as_deref());
+                    return Ok(Event::KeysRevealed { sender, fingerprints });
+                }
+                Ok(Event::Application { sender, plaintext })
             }
             ProcessedMessageContent::StagedCommitMessage(staged) => {
                 let removed_us = staged.self_removed();
@@ -705,6 +851,7 @@ impl MlsClient {
     pub fn forget_group(&mut self, group_id: &[u8]) {
         self.pending.remove(group_id);
         self.signers.remove(group_id);           // dropped: zeroized
+        self.retired.remove(group_id);           // unpublished: zeroized
         if let Some(mut group) = self.groups.remove(group_id) {
             let _ = group.delete(self.provider.storage());
         }
@@ -717,6 +864,7 @@ impl MlsClient {
         self.groups.clear();          // OpenMLS secrets zeroize on drop
         self.provider.wipe();         // every stored entry, zeroized
         self.signers.clear();         // signing keys zeroize on drop
+        self.retired.clear();
         self.kp_signers.clear();
         self.app_data = Zeroizing::new(Vec::new());
         self.wiped = true;
@@ -786,6 +934,9 @@ impl MlsClient {
             )).collect(),
             storage: b(&storage),
             app_data: b(&self.app_data),
+            retired: self.retired.iter()
+                .flat_map(|(g, keys)| keys.iter().map(move |s| (b(g), b(s.public()), b(s.secret()))))
+                .collect(),
         };
         let key_bytes = |s: &SignatureKeyPair| s.public().len() + s.secret().len() + 16;
         let need = storage.len() + self.identity.len() + self.app_data.len()
@@ -795,6 +946,8 @@ impl MlsClient {
             + self.pending.values().map(|p| p.commit.len()
                 + p.welcome.as_ref().map_or(0, |w| w.len())
                 + p.new_signer.as_ref().map_or(0, key_bytes) + 32).sum::<usize>()
+            + self.retired.iter().map(|(g, keys)| keys.iter()
+                .map(|s| g.len() + key_bytes(s)).sum::<usize>()).sum::<usize>()
             + 256;
         let mut plain = Zeroizing::new(Vec::with_capacity(need));
         ciborium::ser::into_writer(&state, &mut *plain).map_err(|_| MlsError::Failed("encode"))?;
@@ -887,7 +1040,18 @@ impl MlsClient {
                                           welcome: welcome.map(|w| w.into_vec()),
                                           new_signer });
         }
-        Ok(Self { identity, provider, signers, kp_signers, groups, pending, app_data,
+        let mut retired: HashMap<Vec<u8>, Vec<SignatureKeyPair>> = HashMap::new();
+        for (gid, public, secret) in state.retired {
+            let gid = gid.into_vec();
+            if !groups.contains_key(&gid) {
+                return Err(MlsError::Refused("retired signing key for an unknown group"));
+            }
+            let list = retired.entry(gid).or_default();
+            if list.len() < MAX_RETIRED {
+                list.push(signer_from(public, secret)?);
+            }
+        }
+        Ok(Self { identity, provider, signers, kp_signers, groups, pending, retired, app_data,
                   wiped: false })
     }
 
@@ -907,6 +1071,7 @@ impl MlsClient {
             pending: old.pending.into_iter().map(|(g, c, w)| (g, c, w, None)).collect(),
             storage: old.storage,
             app_data: serde_bytes::ByteBuf::new(),
+            retired: Vec::new(),
         })
     }
 
@@ -1070,5 +1235,159 @@ mod storage_tests {
             Event::Application { plaintext, .. } => assert_eq!(&plaintext[..], b"second"),
             _ => panic!("expected an application message"),
         }
+    }
+}
+
+#[cfg(test)]
+mod retired_key_tests {
+    //! F4: retired signing keys are published (epochal signatures). A key a
+    //! rotation retired is kept, then published to the group; members learn
+    //! it can no longer prove anything it signed, and it cannot sign into the
+    //! group any more.
+    use super::*;
+    use crate::provider::composite_verify;
+    use openmls_traits::signatures::Signer;
+
+    const G: &[u8] = b"team@conference.example.i2p";
+
+    fn pair() -> (MlsClient, MlsClient) {
+        let mut a = MlsClient::new(b"alice");
+        let mut b = MlsClient::new(b"bob");
+        a.create_group(G).unwrap();
+        let commit = a.add_members(G, &[b.key_package().unwrap()]).unwrap();
+        let welcome = match a.process(G, &commit).unwrap() {
+            Event::Commit { welcome: Some(w), .. } => w,
+            other => panic!("{other:?}"),
+        };
+        b.join(&welcome).unwrap();
+        (a, b)
+    }
+
+    /// Alice rotates; both process the commit, in room order.
+    fn rotate(a: &mut MlsClient, b: &mut MlsClient) {
+        let commit = a.self_update(G).unwrap();
+        a.process(G, &commit).unwrap();
+        b.process(G, &commit).unwrap();
+    }
+
+    fn copy_of(key: &SignatureKeyPair) -> SignatureKeyPair {
+        SignatureKeyPair::from_parts(key.public().to_vec(),
+                                     Zeroizing::new(key.secret().to_vec())).unwrap()
+    }
+
+    #[test]
+    fn a_rotation_retires_the_old_key_and_its_publication_reaches_the_members() {
+        let (mut a, mut b) = pair();
+        let old = a.own_fingerprint(G).unwrap();
+        rotate(&mut a, &mut b);
+        assert_eq!(a.retired_count(G), 1);
+        let wire = a.reveal_retired(G).unwrap().expect("one key to publish");
+        assert_eq!(a.retired_count(G), 0, "published keys are dropped here");
+        match b.process(G, &wire).unwrap() {
+            Event::KeysRevealed { sender, fingerprints } => {
+                assert_eq!(sender, b"alice");
+                assert_eq!(fingerprints, vec![old]);
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(a.reveal_retired(G).unwrap().is_none(), "nothing left to publish");
+    }
+
+    #[test]
+    fn the_published_key_forges_old_signatures_but_cannot_sign_into_the_group() {
+        let (mut a, mut b) = pair();
+        rotate(&mut a, &mut b);
+        let published = copy_of(&a.retired[G][0]);
+        // Anyone holding it can now make a signature its public key accepts:
+        // that is what makes what it signed deniable.
+        let forged = Signer::sign(&published, b"a line alice never wrote").unwrap();
+        assert!(composite_verify(published.public(), b"a line alice never wrote", &forged).is_ok());
+        // But not into the group: the tree holds alice's new key.
+        let (provider, group) = (&a.provider, a.groups.get_mut(G).unwrap());
+        let msg = group.create_message(provider, &published, b"forged into the group").unwrap();
+        let wire = out_bytes(&msg).unwrap();
+        assert!(b.process(G, &wire).is_err());
+    }
+
+    #[test]
+    fn a_key_in_use_or_a_mismatched_pair_is_not_accepted() {
+        let (mut a, mut b) = pair();
+        let current = copy_of(&a.signers[G]);
+        let other = SignatureKeyPair::generate();
+        let body = |pairs: &[(&[u8], &[u8])]| {
+            let mut out = (pairs.len() as u16).to_be_bytes().to_vec();
+            for (public, secret) in pairs {
+                out.extend_from_slice(&(public.len() as u32).to_be_bytes());
+                out.extend_from_slice(public);
+                out.extend_from_slice(&(secret.len() as u32).to_be_bytes());
+                out.extend_from_slice(secret);
+            }
+            out
+        };
+        let now = Some(current.public());
+        assert!(revealed_fingerprints(&body(&[(current.public(), current.secret())]), now).is_empty(),
+                "the sender's current key is never accepted as retired");
+        assert!(revealed_fingerprints(&body(&[(current.public(), other.secret())]), None).is_empty(),
+                "a private half that does not sign for the public half");
+        let good = body(&[(other.public(), other.secret())]);
+        assert_eq!(revealed_fingerprints(&good, now), vec![fingerprint(other.public())]);
+        assert!(revealed_fingerprints(&good[..good.len() - 1], now).is_empty(), "truncated");
+        let mut long = good.clone();
+        long.push(0);
+        assert!(revealed_fingerprints(&long, now).is_empty(), "trailing bytes");
+        assert!(revealed_fingerprints(&body(&[]), now).is_empty(), "none");
+        let five: Vec<(&[u8], &[u8])> = (0..5).map(|_| (other.public(), other.secret())).collect();
+        assert!(revealed_fingerprints(&body(&five), now).is_empty(), "too many");
+        // And through the group: a publication of the current key is empty.
+        let mut plain = REVEAL_MAGIC.to_vec();
+        plain.extend_from_slice(&body(&[(current.public(), current.secret())]));
+        let wire = a.encrypt(G, &plain).unwrap();
+        match b.process(G, &wire).unwrap() {
+            Event::KeysRevealed { fingerprints, .. } => assert!(fingerprints.is_empty()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn retired_keys_survive_a_restart_and_go_with_the_group() {
+        let (mut a, mut b) = pair();
+        rotate(&mut a, &mut b);
+        rotate(&mut a, &mut b);
+        let dek = [7u8; 32];
+        let sealed = a.export_sealed(&dek, b"alice").unwrap();
+        let mut again = MlsClient::import_sealed(&dek, b"alice", &sealed).unwrap();
+        assert_eq!(again.retired_count(G), 2);
+        again.forget_group(G);
+        assert_eq!(again.retired_count(G), 0);
+        a.wipe();
+        assert!(a.retired.is_empty());
+    }
+
+    #[test]
+    fn retired_keys_are_bounded_and_published_in_batches() {
+        let (mut a, mut b) = pair();
+        for _ in 0..(MAX_RETIRED + 3) {
+            rotate(&mut a, &mut b);
+        }
+        assert_eq!(a.retired_count(G), MAX_RETIRED);
+        let mut published = 0;
+        while let Some(wire) = a.reveal_retired(G).unwrap() {
+            match b.process(G, &wire).unwrap() {
+                Event::KeysRevealed { fingerprints, .. } => {
+                    assert!(fingerprints.len() <= MAX_REVEAL_PER_MESSAGE);
+                    published += fingerprints.len();
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(published, MAX_RETIRED);
+    }
+
+    #[test]
+    fn nothing_is_published_while_a_commit_is_pending() {
+        let (mut a, mut b) = pair();
+        rotate(&mut a, &mut b);
+        let _pending = a.self_update(G).unwrap();
+        assert_eq!(a.reveal_retired(G), Err(MlsError::CommitPending));
     }
 }

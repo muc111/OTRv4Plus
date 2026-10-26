@@ -537,6 +537,19 @@ impl SignatureKeyPair {
     }
 }
 
+impl SignatureKeyPair {
+    /// Whether the private half really signs for the public half: a probe is
+    /// signed and verified. For a key a member says they published (F4).
+    pub(crate) fn is_consistent(&self) -> bool {
+        const PROBE: &[u8] = b"OTRv4+ MLS published signing key probe";
+        let Ok(signature) = Signer::sign(self, PROBE) else { return false };
+        match self.scheme {
+            COMPOSITE => composite_verify(&self.public, PROBE, &signature).is_ok(),
+            _ => mldsa87_verify(&self.public, PROBE, &signature).is_ok(),
+        }
+    }
+}
+
 impl core::fmt::Debug for SignatureKeyPair {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("SignatureKeyPair").finish_non_exhaustive()

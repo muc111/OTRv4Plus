@@ -234,6 +234,9 @@ impl RustMlsClient {
     ///    "removed_us": bool, "dropped_ours": bool, "committer": bytes,
     ///    "rekeyed": [(identity, old fingerprint, new fingerprint), ...]}
     ///   {"kind": "proposal"}
+    ///   {"kind": "keys_revealed", "sender": bytes, "fingerprints": [bytes, ...]}
+    ///    -- a member published retired signing keys (F4); only their
+    ///    fingerprints, never the keys
     fn process<'py>(&self, py: Python<'py>, group_id: &[u8], message: &[u8])
         -> PyResult<Bound<'py, PyDict>>
     {
@@ -261,8 +264,29 @@ impl RustMlsClient {
                 d.set_item("rekeyed", rk)?;
             }
             Event::Proposal => d.set_item("kind", "proposal")?,
+            Event::KeysRevealed { sender, fingerprints } => {
+                d.set_item("kind", "keys_revealed")?;
+                d.set_item("sender", PyBytes::new(py, &sender))?;
+                let fps: Vec<_> = fingerprints.iter().map(|f| PyBytes::new(py, f)).collect();
+                d.set_item("fingerprints", fps)?;
+            }
         }
         Ok(d)
+    }
+
+    /// Publish our retired signing keys in this group (F4): a group message
+    /// (MLS wire bytes) for the room, or None when there are none. The keys
+    /// stay in Rust until they are inside that encrypted message.
+    fn reveal_retired<'py>(&self, py: Python<'py>, group_id: &[u8])
+        -> PyResult<Option<Bound<'py, PyBytes>>>
+    {
+        let out = self.with(|c| c.reveal_retired(group_id))?;
+        Ok(out.map(|m| PyBytes::new(py, &m)))
+    }
+
+    /// How many retired signing keys of ours wait to be published here.
+    fn retired_count(&self, group_id: &[u8]) -> PyResult<usize> {
+        self.with(|c| Ok(c.retired_count(group_id)))
     }
 
     /// Media keys for call `call_id` in this group, from the current
