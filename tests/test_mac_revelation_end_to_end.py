@@ -52,6 +52,18 @@ otrv4_core = pytest.importorskip("otrv4_core")
 MKMAC_LEN = 64
 
 
+def _published(field):
+    """The keys a message's revealed_mac_keys field publishes, read off the
+    wire as any third party reads them (L1: the engine hands over only the
+    encoded field)."""
+    return otr.OTRv4DataMessage.parse_revealed_field(bytes(field))
+
+
+def _enc(ratchet, text):
+    out = ratchet.encrypt_message(text)
+    return out[:5] + (_published(out[5]),) + out[6:]
+
+
 def _ratchet_pair():
     """Two ratchets sharing a root and crossed chain keys.
 
@@ -85,7 +97,7 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         """
         alice, bob = _ratchet_pair()
         ct, header, nonce, tag, _epoch, _reveal, send_mkmac = \
-            alice.encrypt_message(b"message one")
+            _enc(alice, b"message one")
 
         plaintext, recv_mkmac = bob.decrypt_message(header, ct, nonce, tag)
 
@@ -94,7 +106,7 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         assert len(bytes(send_mkmac.seal(region))) == MKMAC_LEN
         assert bytes(send_mkmac.seal(region)) == bytes(recv_mkmac.seal(region)), \
             "sender and receiver derived different MKmac for the same message"
-        *_x, revealed, _y = bob.encrypt_message(b"reply")
+        *_x, revealed, _y = _enc(bob, b"reply")
         assert any(send_mkmac.matches(bytes(k)) for k in revealed)
         assert any(recv_mkmac.matches(bytes(k)) for k in revealed)
 
@@ -102,9 +114,9 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         """The exact regression: a 32-byte zero placeholder used to sit here.
         Checked on the key as published, the first moment it is public."""
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _e, _r, handle = alice.encrypt_message(b"probe")
+        ct, h, n, t, _e, _r, handle = _enc(alice, b"probe")
         bob.decrypt_message(h, ct, n, t)
-        *_x, revealed, _y = bob.encrypt_message(b"reply")
+        *_x, revealed, _y = _enc(bob, b"reply")
         mkmac = next(bytes(k) for k in revealed if handle.matches(bytes(k)))
         assert len(mkmac) == MKMAC_LEN
         assert mkmac != bytes(MKMAC_LEN), "MKmac is all zeros -- the L1 bug is back"
@@ -124,7 +136,7 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         alice, _bob = _ratchet_pair()
         seen = set()
         for i in range(8):
-            *_rest, mkmac = alice.encrypt_message(f"message {i}".encode())
+            *_rest, mkmac = _enc(alice, f"message {i}".encode())
             seen.add(bytes(mkmac.seal(b"same region")))
         assert len(seen) == 8, "MKmac repeated across messages"
 
@@ -137,12 +149,12 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         alice, bob = _ratchet_pair()
 
         # 1. Alice sends M1; Bob receives and authenticates it.
-        ct1, h1, n1, t1, _e1, _r1, alice_mkmac = alice.encrypt_message(b"the real message")
+        ct1, h1, n1, t1, _e1, _r1, alice_mkmac = _enc(alice, b"the real message")
         pt1, bob_mkmac = bob.decrypt_message(h1, ct1, n1, t1)
         assert pt1 == b"the real message"
 
         # 2. Bob's next outgoing message publishes the keys he has queued.
-        _ct2, _h2, _n2, _t2, _e2, revealed, _mkmac2 = bob.encrypt_message(b"reply")
+        _ct2, _h2, _n2, _t2, _e2, revealed, _mkmac2 = _enc(bob, b"reply")
         revealed = [bytes(k) for k in revealed]
 
         assert revealed, "receiver published nothing after authenticating a message"
@@ -164,9 +176,9 @@ class TestRevealedKeyIsTheAuthenticatingKey:
         """
         alice, bob = _ratchet_pair()
 
-        ct1, h1, n1, t1, _e, _r, _mk = alice.encrypt_message(b"what was really said")
+        ct1, h1, n1, t1, _e, _r, _mk = _enc(alice, b"what was really said")
         _pt, _recv_mk = bob.decrypt_message(h1, ct1, n1, t1)
-        *_x, revealed, _y = bob.encrypt_message(b"reply")
+        *_x, revealed, _y = _enc(bob, b"reply")
         # A third party holds only the published bytes.
         published = otrv4_core.MessageMacKey.from_revealed(bytes(revealed[0]))
 
@@ -208,18 +220,18 @@ class TestRevelationHygiene:
         """Publishing early would hand out a live authentication key."""
         alice, bob = _ratchet_pair()
         # Alice's FIRST message can carry nothing: she has authenticated nothing.
-        *_r, revealed, _mk = alice.encrypt_message(b"first")
+        *_r, revealed, _mk = _enc(alice, b"first")
         assert list(revealed) == [], \
             "keys were published before anything had been authenticated"
 
     def test_the_queue_drains_and_does_not_republish(self):
         """Each key should be published once, not on every subsequent message."""
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _e, _r, _mk = alice.encrypt_message(b"m1")
+        ct, h, n, t, _e, _r, _mk = _enc(alice, b"m1")
         bob.decrypt_message(h, ct, n, t)
 
-        *_a, first_batch, _b = bob.encrypt_message(b"reply 1")
-        *_c, second_batch, _d = bob.encrypt_message(b"reply 2")
+        *_a, first_batch, _b = _enc(bob, b"reply 1")
+        *_c, second_batch, _d = _enc(bob, b"reply 2")
 
         assert [bytes(k) for k in first_batch], "first reply published nothing"
         assert list(second_batch) == [], \
@@ -229,10 +241,10 @@ class TestRevelationHygiene:
         """A peer that never replies must not grow the queue without limit."""
         alice, bob = _ratchet_pair()
         for i in range(200):
-            ct, h, n, t, _e, _r, _mk = alice.encrypt_message(f"m{i}".encode())
+            ct, h, n, t, _e, _r, _mk = _enc(alice, f"m{i}".encode())
             bob.decrypt_message(h, ct, n, t)
 
-        *_x, revealed, _y = bob.encrypt_message(b"finally a reply")
+        *_x, revealed, _y = _enc(bob, b"finally a reply")
         # MAX_PENDING_REVEALS is 50 in ratchet.rs.
         assert len(revealed) <= 50, \
             f"reveal queue is unbounded: {len(revealed)} keys published at once"
@@ -244,9 +256,9 @@ class TestRevelationHygiene:
         not reveal the key that actually decrypts anything.
         """
         alice, bob = _ratchet_pair()
-        ct, h, n, t, _e, _r, mkmac = alice.encrypt_message(b"secret text")
+        ct, h, n, t, _e, _r, mkmac = _enc(alice, b"secret text")
         bob.decrypt_message(h, ct, n, t)
-        *_x, revealed, _y = bob.encrypt_message(b"reply")
+        *_x, revealed, _y = _enc(bob, b"reply")
 
         published = bytes(revealed[0])
         # The plaintext must not be recoverable from the published key, and the

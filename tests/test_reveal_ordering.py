@@ -52,8 +52,8 @@ def _ratchet_pair():
 
 def _published(ratchet, text=b"reply"):
     """Drain whatever the ratchet would publish on its next message."""
-    *_x, revealed, _y = ratchet.encrypt_message(text)
-    return [bytes(k) for k in revealed]
+    *_x, field, _y = ratchet.encrypt_message(text)
+    return otr.OTRv4DataMessage.parse_revealed_field(bytes(field))
 
 
 def _flip(data, index=0, bit=0x01):

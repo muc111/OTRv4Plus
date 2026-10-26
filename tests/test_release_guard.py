@@ -435,7 +435,8 @@ RAW_KEY_MODULE_FUNCTIONS = (
     "seal_identity", "unseal_identity", "create_sealed_identity",
 )
 RAW_KEY_CLASS_METHODS = {
-    "RustDoubleRatchet": ("from_dakeresult",),
+    # holds_mac_key: L1's T4 accessor, an oracle on MAC-key material.
+    "RustDoubleRatchet": ("from_dakeresult", "holds_mac_key"),
     "RustDAKE": ("new_from_bytearrays", "sign_profile_body_and_construct",
                  "ed448_sign_test"),
     "RustVoiceRoot": ("from_initial_agreement", "derive_rekey", "from_bytes"),

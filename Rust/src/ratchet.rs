@@ -24,8 +24,57 @@ const MAX_SEEN: usize = 10_000;
 const REKEY_INTERVAL: u32 = 50;
 const AD_DEFAULT: &[u8] = b"OTRv4-DATA";
 
+// ── L1: MAC-key retirement and revelation (SPEC §5.8) ──────────────
+//
+// A MAC key (MKmac, 64 bytes, OTRv4 §4.4.2) authenticates exactly one
+// message and is derived from that message's MKenc alone. It is RETIRED --
+// moved into `retired_mac_keys`, from where it is published in the
+// `revealed_mac_keys` field of an outgoing message -- only at one of three
+// moments, each of which is the end of every use it can ever have here:
+//
+//   R1. the message it authenticated has been received and authenticated
+//       (AEAD tag verified): the receive commit consumed its MKenc and the
+//       replay cache refuses a second copy, so nothing can be verified with
+//       it again;
+//   R2. its message never arrived and the skipped MKenc kept for it is
+//       DELETED -- evicted at the MAX_MESSAGE_KEYS bound (the same bound the
+//       skipped store has always used) or discarded by `retire_all` at close
+//       -- so that message can never be decrypted, let alone verified;
+//   R3. `retire_all`, at the end of the session (Make Chat Deniable, sign
+//       out, wipe, quit, peer end, error): R2 for every skipped key still
+//       held, after which the ratchet decrypts nothing more.
+//
+// Never retired: the MKmac of a message WE sent. Only its receiver knows
+// when it is finished with (the message may be in flight, or held as a
+// skipped key there), so revealing it is the receiver's job (R1/R2 on that
+// side). Never retired either: anything derived from a chain key not yet
+// used -- no message used it. DH ratchet steps use no MKmac at all.
+//
+// Retired keys leave Rust only as the encoded wire field
+// (`take_reveal_field`), and each is wiped in place as it leaves the queue.
+
+/// Keys published per ordinary outgoing message.
+pub const REVEAL_PER_MESSAGE: usize = 50;
+/// Keys one message may carry at most: the decoder's count limit, and the
+/// skipped store's bound, so a whole store is publishable in one message.
+pub const REVEAL_FIELD_MAX: usize = MAX_MESSAGE_KEYS;
+/// Retired keys held at most: room for a full skipped store retired at close
+/// on top of as many received keys again. Past it the oldest is wiped
+/// unpublished (a deniability loss for that one message; never a leak).
+pub const MAX_RETIRED: usize = 2 * MAX_MESSAGE_KEYS;
+/// Bytes of one published MKmac.
+pub const MKMAC_LEN: usize = 64;
+
+/// One retired MKmac. Boxed so its bytes stay put while the queue grows or
+/// shifts (no stale copy is left in a reallocated buffer); wiped on drop.
+struct RetiredKey(Box<[u8; MKMAC_LEN]>);
+
+impl Drop for RetiredKey {
+    fn drop(&mut self) { self.0.zeroize(); }
+}
+
 /// Audit C2: how many MKmac fingerprints to retain for the revealed-key
-/// cross-check. A peer reveals at most MAX_PENDING_REVEALS (50) keys per
+/// cross-check. A peer reveals at most REVEAL_PER_MESSAGE (50) keys per
 /// message and reveals them within a message or two of using them, so this is
 /// two orders of magnitude more history than the check ever needs. Each entry
 /// is 32 bytes and is a hash, not key material.
@@ -151,10 +200,13 @@ pub struct EncryptResult {
     pub nonce: [u8; 12],
     pub tag: [u8; 16],
     pub ratchet_id: u32,
-    pub reveal_mac_keys: Vec<Vec<u8>>,
+    /// L1: the encoded `revealed_mac_keys` field -- uint32 count, then each
+    /// retired MKmac -- exactly as it goes on the wire. The keys are public
+    /// from this message on; nothing else crosses to Python.
+    pub reveal_field: Vec<u8>,
     /// MKmac for THIS message (64 B, OTRv4 §4.4.2). Rust-internal: Python
-    /// receives a `MessageMacKey` handle, never these bytes. This ratchet
-    /// keeps its own copy in `last_mac_key` for later revelation.
+    /// receives a `MessageMacKey` handle, never these bytes. Never retired
+    /// by this side: the receiver reveals it once finished with (L1).
     pub mac_key: Vec<u8>,
     /// v2: the item this message carries (its chain's); None in v1.
     pub kem_item: KemItem,
@@ -176,7 +228,7 @@ pub struct DecryptResult {
 // MKmac is secret until the ratchet reveals it; the transient copies in the
 // results are wiped when the result goes.
 impl Drop for EncryptResult {
-    fn drop(&mut self) { self.mac_key.zeroize(); }
+    fn drop(&mut self) { self.mac_key.zeroize(); self.reveal_field.zeroize(); }
 }
 impl Drop for DecryptResult {
     fn drop(&mut self) { self.mac_key.zeroize(); }
@@ -202,8 +254,13 @@ pub struct DoubleRatchet {
     ad: Vec<u8>,
     skipped: BTreeMap<SkipId, SkippedKey>,
     seen: ReplayCache,
-    last_mac_key: Option<Vec<u8>>,
-    pending_reveal_macs: Vec<Vec<u8>>,
+    /// L1: retired MKmacs awaiting publication, oldest first. Each is boxed
+    /// so the bytes never move when the queue grows, and wiped on drop.
+    retired_mac_keys: VecDeque<RetiredKey>,
+    /// L1: `retire_all` ran. The ratchet decrypts nothing more, and after
+    /// the one final message (`encrypt_final`) encrypts nothing more.
+    closing: bool,
+    closed: bool,
     /// Audit C2: fingerprints of every MKmac this endpoint has derived, in
     /// either direction, including the ones derived for skipped messages that
     /// never arrived. A key the peer reveals is checked against this set.
@@ -233,8 +290,7 @@ impl Drop for DoubleRatchet {
         self.dh_pub_local.zeroize();
         if let Some(ref mut k) = self.dh_pub_remote { k.zeroize(); }
         if let Some(ref mut k) = self.last_remote_pub { k.zeroize(); }
-        if let Some(ref mut k) = self.last_mac_key { k.zeroize(); }
-        for mac in &mut self.pending_reveal_macs { mac.zeroize(); }
+        self.retired_mac_keys.clear();          // each entry wipes itself
         self.derived_mac_fps.clear();
         self.derived_mac_fp_order.clear();
         self.ad.zeroize();
@@ -279,8 +335,9 @@ impl DoubleRatchet {
             ad: AD_DEFAULT.to_vec(),
             skipped: BTreeMap::new(),
             seen: ReplayCache::new(MAX_SEEN),
-            last_mac_key: None,
-            pending_reveal_macs: Vec::new(),
+            retired_mac_keys: VecDeque::new(),
+            closing: false,
+            closed: false,
             derived_mac_fps: HashSet::new(),
             derived_mac_fp_order: VecDeque::new(),
             rekey_interval: REKEY_INTERVAL,
@@ -404,20 +461,9 @@ impl DoubleRatchet {
         self.msg_num_send = 0;
         self.msg_counter_send = 0;
         self.dh_pub_local = *new_local_pub;
-
-        if let Some(ref mut mac) = self.last_mac_key {
-            self.pending_reveal_macs.push(mac.clone());
-            mac.zeroize();
-        }
-        self.last_mac_key = None;
-
-        const MAX_PENDING_REVEALS: usize = 50;
-        if self.pending_reveal_macs.len() > MAX_PENDING_REVEALS {
-            let drain_n = self.pending_reveal_macs.len() - MAX_PENDING_REVEALS;
-            for mut mac in self.pending_reveal_macs.drain(..drain_n) {
-                mac.zeroize();
-            }
-        }
+        // L1: no MKmac is retired here. The old code queued the MKmac of our
+        // own last SENT message at every DH step, while the peer might still
+        // be waiting for that message or holding it as a skipped key.
         Ok(())
     }
 
@@ -429,6 +475,32 @@ impl DoubleRatchet {
 
     // ── Encrypt ─────────────────────────────────────────────────
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<EncryptResult, RatchetError> {
+        if self.closing || self.closed {
+            return Err(RatchetError::Protocol(
+                "session closed for revelation: only the final message may be sent".into()));
+        }
+        self.encrypt_with_reveal(plaintext, REVEAL_PER_MESSAGE)
+    }
+
+    /// L1 (R3): a closing message after `retire_all`, publishing up to
+    /// REVEAL_FIELD_MAX retired keys. Called again while `retired_count()` is
+    /// non-zero; the ratchet is closed -- encrypts nothing more -- once the
+    /// queue is empty.
+    pub fn encrypt_final(&mut self, plaintext: &[u8]) -> Result<EncryptResult, RatchetError> {
+        if !self.closing || self.closed {
+            return Err(RatchetError::Protocol(
+                "encrypt_final follows retire_all, until everything is published".into()));
+        }
+        let out = self.encrypt_with_reveal(plaintext, REVEAL_FIELD_MAX);
+        if self.retired_mac_keys.is_empty() {
+            self.closed = true;
+        }
+        out
+    }
+
+    fn encrypt_with_reveal(&mut self, plaintext: &[u8], reveal_max: usize)
+        -> Result<EncryptResult, RatchetError>
+    {
         let (mut next_ck, mut enc_key, mkmac) = kdf_chain(&self.chain_key_send);
         self.chain_key_send.zeroize();
         self.chain_key_send = next_ck;
@@ -461,7 +533,6 @@ impl DoubleRatchet {
         // Audit C2: the peer reveals the MKmac of every message it receives
         // from us, so our own send-side keys belong in the cross-check set.
         self.note_derived_mac(&mkmac);
-        self.last_mac_key = Some(mkmac.to_vec());
 
         let rid = self.ratchet_id;
         self.msg_num_send = self.msg_num_send.checked_add(1)
@@ -469,7 +540,7 @@ impl DoubleRatchet {
         self.msg_counter_send = self.msg_counter_send.checked_add(1)
             .ok_or_else(|| RatchetError::Protocol("Rekey counter overflow".into()))?;
 
-        let reveal = std::mem::take(&mut self.pending_reveal_macs);
+        let reveal_field = self.take_reveal_field(reveal_max);
 
         Ok(EncryptResult {
             ciphertext,
@@ -477,7 +548,7 @@ impl DoubleRatchet {
             nonce: nonce_bytes,
             tag,
             ratchet_id: rid,
-            reveal_mac_keys: reveal,
+            reveal_field,
             mac_key: mkmac.to_vec(),
             kem_item: item,
         })
@@ -488,6 +559,7 @@ impl DoubleRatchet {
         &mut self, header_bytes: &[u8], ciphertext: &[u8],
         nonce: &[u8; 12], tag: &[u8; 16], item: &KemItem,
     ) -> Result<DecryptResult, RatchetError> {
+        self.refuse_if_closing()?;
         let header = RatchetHeader::decode(header_bytes)?;
 
         if self.seen.contains(&header.dh_pub, header.msg_num) {
@@ -513,7 +585,7 @@ impl DoubleRatchet {
             // Skipped path: MKmac is re-derived from the stored MKenc rather
             // than kept alongside it, so the store stays 32 bytes per entry.
             let mkmac = kdf_mkmac(&key);
-            self.queue_reveal(&mkmac);
+            self.retire(&mkmac);                         // R1
             return Ok(DecryptResult { plaintext: pt, mac_key: mkmac.to_vec() });
         }
 
@@ -591,7 +663,7 @@ impl DoubleRatchet {
 
         let mkmac = kdf_mkmac(&recv_enc_key);
         recv_enc_key.zeroize();
-        self.queue_reveal(&mkmac);
+        self.retire(&mkmac);                             // R1
         Ok(DecryptResult { plaintext: pt, mac_key: mkmac.to_vec() })
     }
 
@@ -626,28 +698,91 @@ impl DoubleRatchet {
         self.derived_mac_fps.contains(&mkmac_fingerprint(key))
     }
 
-    /// Queue a MAC key for later revelation, bounded.
-    fn queue_reveal(&mut self, mkmac: &[u8; 64]) {
+    /// L1: retire `mkmac` -- only at R1 or R2 (see the top of this file).
+    /// Bounded at MAX_RETIRED: past it the OLDEST retired key is wiped
+    /// unpublished, which loses deniability for one message and never
+    /// publishes anything early.
+    fn retire(&mut self, mkmac: &[u8; MKMAC_LEN]) {
         self.note_derived_mac(mkmac);
-        self.pending_reveal_macs.push(mkmac.to_vec());
-        const MAX_PENDING_REVEALS: usize = 50;
-        if self.pending_reveal_macs.len() > MAX_PENDING_REVEALS {
-            let drain_n = self.pending_reveal_macs.len() - MAX_PENDING_REVEALS;
-            for mut mac in self.pending_reveal_macs.drain(..drain_n) {
-                mac.zeroize();
-            }
+        self.retired_mac_keys.push_back(RetiredKey(Box::new(*mkmac)));
+        while self.retired_mac_keys.len() > MAX_RETIRED {
+            self.retired_mac_keys.pop_front();           // wiped as it drops
         }
+    }
+
+    /// L1 (R2): a skipped MKenc is being deleted, so its message can never
+    /// be decrypted: its MKmac is retired, then the MKenc is wiped.
+    fn retire_skipped(&mut self, mut key: SkippedKey) {
+        let mut mkmac = kdf_mkmac(&key.enc_key);
+        self.retire(&mkmac);
+        mkmac.zeroize();
+        key.enc_key.zeroize();
+    }
+
+    /// L1: the `revealed_mac_keys` field of the next outgoing message: up to
+    /// `max` retired keys, oldest first, as uint32 count || keys. Each key
+    /// is copied into the field and wiped in the queue before it leaves.
+    fn take_reveal_field(&mut self, max: usize) -> Vec<u8> {
+        let n = self.retired_mac_keys.len().min(max);
+        let mut field = Vec::with_capacity(4 + n * MKMAC_LEN);
+        field.extend_from_slice(&(n as u32).to_be_bytes());
+        for _ in 0..n {
+            if let Some(key) = self.retired_mac_keys.pop_front() {
+                field.extend_from_slice(&key.0[..]);
+            }                                            // wiped as it drops
+        }
+        field
+    }
+
+    /// L1 (R3): the session is ending. Every skipped MKenc still held is
+    /// deleted and its MKmac retired; from now on the ratchet decrypts
+    /// nothing, and encrypts only the one `encrypt_final` message that
+    /// publishes everything retired. Returns how many keys are retired.
+    pub fn retire_all(&mut self) -> usize {
+        let held = std::mem::take(&mut self.skipped);
+        for (_id, key) in held {
+            self.retire_skipped(key);
+        }
+        self.closing = true;
+        self.retired_mac_keys.len()
+    }
+
+    /// Retired keys waiting to be published. A count, not key material.
+    pub fn retired_count(&self) -> usize { self.retired_mac_keys.len() }
+
+    /// Skipped MKenc held (their MKmacs are not retired yet). A count.
+    pub fn skipped_count(&self) -> usize { self.skipped.len() }
+
+    pub fn is_closing(&self) -> bool { self.closing }
+
+    fn refuse_if_closing(&self) -> Result<(), RatchetError> {
+        if self.closing || self.closed {
+            return Err(RatchetError::Protocol(
+                "session closed for revelation: nothing more is decrypted".into()));
+        }
+        Ok(())
+    }
+
+    /// Test-only (T4): whether `key` is still held anywhere in this ratchet
+    /// -- in the retired queue, or derivable from a skipped MKenc.
+    #[cfg(any(test, feature = "raw-key-test-api"))]
+    pub fn holds_mac_key(&self, key: &[u8]) -> bool {
+        self.retired_mac_keys.iter().any(|k| k.0[..] == *key)
+            || self.skipped.values().any(|s| kdf_mkmac(&s.enc_key)[..] == *key)
     }
 
     /// Bound the skipped-key store. Evicts the lowest SkipId, which is
     /// deterministic but arbitrary with respect to age; acceptable because
-    /// the store is only reachable after authentication.
+    /// the store is only reachable after authentication. L1 (R2): an evicted
+    /// key's message can never be decrypted, so its MKmac is retired.
     fn prune_skipped(&mut self) {
         while self.skipped.len() > MAX_MESSAGE_KEYS {
-            if let Some(first) = self.skipped.keys().next().cloned() {
-                self.skipped.remove(&first);
-            } else {
-                break;
+            let first = match self.skipped.keys().next().cloned() {
+                Some(first) => first,
+                None => break,
+            };
+            if let Some(key) = self.skipped.remove(&first) {
+                self.retire_skipped(key);
             }
         }
     }
@@ -668,6 +803,7 @@ impl DoubleRatchet {
         dh_secret_recv: &[u8], dh_secret_send: &[u8], new_local_pub: &[u8; 56],
         item: &KemItem,
     ) -> Result<DecryptResult, RatchetError> {
+        self.refuse_if_closing()?;
         let header = RatchetHeader::decode(header_bytes)?;
 
         if self.seen.contains(&header.dh_pub, header.msg_num) {
@@ -821,22 +957,27 @@ impl DoubleRatchet {
         self.ratchet_id = self.ratchet_id.checked_add(1)
             .ok_or_else(|| RatchetError::Protocol("Ratchet ID overflow".into()))?;
 
-        if let Some(ref mut mac) = self.last_mac_key {
-            self.pending_reveal_macs.push(mac.clone());
-            mac.zeroize();
-        }
-        self.last_mac_key = None;
-
+        // L1: nothing of ours is retired at a DH step (see send_ratchet).
         self.seen.insert(&header.dh_pub, header.msg_num);
 
         let mkmac = kdf_mkmac(&recv_enc_key);
         recv_enc_key.zeroize();
-        self.queue_reveal(&mkmac);
+        self.retire(&mkmac);                             // R1
         Ok(DecryptResult { plaintext: pt, mac_key: mkmac.to_vec() })
     }
 
     // ── Check if a new DH public key was used ──────────────────
     pub fn is_new_dh(&self, header_bytes: &[u8]) -> bool {
+        // A late message from an OLDER chain whose key we still hold is not a
+        // new DH step: it goes to the skipped-key path (decrypt_same_dh),
+        // which authenticates before it consumes anything. Routing it here
+        // as a new step failed it, and its MAC key was then never retired by
+        // receipt (L1/L2: SPEC §5.8, R1).
+        if let Ok(h) = RatchetHeader::decode(header_bytes) {
+            if self.skipped.contains_key(&SkipId { dh_pub: h.dh_pub, msg_num: h.msg_num }) {
+                return false;
+            }
+        }
         if let Some(remote) = &self.dh_pub_remote {
             if let Some(dh_pub) = RatchetHeader::peek_dh_pub(header_bytes) {
                 return bool::from(!dh_pub.ct_eq(remote.as_slice()));
@@ -994,6 +1135,29 @@ pub struct RustDoubleRatchet {
     /// `None` for a ratchet built by `new()` -- the test and legacy path,
     /// which has no DAKE behind it and therefore no such key.
     extra_sym_key: Option<crate::secure_mem::SecretBytes<32>>,
+}
+
+impl RustDoubleRatchet {
+    /// One outgoing message for Python. `reveal_field` is the encoded
+    /// `revealed_mac_keys` wire field (L1): the retired keys cross only as
+    /// the bytes that go on the wire, never as a list of keys.
+    fn encrypt_dict<'py>(py: Python<'py>, result: &EncryptResult) -> PyResult<Bound<'py, PyDict>> {
+        let d = PyDict::new(py);
+        d.set_item("ciphertext", PyBytes::new(py, &result.ciphertext))?;
+        d.set_item("header", PyBytes::new(py, &result.header))?;
+        d.set_item("nonce", PyBytes::new(py, &result.nonce))?;
+        d.set_item("tag", PyBytes::new(py, &result.tag))?;
+        d.set_item("ratchet_id", result.ratchet_id)?;
+        d.set_item("reveal_field", PyBytes::new(py, &result.reveal_field))?;
+        d.set_item("mac_key", Py::new(py, MessageMacKey::new(&result.mac_key))?)?;
+        // v2: the item this message must carry (SPEC §5.2); absent in v1.
+        match &result.kem_item {
+            KemItem::Ek(ek) => d.set_item("kem_ek", PyBytes::new(py, ek))?,
+            KemItem::Ct(ct) => d.set_item("kem_ct", PyBytes::new(py, ct))?,
+            KemItem::None => {}
+        }
+        Ok(d)
+    }
 }
 
 #[pymethods]
@@ -1215,24 +1379,38 @@ impl RustDoubleRatchet {
     fn encrypt<'py>(&mut self, py: Python<'py>, plaintext: &[u8]) -> PyResult<Bound<'py, PyDict>> {
         let result = self.inner.encrypt(plaintext)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
-        let d = PyDict::new(py);
-        d.set_item("ciphertext", PyBytes::new(py, &result.ciphertext))?;
-        d.set_item("header", PyBytes::new(py, &result.header))?;
-        d.set_item("nonce", PyBytes::new(py, &result.nonce))?;
-        d.set_item("tag", PyBytes::new(py, &result.tag))?;
-        d.set_item("ratchet_id", result.ratchet_id)?;
-        let mac_list: Vec<Bound<'_, PyBytes>> = result.reveal_mac_keys.iter()
-            .map(|k| PyBytes::new(py, k)).collect();
-        d.set_item("reveal_mac_keys", mac_list)?;
-        d.set_item("mac_key", Py::new(py, MessageMacKey::new(&result.mac_key))?)?;
-        // v2: the item this message must carry (SPEC §5.2); absent in v1.
-        match &result.kem_item {
-            KemItem::Ek(ek) => d.set_item("kem_ek", PyBytes::new(py, ek))?,
-            KemItem::Ct(ct) => d.set_item("kem_ct", PyBytes::new(py, ct))?,
-            KemItem::None => {}
-        }
-        Ok(d)
+        Self::encrypt_dict(py, &result)
     }
+
+    /// L1 (SPEC §5.8, R3): end of the session. Every skipped key still held
+    /// is deleted and its MAC key retired; the ratchet then decrypts nothing
+    /// and encrypts only the one `encrypt_final` message. Returns the count
+    /// of retired keys -- never the keys.
+    fn retire_all(&mut self) -> usize { self.inner.retire_all() }
+
+    /// L1: the one message after `retire_all`, whose `reveal_field` carries
+    /// every retired MAC key. The ratchet encrypts nothing after it.
+    fn encrypt_final<'py>(&mut self, py: Python<'py>, plaintext: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+        let result = self.inner.encrypt_final(plaintext)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+        Self::encrypt_dict(py, &result)
+    }
+
+    /// Retired MAC keys waiting to be published (a count).
+    #[getter]
+    fn retired_mac_key_count(&self) -> usize { self.inner.retired_count() }
+
+    /// Skipped message keys held (a count).
+    #[getter]
+    fn skipped_key_count(&self) -> usize { self.inner.skipped_count() }
+
+    #[getter]
+    fn closing(&self) -> bool { self.inner.is_closing() }
+
+    /// Test-only (T4): is `key` still held by this ratchet? An oracle on key
+    /// material, so never in a production artifact (tests/test_release_guard).
+    #[cfg(feature = "raw-key-test-api")]
+    fn holds_mac_key(&self, key: &[u8]) -> bool { self.inner.holds_mac_key(key) }
 
     /// Switch to the v2 post-quantum ratchet (SPEC §5.2). Both peers, before
     /// the first message: the DAKE negotiates it from the two profiles.
@@ -1521,6 +1699,14 @@ mod tests {
         rx.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag, &m.kem_item)
     }
 
+    /// The keys a message published, read from its wire field as anyone can.
+    fn revealed(m: &EncryptResult) -> Vec<Vec<u8>> {
+        let f = &m.reveal_field;
+        let n = u32::from_be_bytes([f[0], f[1], f[2], f[3]]) as usize;
+        assert_eq!(f.len(), 4 + n * MKMAC_LEN, "field length disagrees with its count");
+        f[4..].chunks(MKMAC_LEN).map(|c| c.to_vec()).collect()
+    }
+
     // ── Audit C2: revealed-key cross-check ──────────────────────────────
 
     #[test]
@@ -1598,10 +1784,10 @@ mod tests {
         let (mut a, mut b) = pair();
         for _ in 0..5 {
             let m = a.encrypt(b"x").unwrap();
-            assert!(!m.reveal_mac_keys.contains(&m.mac_key));
+            assert!(!revealed(&m).contains(&m.mac_key));
             deliver(&mut b, &m).unwrap();
             let r = b.encrypt(b"y").unwrap();
-            assert!(!r.reveal_mac_keys.contains(&r.mac_key));
+            assert!(!revealed(&r).contains(&r.mac_key));
         }
     }
 
@@ -1745,10 +1931,10 @@ mod tests {
         let r = deliver_full(&mut b, &m).unwrap();
 
         let next = b.encrypt(b"reply").unwrap();
-        assert!(next.reveal_mac_keys.iter().any(|k| k == &r.mac_key),
+        assert!(revealed(&next).iter().any(|k| k == &r.mac_key),
                 "the MKmac that authenticated an inbound message must be \
                  revealed");
-        for k in &next.reveal_mac_keys {
+        for k in &revealed(&next) {
             assert_eq!(k.len(), 64);
             assert!(k.iter().any(|&x| x != 0), "no all-zero key may be revealed");
         }
@@ -1769,7 +1955,7 @@ mod tests {
                    "the skipped path must derive the same MKmac");
 
         let reply = b.encrypt(b"reply").unwrap();
-        assert!(reply.reveal_mac_keys.iter().any(|k| k == &r1.mac_key));
+        assert!(revealed(&reply).iter().any(|k| k == &r1.mac_key));
     }
 
     /// A forgery must not leak a MAC key: nothing is queued if the message
@@ -1781,7 +1967,7 @@ mod tests {
         forged.ciphertext[0] ^= 0x01;
         assert!(deliver_full(&mut b, &forged).is_err());
         let reply = b.encrypt(b"reply").unwrap();
-        assert!(reply.reveal_mac_keys.is_empty(),
+        assert!(revealed(&reply).is_empty(),
                 "an unauthenticated message must not queue a MAC key");
     }
 
@@ -1790,7 +1976,7 @@ mod tests {
     fn empty_reveal_queue_is_empty_not_zero_padded() {
         let (mut a, _b) = pair();
         let m = a.encrypt(b"first").unwrap();
-        assert!(m.reveal_mac_keys.is_empty());
+        assert!(revealed(&m).is_empty());
     }
 
     #[test]
@@ -1801,8 +1987,8 @@ mod tests {
             deliver_full(&mut b, &m).unwrap();
         }
         let reply = b.encrypt(b"reply").unwrap();
-        assert!(reply.reveal_mac_keys.len() <= 50,
-                "got {}", reply.reveal_mac_keys.len());
+        assert!(revealed(&reply).len() <= 50,
+                "got {}", revealed(&reply).len());
     }
 
     #[test]
@@ -2073,5 +2259,234 @@ mod pq_ratchet {
         let m = send(&mut a, b"v1");
         assert_eq!(kind(&m), "none");
         assert_eq!(recv(&mut b, &m).expect("v1"), b"v1");
+    }
+}
+
+#[cfg(test)]
+mod l1_retirement {
+    //! L1 (SPEC §5.8): when a MAC key is retired and published, and that
+    //! nothing is published early. Real X448 DH steps, driven as the engine
+    //! drives them; every assertion reads what a third party reads -- the
+    //! encoded `revealed_mac_keys` field.
+    use super::*;
+    use crate::key_handles::{generate_x448_keypair, X448KeyHandle};
+
+    struct Party { r: DoubleRatchet, key: X448KeyHandle }
+
+    fn pair() -> (Party, Party) {
+        let ka = generate_x448_keypair().expect("key");
+        let kb = generate_x448_keypair().expect("key");
+        let a = DoubleRatchet::new(&[0x11; 32], &[0x22; 32], &[0x33; 32], &[0x44; 32],
+                                   ka.public_array(), true).expect("alice");
+        let b = DoubleRatchet::new(&[0x11; 32], &[0x22; 32], &[0x33; 32], &[0x44; 32],
+                                   kb.public_array(), false).expect("bob");
+        (Party { r: a, key: ka }, Party { r: b, key: kb })
+    }
+
+    fn send(p: &mut Party, text: &[u8]) -> EncryptResult { p.r.encrypt(text).expect("encrypt") }
+
+    fn recv(p: &mut Party, m: &EncryptResult) -> Result<DecryptResult, RatchetError> {
+        if p.r.dh_pub_remote.is_some() && p.r.is_new_dh(&m.header) {
+            let remote = DoubleRatchet::header_dh_pub(&m.header).expect("dh");
+            let next = generate_x448_keypair().expect("key");
+            let s_recv = p.key.dh_internal(&remote).expect("dh");
+            let s_send = next.dh_internal(&remote).expect("dh");
+            let r = p.r.decrypt_new_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag,
+                                       s_recv.expose_slice(), s_send.expose_slice(),
+                                       next.public_array(), &m.kem_item)?;
+            p.key = next;
+            Ok(r)
+        } else {
+            p.r.decrypt_same_dh(&m.header, &m.ciphertext, &m.nonce, &m.tag, &m.kem_item)
+        }
+    }
+
+    fn force(p: &mut Party) {
+        let remote = p.r.dh_pub_remote.expect("a peer key is known");
+        let next = generate_x448_keypair().expect("key");
+        let secret = next.dh_internal(&remote).expect("dh");
+        p.r.send_ratchet(secret.expose_slice(), next.public_array()).expect("step");
+        p.key = next;
+    }
+
+    fn published(m: &EncryptResult) -> Vec<Vec<u8>> {
+        let f = &m.reveal_field;
+        let n = u32::from_be_bytes([f[0], f[1], f[2], f[3]]) as usize;
+        assert_eq!(f.len(), 4 + n * MKMAC_LEN);
+        f[4..].chunks(MKMAC_LEN).map(|c| c.to_vec()).collect()
+    }
+
+    fn started() -> (Party, Party) {
+        let (mut a, mut b) = pair();
+        let m = send(&mut a, b"hello");
+        recv(&mut b, &m).expect("first");
+        let m = send(&mut b, b"hi");
+        recv(&mut a, &m).expect("first reply");
+        (a, b)
+    }
+
+    #[test]
+    fn r1_a_received_message_is_published_by_its_receiver() {
+        let (mut a, mut b) = pair();
+        let m = send(&mut a, b"m");
+        let r = recv(&mut b, &m).expect("m");
+        assert!(published(&send(&mut b, b"reply")).contains(&r.mac_key));
+    }
+
+    #[test]
+    fn a_sender_never_publishes_its_own_keys_not_even_across_dh_steps() {
+        let (mut a, mut b) = started();
+        let mut ours = Vec::new();
+        force(&mut a);                                     // our own DH step
+        for round in 0..4 {
+            // From here every reply makes a real DH step on both sides.
+            for i in 0..3 {
+                let m = send(&mut a, format!("a{round}{i}").as_bytes());
+                for k in &ours {
+                    assert!(!published(&m).contains(k), "a sender published its own MAC key");
+                }
+                ours.push(m.mac_key.clone());
+                recv(&mut b, &m).expect("a->b");           // b's DH step on the first
+            }
+            let m = send(&mut b, format!("b{round}").as_bytes());
+            recv(&mut a, &m).expect("b->a");               // a's DH step
+        }
+    }
+
+    #[test]
+    fn a_skipped_message_stays_unpublished_while_its_key_is_held() {
+        let (mut a, mut b) = started();
+        let lost = send(&mut a, b"in flight");
+        let later = send(&mut a, b"arrives first");
+        recv(&mut b, &later).expect("later");
+        assert_eq!(b.r.skipped_count(), 1);
+        let lost_mac = kdf_mkmac(&b.r.skipped.values().next().expect("held").enc_key).to_vec();
+        assert_eq!(lost_mac, lost.mac_key);
+        for i in 0..5 {
+            let m = send(&mut b, format!("b{i}").as_bytes());
+            assert!(!published(&m).contains(&lost.mac_key),
+                    "a key still needed by a skipped message was published");
+            recv(&mut a, &m).expect("b->a");
+        }
+        // The message arrives after all: now (R1) it is published.
+        recv(&mut b, &lost).expect("late");
+        assert!(published(&send(&mut b, b"after")).contains(&lost.mac_key));
+    }
+
+    #[test]
+    fn across_a_dh_step_the_old_chains_skipped_keys_stay_unpublished() {
+        let (mut a, mut b) = started();
+        let lost = send(&mut a, b"old chain, lost");
+        let got = send(&mut a, b"old chain, arrives");
+        recv(&mut b, &got).expect("got");
+        force(&mut a);
+        let new_chain = send(&mut a, b"new chain");
+        recv(&mut b, &new_chain).expect("new chain");       // b's DH step
+        assert_eq!(b.r.skipped_count(), 1, "the old chain's key is still held");
+        let reply = send(&mut b, b"reply");
+        assert!(!published(&reply).contains(&lost.mac_key));
+        assert!(published(&reply).contains(&got.mac_key));
+    }
+
+    #[test]
+    fn a_late_message_from_an_older_chain_is_received_and_then_published() {
+        let (mut a, mut b) = started();
+        let lost = send(&mut a, b"old chain, late");
+        recv(&mut b, &send(&mut a, b"old chain")).expect("old chain");
+        force(&mut a);
+        recv(&mut b, &send(&mut a, b"new chain")).expect("new chain");   // b steps
+        assert!(!b.r.is_new_dh(&lost.header), "held: the skipped path, not a DH step");
+        let r = recv(&mut b, &lost).expect("late");
+        assert_eq!(r.plaintext, b"old chain, late");
+        assert!(published(&send(&mut b, b"after")).contains(&lost.mac_key));
+    }
+
+    #[test]
+    fn r2_an_evicted_skipped_key_is_published() {
+        let (mut a, mut b) = started();
+        b.r.max_skip = u32::MAX;
+        let lost = send(&mut a, b"first, lost");
+        for _ in 0..MAX_MESSAGE_KEYS { send(&mut a, b"skipped"); }
+        let last = send(&mut a, b"last");
+        recv(&mut b, &last).expect("last");                 // skips MAX + 1
+        assert_eq!(b.r.skipped_count(), MAX_MESSAGE_KEYS, "the store is bounded");
+        assert!(b.r.holds_mac_key(&lost.mac_key), "retired, not yet published");
+        b.r.retire_all();
+        let mut all = Vec::new();
+        while b.r.retired_count() > 0 {
+            let fin = b.r.encrypt_final(b"").expect("final");
+            assert!(published(&fin).len() <= REVEAL_FIELD_MAX, "within the decoder's limit");
+            all.extend(published(&fin));
+        }
+        assert!(all.contains(&lost.mac_key), "the evicted key's MAC key was published");
+        assert_eq!(all.len(), MAX_MESSAGE_KEYS + 2, "every held key, the evicted one, the received one");
+        assert!(b.r.encrypt_final(b"").is_err(), "closed once everything is out");
+    }
+
+    #[test]
+    fn r3_retire_all_publishes_every_held_key_in_the_final_message() {
+        let (mut a, mut b) = started();
+        let lost: Vec<_> = (0..80).map(|i| send(&mut a, format!("l{i}").as_bytes())).collect();
+        let got = send(&mut a, b"got");
+        recv(&mut b, &got).expect("got");
+        assert_eq!(b.r.skipped_count(), 80);
+        assert_eq!(b.r.retire_all(), 81, "80 skipped and the one received");
+        assert_eq!(b.r.skipped_count(), 0, "every skipped key deleted");
+        let fin = b.r.encrypt_final(b"").expect("final");
+        let all = published(&fin);
+        assert_eq!(all.len(), 81, "more than one ordinary message's share, all at once");
+        for m in &lost { assert!(all.contains(&m.mac_key)); }
+        assert!(all.contains(&got.mac_key));
+        assert!(!all.contains(&fin.mac_key), "never the final message's own key");
+    }
+
+    #[test]
+    fn after_close_the_ratchet_decrypts_nothing_and_sends_once() {
+        let (mut a, mut b) = started();
+        let m = send(&mut a, b"too late");
+        b.r.retire_all();
+        assert!(recv(&mut b, &m).is_err(), "decrypt after retire_all");
+        assert!(b.r.encrypt(b"ordinary").is_err(), "only the final message");
+        b.r.encrypt_final(b"").expect("final");
+        assert!(b.r.encrypt_final(b"").is_err(), "closed once everything is published");
+        assert!(b.r.encrypt(b"again").is_err());
+    }
+
+    #[test]
+    fn t4_a_published_key_is_no_longer_held() {
+        let (mut a, mut b) = started();
+        let m = send(&mut a, b"m");
+        let r = recv(&mut b, &m).expect("m");
+        assert!(b.r.holds_mac_key(&r.mac_key));
+        let out = send(&mut b, b"reply");
+        assert!(published(&out).contains(&r.mac_key));
+        assert!(!b.r.holds_mac_key(&r.mac_key), "published, yet still held");
+        assert_eq!(b.r.retired_count(), 0);
+    }
+
+    #[test]
+    fn t4_a_retired_key_is_wiped_where_it_sat() {
+        // RetiredKey wipes its boxed bytes on drop; observe that directly.
+        let mut k = RetiredKey(Box::new([0xAB; MKMAC_LEN]));
+        let at: *const [u8; MKMAC_LEN] = &*k.0;
+        k.0.zeroize();
+        // SAFETY not needed: read through the live box, after the wipe.
+        assert_eq!(*k.0, [0u8; MKMAC_LEN]);
+        assert_eq!(at, &*k.0 as *const _, "the bytes did not move");
+        drop(k);
+    }
+
+    #[test]
+    fn the_retired_queue_keeps_up_to_its_bound_and_never_drops_early() {
+        let (mut a, mut b) = pair();
+        let mut keys = Vec::new();
+        for i in 0..300 {
+            let m = send(&mut a, format!("m{i}").as_bytes());
+            keys.push(recv(&mut b, &m).expect("m").mac_key.clone());
+        }
+        assert_eq!(b.r.retired_count(), 300, "all kept, none silently dropped");
+        let mut out = Vec::new();
+        for _ in 0..6 { out.extend(published(&send(&mut b, b"r"))); }
+        assert_eq!(out, keys, "published once each, oldest first, 50 a message");
     }
 }

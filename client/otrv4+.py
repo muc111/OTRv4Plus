@@ -1942,6 +1942,33 @@ class OTRv4DataMessage:
         self.ciphertext: bytes = b""
         self.mac: bytes = b""
         self.revealed_mac_keys: List[bytes] = []
+        #: L1: the encoded field exactly as the Rust ratchet produced it
+        #: (uint32 count || keys). Set on send, so the retired keys never
+        #: exist in Python as a list of key objects; wins over the list.
+        self.revealed_field: Optional[bytes] = None
+
+    #: Keys one message may carry: the decoder's limit (and Rust's
+    #: REVEAL_FIELD_MAX).
+    MAX_REVEALED_KEYS = 2000
+
+    @classmethod
+    def check_revealed_field(cls, field: bytes) -> bytes:
+        """`field` is a well-formed revealed_mac_keys field, or ValueError."""
+        if len(field) < 4:
+            raise ValueError("revealed-key field shorter than its count")
+        n = struct.unpack("!I", field[:4])[0]
+        if n > cls.MAX_REVEALED_KEYS or len(field) != 4 + n * cls.REVEALED_MAC_KEY_LEN:
+            raise ValueError("revealed-key field does not match its count")
+        return bytes(field)
+
+    @classmethod
+    def parse_revealed_field(cls, field: bytes) -> List[bytes]:
+        """The keys a field publishes, as any third party reads them off the
+        wire. Public data: used by tests and by a verifier, never on send."""
+        cls.check_revealed_field(field)
+        n = struct.unpack("!I", field[:4])[0]
+        size = cls.REVEALED_MAC_KEY_LEN
+        return [bytes(field[4 + i * size:4 + (i + 1) * size]) for i in range(n)]
 
     def _auth_header(self) -> bytes:
         """Bytes from protocol version through nonce (the authenticatable region)."""
@@ -2016,6 +2043,8 @@ class OTRv4DataMessage:
             ah = self._auth_header()
             ct_blk = struct.pack("!I", len(self.ciphertext)) + self.ciphertext
             mac = self.mac if len(self.mac) == self.MAC_LEN else b"\x00" * self.MAC_LEN
+            if self.revealed_field is not None:
+                return ah + ct_blk + mac + self.check_revealed_field(self.revealed_field)
             keys = struct.pack("!I", len(self.revealed_mac_keys))
             for k in self.revealed_mac_keys:
                 # L1: 64 bytes per OTRv4 §4.4.2. Was 32, which silently
@@ -4286,20 +4315,51 @@ class RustBackedDoubleRatchet:
                 plaintext = plaintext.encode("utf-8")
 
             enc = self._rust.encrypt(plaintext)
-            if getattr(self, "pq", False):
-                self._v2_item = (enc.get("kem_ek"), enc.get("kem_ct"))
-            self.message_counter_send += 1
-            self._sync_mirrors()
+            return self._sent(enc)
 
-            return (
-                enc["ciphertext"],
-                enc["header"],
-                enc["nonce"],
-                enc["tag"],
-                self._dh_epoch,
-                list(enc["reveal_mac_keys"]),
-                enc["mac_key"],
-            )
+    def _sent(self, enc):
+        """One encrypted message, in the shape every caller expects. The
+        sixth item is the encoded `revealed_mac_keys` wire field (L1): the
+        retired MAC keys cross from Rust only as those wire bytes."""
+        if getattr(self, "pq", False):
+            self._v2_item = (enc.get("kem_ek"), enc.get("kem_ct"))
+        self.message_counter_send += 1
+        self._sync_mirrors()
+        return (
+            enc["ciphertext"],
+            enc["header"],
+            enc["nonce"],
+            enc["tag"],
+            self._dh_epoch,
+            enc["reveal_field"],
+            enc["mac_key"],
+        )
+
+    # -- L1: the end of the session (SPEC §5.8) --------------------------
+
+    def retire_all(self) -> int:
+        """Delete every skipped message key and retire its MAC key, in Rust;
+        from now on this ratchet decrypts nothing. Returns the count of
+        retired MAC keys waiting to be published -- never the keys."""
+        with self.lock:
+            return int(self._rust.retire_all())
+
+    def encrypt_final(self, plaintext):
+        """A closing message carrying retired MAC keys (up to the decoder's
+        limit). Call while `retired_mac_key_count` is non-zero; the ratchet
+        encrypts nothing once they are all out. No rekey: the session ends."""
+        with self.lock:
+            if isinstance(plaintext, str):
+                plaintext = plaintext.encode("utf-8")
+            return self._sent(self._rust.encrypt_final(plaintext))
+
+    @property
+    def retired_mac_key_count(self) -> int:
+        return int(self._rust.retired_mac_key_count)
+
+    @property
+    def closing(self) -> bool:
+        return bool(self._rust.closing)
 
     def decrypt_message(self, header_bytes, ciphertext, nonce, tag, kem_ek=None, kem_ct=None):
         """Decrypt a message (OTRv4 §4.4.4).
@@ -4347,7 +4407,15 @@ class RustBackedDoubleRatchet:
                 _did_dh_ratchet_recv = (
                     is_new_dh and self.dh_ratchet_remote_pub is not None and pt is not None
                 )
-                if hdr_dh_pub is not None and hdr_msg_num is not None:
+                # A late message from an older chain (its skipped key still
+                # held: the Rust is_new_dh said so) leaves the epoch mirrors
+                # where they are -- it is not the start of one.
+                late_old_chain = (not is_new_dh and hdr_dh_pub is not None
+                                  and self._current_recv_dh_pub is not None
+                                  and hdr_dh_pub != self._current_recv_dh_pub)
+                if late_old_chain:
+                    self.skipped_keys.pop((hdr_dh_pub, hdr_msg_num), None)
+                elif hdr_dh_pub is not None and hdr_msg_num is not None:
                     new_epoch = (
                         self._current_recv_dh_pub is None or hdr_dh_pub != self._current_recv_dh_pub
                     )
@@ -6865,56 +6933,7 @@ class EnhancedOTRSession:
 
             payload_obj = OTRv4Payload(plaintext or "", tlvs)
             payload = payload_obj.encode(add_padding=True)
-
-            ct, rh_bytes, nonce, tag, ratchet_id, reveal_keys, mac_key = (
-                self.ratchet.encrypt_message(payload)
-            )
-            ct_with_tag = ct + tag
-
-            rh = RatchetHeader.decode(rh_bytes)
-            # L1: MKmac now comes from the ratchet chain (OTRv4 §4.4.2), not
-            # from sha3_512(session_id || ratchet_id || msg_num). The old key
-            # was a pure function of session_id and two CLEARTEXT wire fields,
-            # so it authenticated nothing an attacker holding session_id could
-            # not reproduce — and it was not the key that got revealed, which
-            # is why revelation proved nothing.
-            # MKmac stays in Rust: `mac_key` is a MessageMacKey handle with no
-            # getter. It seals the public region below and is then destroyed.
-
-            dmsg = OTRv4DataMessage()
-            dmsg.sender_tag = self._sender_tag
-            dmsg.receiver_tag = self._receiver_tag
-            dmsg.flags = 0
-            dmsg.prev_chain_len = rh.prev_chain_len
-            dmsg.ratchet_id = ratchet_id
-            dmsg.message_id = rh.msg_num
-            dmsg.ecdh_pub = rh.dh_pub
-            dmsg.nonce = nonce
-            dmsg.ciphertext = ct_with_tag
-
-            _kem_ct = self.ratchet.consume_outgoing_kem_ct()
-            _kem_ek = self.ratchet.consume_outgoing_kem_ek() if _kem_ct is None else None
-            dmsg.kem_ct = _kem_ct
-            dmsg.kem_ek = _kem_ek
-
-            try:
-                dmsg.mac = dmsg.compute_mac(mac_key)
-            finally:
-                mac_key.zeroize()
-            # L1: no length filter. The old `if len(k) == 32` silently dropped
-            # every spec-sized key; a key the engine queued for revelation must
-            # either be revealed or raise, never vanish.
-            dmsg.revealed_mac_keys = [bytes(k) for k in reveal_keys]
-            for _k in dmsg.revealed_mac_keys:
-                if len(_k) != OTRv4DataMessage.REVEALED_MAC_KEY_LEN:
-                    raise ValueError(
-                        f"Engine produced a {len (_k )}-byte MAC key for "
-                        "revelation; expected "
-                        f"{OTRv4DataMessage .REVEALED_MAC_KEY_LEN }")
-
-            wire = dmsg.encode()
-            encoded = base64.urlsafe_b64encode(wire).decode("ascii").rstrip("=")
-            result = f"?OTRv4 {encoded }."
+            result = self._seal_data_message(self.ratchet.encrypt_message(payload))
 
             self.tracer.trace(
                 self.peer,
@@ -6932,6 +6951,98 @@ class EnhancedOTRSession:
             raise EncryptionError(f"Encryption failed: {e }", self)
         finally:
             self._release_lock()
+
+    def _seal_data_message(self, sent, flags: int = 0) -> str:
+        """Frame one ratchet output as an OTRv4 DATA message on the wire."""
+        ct, rh_bytes, nonce, tag, ratchet_id, reveal_field, mac_key = sent
+        ct_with_tag = ct + tag
+
+        rh = RatchetHeader.decode(rh_bytes)
+        # L1: MKmac now comes from the ratchet chain (OTRv4 §4.4.2), not
+        # from sha3_512(session_id || ratchet_id || msg_num). The old key
+        # was a pure function of session_id and two CLEARTEXT wire fields,
+        # so it authenticated nothing an attacker holding session_id could
+        # not reproduce — and it was not the key that got revealed, which
+        # is why revelation proved nothing.
+        # MKmac stays in Rust: `mac_key` is a MessageMacKey handle with no
+        # getter. It seals the public region below and is then destroyed.
+
+        dmsg = OTRv4DataMessage()
+        dmsg.sender_tag = self._sender_tag
+        dmsg.receiver_tag = self._receiver_tag
+        dmsg.flags = flags
+        dmsg.prev_chain_len = rh.prev_chain_len
+        dmsg.ratchet_id = ratchet_id
+        dmsg.message_id = rh.msg_num
+        dmsg.ecdh_pub = rh.dh_pub
+        dmsg.nonce = nonce
+        dmsg.ciphertext = ct_with_tag
+
+        _kem_ct = self.ratchet.consume_outgoing_kem_ct()
+        _kem_ek = self.ratchet.consume_outgoing_kem_ek() if _kem_ct is None else None
+        dmsg.kem_ct = _kem_ct
+        dmsg.kem_ek = _kem_ek
+
+        try:
+            dmsg.mac = dmsg.compute_mac(mac_key)
+        finally:
+            mac_key.zeroize()
+        # L1: the retired MAC keys arrive as the encoded wire field and go
+        # out as it is -- checked against its own count, never unpacked
+        # into a list of keys here (SPEC §5.8).
+        dmsg.revealed_field = OTRv4DataMessage.check_revealed_field(reveal_field)
+
+        wire = dmsg.encode()
+        encoded = base64.urlsafe_b64encode(wire).decode("ascii").rstrip("=")
+        return f"?OTRv4 {encoded }."
+
+    # -- L1: the end of a session (SPEC §5.8) ----------------------------
+
+    #: Messages this session produced as it closed, each publishing retired
+    #: MAC keys; taken by the manager (`take_final_revelations`) and sent by
+    #: the client. Public by construction: what they carry is meant for the
+    #: wire.
+    final_revelation: List[str]
+
+    def close_with_revelation(self, announce: bool = False) -> List[str]:
+        """End this session's ratchet the deniable way. Idempotent.
+
+        In Rust: every skipped message key is deleted and its MAC key retired
+        (R3); the ratchet then decrypts nothing. Here: closing messages are
+        built until every retired key is published (more than one only past
+        the decoder's 2000-key limit), flagged IGNORE_UNREADABLE so a peer
+        whose session is already gone drops them silently. With [announce]
+        the last carries the DISCONNECTED TLV -- we are the side ending it.
+
+        Runs whatever the state, before any key is wiped: a session ending
+        by error, expiry or the peer's own DISCONNECTED reveals too. If the
+        messages are never sent (no network), the keys are still retired and
+        wiped in Rust; only their publication is lost.
+        """
+        if not hasattr(self, "final_revelation"):
+            self.final_revelation = []
+        ratchet = self.ratchet
+        if ratchet is None or not hasattr(ratchet, "retire_all") or ratchet.closing:
+            return []
+        out: List[str] = []
+        try:
+            ratchet.retire_all()
+            while True:
+                last = ratchet.retired_mac_key_count <= OTRv4DataMessage.MAX_REVEALED_KEYS
+                tlvs = [OTRv4TLV(OTRv4TLV.DISCONNECTED, b"")] if (announce and last) else []
+                payload = OTRv4Payload("", tlvs).encode(add_padding=True)
+                out.append(self._seal_data_message(
+                    ratchet.encrypt_final(payload),
+                    flags=OTRv4DataMessage.FLAG_IGNORE_UNREADABLE))
+                if ratchet.retired_mac_key_count == 0:
+                    break
+        except Exception as e:
+            # Never a reason to keep a session alive: whatever was built goes,
+            # and _cleanup_resources wipes the rest.
+            self.tracer.trace(self.peer, "ERROR", "REVEAL", "FAILED", type(e).__name__)
+        self.final_revelation.extend(out)
+        self.tracer.trace(self.peer, "REVEAL", "ACTIVE", "CLOSING", f"messages={len (out )}")
+        return out
 
     def decrypt_message(self, encrypted_msg: str) -> bytes:
         """Decrypt an OTRv4 DATA message; return human-readable text as UTF-8 bytes.
@@ -7127,6 +7238,9 @@ class EnhancedOTRSession:
                     self.tracer.trace(
                         self.peer, "DISCONNECT", "TLV", "RECEIVED", "peer ended session gracefully"
                     )
+                    # L1 (d): the peer ended it; we still publish what we
+                    # retired. Their side drops it unread, the wire has it.
+                    self.close_with_revelation(announce=False)
                     if self.session_state == SessionState.ENCRYPTED:
                         try:
                             self.transition_session(
@@ -7134,6 +7248,10 @@ class EnhancedOTRSession:
                             )
                         except StateMachineError:
                             pass
+                    # Ended: its keys go now, not when the table is next
+                    # tidied. The closed ratchet used to linger here and was
+                    # taken up again by the next DAKE with this peer.
+                    self._cleanup_resources()
 
                 elif tlv.type in OTRv4TLV.SMP_TYPES:
                     self._enh_handle_smp_tlv(tlv)
@@ -7643,8 +7761,14 @@ class EnhancedOTRSession:
             self._smp_step_times = []
 
     def send_disconnect(self) -> Optional[str]:
-        """Encrypt and return a DISCONNECTED TLV message to notify the peer."""
-        return self.encrypt_with_tlvs("", [OTRv4TLV(OTRv4TLV.DISCONNECTED, b"")])
+        """End the session gracefully: the closing message(s) of
+        close_with_revelation, the last carrying DISCONNECTED (L1). Returns
+        the first; any further ones wait in `final_revelation`."""
+        out = self.close_with_revelation(announce=True)
+        if not out:
+            return None
+        self.final_revelation.remove(out[0])
+        return out[0]
 
     def start_dake(self) -> Optional[str]:
         """Start DAKE as initiator (opportunistic)"""
@@ -7703,6 +7827,9 @@ class EnhancedOTRSession:
 
     def _cleanup_resources(self):
         """Clean up all resources"""
+        # L1: every path that destroys the ratchet -- terminate, failure,
+        # wipe, logout, reset -- publishes its retired MAC keys first.
+        self.close_with_revelation(announce=False)
         try:
             # A handshake that produced session keys but never built a ratchet
             # from them leaves them here. Destroy them explicitly.
@@ -8974,6 +9101,20 @@ class EnhancedSessionManager:
         """Get existing session or create new one"""
         with self.lock:
             self._refuse_if_wiped()
+            ended = self.sessions.get(peer)
+            if ended is not None and ended.session_state in (SessionState.FINISHED,
+                                                             SessionState.FAILED):
+                # An ended session is never taken up again: a new handshake
+                # gets a new session, with nothing of the old one -- not its
+                # ratchet, not its instance tags (L1: "no cryptographic link
+                # to the previous transcript"). What it published goes first.
+                self._collect_revelation(peer, ended)
+                try:
+                    ended._cleanup_resources()
+                except Exception:
+                    pass
+                self._collect_revelation(peer, ended)
+                del self.sessions[peer]
             if peer in self.sessions:
                 session = self.sessions[peer]
 
@@ -9223,6 +9364,23 @@ class EnhancedSessionManager:
             except Exception as e:
                 self.tracer.trace(peer, "ERROR", "PARSE", "FAILED", str(e))
                 return None
+
+    @staticmethod
+    def _flagged_ignore_unreadable(data_msg: str) -> bool:
+        """Whether a DATA frame says IGNORE_UNREADABLE: a peer's closing
+        message (L1, SPEC §5.8) arriving after our side of the session is
+        gone. Such a frame is dropped quietly -- never taken as a session we
+        lost, which would start a handshake for a session both sides ended.
+        Read from the public header only; nothing is decrypted."""
+        try:
+            raw = str(data_msg)[len("?OTRv4 "):].strip()
+            decoded = _safe_b64decode(raw)
+            if not OTRv4DataMessage.looks_like_data_frame(decoded):
+                return False
+            return bool(OTRv4DataMessage.decode(decoded).flags
+                        & OTRv4DataMessage.FLAG_IGNORE_UNREADABLE)
+        except Exception:
+            return False
 
     def take_orphan_data(self, peer: str) -> bool:
         """Whether `peer` sent a DATA frame we had no session for, since asked.
@@ -9608,16 +9766,19 @@ class EnhancedSessionManager:
         rather than being aborted with NO_SECRET.
         """
         with self.lock:
+            unreadable_ok = self._flagged_ignore_unreadable(data_msg)
             if peer not in self.sessions:
                 self.tracer.trace(peer, "ERROR", "DATA", "NO_SESSION", "")
-                self._orphan_data.add(peer)
+                if not unreadable_ok:
+                    self._orphan_data.add(peer)
                 return None
             session = self.sessions[peer]
             if not session.is_encrypted():
                 self.tracer.trace(
                     peer, "ERROR", "DATA", "NOT_ENCRYPTED", session.session_state.name
                 )
-                self._orphan_data.add(peer)
+                if not unreadable_ok:
+                    self._orphan_data.add(peer)
                 return None
 
             try:
@@ -9727,8 +9888,50 @@ class EnhancedSessionManager:
 
             return True
 
-    def end_session(self, peer: str, reason: str = "session ended") -> bool:
+    # -- L1: closing messages (SPEC §5.8) --------------------------------
+
+    def _collect_revelation(self, peer: str, session) -> None:
+        """Keep what an ended session produced for the wire."""
+        out = getattr(session, "final_revelation", None) or []
+        if out:
+            if not hasattr(self, "_final_revelations"):
+                self._final_revelations = []
+            self._final_revelations.extend((peer, wire) for wire in out)
+            session.final_revelation = []
+
+    def take_final_revelations(self) -> List[Tuple[str, str]]:
+        """Every closing message waiting to be sent, as (peer, wire), oldest
+        first; each is handed out once. Includes those of sessions still in
+        the table (a peer that ended it, an IRC `terminate_session`)."""
+        with self.lock:
+            for peer, session in list(self.sessions.items()):
+                self._collect_revelation(peer, session)
+            out = list(getattr(self, "_final_revelations", []))
+            self._final_revelations = []
+            return out
+
+    def make_deniable(self, peer: str) -> bool:
+        """"Make Chat Deniable": publish every MAC key of this session, tell
+        the peer it has ended (DISCONNECTED) and forget it, so a fresh
+        session with no cryptographic link to this transcript can start.
+        The closing messages wait in `take_final_revelations`. False when
+        there is no encrypted session to close."""
+        with self.lock:
+            session = self.sessions.get(peer)
+            if session is None or not session.is_encrypted():
+                return False
+            session.close_with_revelation(announce=True)
+            self.end_session(peer, "made deniable")
+            return True
+
+    def end_session(self, peer: str, reason: str = "session ended",
+                    announce: bool = False) -> bool:
         """Forget everything about this peer's session so a fresh DAKE can run.
+
+        L1: an encrypted session publishes its retired MAC keys first
+        (`close_with_revelation`); with [announce] -- sign-out, quit -- the
+        last closing message also says DISCONNECTED. The reset callers below
+        do not announce, for the reasons given.
 
         This method did not exist until v10.18.1, and three call sites in the
         XMPP client had been calling it since they were written -- clearing an
@@ -9778,6 +9981,11 @@ class EnhancedSessionManager:
             if session is None and engine is None and pending is None:
                 return False
             if session is not None:
+                if announce:
+                    try:
+                        session.close_with_revelation(announce=True)
+                    except Exception:
+                        pass
                 try:
                     session.terminate(reason)
                 except Exception as exc:            # pragma: no cover
@@ -9786,6 +9994,7 @@ class EnhancedSessionManager:
                     # is what the caller needed; failing here would put us
                     # back to the reset not working.
                     self.logger.debug("end_session: terminate raised: %s" % exc)
+                self._collect_revelation(peer, session)
             self.tracer.trace(peer, "END_SESSION", "ACTIVE", "ENDED", reason)
             return True
 
@@ -9848,6 +10057,12 @@ class EnhancedSessionManager:
                     pass
             for peer, session in (list(self.sessions.items())
                                   + list(self._pending_sessions.items())):
+                # L1 (c): every live session publishes and announces before
+                # any of its keys is destroyed.
+                try:
+                    session.close_with_revelation(announce=True)
+                except Exception:
+                    pass
                 try:
                     session.terminate(reason)
                     report["sessions"] += 1
@@ -9856,6 +10071,7 @@ class EnhancedSessionManager:
                         session._cleanup_resources()
                     except Exception:
                         pass
+                self._collect_revelation(peer, session)
             self.sessions.clear()
             self.dake_engines.clear()
             self._pending_sessions.clear()
@@ -9907,9 +10123,12 @@ class EnhancedSessionManager:
         session with any shared peer.
 
         `end_session` is the method that actually forgets, and it is used here
-        for that reason. The wire behaviour is unchanged: neither it nor
-        `terminate_session` sends a DISCONNECTED TLV, so this is a local
-        teardown exactly as before -- it now simply is one.
+        for that reason. L1 (2026-10-26): each encrypted session now ends
+        deniably -- its retired MAC keys are published and the last closing
+        message says DISCONNECTED -- and the messages wait in
+        `take_final_revelations` for the client to send before it closes the
+        transport. Without a network they are dropped; the keys are retired
+        and wiped in Rust all the same.
 
         The trust database is untouched, deliberately. A pinned fingerprint is
         long-term identity and survives a session ending; forgetting it here
@@ -9919,7 +10138,8 @@ class EnhancedSessionManager:
         with self.lock:
             held = len(self.sessions)
             for peer in list(self.sessions.keys()):
-                self.end_session(peer, reason)
+                # L1 (c): sign-out and quit end every session deniably.
+                self.end_session(peer, reason, announce=True)
 
             self.sessions.clear()
             self.dake_engines.clear()

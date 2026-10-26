@@ -42,8 +42,10 @@ class TestTheBoundary:
         assert isinstance(res["mac_key"], otrv4_core.MessageMacKey)
         # The results carry only public wire values and the plaintext; the
         # 64-byte header is the ratchet's public DH key and counters.
+        # L1: retired MAC keys cross only as the encoded wire field.
         assert set(enc) == {"ciphertext", "header", "nonce", "tag", "ratchet_id",
-                            "reveal_mac_keys", "mac_key"}
+                            "reveal_field", "mac_key"}
+        assert isinstance(enc["reveal_field"], bytes)
         assert set(res) == {"plaintext", "mac_key"}
 
     def test_the_handle_cannot_be_read(self):
