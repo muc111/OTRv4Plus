@@ -316,12 +316,9 @@ def _identity_path_for(account):
     by the first account to sign in afterwards, so its contacts see no key
     change; any other account starts with a new identity.
     """
-    import hashlib
+    from otrv4plus_identity import account_tag
     bare = str(account or "").split("/", 1)[0].strip().lower()
-    if "@" not in bare:
-        raise ValueError("a persistent identity needs the account (user@server)")
-    tag = hashlib.sha3_256(b"OTRv4+ identity record v1\x00" + bare.encode("utf-8")).hexdigest()[:32]
-    path = _xmpp_state_path("identity.%s.sealed" % tag)
+    path = _xmpp_state_path("identity.%s.sealed" % account_tag(bare))
     legacy = _xmpp_state_path("identity.sealed")
     if not os.path.exists(path) and os.path.exists(legacy):
         for suffix in ("", ".mldsa"):

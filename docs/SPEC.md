@@ -219,7 +219,7 @@ parse `num_versions` to locate it; the offset is not fixed.
 `num_versions` MUST be in the range 1..8 inclusive. A value of 0 or > 8 MUST
 cause the message to be rejected.
 
-### 3.1 One identity per account (F2)
+### 3.1 One identity per account (F2, F3)
 
 The ClientProfile travels in DAKE1 in a message body the XMPP server relays,
 so the identity key in it is visible to the server and to every peer. An
@@ -228,22 +228,38 @@ the same Ed448 or ML-DSA identity key can be linked by anyone who sees a DAKE
 from each. The fingerprint stays `SHA3-512(Ed448 identity public key)`, a
 public value; it is not re-derived from the account name, because a derived
 display value would change only what people compare, not the key on the wire.
+Nor is the key derived from the account name and a device value: a private
+key computed from inputs that are not secret belongs to whoever learns them.
 
-- **Identity not persisted** (the Android and desktop apps: one identity per
-  process). The identity generated at start-up is taken by the first account
-  a connection is prepared for. A connection prepared for a different account
-  first replaces it: new Ed448 and ML-DSA identities from the same generation
-  code, the old handles zeroized in Rust, every session and handshake of the
-  old identity ended (§5.8), in-memory trust pins discarded. This happens
-  before any byte is sent as the new account. The same account again keeps
-  its identity.
-- **Identity persisted** (the terminal client). One sealed record per
-  account, named `identity.<h>.sealed` with
-  `h = hex(SHA3-256("OTRv4+ identity record v1" || 0x00 || lowercase bare JID))[0..32]`,
-  so the file name does not contain the JID. Sealing is unchanged (Rust,
-  device DEK). The single record from before this rule is kept by the first
-  account to sign in afterwards; any other account starts with a new
-  identity.
+Each account's identity is random (Ed448, its X448 prekey and ML-DSA-87, from
+the usual Rust generation code), created on the account's first sign-in on an
+install, and kept in two sealed records named `identity.<h>.sealed` and
+`identity.<h>.sealed.mldsa`, with
+`h = hex(SHA3-256("OTRv4+ identity record v1" || 0x00 || lowercase bare JID))[0..32]`
+so no name contains the JID. Records are sealed and opened inside Rust under
+the install's key file (`FileDek`, 0600); only ciphertext reaches Python.
+The same account on the same install therefore presents the same identity on
+every sign-in; another account, install or reinstall, or a Wipe & Exit,
+presents an unrelated one.
+
+- **Android.** The records are kept in the Keystore vault (a second AES-GCM
+  layer under a key in the AndroidKeyStore), in a vault directory of their
+  own. Wipe & Exit deletes the Keystore key and the key file. Where the
+  Keystore cannot be opened the vault keeps nothing and the identity is new
+  each start, still one per account.
+- **Desktop.** The records are 0600 files under `~/.otrv4plus/identity`,
+  beside the key file, protected by file permissions; Wipe & Exit destroys
+  them.
+- **Terminal.** The records are files in its own state directory; the single
+  record from before this rule is kept by the first account to sign in
+  afterwards.
+
+When a connection is prepared for an account (sign-in or account creation),
+before any byte is sent as it, the identity presented until then is replaced
+by the account's: every session and handshake of the old identity ends
+(§5.8), its handles are zeroized in Rust (its sealed record stays), and
+in-memory trust pins are discarded. A record that exists and does not open is
+refused (`identity_unavailable`), never replaced.
 
 A device fingerprint is shown only once a login has succeeded, and never
 across an account switch (docs/SECURITY_ISSUES.md U1, F2).

@@ -324,14 +324,22 @@ class VerificationTest {
 
     @Test
     fun `a verification says it does not survive a restart`() {
-        // B1: a new identity every launch. A tick that did not say so would
+        // The verified mark is not saved. A tick that did not say so would
         // overstate what was proved.
         val said = Verification.outcome(SmpState.VERIFIED)!!
         assertTrue("until the app closes" in said, said)
-        assertTrue("new each" in Verification.IDENTITY_LIFETIME)
+        assertTrue("not saved" in said, said)
+        assertFalse("identity is new each launch" in said,
+            "F3: the identity is kept, so that is no longer the reason")
+        val lifetime = Verification.IDENTITY_LIFETIME
         // F2: one identity per account, and said so.
-        assertTrue("each account you sign in to has its own" in Verification.IDENTITY_LIFETIME)
-        assertTrue("warned" in Verification.IDENTITY_LIFETIME,
+        assertTrue("Each account you sign in to has its own" in lifetime)
+        // F3: the same account here keeps it; reinstall and wipe do not.
+        assertTrue("the same every time you sign in to that account here" in lifetime)
+        assertTrue("Reinstalling the app or Wipe & Exit" in lifetime)
+        // The keystore fallback is not hidden.
+        assertTrue("if the keystore cannot be used" in lifetime)
+        assertTrue("warned" in lifetime,
             "the user is not told their contacts will see a key change")
     }
 

@@ -1,14 +1,10 @@
 """Long-term identity lifecycle -- sealed in Rust, NOT used by the Android app.
 
-STATUS (0.6.0-experimental): the Android app does not persist its identity.
-`ChaquopyOtrCore` builds the engine with `OTRConfig()`, whose
-`persist_identity` is false, so every launch generates a new identity; the
-app says so on its About screen and on every successful verification. This
-module's sealing path is used by the Termux XMPP client
-(`otrv4plus_identity.py`). The history below records why it was built and is
-kept because it is still how a persistent identity must be done if Android
-ever adopts one -- that would be a deliberate change to decision B1, not a
-default.
+STATUS (rc.184, F3): the Android and desktop apps keep one identity per
+account through this module's Rust sealing path, by way of
+`otrv4plus_identity.AccountIdentities` (`android_bridge.account_identity`);
+the Termux XMPP client uses the same path (`otrv4plus_identity.py`). The
+history below records why it was built.
 
 Background: why this module needs a decision
 --------------------------------------------

@@ -10032,10 +10032,33 @@ class EnhancedSessionManager:
         (`identity_path_for`); asking to rotate one is a programming error.
         Returns the new fingerprint (public).
         """
+        if self.config.persist_identity:
+            raise RuntimeError("a persisted identity is per account by its path")
+        return self._replace_identity(self._build_client_profile, reason)
+
+    def adopt_identity(self, identity_key, prekey, mldsa, reason: str = "account changed") -> str:
+        """F3: present [account]'s own stored identity from now on.
+
+        The handles come from `otrv4plus_identity.AccountIdentities.load`:
+        opened inside Rust from the account's sealed record, so the private
+        keys never reach Python. Everything else is `rotate_identity`: the
+        sessions of the identity presented until now end (deniably, L1), its
+        handles are zeroized -- its sealed record stays where it is -- and
+        in-memory pins go. Returns the fingerprint (public)."""
+        if self.config.persist_identity:
+            raise RuntimeError("a persisted identity is per account by its path")
+
+        def stored():
+            profile = ClientProfile(identity_key=identity_key, prekey=prekey)
+            profile.mldsa_identity = MLDSA87Auth(handle=mldsa)
+            return profile
+        fingerprint = self._replace_identity(stored, reason)
+        self.identity_is_persistent = True
+        return fingerprint
+
+    def _replace_identity(self, build, reason: str) -> str:
         with self.lock:
             self._refuse_if_wiped()
-            if self.config.persist_identity:
-                raise RuntimeError("a persisted identity is per account by its path")
             for peer in list(self.sessions):
                 self.end_session(peer, reason, announce=True)
             for peer, engine in list(self.dake_engines.items()):
@@ -10054,7 +10077,8 @@ class EnhancedSessionManager:
             self._answering_dake1.clear()
             self._orphan_data.clear()
             old = self.client_profile
-            self.client_profile = self._build_client_profile()
+            self.client_profile = build()
+            self.identity_is_persistent = False
             for name in ("identity_key", "prekey", "mldsa_identity"):
                 handle = getattr(old, name, None)
                 if handle is not None and hasattr(handle, "zeroize"):

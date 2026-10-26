@@ -134,12 +134,25 @@ class KeystoreVault private constructor(
          * every message body to disk in the clear on exactly the devices least
          * able to protect them.
          */
-        fun open(context: Context): Vault = try {
-            val directory = File(context.filesDir, "vault").apply { mkdirs() }
+        fun open(context: Context, section: String = DEFAULT): Vault = try {
+            require(section in SECTIONS) { "unknown vault section" }
+            val directory = File(context.filesDir, section).apply { mkdirs() }
             KeystoreVault(loadOrCreateKey(), directory)
         } catch (e: Exception) {
             InMemoryVault()
         }
+
+        /** The vault for chat history, credentials and settings. */
+        const val DEFAULT = "vault"
+
+        /**
+         * Each account's sealed identity (F3), under the same Keystore key but
+         * in its own directory: [clear] on the default vault (clearing chat
+         * history) must never take an identity with it.
+         */
+        const val IDENTITY = "identity-vault"
+
+        private val SECTIONS = setOf(DEFAULT, IDENTITY)
 
         /**
          * Wipe & Exit: delete the sealing key, then the records.
@@ -162,7 +175,9 @@ class KeystoreVault private constructor(
                 if (store.containsAlias(ALIAS)) store.deleteEntry(ALIAS)
                 !store.containsAlias(ALIAS)
             }.getOrDefault(false)
-            runCatching { File(context.filesDir, "vault").deleteRecursively() }
+            for (section in SECTIONS) {
+                runCatching { File(context.filesDir, section).deleteRecursively() }
+            }
             return keyGone
         }
 

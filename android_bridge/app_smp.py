@@ -255,23 +255,47 @@ class SmpMixin:
         if account and "@" in account and not getattr(self, "_wiped", False):
             self._signed_in = True
 
+    def use_identity_store(self, store) -> None:
+        """F3: keep each account's identity in [store] (an
+        `otrv4plus_identity.AccountIdentities`): Android puts its records in
+        the Keystore vault, the desktop in 0600 files. Without one, every
+        account gets a new identity per process (F2)."""
+        self._identity_store = store
+
     def bind_identity_account(self, account: str) -> bool:
-        """F2: the identity is the ACCOUNT's, not the process's.
+        """F2/F3: the identity is the ACCOUNT's, not the process's.
 
         Called when a connection (sign-in or account creation) is prepared for
-        [account], before anything is sent. The first account in this process
-        takes the identity generated at start-up, which nobody has seen yet;
-        a different account afterwards gets a new one
-        (`EnhancedSessionManager.rotate_identity`) -- the old key wiped in
-        Rust, its sessions ended -- so no two accounts ever present the same
-        long-term key. The same account again keeps it. Returns whether the
-        identity was rotated."""
+        [account], before anything is sent. With an identity store (F3) the
+        account's own stored identity is opened -- created on its first
+        sign-in on this install -- so the same account here always shows the
+        same fingerprint. Without one (F2), the first account takes the
+        identity generated at start-up and a different account afterwards
+        gets a new one. Either way the key presented until then is wiped in
+        Rust and its sessions end, so no two accounts ever present the same
+        long-term key; the same account again keeps it. Returns whether the
+        identity changed. A stored identity that will not open is refused
+        (`identity_unavailable`), never silently replaced."""
         bare = str(account or "").split("/", 1)[0].strip().lower()
         if "@" not in bare or getattr(self, "_wiped", False):
             return False
         current = getattr(self, "_identity_account", None)
         if current == bare:
             return False
+        store = getattr(self, "_identity_store", None)
+        if store is not None:
+            try:
+                handles = store.load(bare)
+            except Exception as exc:
+                _log.warning("identity of the account unavailable: %s", exc.__class__.__name__)
+                raise BridgeError(
+                    "identity_unavailable",
+                    "this account's stored identity could not be opened; it has "
+                    "not been replaced") from None
+            self._signed_in = False
+            self._engine.adopt_identity(*handles, reason="account changed")
+            self._identity_account = bare
+            return True
         rotated = False
         if current is not None:
             self._signed_in = False

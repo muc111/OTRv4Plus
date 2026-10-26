@@ -48,6 +48,7 @@ CODES: Dict[str, Tuple[str, str]] = {
     "engine_required": ("otr", "the call needs the engine, which is not loaded"),
     "session_start_failed": ("otr", "the encrypted session could not be started"),
     "dake_generate_failed": ("otr", "the key exchange message could not be made"),
+    "identity_unavailable": ("identity", "this account's stored identity would not open; it is not replaced (F3)"),
     "dake_send_failed": ("otr", "the key exchange message could not be sent"),
     "pq_downgrade": ("otr", "handshake refused: the contact's identity used ML-DSA before and now did not (A2)"),
     "pq_v2_required": ("otr", "handshake refused: the contact's app does not run protocol v2 (A1, A2 fixed)"),

@@ -16,6 +16,7 @@ Status vocabulary:
 | L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED (mechanism; 2026-10-26)** -- an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`. Residual: the retirement rule wants formal expert review, and until then no "deniable messaging" claim is made; first contact stays trust-on-first-use |
 | U1 | Signed out, About -> back reached the signed-in chat list, and the device's identity fingerprint could be read before any login | Medium (privacy: device-account binding) | **RESOLVED** (2026-10-26) -- the bridge withholds the fingerprint until a login succeeds (`OtrApp.local_fingerprint`, security details, the desktop host's start-up message); Android shows only public screens while signed out and About goes back to sign-in; sign-out keeps nothing to navigate back to; the desktop and terminal show no fingerprint before login. `tests/test_u1_signed_out_surfaces.py`, `AuthGateTest`. Its residual (one identity shared by accounts) is resolved by F2 |
 | F2 | Two accounts used one after the other in one app process (Android, desktop) or on one machine (terminal) presented the same long-term identity key, which every DAKE1 carries past the server: the accounts could be linked | Medium (privacy) | **RESOLVED** (2026-10-26) -- one identity per account (SPEC §3.1): a non-persisted identity is replaced, old handles zeroized in Rust, when a connection is prepared for a different account, before any byte is sent as it; the terminal keeps one sealed record per account, named by a hash. Key generation and sealing unchanged. `tests/test_f2_per_account_identity.py` |
+| F3 | After F2, every sign-in on Android and the desktop showed a new fingerprint (identity per process): contacts were warned of a key change at each restart and verification had to be redone | Medium (usability of TOFU) | **RESOLVED** (2026-10-26) -- each account's random identity is kept per install, sealed in Rust, on Android also in the Keystore vault (SPEC §3.1): the same account on the same install keeps its fingerprint; accounts stay unlinkable. `tests/test_f3_stable_account_identity.py`. Residual: kept on the phone between runs, so code running as the app on an unlocked phone can use it |
 | N1 | The route chosen from the server name (route.py) was followed by the code written to follow it, but not enforced on the process: a library, a mistyped flag or a new feature could open another socket or resolve a name | Medium (anonymity) | **RESOLVED for the app's own code** (2026-10-26) -- a process-wide audit hook (`otrv4plus_egress`) enforces the route from the gate every sign-in, account creation and server test passes first: on I2P and Tor only loopback and the configured bridge are reachable and nothing is resolved; no `.i2p` or `.onion` name reaches DNS on any route. `tests/test_n1_network_isolation.py`. Residual: the bundled i2pd is a separate process with its own reseed and router links; not yet confirmed by a device packet capture |
 | M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
 | G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **RESOLVED** (2026-10-24) -- `tests/test_dake_timeout.py`; `test_08_dake_timeout` no longer an expected failure |
@@ -250,6 +251,84 @@ sent; the terminal's records are per account, named by hash, the old record
 claimed once, and two accounts load two real identities while one account
 keeps its own across runs. Also `VerificationTest` (the About text says each
 account has its own identity).
+
+---
+
+## F3 — The same account on the same install keeps its identity
+
+**Status: RESOLVED, 2026-10-26.**
+
+### What was wrong
+
+F2 gave each account its own identity, but on Android and the desktop that
+identity still lived only as long as the process. A handset test confirmed it:
+two accounts, both with a new fingerprint at every sign-in. Every contact saw a
+key-change warning after each restart, which trains people to dismiss the
+warning TOFU depends on.
+
+### Why not a key computed from the username and the device
+
+Asked for first: compute the identity so it is the same for username + device.
+A key computed from inputs that are not secret (a device ID, a serial, the
+username) is a key anyone who learns them can compute. It would also need a
+production entry point that takes raw seed material, which the release guard
+forbids. Not done.
+
+### The fix (SPEC §3.1)
+
+Each account's identity is random, made by Rust on its first sign-in on this
+install, sealed and opened inside Rust under the install's 0600 key file
+(the existing `create_sealed_identity_under` / `seal_mldsa_identity_under`
+path the terminal client uses), and kept:
+
+- **Android:** in the Keystore vault, sealed again under a key in the
+  AndroidKeyStore, in a vault directory of its own (clearing chat history
+  cannot reach it). Kotlin sees only Rust-sealed ciphertext.
+- **Desktop:** as 0600 files under `~/.otrv4plus/identity`.
+
+`OtrApp.bind_identity_account` opens the account's identity before anything
+is sent as it (`EnhancedSessionManager.adopt_identity`). The identity presented
+until then is zeroized, its sessions end and in-memory pins go. A record that
+will not open is refused (`identity_unavailable`), never replaced.
+Wipe & Exit deletes the Keystore key and destroys `~/.otrv4plus`, so the
+next sign-in creates a new identity.
+
+### Regression gate
+
+`tests/test_f3_stable_account_identity.py`:
+- every sign-in to the same account on one install shows the same
+  fingerprint, on Android and the desktop;
+- the peer sees the same key after a restart;
+- switching back to an account brings its identity back, and case or
+  resource do not make another;
+- two accounts present different keys on the wire; the same account on
+  another install has another key; a reinstall or wipe gives a new one;
+- the vault holds two records per account, named by hash, not containing the
+  public key, and they will not open without this install's key file;
+- the desktop records are 0600 files under the wiped root;
+- a tampered record is refused and nothing is replaced;
+- the identity presented before is zeroized;
+- the desktop host and the Android core install the store; the identity vault
+  is separate from chat history and destroyed by Wipe & Exit;
+- without a store, F2's behaviour remains;
+- the terminal's record names are unchanged.
+
+Also `VerificationTest` (About says the identity is kept per account on this
+install, and that reinstalling, Wipe & Exit or an unusable keystore change it).
+
+### Residuals
+
+- The identity now stays on the phone between runs. A powered-off phone, a
+  copy of its files or a backup (backups are off) holds only ciphertext under
+  the Keystore key. Code running as the app on an unlocked phone can use the
+  identity, as it can use the saved password: background reconnect needs both
+  without the user present (KeystoreVault).
+- The desktop has no keystore: the records and the key file are protected by
+  the user account's file permissions only, like the terminal client's.
+- The verified mark is still not saved; a verification lasts until the app
+  closes, and the app says so.
+- A record that will not open shows as a connection failure and is retried.
+  It is not replaced; Wipe & Exit starts over.
 
 ---
 

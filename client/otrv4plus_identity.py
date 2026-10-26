@@ -180,7 +180,30 @@ def load_or_create_identity(identity_path: str, dek_path: str):
     """
     if not identity_path:
         raise IdentityUnavailable("no identity path configured")
+    try:
+        return _identity_from(_read_record(identity_path),
+                              lambda sealed: _write_record(identity_path, sealed),
+                              dek_path)
+    except _Unopenable as exc:
+        raise IdentityUnavailable(
+            "the stored XMPP identity could not be opened (%s).\n"
+            "  It has NOT been replaced. Replacing it silently would change "
+            "your fingerprint\n"
+            "  and every peer who pinned it would see that as an identity "
+            "change.\n"
+            "  If you know why (restored backup, deleted key file), move %s "
+            "aside to start\n"
+            "  a new identity -- and expect peers to warn about the change."
+            % (exc, identity_path)) from None
 
+
+class _Unopenable(IdentityUnavailable):
+    """A record exists and will not open. Never replaced (fail closed)."""
+
+
+def _identity_from(blob, persist, dek_path):
+    """The Ed448 identity in sealed [blob], or a new one handed sealed to
+    [persist] when there is none."""
     try:
         from android_bridge.identity import (
             IdentityManager, RustSealedIdentityKeyStore, CorruptIdentity,
@@ -196,24 +219,10 @@ def load_or_create_identity(identity_path: str, dek_path: str):
     key_store = RustSealedIdentityKeyStore(provider)
     manager = IdentityManager(store, key_store)
 
-    blob = _read_record(identity_path)
-
-    def _persist(sealed: bytes) -> None:
-        _write_record(identity_path, sealed)
-
     try:
-        record = manager.load_or_create(blob, _persist)
+        record = manager.load_or_create(blob, persist)
     except CorruptIdentity as exc:
-        raise IdentityUnavailable(
-            "the stored XMPP identity could not be opened (%s).\n"
-            "  It has NOT been replaced. Replacing it silently would change "
-            "your fingerprint\n"
-            "  and every peer who pinned it would see that as an identity "
-            "change.\n"
-            "  If you know why (restored backup, deleted key file), move %s "
-            "aside to start\n"
-            "  a new identity -- and expect peers to warn about the change."
-            % (exc, identity_path)) from None
+        raise _Unopenable(str(exc)) from None
     except IdentityError as exc:
         raise IdentityUnavailable("identity storage unusable: %s" % exc) from None
 
@@ -233,23 +242,126 @@ def load_or_create_mldsa(identity_path: str, dek_path: str):
     """
     if not identity_path:
         raise IdentityUnavailable("no identity path configured")
-    import otrv4_core
     path = identity_path + ".mldsa"
+    try:
+        return _mldsa_from(_read_record(path),
+                           lambda sealed: _write_record(path, sealed), dek_path)
+    except _Unopenable:
+        raise IdentityUnavailable(
+            "the stored ML-DSA identity key could not be opened. It has NOT "
+            "been replaced: contacts who pinned it would refuse a new one. "
+            "If you know why, move %s aside and expect them to warn." % path
+        ) from None
+
+
+def _mldsa_from(blob, persist, dek_path):
+    """The ML-DSA-87 key in sealed [blob], or a new one handed sealed to
+    [persist]. Sealed and opened inside Rust; Python sees ciphertext."""
+    import otrv4_core
     handle = TermuxFileDekProvider(dek_path).current()
     dek = handle.rust_dek()
-    blob = _read_record(path)
     if blob:
         try:
             return otrv4_core.unseal_mldsa_identity_under(blob, dek, handle.key_id)
         except Exception:
-            raise IdentityUnavailable(
-                "the stored ML-DSA identity key could not be opened. It has NOT "
-                "been replaced: contacts who pinned it would refuse a new one. "
-                "If you know why, move %s aside and expect them to warn." % path
-            ) from None
+            raise _Unopenable("ML-DSA record") from None
     key = otrv4_core.MlDsa87KeyHandle()
-    _write_record(path, bytes(otrv4_core.seal_mldsa_identity_under(key, dek, handle.key_id)))
+    persist(bytes(otrv4_core.seal_mldsa_identity_under(key, dek, handle.key_id)))
     return key
+
+
+# ---------------------------------------------------------------------------
+# One identity per account, for the apps (F3)
+# ---------------------------------------------------------------------------
+
+def account_tag(account) -> str:
+    """The name an account's records are kept under: a domain-separated
+    SHA3-256 of the bare JID, so the JID itself is never a file or vault
+    entry name. The terminal client's per-account records use the same."""
+    import hashlib
+    bare = str(account or "").split("/", 1)[0].strip().lower()
+    if "@" not in bare:
+        raise ValueError("a persistent identity needs the account (user@server)")
+    return hashlib.sha3_256(b"OTRv4+ identity record v1\x00"
+                            + bare.encode("utf-8")).hexdigest()[:32]
+
+
+class FileRecords:
+    """Sealed records as 0600 files in one directory (the desktop)."""
+
+    def __init__(self, directory: str):
+        self._dir = directory
+
+    def get(self, name: str):
+        return _read_record(os.path.join(self._dir, name))
+
+    def put(self, name: str, sealed: bytes) -> None:
+        _write_record(os.path.join(self._dir, name), sealed)
+
+    def remove(self, name: str) -> None:
+        try:
+            os.remove(os.path.join(self._dir, name))
+        except FileNotFoundError:
+            pass
+
+
+class VaultRecords:
+    """Sealed records kept in a platform vault (Android: a KeystoreVault).
+
+    What goes in is the record Rust already sealed -- ciphertext -- and the
+    vault seals it again, under a key in the AndroidKeyStore that never leaves
+    it. A copy of the app's files alone (a pulled flash chip, a backup) holds
+    the inner key file and outer ciphertext, and opens neither.
+
+    [vault] has `get(name) -> bytes | None`, `put(name, bytes)` and
+    `remove(name)`; `get` answers None for absent AND for unopenable, which
+    for an identity means a new one -- contacts are warned of the change."""
+
+    PREFIX = "otrv4plus.identity."
+
+    def __init__(self, vault):
+        self._vault = vault
+
+    def get(self, name: str):
+        blob = self._vault.get(self.PREFIX + name)
+        return bytes(blob) if blob is not None and len(blob) else None
+
+    def put(self, name: str, sealed: bytes) -> None:
+        self._vault.put(self.PREFIX + name, bytes(sealed))
+
+    def remove(self, name: str) -> None:
+        self._vault.remove(self.PREFIX + name)
+
+
+class AccountIdentities:
+    """Each account's long-term identity on this install (SPEC §3.1, F3).
+
+    Created on the account's first sign-in here -- random, by the same Rust
+    generation code as ever -- sealed inside Rust under the install's key
+    file [dek_path], and kept in [records]. Every later sign-in to the same
+    account on the same install opens the same identity, so its fingerprint
+    is the same; another account, another install, a reinstall or a Wipe &
+    Exit has a different one. Nothing about one account's key can be computed
+    from another's: they are independent random keys, not derived from the
+    username or the device."""
+
+    def __init__(self, records, dek_path: str):
+        if not dek_path:
+            raise IdentityUnavailable("no identity key file configured")
+        self._records = records
+        self._dek_path = dek_path
+
+    def load(self, account):
+        """`(ed448, x448, mldsa)` handles of [account], created if new.
+        A record that exists and will not open raises IdentityUnavailable."""
+        name = "identity.%s.sealed" % account_tag(account)
+        records = self._records
+        ed448, x448, _pub = _identity_from(
+            records.get(name), lambda sealed: records.put(name, sealed), self._dek_path)
+        mldsa = _mldsa_from(records.get(name + ".mldsa"),
+                            lambda sealed: records.put(name + ".mldsa", sealed),
+                            self._dek_path)
+        return ed448, x448, mldsa
 
 
 def _read_record(path: str):

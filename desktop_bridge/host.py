@@ -370,7 +370,10 @@ def _real_app():
     bootstrap.ensure_runtime()
     otr = bootstrap.load_orchestration()
     from android_bridge.app import OtrApp
-    return OtrApp(otr.EnhancedSessionManager(otr.OTRConfig()))
+    from android_bridge.account_identity import for_desktop
+    app = OtrApp(otr.EnhancedSessionManager(otr.OTRConfig()))
+    app.use_identity_store(for_desktop())        # F3: one identity per account
+    return app
 
 
 def _real_controller(app, jid, server, sam_host, sam_port):

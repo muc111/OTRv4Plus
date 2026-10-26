@@ -6,6 +6,7 @@ import com.chaquo.python.PyObject
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import org.otrv4plus.android.BuildConfig
+import org.otrv4plus.android.security.KeystoreVault
 
 /**
  * [OtrCore] backed by CPython via Chaquopy.
@@ -117,6 +118,17 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             val appModule = py.getModule("android_bridge.app")
             app = appModule.callAttr(
                 "OtrApp", engine ?: throw OtrBridgeException("engine_unavailable"))
+            // F3: each account's identity, kept between runs. The records are
+            // sealed inside Rust before they reach the vault; the vault seals
+            // them again under the AndroidKeyStore. Its own directory, so
+            // clearing chat history never removes an identity.
+            // Without it (no Keystore, no storage) every account still gets
+            // its own identity, made new each run (F2).
+            runCatching {
+                app?.callAttr("use_identity_store",
+                    py.getModule("android_bridge.account_identity").callAttr(
+                        "for_android", KeystoreVault.open(appContext, KeystoreVault.IDENTITY)))
+            }
 
             InitResult(
                 ok = report.callAttr("get", "ok").toBoolean(),

@@ -153,28 +153,33 @@ object Verification {
      * attacker does not control.
      */
     /**
-     * How long an identity -- and so a verification -- lasts on this device.
+     * How long an identity lasts on this device.
      *
-     * Decision B1: the engine is built with `OTRConfig()`, whose
-     * `persist_identity` is false, so every launch generates a new Ed448
-     * identity and nothing about the old one survives. That is deliberate and
-     * is not changed here; what was missing is that nothing told the user.
-     * A verification is a proof about a key, so it ends with the key, and
-     * every contact who pinned the old one will see a key-change warning for
-     * the new one. Saying so up front is what stops that warning being
-     * learned as noise.
+     * F3 (SPEC §3.1): each account has its own identity, made on its first
+     * sign-in on this install and kept sealed -- inside Rust, then again by
+     * the Keystore vault -- so signing in to the same account here shows the
+     * same fingerprint every time. A reinstall or Wipe & Exit makes a new one,
+     * and so does every start if the Keystore cannot be opened (the vault
+     * then keeps nothing). Every contact who pinned the old key will see a
+     * key-change warning for the new one; saying so up front is what stops
+     * that warning being learned as noise.
      */
     const val IDENTITY_LIFETIME: String =
-        "Your identity on this device is new each time the app starts, and " +
-            "each account you sign in to has its own, so accounts used on one " +
-            "phone cannot be linked by their key. Nothing about it is kept " +
-            "after you close the app. Contacts who " +
-            "saved your previous key will be warned that it changed, and any " +
-            "verification has to be done again."
+        "Each account you sign in to has its own identity on this phone, so " +
+            "accounts used on one phone cannot be linked by their key. It is " +
+            "the same every time you sign in to that account here, kept sealed " +
+            "with the phone's keystore (if the keystore cannot be used, it is " +
+            "new each time the app starts). Reinstalling the app or Wipe & Exit " +
+            "makes a new one: contacts who saved your previous key will be " +
+            "warned that it changed, and any verification has to be done again."
 
-    /** Appended to a successful verification: it is not permanent. */
+    /**
+     * Appended to a successful verification: it is not permanent. The
+     * identity now outlives the app (F3), but the verified mark does not --
+     * nothing about a contact's key is stored on this side.
+     */
     const val VERIFIED_UNTIL: String =
-        "This lasts until the app closes: your identity is new each launch."
+        "This lasts until the app closes: verifications are not saved yet."
 
     /**
      * The progress bar while a verification runs. Owner (2026-10-16):

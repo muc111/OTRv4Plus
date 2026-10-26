@@ -21,7 +21,7 @@ end-to-end run is step 35–49 of
 | Message history, saved contacts | kept | this account's forgotten | **destroyed** |
 | Vault key (AndroidKeyStore) | kept | kept | **deleted** |
 | Received files; leftovers of older builds under `~/.otrv4plus` | kept | kept | **destroyed** |
-| Identity / fingerprint | per process | per process | **destroyed**; a new one next launch |
+| Identity / fingerprint (one per account, F3) | kept | kept | **destroyed** (vault key and key file); a new one at the next sign-in |
 | App | stays open | stays open | **process ends** |
 
 Disconnect is never described as erasing anything. On the Connect screen the

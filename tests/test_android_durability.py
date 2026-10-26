@@ -72,7 +72,7 @@ class TestTheVaultUsesThePlatform:
     def test_failing_to_open_degrades_to_remembering_nothing(self, vault):
         """NEVER to a plaintext file. A device whose Keystore is unavailable is
         the last place to start writing passwords in the clear."""
-        block = vault[vault.index("fun open(context: Context)"):]
+        block = vault[vault.index("fun open(context: Context"):]
         block = block[:block.index("private fun loadOrCreateKey")]
         assert "InMemoryVault()" in block
 
