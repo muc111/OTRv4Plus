@@ -13,7 +13,7 @@ group = "org.otrv4plus"
 // The desktop app's own version (docs/VERSIONING.md). Not the Rust core's: it
 // started at the core's 0.13.1 only so packages already installed upgrade.
 // The README badge is tested against this line.
-version = "0.14.7"
+version = "0.14.8"
 
 dependencies {
     implementation(compose.desktop.currentOs)

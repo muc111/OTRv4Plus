@@ -240,6 +240,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Sign-out and About | Signed out, About goes back to sign-in and the device fingerprint is not shown anywhere until you sign in; Make Chat Deniable in a 1:1 chat ends the session and starts a new one | rc.182 |
 | Accounts and network | Each account you sign in to has its own identity key; on I2P and Tor the app reaches only this device and resolves no names; check with PCAPdroid that an .i2p account shows no DNS from the app | rc.183 |
 | Identity, wipe and groups | Sign in twice to the same account: same fingerprint, and the contact is not warned; a second account has another. Wipe & Exit with a chat open: the contact receives the closing message. Delete a group: members see they were removed before it goes. Desktop: the Rooms tab flashes for an unseen invitation | rc.184 |
+| Invites and deniability | Invite by name and from the online list, also right after Make Chat Deniable: the other client receives it. Make Chat Deniable and Make Group Deniable delete that chat's history here. In a group, after Make Group Deniable the other members carry on talking normally | rc.185 |
 
 ## ⚠️ Known limits
 

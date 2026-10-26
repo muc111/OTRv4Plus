@@ -4,6 +4,44 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.185 — 2026-10-26 — Group invitations recover from a lost handshake; group signing keys published; deniable chats delete their history (core 0.13.2)
+
+- **Group invitations that never arrived.** An invitation waits for OTRv4+
+  with the person invited, and so does a queued message. Until now the app
+  stopped trying when it already had any session object for that contact:
+  one that had ended, or a handshake whose message was lost. Over I2P a
+  message can be lost, and so can a handshake right after Make Chat
+  Deniable. The invitation then waited until the app was restarted.
+  - Now a handshake counts as running only while it is in progress and not
+    past its 2-minute timeout.
+  - A stalled one is started again for anyone something is waiting for: at
+    most once every 2 minutes per contact.
+  - The tests run two real apps end to end: invite by name, from the online
+    list, with the chat open, after Make Chat Deniable on either side, and
+    with a handshake message lost on the way.
+- **Make Chat Deniable now deletes that chat's history on this device**, so
+  only the new session's messages are shown. The chat stays open, and the
+  confirmation says so.
+- **Group signatures can be denied after the fact** (security issue F4,
+  using "epochal signatures"). Every member's group message is signed, and
+  until now those signatures stayed checkable for ever.
+  - Each automatic key change (every 50 messages or 30 minutes) already gave
+    you a new signing key. Now your old key is kept and then published to
+    the group's members 10 minutes later. After that, any member could have
+    signed what it signed. The key you use now is never published.
+  - **Make Group Deniable…** (in a group's panel) changes your key at once,
+    publishes your earlier ones as soon as the room confirms the change, and
+    deletes the group's history on this device.
+  - The keys are built into the publication, and checked on arrival, inside
+    Rust; the app sees only their fingerprints. A published key cannot sign
+    new messages into the group.
+  - An older client drops the publication without showing it.
+  - Anything leaked before the publication stays signed. The mechanism has
+    not been independently reviewed, and the app says so.
+- Tests: `tests/test_group_invite_end_to_end.py`,
+  `tests/test_f4_group_key_publication.py`, `retired_key_tests` (Rust),
+  `DeniableChatTest`.
+
 ## Android 0.7.0-experimental.rc.184 — 2026-10-26 — The same account keeps its fingerprint; MAC keys published before Wipe & Exit; deleting a group removes everyone (core 0.13.2)
 
 - **The same account on the same phone keeps its fingerprint** (security
