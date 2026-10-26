@@ -23,6 +23,8 @@ object DeniableChat {
             "who has a copy of them could have forged them. Then this encrypted " +
             "session ends and a new one starts, unlinked to the old one. Your " +
             "messages stay encrypted: only their authentication keys are published. " +
+            "This chat's history is deleted from this device, so only the new " +
+            "session's messages are shown. " +
             "This mechanism has not been independently reviewed yet."
 
     /** Offered only in an established OTRv4+ session -- not plaintext, and
@@ -32,7 +34,21 @@ object DeniableChat {
                                      SecurityState.SMP_VERIFIED)
 
     fun outcome(result: String): String = when (result) {
-        "made_deniable" -> "The keys were published and a new encrypted session is starting."
+        "made_deniable" -> "The keys were published, this chat's history was deleted from " +
+            "this device, and a new encrypted session is starting."
         else -> "There is no encrypted session with this contact to end."
+    }
+
+    /**
+     * What the phone and the desktop do with the engine's answer. Owner
+     * (2026-10-26): "wipe the chat history and only show new chat session
+     * following the make deniability". On "made_deniable" this chat's
+     * messages go, from memory and from the vault ([ChatState.clearHistory]);
+     * the chat itself stays open for the new session. Anything else deletes
+     * nothing. Returns the line to show.
+     */
+    fun apply(result: String, chat: org.otrv4plus.android.chat.ChatState, jid: String): String {
+        if (result == "made_deniable") chat.clearHistory(jid)
+        return outcome(result)
     }
 }

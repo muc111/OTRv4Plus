@@ -405,7 +405,7 @@ class ChatViewModel : ViewModel() {
             val result = withContext(Dispatchers.IO) {
                 runCatching { c.makeChatDeniable(jid) }.getOrDefault("no_session")
             }
-            state?.note(org.otrv4plus.android.crypto.DeniableChat.outcome(result))
+            state?.let { it.note(org.otrv4plus.android.crypto.DeniableChat.apply(result, it, jid)) }
             revision++
         }
     }

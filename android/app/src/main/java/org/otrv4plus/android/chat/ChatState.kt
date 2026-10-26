@@ -347,6 +347,19 @@ class ChatState(
         return had
     }
 
+    /**
+     * This conversation's messages, from memory and from the vault -- after
+     * Make Chat Deniable ([org.otrv4plus.android.crypto.DeniableChat.apply]),
+     * so that only the new session's messages are shown. Unlike
+     * [deleteConversation] the conversation goes on: it stays open, its row
+     * and draft stay. Returns whether there was history to delete.
+     */
+    fun clearHistory(jid: String): Boolean {
+        val bare = bare(jid)
+        if (bare.isEmpty() || !account.isAuthenticated) return false
+        return store.delete(bare)
+    }
+
     /** Whether [jid]'s stored history is room traffic: lines carry a sender nick. */
     private fun storedAsRoom(jid: String): Boolean =
         store.messages(jid).any { it.sender.isNotEmpty() }

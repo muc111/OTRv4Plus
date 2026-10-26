@@ -1177,7 +1177,7 @@ class AppModel(
     fun makeChatDeniable(jid: String) {
         ui.launch {
             val result = withContext(Dispatchers.IO) { core.makeChatDeniable(jid) }
-            chat.note(org.otrv4plus.android.crypto.DeniableChat.outcome(result))
+            chat.note(org.otrv4plus.android.crypto.DeniableChat.apply(result, chat, jid))
             changed()
         }
     }
