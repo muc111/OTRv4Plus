@@ -26,23 +26,37 @@ class DeniableChatTest {
         assertFalse(DeniableChat.offered(SecurityState.ENCRYPTED, isRoom = true))
     }
 
-    @Test fun `the words claim what the tests show and no more`() {
+    // Audit 2026-10-26 (docs/AUDIT_CLAIM_MATRIX.md §1): L1 is RESOLVED-CODE,
+    // so the words describe the mechanism and its residuals and state no
+    // deniability property.
+    @Test fun `the words describe the mechanism and its residuals and state no property`() {
         val all = listOf(DeniableChat.ACTION, DeniableChat.TITLE, DeniableChat.BODY,
                          DeniableChat.outcome("made_deniable"),
                          DeniableChat.outcome("made_deniable_unconfirmed"),
                          DeniableChat.outcome("no_session"))
-        // Qualified, never bare: pending the external audit.
-        assertTrue("Deniability pending external audit" in DeniableChat.BODY)
-        assertTrue(all.none { "deniable messaging" in it.lowercase() })
-        // What is deniable: who wrote what, in a copy someone else holds.
-        assertTrue("no longer proves who wrote what" in DeniableChat.BODY)
-        // What is NOT: having talked (the handshake's ML-DSA signatures, SPEC §10.1).
-        assertTrue("does not hide that you two talked" in DeniableChat.BODY)
+        for (word in listOf("deniable messaging", "pending external audit", "no longer proves",
+                            "could have forged", "until it does", "unlinked")) {
+            assertTrue(all.none { word in it.lowercase() }, word)
+        }
+        assertTrue("Not independently reviewed." in DeniableChat.BODY)
+        // The mechanism.
+        assertTrue("Publishes the keys used to authenticate this chat's messages" in DeniableChat.BODY)
         assertTrue("stay encrypted" in DeniableChat.BODY)
-        // Confirmed only when the server said so; otherwise it says it is not.
-        assertTrue("confirms it received them first" in DeniableChat.BODY)
+        assertTrue("asks your server to confirm" in DeniableChat.BODY)
+        assertTrue("shares no keys with it" in DeniableChat.BODY)
+        // The residuals: having talked (SPEC §10.1); a copy made before the
+        // publication; a close that does not finish (TestCrashDuringClose,
+        // TestMultiPartClose).
+        assertTrue("does not hide that you two talked" in DeniableChat.BODY)
+        assertTrue("A copy made before the keys are published, or a close that does not " +
+                   "finish, can still be proof." in DeniableChat.BODY)
+        // Confirmed only when the server said so; otherwise it says how far
+        // the re-sending goes (CLOSING_MAX_TRIES, in memory only).
         assertTrue("confirmed" in DeniableChat.outcome("made_deniable"))
-        assertTrue("not yet confirmed" in DeniableChat.outcome("made_deniable_unconfirmed"))
+        val unconfirmed = DeniableChat.outcome("made_deniable_unconfirmed")
+        assertTrue("not yet confirmed" in unconfirmed)
+        assertTrue("up to 40 times, while it keeps running" in unconfirmed)
+        assertTrue("can still be proof" in unconfirmed)
     }
 
     @Test fun `unconfirmed the history still goes because the session is closed either way`() {
@@ -118,8 +132,12 @@ class DeniableChatTest {
     @Test fun `the group words describe the mechanism and claim nothing more`() {
         val all = listOf(GroupDeniable.ACTION, GroupDeniable.TITLE, GroupDeniable.BODY,
                          GroupDeniable.outcome(true, "ok"), GroupDeniable.outcome(false, "x"))
-        assertTrue(all.none { "deniable messaging" in it.lowercase() })
-        assertTrue("Pending external audit" in GroupDeniable.BODY)
+        for (word in listOf("deniable messaging", "pending external audit", "no longer proves")) {
+            assertTrue(all.none { word in it.lowercase() }, word)
+        }
+        assertTrue("Not independently reviewed." in GroupDeniable.BODY)
+        assertTrue("any of them can make signatures under those keys" in GroupDeniable.BODY)
+        assertTrue("while the app is running" in GroupDeniable.BODY)
         // MLS_SECURITY_HARDENING §1: release does not reach back, so no copy
         // may say the past is deniable.
         val group = listOf(GroupDeniable.ACTION, GroupDeniable.TITLE, GroupDeniable.BODY,

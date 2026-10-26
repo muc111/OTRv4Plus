@@ -6,8 +6,10 @@ A mixin of OtrApp (app.py). The keys themselves are retired and wiped in the
 Rust ratchet; what reaches this module is only the closing messages the
 engine built -- wire text whose `revealed_mac_keys` field is meant to be
 public. They are sent wherever a session ends: Make Chat Deniable, the peer
-ending it, sign-out, Wipe & Exit, quit. Without a network they are dropped,
-and nothing secret is lost with them: the keys are already retired.
+ending it, sign-out, Wipe & Exit, quit. Without a network they are kept, in
+memory only, and sent when it is back (up to CLOSING_MAX_TRIES sends); if
+the process ends first they are lost, and nothing secret with them: the
+keys are already retired.
 """
 from __future__ import annotations
 
@@ -143,12 +145,12 @@ class DeniableMixin:
     def make_chat_deniable(self, peer: str, restart: bool = True) -> str:
         """"Make Chat Deniable" for [peer]: every MAC key of the session is
         published, the peer is told it has ended, the session is forgotten
-        and, with [restart], a fresh one is started -- with no cryptographic
-        link to the old transcript.
+        and, with [restart], a fresh one is started that shares no key with
+        the old one.
 
-        The new session starts only after our server has confirmed the
-        closing messages that publish the keys (`confirm_closings`), so the
-        keys are known to be on the wire. Returns "made_deniable" (confirmed),
+        The new session starts after our server has been asked to confirm
+        the closing messages that publish the keys (`confirm_closings`),
+        whatever it answers. Returns "made_deniable" (confirmed),
         "made_deniable_unconfirmed" (the session is closed and its keys are
         retired, but the server did not confirm in time: the closing messages
         are kept and sent again until it does), or "no_session"."""

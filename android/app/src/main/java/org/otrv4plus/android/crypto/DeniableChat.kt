@@ -8,31 +8,33 @@ import org.otrv4plus.android.bridge.SecurityState
  * "Make Chat Deniable" (L1, SPEC §5.8): what the action is offered for and
  * what it says. Shared by the phone and the desktop; `DeniableChatTest`.
  *
- * The words say what the tests show and no more (owner, 2026-10-26: "we
- * want to be able to say we have deniability pending external audit"):
- *   * deniability of WHAT WAS SAID -- every line's MAC key is on the wire
- *     once both closing messages are out (tests/test_deniability_wire_audit.py),
- *     and a message is authenticated only by keys both sides hold;
- *   * NOT of having talked: the handshake's ML-DSA-87 signatures are
- *     attributable (SPEC §10.1), so the text says so;
- *   * pending the external audit (docs/SECURITY_ISSUES.md, L1).
+ * The words describe the mechanism and its residuals; they state no
+ * deniability property (docs/SECURITY_ISSUES.md L1 is RESOLVED-CODE; audit
+ * of 2026-10-26, docs/AUDIT_CLAIM_MATRIX.md §1):
+ *   * what it does: every line's MAC key goes on the wire in the closing
+ *     messages (tests/test_deniability_wire_audit.py), messages stay
+ *     encrypted, the server is asked to confirm, a new session starts;
+ *   * what it does not: hide that you talked (the handshake's ML-DSA-87
+ *     signatures, SPEC §10.1); help a copy made before the keys are
+ *     published, or a close that does not finish;
+ *   * that it has not been independently reviewed.
  */
 object DeniableChat {
 
     const val ACTION = "Make Chat Deniable…"
-    const val TITLE = "Make this chat deniable?"
+    const val TITLE = "Publish this chat's keys and start again?"
     const val CONFIRM = "Make deniable"
 
     const val BODY =
-        "Publishes the keys that authenticated this chat's messages, so a copy " +
-            "of the chat -- your contact's, or a recording of the traffic -- no " +
-            "longer proves who wrote what: anyone holding it could have forged " +
-            "it. Your server confirms it received them first. Then this " +
-            "encrypted session ends and a new one starts, unlinked to the old one. " +
-            "Your messages stay encrypted: only their authentication keys are " +
-            "published. It does not hide that you two talked: starting a session " +
-            "is signed. This chat's history is deleted from this device, so only " +
-            "the new session's messages are shown. Deniability pending external audit."
+        "Publishes the keys used to authenticate this chat's messages, so a copy " +
+            "of the chat cannot prove who wrote what. Your messages stay encrypted: " +
+            "only their authentication keys are published. The app asks your server " +
+            "to confirm it received them, then ends this encrypted session and " +
+            "starts a new one that shares no keys with it. It does not hide that you " +
+            "two talked: starting a session is signed. This chat's history is " +
+            "deleted from this device, so only the new session's messages are shown. " +
+            "Not independently reviewed. A copy made before the keys are published, " +
+            "or a close that does not finish, can still be proof."
 
     /** Offered only in an established OTRv4+ session -- not plaintext, and
      *  not a session whose key does not match the one pinned. */
@@ -45,8 +47,9 @@ object DeniableChat {
             "chat's history was deleted from this device, and a new encrypted session " +
             "is starting."
         "made_deniable_unconfirmed" -> "The session was closed and its keys retired, but " +
-            "your server has not yet confirmed the message that publishes them; the app " +
-            "keeps sending it until it does. This chat's history was deleted from this " +
+            "your server has not yet confirmed the message that publishes them. The app " +
+            "sends it again, up to 40 times, while it keeps running; if it closes first, " +
+            "this close can still be proof. This chat's history was deleted from this " +
             "device, and a new encrypted session is starting."
         else -> "There is no encrypted session with this contact to end."
     }
@@ -80,12 +83,13 @@ object GroupDeniable {
 
     const val BODY =
         "Gives you a new signing key in this group, then publishes your earlier " +
-            "ones to its members, so a copy of the group shown after that no " +
-            "longer proves who signed what. New messages are signed with the new key, which stays " +
+            "ones to its members, so any of them can make signatures under those " +
+            "keys too. New messages are signed with the new key, which stays " +
             "secret. Messages stay encrypted. Earlier keys are also published " +
-            "by themselves some minutes after each automatic key change. " +
-            "Anything copied before they are published stays signed. This " +
-            "group's history is deleted from this device. Pending external audit."
+            "by themselves some minutes after each automatic key change, while " +
+            "the app is running. Anything copied before they are published stays " +
+            "signed. This group's history is deleted from this device. Not " +
+            "independently reviewed."
 
     fun outcome(ok: Boolean, code: String): String =
         if (ok) "A new signing key is being set up; your earlier ones are published " +

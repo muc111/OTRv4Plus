@@ -2086,8 +2086,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
 
     def make_deniable(self, peer):
         """/deniable: publish every MAC key of the session with [peer], tell
-        them it has ended, forget it, and start a fresh session -- one with
-        no cryptographic link to the transcript anyone can now forge."""
+        them it has ended, forget it, and start a fresh session that shares
+        no key with the one whose MAC keys are now public."""
         try:
             done = self.otr.make_deniable(peer)
         except Exception as exc:
@@ -2679,12 +2679,13 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             "                       just type (/to alice, /to mls3)\n"
             "  /otr [jid]           start OTR session (DAKE); a user name\n"
             "                       alone is enough (/otr bob)\n"
-            "  /deniable [jid]      publish this chat's MAC keys once your\n"
-            "                       server confirms (a copy then no longer\n"
-            "                       proves who wrote what; it does not hide\n"
-            "                       that you talked), end the session and\n"
-            "                       start a new one. Deniability pending\n"
-            "                       external audit\n"
+            "  /deniable [jid]      publish the keys used to authenticate this\n"
+            "                       chat's messages, ask your server to confirm,\n"
+            "                       end the session and start a new one. It does\n"
+            "                       not hide that you talked. Not independently\n"
+            "                       reviewed. A copy made before the keys are\n"
+            "                       published, or a close that does not finish,\n"
+            "                       can still be proof\n"
             "  /smp start           begin SMP verification\n"
             "  /smp <secret>        set secret and start SMP\n"
             "  /smp                 verify this session — prompts (hidden) for\n"
