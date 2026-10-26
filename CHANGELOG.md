@@ -4,6 +4,47 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.183 — 2026-10-26 — One identity per account; the route enforced on the whole app, no DNS on I2P or Tor (core 0.13.2)
+
+Security issues F2 and N1 (docs/SECURITY_ISSUES.md), both closed with
+regression gates.
+
+- **F2: one identity per account.** The identity key goes out in every
+  handshake, inside a message the XMPP server relays. Until now, two accounts
+  used one after the other in the app, or on one machine with the terminal
+  client, sent the same key, so the server or a contact of both could link
+  them. Now every account has its own Ed448 and ML-DSA identity (SPEC §3.1).
+  On Android and the desktop, signing in as a different account replaces the
+  identity before anything is sent as that account. The old keys are wiped in
+  Rust, and the old identity's chats are ended (deniably, L1) and its pins
+  dropped. The terminal client keeps one sealed record per account, and the
+  file name is a hash, not the JID. Your existing terminal identity stays with
+  the first account that signs in, so its contacts see no key change. Key
+  generation and sealing are unchanged.
+- **N1: the route is enforced on the whole app process.** The route still
+  comes from the server name, as before:
+  - `.i2p`: only I2P via SAM;
+  - `.onion`: only Tor;
+  - anything else: TLS, with the certificate checked.
+
+  A process-wide audit hook now enforces it. On I2P and Tor, the app's own
+  code can reach only this device's loopback and the configured bridge, and
+  resolves no names at all. No `.i2p` or `.onion` name is ever sent to DNS, on
+  any route. The rule takes effect before sign-in, account creation or a
+  server test sends anything. slixmpp's own resolver (aiodns), which bypasses
+  the hook, is switched off on those routes; the APK does not include it.
+- **Router choice stays on this device:** a local I2P app's SAM bridge on
+  127.0.0.1:7656 first, then the bundled router. Nothing on the local network
+  is scanned or tried. On the desktop, a SAM bridge on another machine must be
+  typed in as an IP address, and the screen warns that SAM has no password.
+  The terminal client refuses `--no-i2p` for an `.i2p` server.
+- **Not covered by N1:** the bundled router is a separate process. On its
+  first start it reseeds over HTTPS, which looks up the reseed servers' names,
+  and then connects to other I2P routers. Using a local I2P app avoids both.
+  None of this has been checked with a packet capture on a device yet.
+- Tests: `tests/test_f2_per_account_identity.py`,
+  `tests/test_n1_network_isolation.py`, `VerificationTest`.
+
 ## Android 0.7.0-experimental.rc.182 — 2026-10-26 — MAC keys retired by an exact rule, Make Chat Deniable; signed out means signed out (core 0.13.2)
 
 Security issues L1 and U1 (docs/SECURITY_ISSUES.md), both closed with
