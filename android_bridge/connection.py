@@ -989,6 +989,11 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         except Exception:
             # A call-state read must not be able to cost the UI its messages.
             _TRACE.record("voice", "poll_failed", "warning")
+        try:
+            # Waiting invitations and lines: a lost handshake is started again.
+            self._app.retry_stalled_handshakes()
+        except Exception:
+            _TRACE.record("otr", "retry_failed", "warning")
         return self._events.drain(limit)
 
     def add_contact(self, jid: str, name: str = "") -> Dict[str, Any]:

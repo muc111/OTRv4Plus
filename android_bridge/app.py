@@ -736,16 +736,87 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         me = self._own_bare()
         if not waiting and not (me and me < peer):
             return
-        try:
-            if self._engine.has_session(peer):
-                return
-        except Exception:
-            pass
+        if self._handshake_running(peer):
+            return
         try:
             self.start_session(peer)
             _TRACE.record("otr", "auto_started", "info", jid=peer)
         except BridgeError:
             pass
+
+    def _handshake_running(self, peer: str) -> bool:
+        """Whether a handshake with [peer] is in flight and not stalled.
+
+        The automatic starts (`ensure_otr`, `_auto_start`, a queued send)
+        used to ask `has_session`, which is true of ANY session object: one
+        that ended (the peer's closing message, an error) or a handshake whose
+        DAKE message was lost on the way -- over I2P, or refused by the peer's
+        DAKE1 rate limit after a quick Make Chat Deniable. Each of them then
+        declined to start, for good: the queued lines and group invitations
+        waited on a handshake nobody was running (owner, 2026-10-26: group
+        invitations never arrived). In flight means DAKE_IN_PROGRESS, or a
+        responder waiting for DAKE3; stalled means the DAKE engine says it has
+        been half-open past its timeout (`is_expired`)."""
+        live = getattr(self._engine, "sessions", {}).get(peer)
+        state = getattr(getattr(live, "session_state", None), "name", "")
+        dake = (getattr(self._engine, "dake_engines", {}).get(peer)
+                or getattr(live, "dake_engine", None))
+        if state == "DAKE_IN_PROGRESS" or (state == "PLAINTEXT" and dake is not None):
+            expired = getattr(dake, "is_expired", None)
+            if expired is None:
+                started = self._hs_started.get(peer)
+                return started is not None and (
+                    time.monotonic() - started < self.HANDSHAKE_STALL_SECONDS)
+            try:
+                return not expired()
+            except Exception:
+                return True
+        return False
+
+    #: A handshake half-open this long is stalled (the DAKE engine's own
+    #: timeout, used when it has none to ask).
+    HANDSHAKE_STALL_SECONDS = 120.0
+    #: How often `retry_stalled_handshakes` looks.
+    RETRY_LOOK_SECONDS = 15.0
+
+    def retry_stalled_handshakes(self) -> int:
+        """Start OTRv4+ again with anyone something is waiting for -- a
+        queued line, a group invitation -- whose handshake is not running or
+        has stalled. Called on the UI's event tick (`drain_events`); looks at
+        most every RETRY_LOOK_SECONDS and restarts a given peer at most once
+        per HANDSHAKE_STALL_SECONDS, well inside the peer's DAKE1 limit.
+        Without it a lost handshake message left the invitation waiting until
+        the app was restarted. Returns how many were started."""
+        now = time.monotonic()
+        if self._wiped or self._transport is None:
+            return 0
+        if now - getattr(self, "_retry_looked", 0.0) < self.RETRY_LOOK_SECONDS:
+            return 0
+        self._retry_looked = now
+        restarted = getattr(self, "_retry_started", None)
+        if restarted is None:
+            restarted = self._retry_started = {}
+        started = 0
+        waiting = [p for p in set(self._outbox) | set(self._invite_after_otr)
+                   if self._outbox.get(p) or self._invite_after_otr.get(p)]
+        for peer in sorted(waiting):
+            if self.security_state(peer) is not SecurityState.PLAINTEXT:
+                self._flush_outbox(peer)
+                continue
+            if self._handshake_running(peer):
+                continue
+            if now - restarted.get(peer, -1e9) < self.HANDSHAKE_STALL_SECONDS:
+                continue
+            if self._capability_enforced() and self.otr_capability(peer) != "available":
+                continue
+            restarted[peer] = now
+            try:
+                self.start_session(peer)
+                started += 1
+                _TRACE.record("otr", "stalled_handshake_restarted", "info", jid=peer)
+            except BridgeError:
+                pass
+        return started
 
     def invite_when_ready(self, room: str, peer: str) -> str:
         """Invite `peer` to a secure group, starting OTRv4+ with them first if
@@ -902,11 +973,8 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         capability = self.otr_capability(peer)
         if self._capability_enforced() and capability != "available":
             return capability
-        try:
-            if self._engine.has_session(peer):
-                return self.ENSURE_IN_PROGRESS
-        except Exception:
-            pass
+        if self._handshake_running(peer):
+            return self.ENSURE_IN_PROGRESS
         try:
             self.start_session(peer)
         except BridgeError as exc:
@@ -1235,7 +1303,7 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
                     return self.SEND_FAILED
                 if capability == "available":
                     try:
-                        if not self._engine.has_session(peer):
+                        if not self._handshake_running(peer):
                             self.start_session(peer)
                     except (BridgeError, Exception):
                         pass
@@ -1259,7 +1327,7 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
             if not self._hold(peer, body, message_id, reply_to):
                 return self.SEND_FAILED
             try:
-                if not self._engine.has_session(peer):
+                if not self._handshake_running(peer):
                     self.start_session(peer)
             except (BridgeError, Exception):
                 pass
