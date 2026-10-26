@@ -52,12 +52,14 @@ class Wire:
     def __init__(self):
         self.apps, self.frames, self.q, self.busy = {}, [], collections.deque(), False
         self.lose = lambda frm, to, body: False
+        self.lost = set()
         self.held = []
         self.hold = lambda frm, to, body: False
 
     def push(self, frm, to, body):
         self.frames.append((frm, to, body))
         if self.lose(frm, to, body):
+            self.lost.add(len(self.frames) - 1)   # on the sender's link only
             return
         if self.hold(frm, to, body):
             self.held.append((frm, to, body))
@@ -165,8 +167,13 @@ SCRIPT = [("a", "one"), ("a", "two"), ("b", "three"), ("a", "four"),
           ("b", "five"), ("b", "six"), ("a", "seven"), ("b", "eight")]
 
 
-def _audit(wire, lines):
-    keys = _revealed_on_the_wire(wire.frames)
+def _audit(wire, lines, arrived_only=False):
+    """[arrived_only]: the transcript as the server and the peer hold it --
+    a frame lost on the way is not in it. Otherwise everything the sender's
+    link carried, lost frames included."""
+    frames = ([f for i, f in enumerate(wire.frames) if i not in wire.lost]
+              if arrived_only else wire.frames)
+    keys = _revealed_on_the_wire(frames)
     missing = [i for i in lines if _key_for(_data(wire.frames[i][2]), keys) is None]
     return keys, missing
 
@@ -269,3 +276,65 @@ def test_sign_out_publishes_every_line_too():
     alice.shutdown()
     _keys, missing = _audit(wire, lines)
     assert missing == []
+
+
+# ── a close over the per-message bound: several closing messages ─────────────
+
+class TestMultiPartClose:
+    """More retired keys than one closing message may carry (REVEAL_FIELD_MAX,
+    2000) means several closing messages, each publishing its own range,
+    oldest first. Alice sends 2150 lines, Bob sends nothing, Alice presses:
+    Bob's close publishes the 2150 keys in two parts."""
+
+    N = 2150
+    BOUND = 2000
+
+    def _run(self, lose_part=None):
+        wire, alice, bob = _pair()
+        lines = []
+        for i in range(self.N):
+            before = len(wire.frames)
+            alice.send_user_text(BOB, "line %d" % i)
+            lines.extend(j for j in range(before, len(wire.frames))
+                         if _data(wire.frames[j][2]) is not None)
+        assert len(lines) == self.N
+        n = len(wire.frames)
+        state = {"bob_parts": 0}
+
+        def lose(frm, to, body):
+            if frm == BOB and _data(body) is not None:
+                state["bob_parts"] += 1
+                return state["bob_parts"] == lose_part
+            return False
+
+        wire.lose = lose
+        alice.make_chat_deniable(BOB, restart=False)
+        bob_parts = [_data(b) for f, _t, b in wire.frames[n:] if f == BOB and _data(b)]
+        return wire, lines, bob_parts
+
+    def test_bobs_close_is_two_parts_each_with_its_own_range(self):
+        wire, lines, parts = self._run()
+        # Part 2 also carries the key of Alice's closing message (Bob received it).
+        assert [len(p.revealed_mac_keys) for p in parts] == [self.BOUND, self.N - self.BOUND + 1]
+        first = {bytes(k) for k in parts[0].revealed_mac_keys}
+        second = {bytes(k) for k in parts[1].revealed_mac_keys}
+        assert not first & second, "no key in two parts"
+        _keys, missing = _audit(wire, lines)
+        assert missing == [], "both parts out: every line deniable"
+        covered_by_first = [i for i in lines if _key_for(_data(wire.frames[i][2]), list(first))]
+        assert covered_by_first == lines[:self.BOUND], "part 1: exactly the oldest 2000"
+
+    def test_a_lost_second_part_leaves_exactly_its_range_provable(self):
+        """The audit refuses the transcript: the deniability claim does not
+        hold for it. Part 1's range is deniable, part 2's is not."""
+        wire, lines, parts = self._run(lose_part=2)
+        _keys, missing = _audit(wire, lines, arrived_only=True)
+        assert missing == lines[self.BOUND:], "the last 150 lines stay provable"
+        assert missing, "the audit rejects this transcript"
+        # The client keeps the lost part until the server confirms it, and
+        # sends it again (app_deniable.py): that is what closes the gap.
+        bob = wire.apps[BOB]
+        assert len([e for e in bob._closings() if e[2]]) == 2, "both parts kept unconfirmed"
+        bob._resend_closings_now()
+        _keys, missing = _audit(wire, lines, arrived_only=True)
+        assert missing == [], "re-sent: the gap closes"

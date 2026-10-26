@@ -867,6 +867,13 @@ unpublished, which loses deniability for that one message and publishes nothing
 early. A key is wiped from the queue as it is written into the field, and the
 field is the only form in which retired keys leave the ratchet.
 
+**Partial close (residual).** A close with more retired keys than one
+closing message may carry is split into parts, each with its own contiguous
+range, oldest first. Once a part is made, the ratchet no longer holds its
+keys, so a part lost on the way leaves exactly its range unpublished until
+the client sends that frame again. A client SHOULD keep every part until
+its server confirms it (Confirmation, below).
+
 **Close.** Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's
 DISCONNECTED, an error or expiry: before any session key is destroyed the
 ratchet runs `retire_all`, then encrypts closing messages (`encrypt_final`)

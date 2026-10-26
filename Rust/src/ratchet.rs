@@ -2423,6 +2423,72 @@ mod l1_retirement {
         assert!(b.r.encrypt_final(b"").is_err(), "closed once everything is out");
     }
 
+    // ── a close over the per-message bound (multi-part close) ────────────────
+    //
+    // The decoder takes at most REVEAL_FIELD_MAX keys per message, so a close
+    // with more retired keys than that is split into several closing messages.
+    // Each publishes its own contiguous range, oldest first. The residual,
+    // asserted rather than hidden: once the parts are made the ratchet holds
+    // none of those keys, so a part that is lost on the way takes its range
+    // with it -- those messages stay provable -- unless the client re-sends
+    // that frame (it keeps it until the server confirms: app_deniable.py).
+
+    /// Bob receives `n` messages and sends none (so nothing is published in
+    /// passing), then closes. Returns the messages and the closing parts.
+    fn close_after(n: usize) -> (Vec<EncryptResult>, Vec<EncryptResult>, Party) {
+        let (mut a, mut b) = pair();
+        let sent: Vec<_> = (0..n).map(|i| {
+            let m = send(&mut a, format!("m{i}").as_bytes());
+            recv(&mut b, &m).expect("received");
+            m
+        }).collect();
+        assert_eq!(b.r.retire_all(), n, "every received message's key, retired (R1)");
+        let mut parts = Vec::new();
+        while b.r.retired_count() > 0 {
+            parts.push(b.r.encrypt_final(b"").expect("final"));
+        }
+        (sent, parts, b)
+    }
+
+    #[test]
+    fn a_close_over_the_bound_is_several_messages() {
+        let n = REVEAL_FIELD_MAX + 150;
+        let (_sent, parts, mut b) = close_after(n);
+        assert_eq!(parts.len(), 2);
+        assert_eq!(published(&parts[0]).len(), REVEAL_FIELD_MAX);
+        assert_eq!(published(&parts[1]).len(), 150);
+        assert!(b.r.encrypt_final(b"").is_err(), "closed after the last part");
+    }
+
+    #[test]
+    fn each_part_publishes_only_its_own_range_oldest_first() {
+        let n = REVEAL_FIELD_MAX + 150;
+        let (sent, parts, _b) = close_after(n);
+        let first = published(&parts[0]);
+        let second = published(&parts[1]);
+        let keys: Vec<_> = sent.iter().map(|m| m.mac_key.to_vec()).collect();
+        assert_eq!(first, keys[..REVEAL_FIELD_MAX].to_vec(), "part 1: the oldest, in order");
+        assert_eq!(second, keys[REVEAL_FIELD_MAX..].to_vec(), "part 2: the rest, in order");
+        assert!(first.iter().all(|k| !second.contains(k)), "no key in two parts");
+    }
+
+    #[test]
+    fn residual_a_lost_later_part_takes_its_range_with_it() {
+        let n = REVEAL_FIELD_MAX + 150;
+        let (sent, parts, b) = close_after(n);
+        let first = published(&parts[0]);
+        // Part 2 is lost. Part 1's range is out; part 2's is not, and the
+        // ratchet holds none of it any more: nothing can publish it again
+        // except a re-send of that same frame.
+        for m in &sent[..REVEAL_FIELD_MAX] {
+            assert!(first.contains(&m.mac_key.to_vec()));
+        }
+        for m in &sent[REVEAL_FIELD_MAX..] {
+            assert!(!first.contains(&m.mac_key.to_vec()), "provable while part 2 is missing");
+            assert!(!b.r.holds_mac_key(&m.mac_key), "and held nowhere in the ratchet");
+        }
+    }
+
     #[test]
     fn r3_retire_all_publishes_every_held_key_in_the_final_message() {
         let (mut a, mut b) = started();
