@@ -239,6 +239,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Join requests | The creator is asked on any screen and can Accept, Deny or Later; a denied person waits 15 minutes, doubling each time | rc.181 |
 | Sign-out and About | Signed out, About goes back to sign-in and the device fingerprint is not shown anywhere until you sign in; Make Chat Deniable in a 1:1 chat ends the session and starts a new one | rc.182 |
 | Accounts and network | Each account you sign in to has its own identity key; on I2P and Tor the app reaches only this device and resolves no names; check with PCAPdroid that an .i2p account shows no DNS from the app | rc.183 |
+| Identity, wipe and groups | Sign in twice to the same account: same fingerprint, and the contact is not warned; a second account has another. Wipe & Exit with a chat open: the contact receives the closing message. Delete a group: members see they were removed before it goes. Desktop: the Rooms tab flashes for an unseen invitation | rc.184 |
 
 ## ⚠️ Known limits
 

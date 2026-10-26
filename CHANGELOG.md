@@ -4,6 +4,38 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.184 — 2026-10-26 — The same account keeps its fingerprint; MAC keys published before Wipe & Exit; deleting a group removes everyone (core 0.13.2)
+
+- **The same account on the same phone keeps its fingerprint** (security
+  issue F3; SPEC §3.1). Every account still has its own identity, so accounts
+  cannot be linked by their key. It is made on that account's first sign-in on
+  this install, sealed inside Rust, and kept: on Android in the Keystore
+  vault (sealed a second time), on the desktop as 0600 files. Signing in to
+  the same account again shows the same fingerprint, so contacts are no longer
+  warned of a key change after every restart.
+  - A reinstall or Wipe & Exit makes a new identity. If the phone's keystore
+    can't be used, the identity is new each time the app starts.
+  - The key is not computed from the username and the device: anyone who
+    learned those could compute it.
+  - The verified mark is still not saved; a verification lasts until the
+    app closes.
+- **Wipe & Exit and sign-out: the messages that publish MAC keys now leave
+  before the connection does.** The keys were already retired and each chat's
+  closing message made, but the connection was then aborted, which could drop
+  them. Now the app ends the stream and waits (up to 10 seconds) for the
+  server's reply, which confirms the server received every closing message. A
+  contact who is offline may still never receive theirs.
+- **Deleting a group removes everyone first.** The creator removes every
+  member in one group commit and waits for the room to confirm it. Only then is
+  the room deleted. If it isn't confirmed in time, nothing is deleted, and
+  Delete says to try again.
+- **Desktop: the Rooms tab flashes, with a count, while a group invitation
+  you haven't seen is waiting.** Opening Rooms stops it.
+- Tests: `tests/test_f3_stable_account_identity.py`,
+  `tests/test_closing_messages_arrive.py` (real slixmpp),
+  `tests/test_group_delete_removes_everyone.py` (real group clients),
+  `InviteAttentionTest`, `VerificationTest`.
+
 ## Android 0.7.0-experimental.rc.183 — 2026-10-26 — One identity per account; the route enforced on the whole app, no DNS on I2P or Tor (core 0.13.2)
 
 Security issues F2 and N1 (docs/SECURITY_ISSUES.md), both closed with
