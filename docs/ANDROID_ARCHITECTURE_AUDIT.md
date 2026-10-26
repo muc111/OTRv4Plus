@@ -49,7 +49,7 @@ out in §14.1 and summarised here:
 
 | # | Blocker | Why it blocks |
 |---|---|---|
-| **B1** | **Identity is ephemeral by deliberate design.** Fingerprints regenerate every launch. | The spec's Contacts (§11), SMP verification (§13) and Identity (§15) screens all assume a stable long-term identity. As built, "Contact verified ✓" cannot survive an app restart. |
+| **B1** | **Identity is ephemeral by deliberate design.** Fingerprints regenerate every launch. *(Resolved 2026-10-26 by F3: one identity per account, kept per install; docs/SECURITY_ISSUES.md F3.)* | The spec's Contacts (§11), SMP verification (§13) and Identity (§15) screens all assume a stable long-term identity. As built, "Contact verified ✓" cannot survive an app restart. |
 | **B2** | **No decision on how Python runs on Android.** Termux is the only supported host today. | Termux cannot be shipped as a consumer APK. Everything downstream depends on this choice. |
 | **B3** | **Voice requires a local I2P router** (SAM API on `127.0.0.1:7656`). | A consumer app cannot assume the user has i2pd installed and running. |
 

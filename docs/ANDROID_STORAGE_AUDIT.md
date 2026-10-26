@@ -35,7 +35,7 @@ enumerated from the actual write sites in `otrv4+.py`, `otrv4plus_log.py` and
 
 | # | Data | Current storage | Current encryption | Key source | Plaintext exposure | Android replacement | Phase |
 |---|------|-----------------|--------------------|------------|--------------------|---------------------|-------|
-| 1 | **OTR identity (Ed448 seed, X448 prekey)** | **not persisted at all** | n/a | n/a | none on disk; regenerated every launch | `SealedStore` record `otr.identity`, DEK wrapped by Keystore | 2 (interfaces) / 4 (vault) |
+| 1 | **OTR identity (Ed448 seed, X448 prekey, ML-DSA-87)** | one sealed record pair per account in the Keystore vault (`identity-vault`), since F3 (2026-10-26) | AES-256-GCM in Rust under a 0600 key file, then AES-256-GCM under the Keystore key | Rust `FileDek` (inner), AndroidKeyStore (outer) | none: the private keys never reach Python or Kotlin | `SealedStore` record `otr.identity`, DEK wrapped by Keystore | 2 (interfaces) / 4 (vault) |
 | 2 | **Device seed** (`~/.otrv4plus/keys/.device_seed`) | file, mode 0600 | **none — plaintext 32 bytes** | itself: it *is* the credential | **full** — whoever reads the file derives the storage key | deleted; replaced by Keystore-wrapped DEK | 4 |
 | 3 | **Stored keys** (`~/.otrv4plus/keys/*.bin`) | files, 0600 | AES-256-GCM (Rust) | Argon2id/scrypt over the plaintext device seed (#2) | effectively full — key material is one file read away | `SealedStore`, same AEAD, Keystore-held key | 4 |
 | 4 | **Trust database** (XMPP: `~/.otrv4plus/xmpp/trust.json` as of v10.12.0; IRC: not persisted at all) | JSON file | **none — plaintext** | n/a | **full** — peer JIDs and pinned fingerprints readable | `SealedStore` record `otr.trust` | 4 |

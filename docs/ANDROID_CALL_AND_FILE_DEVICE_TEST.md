@@ -21,7 +21,7 @@ not what would merely look right.
 | Area | Verified automatically (CI, every run) | Requires hardware | Status |
 |---|---|---|---|
 | First launch | APK builds; contents inspected (`inspect_apk.py`); core imports under Chaquopy in the debug diagnostics | §9 steps 55–57 | NOT RUN |
-| Identity and fingerprint (new each launch, B1) | `test_peer_fingerprint_is_stable.py`, `test_android_termux_interop.py` (fingerprints agree both ways; Android identity not persisted) | §9 steps 58–60 | NOT RUN |
+| Identity and fingerprint (one per account, kept on this install, F3) | `test_peer_fingerprint_is_stable.py`, `test_android_termux_interop.py` (fingerprints agree both ways), `test_f3_stable_account_identity.py` | §9 steps 58–60 | NOT RUN |
 | XMPP over I2P | Transport against a fake forwarder; no direct fallback in any failure mode (`test_android_transport_lifecycle.py`) | §10 steps 61–63 | NOT RUN |
 | OTR (DAKE) | Real DAKE through the bridge, fragmented, both initiators (`test_android_termux_interop.py`, `test_smp_android_interop.py`) | §10 step 64, §11 | NOT RUN |
 | Fingerprint verification / SMP | Real SMP runs Android↔Android and Android↔Termux, success, failure, abort | §1, §9 step 60, §10 step 66 | NOT RUN |
@@ -274,16 +274,18 @@ listing.
 55. Install the release APK on a phone that has never had OTRv4+. Launch it.
     **Expect:** the sign-in screen, no connection attempt before sign-in.
 56. About screen. **Expect:** the version reads `0.7.0-experimental.rc.1+core.…`,
-    the Identity paragraph says the identity is new each launch, and the
-    third-party notices open.
+    the Identity paragraph says each account has its own identity, the same
+    every time you sign in to it here, and the third-party notices open.
 57. Sign in. **Expect:** progress for the length of an I2P round trip, then
     the roster.
 58. Start OTR with a peer and note your fingerprint as the peer sees it.
-59. Force-stop the app and relaunch. Start OTR again. **Expect:** the peer is
-    warned your key changed (a Termux peer that pinned you; an Android peer
-    keeps no pins across its own restart).
+59. Force-stop the app, relaunch and sign in to the same account. Start OTR
+    again. **Expect:** the same fingerprint as in step 58, and no key-change
+    warning at the peer (F3). Sign in to a second account: **Expect:** a
+    different fingerprint. Back to the first: its fingerprint again.
 60. Complete SMP. **Expect:** "Identity verified … This lasts until the app
-    closes". Relaunch: **Expect:** no longer verified.
+    closes: verifications are not saved yet". Relaunch: **Expect:** no longer
+    verified, and the fingerprint unchanged.
 
 ## 10. Messaging, reconnect and roster over I2P — two handsets or one plus Termux
 
