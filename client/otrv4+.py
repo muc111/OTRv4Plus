@@ -4307,8 +4307,15 @@ class RustBackedDoubleRatchet:
                 or now - self.last_rekey_time > self.rekey_timeout
             ):
                 _rekey_target = self.dh_ratchet_remote_pub or self.last_remote_pub
-                if _rekey_target:
+                # P2 (SECURITY_ISSUES.md): one forced step per remote key. A
+                # second step toward a key the peer has not replaced yet is
+                # one the peer cannot follow -- its receive step uses the
+                # key it made after our first -- and every later message
+                # fails to decrypt. The next step comes from the peer's reply
+                # (`_decrypt_new_dh`), as in the double ratchet.
+                if _rekey_target and _rekey_target != getattr(self, "_forced_toward", None):
                     self._ratchet(_rekey_target)
+                    self._forced_toward = _rekey_target
                 self.last_rekey_time = now
 
             if isinstance(plaintext, str):
@@ -4494,6 +4501,9 @@ class RustBackedDoubleRatchet:
         self.dh_ratchet_remote_pub = dh_pub
         self.dh_ratchet_local = new_local
         self.dh_ratchet_local_pub = new_local_pub
+        # P2: this step already made our sending chain toward `dh_pub`; a
+        # forced step toward it as well would be a second one.
+        self._forced_toward = dh_pub
 
         self._dh_epoch += 1
         self.ratchet_id = self._dh_epoch

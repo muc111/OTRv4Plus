@@ -2212,6 +2212,25 @@ mod pq_ratchet {
         assert_eq!(recv(&mut b, &m).expect("next round"), b"on");
     }
 
+    /// P2 (SECURITY_ISSUES.md), the constraint the engine must keep: two
+    /// send steps toward one remote key, with no new key from the peer in
+    /// between, leave the peer unable to decrypt anything after the second
+    /// -- its receive step uses the key it made after the first. With every
+    /// message delivered, in v1 and v2 alike. The Rust ratchet does not
+    /// refuse it; the engine never takes such a step (`_forced_toward`,
+    /// tests/test_p2_forced_steps.py).
+    #[test]
+    fn p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed() {
+        for pq in [false, true] {
+            let (mut a, mut b) = started(pq);
+            let x1 = send(&mut a, b"x1");
+            assert_eq!(recv(&mut b, &x1).expect("after one step"), b"x1");
+            force(&mut a);                               // a second, toward the same key
+            let x2 = send(&mut a, b"x2");
+            assert!(recv(&mut b, &x2).is_err(), "pq={pq}: the peer cannot follow it");
+        }
+    }
+
     #[test]
     fn a_tampered_item_is_refused_and_changes_nothing() {
         let (mut a, mut b) = started(true);
