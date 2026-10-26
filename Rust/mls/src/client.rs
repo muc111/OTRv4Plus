@@ -1383,6 +1383,34 @@ mod retired_key_tests {
         assert_eq!(published, MAX_RETIRED);
     }
 
+    /// PQC_DECISIONS (c): the composite key is released as a unit. A forgery
+    /// from the publication satisfies BOTH halves of "both must verify", and
+    /// either half alone would not do: corrupting either half of a forged
+    /// signature fails the composite check.
+    #[test]
+    fn a_publication_carries_both_halves_of_the_composite_key() {
+        use crate::provider::{COMPOSITE_PUBLIC_KEY_BYTES, COMPOSITE_SECRET_KEY_BYTES,
+                              ED448_SIGNATURE_BYTES};
+        let (mut a, mut b) = pair();
+        rotate(&mut a, &mut b);
+        let published = copy_of(&a.retired[G][0]);
+        assert_eq!(published.public().len(), COMPOSITE_PUBLIC_KEY_BYTES);
+        assert_eq!(published.secret().len(), COMPOSITE_SECRET_KEY_BYTES,
+                   "the Ed448 seed and the ML-DSA-87 key, together");
+        let forged = Signer::sign(&published, b"forged").unwrap();
+        assert!(composite_verify(published.public(), b"forged", &forged).is_ok());
+        for at in [0, ED448_SIGNATURE_BYTES + 10] {           // Ed448 half, ML-DSA half
+            let mut bad = forged.clone();
+            bad[at] ^= 1;
+            assert!(composite_verify(published.public(), b"forged", &bad).is_err(),
+                    "the composite rule still checks each half");
+        }
+        // Only the ML-DSA half, offered as if it were the key, is not the
+        // member's key: its fingerprint is another key's.
+        let ml_pk = published.public()[crate::provider::ED448_PUBLIC_KEY_BYTES..].to_vec();
+        assert_ne!(fingerprint(&ml_pk), fingerprint(published.public()));
+    }
+
     #[test]
     fn nothing_is_published_while_a_commit_is_pending() {
         let (mut a, mut b) = pair();
