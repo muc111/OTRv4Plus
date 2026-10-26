@@ -4,7 +4,36 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Unreleased (dev) — audit and hardening pass, 2026-10-26
+
+- **Fixed (P2): a chat could stop decrypting silently.** The engine forced
+  a DH step at every rekey boundary even toward a key it had already
+  stepped toward, which the other side cannot follow: after 100 messages
+  from one side following a round trip, or in a chat open across two days,
+  every later message failed to decrypt with no error shown. Now at most
+  one step goes toward each key; the next comes with the reply.
+  `tests/test_p2_forced_steps.py`.
+- **Found (P1, open): on Android and the desktop, contact pins last one run
+  of the app.** After a restart a changed key is accepted as a first
+  contact. The terminal client keeps its pins. `tests/test_p1_trust_pins_per_run.py`.
+- **Make Chat Deniable / Make Group Deniable / `/deniable` describe the
+  mechanism and its residuals and no longer say "deniability pending
+  external audit"**: "Not independently reviewed. A copy made before the
+  keys are published, or a close that does not finish, can still be proof."
+- Corrected claims across README, SECURITY.md, SPEC, SECURITY_ISSUES and
+  the MLS hardening notes; the record is docs/AUDIT_CLAIM_MATRIX.md,
+  docs/AUDIT_TEST_INTEGRITY.md, docs/AUDIT_THREAT_MODEL.md,
+  docs/CRYPTOGRAPHER_QUESTIONS.md and docs/AUDIT_SUMMARY.md.
+
 ## Android 0.7.0-experimental.rc.186 — 2026-10-26 — One-to-one deniability, pending external audit: confirmed publication, audited from the wire (core 0.13.2)
+
+> **Audit correction (2026-10-26).** This entry overstated three things,
+> corrected under "Unreleased" above. The app no longer says "pending
+> external audit": no deniability property is claimed (L1 is
+> RESOLVED-CODE). Make Chat Deniable *asks* the server to confirm and
+> starts the new session whatever the answer. Unconfirmed closing messages
+> are re-sent up to 40 times while the app runs, not "until the server
+> confirms".
 
 **One-to-one chats: deniability of what was said, pending external audit**
 (security issue L1). "Pending external audit" is how the app now describes

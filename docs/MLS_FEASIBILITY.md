@@ -342,7 +342,7 @@ over I2P between phones.
 |---|---|---|
 | KeyPackages published over PEP | KeyPackage, invitation and Welcome sent **inside an encrypted OTRv4+ 1:1 session** (`?OTRv4-MLS:` bodies) | The session authenticates who sent the KeyPackage, which is the identity binding stage 5 needs. PEP would publish a key per account for anyone to fetch (enumeration) and bind it to nothing. |
 | State in the Keystore vault | Sealed by Rust under a key derived from `FileDek` (a 0600 key file in app-private storage) | Keeps the MLS secrets inside Rust end to end; the Keystore path would hand the plaintext state or its key to Kotlin. Weaker at rest than a hardware-backed key: anyone who can read app-private storage can open it. Recorded as a limitation. |
-| hpke-rs | `Rust/mls/src/hpke.rs` | Removes an MPL-2.0 component, a second SHA-3 (libcrux-sha3) and an unmaintained proc-macro from the build. hpke-rs stays a dev-dependency and `tests/hpke_cross.rs` checks the new code against it byte for byte. |
+| hpke-rs | `Rust/mls/src/hpke.rs` | Removes an MPL-2.0 component, a second SHA-3 (libcrux-sha3) and an unmaintained proc-macro from the build. hpke-rs stays a dev-dependency and `Rust/mls/tests/hpke_cross.rs` checks the new code against it byte for byte. |
 
 ### Stage 3: transport (automated; not physically verified)
 

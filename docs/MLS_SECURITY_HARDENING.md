@@ -100,9 +100,17 @@ It does **not** reach back. A signature that someone captured and verified
 while the key was still private was valid evidence at that moment, and stays
 attributable for ever to anyone who trusts that capture. Release cannot undo
 a verification already made. This residual is cryptographic and permanent;
-no later mechanism removes it. The window in which a capture is still
-attributable is the rekey period (at most 50 messages or 30 minutes) plus
-the delay (10 minutes), or none after Make Group Deniable.
+no later mechanism removes it. How long a key stays secret, and so how long
+a capture of its signatures can be made and checked against a secret key,
+is the rekey period (at most 50 messages or 30 minutes) plus the delay (10
+minutes); Make Group Deniable cuts the delay to nothing from the press on.
+It does nothing for a capture already made. The forgers after release are
+the group's members who received the publication, not anyone: it is an
+MLS message encrypted to them
+(`retired_key_tests::residual_only_the_groups_members_receive_the_published_key`,
+`::residual_a_signature_checked_before_release_still_checks_after_it`).
+Publication needs the app running; past 16 retired keys per group the
+oldest are wiped unpublished.
 
 **UI copy constraint.** No text in any client may say "past messages are
 deniable", or anything equivalent. Group copy may say only that earlier keys
@@ -122,7 +130,8 @@ signatures made by a key that was then private. Full OTRv4-style
 deniability inside MLS (ring-signature or designated-verifier
 authentication of leaves) is current research, for example the "deniable
 MLS" constructions. It is not implementable in RFC 9420 or OpenMLS without
-forking the protocol. **Recommendation:** do 1 and 2 now, and decide on 3.
+forking the protocol. (The recommendation of 2026-10-03, "do 1 and 2 now,
+and decide on 3", was settled on 2026-10-26: 3 is done, as F4.)
 
 ## 2. Ciphersuite: AES-256-GCM + hybrid PQ — MET (M4, rc.27)
 
@@ -293,17 +302,22 @@ This is the largest item: transport, mixing and UI on two clients.
 - **Post-compromise security:** MLS heals at the next commit from the
   compromised member. M1 makes that automatic (≤ 50 messages / 30 min).
   OTRv4+ heals at the next DH ratchet step.
-- **Deniability:** OTRv4+ is deniable (DAKE, ring signatures, published
-  MAC keys). MLS can only approach it (§1): leaf keys are unlinked to
-  identity except through deniable OTRv4+, rotated per group and epoch
-  after M2, and optionally published.
+- **Deniability:** no deniability property is claimed for either
+  (docs/SECURITY_ISSUES.md L1, F4: RESOLVED-CODE). OTRv4+ authenticates
+  messages with keys both sides hold and publishes the MAC keys at close
+  (L1), but its v2 handshake signs with attributable ML-DSA-87 keys, so
+  taking part is provable (SPEC §10.1). MLS can only approach it (§1):
+  leaf keys are tied to identity only through OTRv4+ sessions, rotated per
+  group and epoch after M2, and published after rotation (F4).
 - **PQ resistance:** hybrid everywhere since rc.27: OTRv4+, voice, and MLS
   (X448+ML-KEM-1024, Ed448+ML-DSA-87), so a break of either half alone does
   not break confidentiality or authentication. Groups made before rc.27
   remain PQ-only until re-created.
 - **Metadata:** the room (server) sees member nicknames, timing and sizes.
   Content and the group roster in the tree are encrypted
-  (`PURE_CIPHERTEXT` wire format). The server never sees a JID–key link.
+  (`PURE_CIPHERTEXT` wire format), and KeyPackages and Welcomes travel
+  inside OTRv4+ sessions, so the design gives the server no JID–key link.
+  No test checks that end to end (docs/AUDIT_CLAIM_MATRIX.md 2.9).
 
 ## 7. Owner decisions (2026-10-03)
 
@@ -312,7 +326,8 @@ This is the largest item: transport, mixing and UI on two clients.
 - **U1 → idle-leaf removal after 72 h**, configurable
   (`OTRV4PLUS_MLS_IDLE_REMOVE_HOURS`).
 - **D1 → rotate only** (per-group leaf keys, rotated on every
-  self-update); publishing old keys is deferred.
+  self-update); publishing old keys is deferred. *Superseded on
+  2026-10-26: publication is done (F4, §1).*
 
 Found while planning M3: the core's commit event does not say **who**
 committed, which idle tracking needs. M2 adds the committer's leaf identity
@@ -327,4 +342,4 @@ to the commit event (one core change for both).
 | M3 | idle-leaf removal, 72 h default, needs M2's committer field — **done, rc.27** | no |
 | M4 | hybrid ciphersuite via patched OpenMLS (decision C1) — **done, rc.27** | yes; new groups |
 | M5 | group audio calls over MLS exporter keys and I2P — **done for Termux, rc.28 / core 0.13.0; Android screen open** | yes |
-| M2b | optional: publish rotated signature keys (decision D1-3) | yes |
+| M2b | publish rotated signature keys (decision D1-3) — **done as F4, 2026-10-26** | yes |

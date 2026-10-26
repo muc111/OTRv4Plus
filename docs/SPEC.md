@@ -389,7 +389,10 @@ list `PQ_AUTH_VERSION` (`0x51`):
    (`pq_downgrade`) or uses another ML-DSA key (`pq_key_changed`) is refused:
    in exactly that attack the Ed448 fingerprint a user would compare matches. A
    new Ed448 identity is the ordinary fingerprint change and is re-pinned by
-   its next v2 handshake. Resetting trust for the peer clears the pin.
+   its next v2 handshake. Resetting trust for the peer clears the pin. Pins
+   are meant to outlive a run of the client. The terminal client keeps them
+   on disk; the Android and desktop apps keep them in memory, so there they
+   hold for one run (docs/SECURITY_ISSUES.md P1, OPEN).
 
 **Policy.** By default an implementation refuses a peer whose profile lacks
 `0x50` or `0x51` (`pq_v2_required`): the responder before answering DAKE1, the
@@ -501,7 +504,11 @@ OTRv4+ uses the OTRv4 Double Ratchet (OTRv4 §) with one extension: in ratchet v
 (§5.1), an ML-KEM-1024 brace-key contribution folded into every DH ratchet step.
 The reference engine forces the first DH step at its rekey boundary (100 messages
 in one direction, or 24 hours); until then both parties use the chains the DAKE
-derived, whose root already includes the DAKE's ML-KEM secret.
+derived, whose root already includes the DAKE's ML-KEM secret. It takes at most
+one send step toward each remote key: a second step toward a key the peer has
+not replaced cannot be followed, because the peer's receive step uses the key it
+made after the first. After a step, the next one comes from the peer's reply
+(docs/SECURITY_ISSUES.md P2).
 
 The ratchet combines two mechanisms. The **symmetric-key ratchet** governs
 individual messages: each direction has a 32-byte chain key, and sending or
@@ -566,11 +573,19 @@ nothing. Each new key is answered once, so in a conversation a fresh ML-KEM
 secret enters the root roughly every round trip once the first DH step has
 happened.
 
-*Residual.* An `Ek` is advertised once, on the chain that starts after it is
-generated. If every message of that chain is lost and our side later takes a
-forced step (`REKEY_INTERVAL` messages or `REKEY_TIMEOUT`), the key stays
-outstanding and v2 adds no new ML-KEM secret in that direction for the rest of
-the session. The X448 ratchet is unaffected.
+*Residual (reworded by the audit of 2026-10-26).* An `Ek` is advertised on the
+chain that starts after it is generated, on every message of that chain. This
+used to say that if every message of that chain is lost and our side then takes
+a forced step, the key stays outstanding for the rest of the session, with the
+X448 ratchet unaffected. That forced step was a second send step toward the same
+remote key, which the peer could not follow at all (docs/SECURITY_ISSUES.md P2).
+The engine no longer takes it: a new sending chain starts only after the peer
+has stepped, and the peer steps only on receiving a message of our current
+chain, which carries the `Ek`. So the key is delivered with the first message
+the peer receives. What remains is that an adversary who drops every message in
+one direction stops the ratchet in that direction altogether, X448 included;
+that is a denial of service, not a quieter loss of PQ secrets. The combiner
+itself is a review item (docs/CRYPTOGRAPHER_QUESTIONS.md Q4).
 
 ### 5.2 Root Key Folding
 
@@ -880,9 +895,12 @@ ratchet runs `retire_all`, then encrypts closing messages (`encrypt_final`)
 until the queue is empty, flagged IGNORE_UNREADABLE; when this side ends the
 session the last carries the DISCONNECTED TLV. The ratchet is then closed: it
 encrypts and decrypts nothing more. Without a network the closing messages are
-dropped; the keys are retired and wiped all the same. A new handshake always
-creates a new session: nothing of an ended one -- ratchet, instance tags -- is
-reused, so the new transcript has no cryptographic link to the old one.
+kept (Confirmation, below) and sent when it is back; if the client ends first
+they are lost, and the keys are retired and wiped all the same. A new handshake
+always creates a new session: nothing of an ended one -- ratchet, instance tags
+-- is reused, so the new session shares no key with the old one. Both
+handshakes are signed by the same long-term identities (§10.1), so they are
+linked by who ran them.
 
 **Confirmation.** A closing message counts as published only once the
 sender's own server has confirmed receiving it. A server reads a stream in
@@ -892,9 +910,11 @@ before it:
 - the answer to a XEP-0199 ping (Make Chat Deniable, where the stream stays
   up).
 
-Make Chat Deniable starts the new session only after asking. A closing
-message not confirmed is kept and sent again until it is, or until the
-client gives it up. A client MUST NOT report the keys as published before
+Make Chat Deniable starts the new session only after asking, whatever the
+answer, and reports whether the server confirmed. A closing message not
+confirmed is kept and sent again until it is, or until the client gives it
+up (the reference clients: 40 sends on Android and the desktop, 5 in the
+terminal, in memory only). A client MUST NOT report the keys as published before
 confirmation. Confirmation is by the sender's server, not by the peer.
 
 **Late messages.** A message from an older chain whose skipped key is still held

@@ -74,7 +74,7 @@ on Android. Findings were fixed, each with a regression test.
 It has **not** had a paid independent third-party audit or a formal external
 cryptographic assessment, and that work is not equivalent to one. Known limitations:
 [docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) (A1 and A2 are addressed by protocol v2,
-which both peers must run; 1:1 deniability of what was said, pending external audit: SPEC §5.8). The evidence, layer by layer: [SECURITY.md](SECURITY.md#security-assessment-and-audit-status).
+which both peers must run; 1:1 chats can publish the keys that authenticated their messages, a mechanism not yet independently reviewed: SPEC §5.8). The evidence, layer by layer: [SECURITY.md](SECURITY.md#security-assessment-and-audit-status); the latest claim-by-claim audit: [docs/AUDIT_CLAIM_MATRIX.md](docs/AUDIT_CLAIM_MATRIX.md).
 
 ## Cryptography
 

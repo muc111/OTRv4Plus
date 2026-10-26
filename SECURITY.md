@@ -14,23 +14,24 @@ name a transport.
 ## Security assessment and audit status
 
 OTRv4+ has undergone extensive developer-led security review and hardening
-during development. It uses several independent layers of automated
-validation, each of which runs on every change:
+during development. It uses several independent layers of validation. The
+test suites, `cargo audit` and Clippy run in CI on every change; fuzzing,
+the reviews and the physical tests are run by hand, not on every change:
 
 | Layer | What it covers | Where |
 |---|---|---|
-| Rust unit and integration tests | DAKE, double ratchet, SMP, ring signatures, MAC revelation, the at-rest store, the `.otrv` container, MLS groups | `Rust/src` (151 core tests), `Rust/mls` (33) |
+| Rust unit and integration tests | DAKE, double ratchet, SMP, ring signatures, MAC revelation, the at-rest store, the `.otrv` container, MLS groups | `Rust/src` (199 library tests), `Rust/mls` (70) |
 | Known-answer and cross-implementation tests for post-quantum primitives | ML-KEM-1024 against the FIPS 203 known-answer vectors, and against Go's independent `crypto/mlkem` (agreement both directions); X448 and Ed448 against an independent library | `tests/test_mlkem_kat.py`, `tests/test_mlkem_cross_implementation.py`, `tests/test_differential.py` |
 | Fuzzing | cargo-fuzz (libFuzzer) on every Rust parser of untrusted input: ratchet headers and forged messages, DAKE1/2/3, ring signatures, SMP1-4, the `.otrv` header -- each with a security invariant beyond "no crash" | `Rust/fuzz/` ([FUZZING.md](Rust/fuzz/FUZZING.md)) |
 | Property and attack tests | Replay, reordering, forgery, downgrade, malformed input, state-machine abuse | `tests/test_attacks.py`, `tests/test_property.py` |
-| Python integration and protocol suites | Handshake, ratchet, SMP, file transfer, transports, the Android bridge, wipe | `tests/` (6,300+ tests) |
+| Python integration and protocol suites | Handshake, ratchet, SMP, file transfer, transports, the Android bridge, wipe | `tests/` (8,000+ tests) |
 | Android/Kotlin tests | Security state, gating of calls and files on SMP, reconnect and wipe policy | `android/app/src/test` (800+ tests) |
 | Dependency and lint checks | `cargo audit --deny warnings` in CI; Clippy; dependency-licence checks on the APK | `.github/workflows` |
 | Security-focused review | Threat model, a Rust-authority audit (secrets never leave the Rust core), a cryptographic audit with its findings tracked to closure, a transport audit | [SECURITY.md](SECURITY.md), [docs/CRYPTO_AUDIT_2026-09.md](docs/CRYPTO_AUDIT_2026-09.md), [docs/SECURITY_AUDIT_2026-10-11.md](docs/SECURITY_AUDIT_2026-10-11.md) (dependencies and recent code), [docs/RUST_AUTHORITY_AUDIT.md](docs/RUST_AUTHORITY_AUDIT.md), [docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) |
 | AI-assisted review | Used throughout to look for implementation weaknesses and to write adversarial tests; every finding it produced is a test or a tracked issue, not a claim | -- |
 | Physical testing | OTRv4+ handshake, SMP, encrypted files and voice between handsets and Termux; clearnet and I2P sign-in; Wipe & Exit | [docs/PHYSICAL_TEST_PLAN.md](docs/PHYSICAL_TEST_PLAN.md) |
 
-Counts are as of 2026-09-28.
+Counts are as of 2026-10-26 (docs/AUDIT_SUMMARY.md).
 
 Findings from this work were fixed, not just recorded. For example:
 defensive and canonical-encoding checks in every parser, rejection of
@@ -63,7 +64,8 @@ post-quantum design. Protocol v2 (Android rc.159, required of both peers;
 an older peer is refused) addresses the two design findings that needed a
 protocol change: A1 (fresh ML-KEM secrets are now folded into the ratchet's
 root key) and A2 (both sides now authenticate with a long-term ML-DSA-87 key,
-pinned per contact). Its cost: the ML-DSA-87 signatures are attributable, so
+pinned per contact; on Android and the desktop the pins last one run of the
+app, docs/SECURITY_ISSUES.md P1). Its cost: the ML-DSA-87 signatures are attributable, so
 taking part in a conversation can be proven (SPEC §10.1). See
 [docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) and [docs/SPEC.md](docs/SPEC.md).
 
@@ -76,12 +78,12 @@ AI-assisted analysis, but not independently audited.**
 |---|---|
 | Passive network eavesdropper | TLS 1.3 transport (when used over plain IRC), or I2P / Tor onion routing |
 | Active MITM at first contact | Hybrid PQC SMP zero-knowledge proof out-of-band (user types same secret on both sides); classical Schnorr ZKP wrapped in ML-KEM-1024 + ML-DSA-87 binding |
-| Long-term key compromise after the fact | Per-message forward secrecy via double ratchet; PCS via DH ratchet at 100-message / 24-hour boundaries |
+| Long-term key compromise after the fact | Per-message forward secrecy via double ratchet; PCS via the DH ratchet: the first step at the 100-message / 24-hour boundary, then a step with each reply under a new key (one send step per remote key: docs/SECURITY_ISSUES.md P2) |
 | Future quantum adversary recording today | ML-KEM-1024 hybrid in DAKE; ML-DSA-87 hybrid signatures; hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 binding the identity proof) |
-| Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle. Voice too since v10.13.2: the epoch root, media keys and X448 scalar are Rust-owned with no accessor; the ML-KEM decapsulation key is the one secret still Python-side (see caveat 11). |
+| Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle. Voice too since v10.13.2: the epoch root, media keys and X448 scalar are Rust-owned with no accessor. Still Python-side: the voice ML-KEM decapsulation key (caveat 11) and the at-rest key-encryption key, which the storage provider hands down to Rust (docs/SECURITY_ISSUES.md B1-seed). |
 | AES-GCM nonce reuse | Counter-based nonce per ratchet step, KDF-derived; nonce never reused across messages. For voice the nonce is `epoch ‖ counter`, derived from authenticated header fields and never transmitted |
 | Recording a voice call for later quantum decryption | Voice media root requires **both** X448 and ML-KEM-1024; neither alone suffices |
-| Peer identity silently swapped between XMPP sessions | Fingerprint pinned on first contact; a change is reported, never auto-accepted, and refuses voice until cleared deliberately (XMPP only — IRC identities change by design) |
+| Peer identity silently swapped between XMPP sessions | Fingerprint pinned on first contact; a change is reported, never auto-accepted, and refuses voice until cleared deliberately (XMPP only — IRC identities change by design). The terminal client keeps the pins across restarts; the Android and desktop apps keep them for one run, so after a restart a changed key is a first contact (docs/SECURITY_ISSUES.md P1, OPEN) |
 | A remote peer making your next typed line a secret | An inbound SMP request can only ask; it moves the flow to AWAITING_LOCAL_CONSENT and no further. Only a local `y` opens the hidden passphrase read, and an ordinary message typed at the request is sent as an ordinary message (`otrv4plus_smpflow.py`) |
 | Forged, replayed or rolled-back voice endpoint address | `MEDIAPATH` announcements carry a tag derived from the committed epoch root over call_id, epoch, sequence, destination and role; sequence must strictly increase, and no state moves before the tag verifies |
 | Reflection of a voice frame back at its sender | The direction byte is in the AAD but not on the wire, so a reflected frame fails authentication |
@@ -92,7 +94,7 @@ AI-assisted analysis, but not independently audited.**
 | Threat | Why not |
 |---|---|
 | Compromised endpoint at time of message | Out of scope. If the device has malware, no messaging app helps. |
-| Compromised endpoint after message is sent | Skipped message keys cached for up to 1000 messages for out-of-order delivery. They are wiped on session close, not after each message. |
+| Compromised endpoint after message is sent | Skipped message keys cached for out-of-order delivery: up to 1000 skipped in one gap, 2000 held in all. They are wiped on session close or eviction, not after each message. |
 | Side-channel timing analysis on Python | Python is not constant-time. Rust core uses constant-time crypto via `ed448-goldilocks-plus` and `subtle`. |
 | Side-channel on SMP modular exponentiation | Constant-time as of v10.7.6: SMP `modpow` uses `crypto-bigint` 0.7.8 `FixedMontyForm` (Montgomery form; 0.7.8 since 2026-10-25 for RUSTSEC-2026-0387, which found secret-dependent branches in 0.5's Montgomery multiplication), not `num-bigint`'s variable-time `modpow`. The secret SMP exponents (blinding scalars, the secret, ZKP randomisers) no longer leak via exponentiation timing. |
 | Side-channel on the Rust core | `ed448-goldilocks-plus`, `x448`, and `crypto-bigint` claim constant-time but have not been formally audited. Treat as best-effort. |

@@ -40,22 +40,24 @@ instead of restating it.
 
 | ID | Title | Severity | Status |
 |----|-------|----------|--------|
-| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED-CODE** (2026-10-26). No property is claimed in this file; the app's wording "deniability pending external audit" is the owner's decision, qualified as such (see L1). Mechanism: an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`, `tests/test_deniability_wire_audit.py` (an outsider re-MACs every line from the wire alone), `tests/test_deniable_confirmation.py` (the server confirms the closing messages before the new session), `TestMultiPartClose`, `TestCrashDuringClose`. Residuals: expert review of the rule; a lost closing part (partial close); the kill-to-confirmation window; TOFU (shared residual) |
+| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED-CODE** (2026-10-26). No property is claimed: the app describes the mechanism and its residuals; no deniability property is stated (audit 2026-10-26; the earlier "deniability pending external audit" wording is withdrawn from every surface). Mechanism: an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`, `tests/test_deniability_wire_audit.py` (an outsider re-MACs every line from the wire alone), `tests/test_deniable_confirmation.py` (the server confirms the closing messages before the new session), `TestMultiPartClose`, `TestCrashDuringClose`, `tests/test_deniable_wording.py`, and the asserted residuals `test_residual_the_receiver_refuses_a_frame_only_the_outer_mac_was_forged_for`, `test_residual_a_peer_that_never_closes_leaves_our_lines_provable`, `test_residual_unconfirmed_the_new_session_starts_anyway_and_the_app_says_so`, `test_every_line_is_covered_across_dh_steps`. Residuals: expert review of the rule; a lost closing part (partial close); the kill-to-confirmation window; an unanswered confirmation (the new session starts anyway); a peer that never closes; TOFU (shared residual) |
 | U1 | Signed out, About -> back reached the signed-in chat list, and the device's identity fingerprint could be read before any login | Medium (privacy: device-account binding) | **RESOLVED** (2026-10-26) -- the bridge withholds the fingerprint until a login succeeds (`OtrApp.local_fingerprint`, security details, the desktop host's start-up message); Android shows only public screens while signed out and About goes back to sign-in; sign-out keeps nothing to navigate back to; the desktop and terminal show no fingerprint before login. `tests/test_u1_signed_out_surfaces.py`, `AuthGateTest`. Its residual (one identity shared by accounts) is resolved by F2 |
 | F2 | Two accounts used one after the other in one app process (Android, desktop) or on one machine (terminal) presented the same long-term identity key, which every DAKE1 carries past the server: the accounts could be linked | Medium (privacy) | **RESOLVED** (2026-10-26) -- one identity per account (SPEC §3.1): a non-persisted identity is replaced, old handles zeroized in Rust, when a connection is prepared for a different account, before any byte is sent as it; the terminal keeps one sealed record per account, named by a hash. Key generation and sealing unchanged. `tests/test_f2_per_account_identity.py` |
 | F3 | After F2, every sign-in on Android and the desktop showed a new fingerprint (identity per process): contacts were warned of a key change at each restart and verification had to be redone | Medium (usability of TOFU) | **RESOLVED** (2026-10-26) -- each account's random identity is kept per install, sealed in Rust, on Android also in the Keystore vault (SPEC §3.1): the same account on the same install keeps its fingerprint; accounts stay unlinkable. `tests/test_f3_stable_account_identity.py`. Residual: kept on the phone between runs, so code running as the app on an unlocked phone can use it |
-| F4 | Secure-group (MLS) signatures were evidence for ever: every member's message carries a signature a third party can check, and a rekey only stopped the key signing more (docs/MLS_SECURITY_HARDENING.md §1, D1) | Medium (deniability) | **RESOLVED-CODE** (2026-10-26), not reviewed, no claim -- retired signing keys are published to the group after a delay (epochal signatures), at once on "Make Group Deniable"; built and checked in Rust, the keys never reach Python. `retired_key_tests` (incl. `a_publication_carries_both_halves_of_the_composite_key`), `tests/test_f4_group_key_publication.py`. Residual (cryptographic, permanent): a signature captured and verified before the release stays attributable for ever; release only makes the epoch's signatures forgeable from then on |
+| F4 | Secure-group (MLS) signatures were evidence for ever: every member's message carries a signature a third party can check, and a rekey only stopped the key signing more (docs/MLS_SECURITY_HARDENING.md §1, D1) | Medium (deniability) | **RESOLVED-CODE** (2026-10-26), not reviewed, no claim -- retired signing keys are published to the group after a delay (epochal signatures), at once on "Make Group Deniable"; built and checked in Rust, the keys never reach Python. `retired_key_tests` (incl. `a_publication_carries_both_halves_of_the_composite_key` and the asserted residuals `residual_a_signature_checked_before_release_still_checks_after_it`, `residual_only_the_groups_members_receive_the_published_key`), `tests/test_f4_group_key_publication.py`, `tests/test_deniable_wording.py`. Residuals: (cryptographic, permanent) a signature captured and verified before the release stays attributable for ever; release only makes the epoch's signatures forgeable from then on; the forgers are the group's members who received the publication, not anyone; publication needs the app running (10 minutes after a rekey, or at once on Make Group Deniable); past 16 retired keys per group the oldest are wiped unpublished (`retired_keys_are_bounded_and_published_in_batches`) |
 | N1 | The route chosen from the server name (route.py) was followed by the code written to follow it, but not enforced on the process: a library, a mistyped flag or a new feature could open another socket or resolve a name | Medium (anonymity) | **RESOLVED for the app's own code** (2026-10-26) -- a process-wide audit hook (`otrv4plus_egress`) enforces the route from the gate every sign-in, account creation and server test passes first: on I2P and Tor only loopback and the configured bridge are reachable and nothing is resolved; no `.i2p` or `.onion` name reaches DNS on any route. `tests/test_n1_network_isolation.py`. Residual: the bundled i2pd is a separate process with its own reseed and router links; not yet confirmed by a device packet capture |
 | M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
 | G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **RESOLVED** (2026-10-24) -- `tests/test_dake_timeout.py`; `test_08_dake_timeout` no longer an expected failure |
 | G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **RESOLVED** (2026-10-24) -- one copy, `tests/otrv4_testlib.py`; `tests/test_dake_timeout.py::test_there_is_one_test_library` |
 | B1-seed | Persisting an identity requires the seed to exist in Python | Design | **RESOLVED** |
 | A1 | Ratchet brace key is never folded into root/chain keys (SPEC §5.2 not implemented): no post-quantum post-compromise recovery | Design / High (spec divergence) | **MITIGATED** (2026-10-24) -- mitigated by the new v2 ratchet, which rotates ML-KEM secrets about every round trip once the first DH ratchet step has happened (after 100 messages in one direction or 24 hours; before it the handshake's ML-KEM secret protects the keys) and folds each into the root (SPEC §5.1-5.2; `ratchet::pq_ratchet`, `tests/test_pq_ratchet_v2.py`). A peer without v2 is refused by default (`require_pq_v2`, code `pq_v2_required`), so the v1 derivation is no longer reached; its code remains for that switch and stays pinned by `ratchet::audit_brace_folding`. Kept listed as a known limitation: the combiner and its interleaving with loss want expert review (CRYPTO_AUDIT §7 item 3), and SPEC §5.1 states a residual |
-| A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **RESOLVED-CLAIM** (2026-10-24; claim: the v2 handshake authenticates both sides with ML-DSA-87 and refuses downgrade or key change for a pinned contact; Android rc.159; requires both peers to list `PQ_RATCHET_VERSION` 0x50 and `PQ_AUTH_VERSION` 0x51) -- each identity has one long-term ML-DSA-87 key, sealed beside it; the responder signs the transcript in DAKE2 (`KDF_1(0x06, DAKE1 \|\| DAKE2-to-signature)`: both ephemeral X448 keys, the initiator's ML-KEM key and the responder's ciphertext, both profiles, both ML-DSA keys) and the initiator verifies it before DAKE3 or any data; the initiator signs DAKE3; both mandatory. An older peer is refused outright (`pq_v2_required`), and a known contact's ML-DSA key is pinned, so dropping or changing it under the same Ed448 identity is refused (`pq_downgrade`, `pq_key_changed`) even with the policy relaxed. SPEC §4.3. `dake::pq_auth_tests`, `mldsa::tests`, `tests/test_pq_auth_v2.py`. Residual: TOFU (shared residual). Deniability cost: SPEC §10.1 |
+| A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **RESOLVED-CLAIM** (2026-10-24, claim narrowed by the audit of 2026-10-26; claim: the v2 handshake authenticates both sides with ML-DSA-87 and refuses downgrade or key change for a contact pinned in the same run of the app on Android and the desktop, or in any run of the terminal client; Android rc.159; requires both peers to list `PQ_RATCHET_VERSION` 0x50 and `PQ_AUTH_VERSION` 0x51) -- each identity has one long-term ML-DSA-87 key, sealed beside it; the responder signs the transcript in DAKE2 (`KDF_1(0x06, DAKE1 \|\| DAKE2-to-signature)`: both ephemeral X448 keys, the initiator's ML-KEM key and the responder's ciphertext, both profiles, both ML-DSA keys) and the initiator verifies it before DAKE3 or any data; the initiator signs DAKE3; both mandatory. An older peer is refused outright (`pq_v2_required`), and a known contact's ML-DSA key is pinned, so dropping or changing it under the same Ed448 identity is refused (`pq_downgrade`, `pq_key_changed`) even with the policy relaxed. SPEC §4.3. `dake::pq_auth_tests`, `mldsa::tests`, `tests/test_pq_auth_v2.py`, `tests/test_p1_trust_pins_per_run.py`. Residuals: TOFU (shared residual); **P1**: on Android and the desktop the pins last one run of the app. Deniability cost: SPEC §10.1 |
 | A3 | Crafted `.otrv` header overflowed `8 * p` before bounding p: process abort (overflow-checks + panic=abort) | Medium (DoS) | **RESOLVED** -- `container::tests::a_huge_lane_count_is_refused_not_an_overflow`; found by `fuzz/container_header` |
 | A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
+| P1 | Android and the desktop keep contact pins (fingerprint and ML-DSA) in memory: after the app restarts, a substituted key is pinned as a first contact, without a warning | Medium (authentication) | **OPEN** (found 2026-10-26) -- `OTRConfig().persist_trust` is False and neither app sets it; the terminal client does. Asserted by `tests/test_p1_trust_pins_per_run.py`. Fix proposed in the P1 section; until then the A2 claim and SECURITY.md are worded to one run |
+| P2 | A forced DH step toward a remote key already stepped toward could not be followed by the peer: every later message failed to decrypt, silently. Reached by 100 messages from one side after a round trip, or by a chat open across two 24-hour boundaries | High (availability; silent message loss) | **RESOLVED** (2026-10-26) -- one send step per remote key (`RustBackedDoubleRatchet._forced_toward`). `tests/test_p2_forced_steps.py` (every test fails on the old engine), Rust `pq_ratchet::p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed`. Residual: a peer on an older build can still take the double step |
 | X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED-CLAIM** (Android and the terminal client; claim: a changed destination receives no byte, and no password is sent where certificate checks are off) -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: TOFU (shared residual); SCRAM guessing and first registration (X1 section). NOT yet confirmed by a handset login |
 
 ---
@@ -64,19 +66,20 @@ instead of restating it.
 
 **Status: RESOLVED-CODE, 2026-10-26.** The mechanism is implemented and
 tested end to end; this file claims no property for it until the external
-audit of the retirement rule (SPEC §5.8). The app's dialog says
-"deniability pending external audit", of what was said in a one-to-one chat
-and never of having talked. That wording is the owner's decision
-(2026-10-26), qualified by "pending", and is pinned by `DeniableChatTest`.
-It is not a RESOLVED-CLAIM. If the owner wants the file and the app to
-agree, either the audit lands, or the dialog drops the word. See
-docs/DENIABILITY_LAYERS.md.
+review of the retirement rule (SPEC §5.8; docs/CRYPTOGRAPHER_QUESTIONS.md
+Q1, Q2). The app describes the mechanism and its residuals; no deniability
+property is stated. The audit of 2026-10-26 withdrew the earlier
+"deniability pending external audit" from the Android and desktop dialog
+and the terminal's `/help`; `DeniableChatTest` and
+`tests/test_deniable_wording.py` hold every surface to that. See
+docs/DENIABILITY_LAYERS.md and docs/AUDIT_CLAIM_MATRIX.md §1.
 
-### What the claim rests on, and what it does not cover
+### What the mechanism does, and what it does not cover
 
-The claim is that a copy of a closed chat held by someone else -- the
-contact's, or a recording of the traffic -- does not prove who wrote what.
-It rests on four things, each with a test:
+What it is for: a copy of a closed chat held by someone else -- the
+contact's, or a recording of the traffic -- should not prove who wrote
+what. Whether it achieves that is the review question. What the tests show
+rests on four things:
 
 1. **Symmetric authentication.** Every message is authenticated with keys
    both sides hold (SPEC §10.1), so either party could have produced any
@@ -91,14 +94,19 @@ It rests on four things, each with a test:
    delivered. Nothing revealed authenticates the new session. A negative
    control shows the last lines stay provable if the closing messages are
    lost.
-3. **The closing messages are known to have arrived.** Make Chat Deniable
-   waits until our server confirms it received them before the new session
-   starts. The server answers a XEP-0199 ping only after reading everything
-   before it. Wipe & Exit and sign-out end the stream and wait for the
-   server's end. Unconfirmed closing messages are kept, and sent again until
-   the server confirms them (Android, desktop, terminal). The app says when
-   they are not yet confirmed. Gate: `tests/test_deniable_confirmation.py`
-   (real slixmpp against a scripted server), `tests/test_closing_messages_arrive.py`.
+3. **Whether the closing messages arrived is asked, not assumed.** Make
+   Chat Deniable asks our server to confirm it received them, then starts
+   the new session whatever the answer (within 15 s); the result says
+   whether the server confirmed. The server answers a XEP-0199 ping only
+   after reading everything before it. Wipe & Exit and sign-out end the
+   stream and wait for the server's end. Unconfirmed closing messages are
+   kept in memory and sent again, up to 40 times while the app runs
+   (Android, desktop; the terminal 5 times). Gate:
+   `tests/test_deniable_confirmation.py` (real slixmpp against a scripted
+   server, including
+   `test_residual_unconfirmed_the_new_session_starts_anyway_and_the_app_says_so`
+   and `test_a_closing_message_is_given_up_after_its_tries`),
+   `tests/test_closing_messages_arrive.py`.
 4. **The rule itself** (SPEC §5.8): `tests/test_l1_revelation_gate.py`
    (T1-T8) and `ratchet::l1_retirement`.
 
@@ -114,8 +122,11 @@ It rests on four things, each with a test:
 - **The second closing.** Each side publishes the keys of what it received,
   so complete coverage needs the contact's app to close too. It does as soon
   as it reads our closing message (the audit covers both sides). A contact
-  whose app never closes keeps the MAC keys of what we sent unrevealed. That
-  copy is still not proof against us, by point 1.
+  whose app never closes keeps the MAC keys of what we sent unrevealed:
+  exactly the lines it received after it last sent anything
+  (`test_residual_a_peer_that_never_closes_leaves_our_lines_provable`).
+  That copy is still not proof against us, by point 1; a recording of the
+  traffic still shows those lines came from one of the two of us.
 - **Residual: the kill-to-confirmation window.** The re-sending lives in
   memory only. If the process dies between `retire_all` and the server's
   confirmation, the keys are retired and wiped, never published, and that
@@ -199,8 +210,9 @@ depends on it.
   inbound frame, at sign-out, at Wipe & Exit before the transport closes) and
   the terminal client (`/deniable`, `/quit`). "Make Chat Deniable…" in every
   established 1:1 chat on Android and desktop, `/deniable [jid]` in the
-  terminal. Offline, the closing messages are dropped; the keys are retired and
-  wiped in Rust all the same.
+  terminal. Offline, the closing messages are kept in memory and sent when
+  the connection is back; the keys are retired and wiped in Rust all the
+  same.
 
 ### Regression gate
 
@@ -208,12 +220,13 @@ depends on it.
 
 | | Test |
 |-|------|
-| T1 | `TestT1PositiveDeniability::test_a_published_key_forges_a_message_really_observed` |
+| T1 | `TestT1PositiveDeniability::test_a_published_key_lets_anyone_mac_an_altered_copy_of_an_observed_message` (renamed by the audit: it forges the outer MAC only), `::test_residual_the_receiver_refuses_a_frame_only_the_outer_mac_was_forged_for` |
 | T2 | `TestT2NoPrematureRevelation::test_a_long_conversation_with_loss_and_dh_steps_publishes_nothing_early`, `::test_a_sender_never_publishes_the_key_of_its_own_message`, `::test_the_check_catches_a_transcript_that_reveals_early` (mutation) |
 | T3 | `TestT3SkippedMessages::test_unpublished_while_held_across_a_dh_step_then_published_late`, `::test_a_skipped_key_deleted_at_close_is_published` |
-| T4 | `TestT4Zeroization::test_a_published_key_is_no_longer_held`, `::test_close_leaves_nothing_retired_nothing_skipped_and_no_ratchet` |
-| T5 | `TestT5MakeChatDeniable::test_final_publication_disconnect_and_a_fresh_unlinked_session`, `::test_no_session_no_action` |
-| T6 | `TestT6SignOutWipeQuit::test_every_session_publishes_before_its_keys_go[sign_out]`, `[wipe]`, `::test_the_peers_closing_message_after_our_end_starts_no_handshake`, `::test_offline_the_keys_are_still_retired_and_wiped`, `::test_the_bridge_sends_them_before_the_transport_goes`, `::test_the_bridge_sends_every_message_and_drops_them_offline` |
+| T4 | `TestT4PublishedKeysAreNotHeld::test_a_published_key_is_no_longer_held`, `::test_close_leaves_nothing_retired_nothing_skipped_and_no_ratchet` (renamed from `TestT4Zeroization` by the audit: it shows the key is not held; the overwrite is zeroize-on-drop, not observable) |
+| T5 | `TestT5MakeChatDeniable::test_final_publication_disconnect_and_a_fresh_session_sharing_no_key` (renamed by the audit from `..._fresh_unlinked_session`), `::test_no_session_no_action` |
+| Residuals | `TestL1Residuals::test_residual_an_altered_outer_mac_costs_the_message_and_its_key_is_published` |
+| T6 | `TestT6SignOutWipeQuit::test_every_session_publishes_before_its_keys_go[sign_out]`, `[wipe]`, `::test_the_peers_closing_message_after_our_end_starts_no_handshake`, `::test_offline_the_keys_are_still_retired_and_wiped`, `::test_the_bridge_sends_them_before_the_transport_goes`, `::test_the_bridge_sends_each_closing_message_once` (renamed by the audit: it never tested an offline transport) |
 | T7 | `TestT7WireCompatibility::test_a_peer_reading_the_field_by_shape_only_accepts_real_keys`, `::test_the_field_is_outside_what_the_mac_covers`, `::test_a_peer_implementing_it_accounts_for_every_key_it_is_shown` |
 | T8 | `TestT8NoMacKeyBytesInPython::test_the_ratchet_hands_over_the_field_and_handles_only`, `::test_a_mac_key_handle_has_no_bytes`, `::test_no_production_path_unpacks_the_field_into_keys`, `::test_the_deniable_paths_move_wire_text_only` |
 
@@ -227,16 +240,21 @@ none. Also `tests/test_mac_revelation_end_to_end.py`, `test_reveal_ordering.py`,
 ### Residuals
 
 - **Expert review of the retirement rule** (SPEC §5.8) before any claim of
-  deniable messaging; the button and its text describe the mechanism and say
-  it has not been independently reviewed.
+  deniable messaging; the dialog and `/help` describe the mechanism, say it
+  has not been independently reviewed, and name the copy made before the
+  publication and the close that does not finish.
 - The MAC key of the outer OTRv4 MAC is published; AES-GCM, the primary
   authenticator, is keyed by the message key, which is never published. A
   third party with a published key can forge the outer MAC of a transcript
   entry, which is the OTR sense of transcript deniability; it cannot produce a
-  ciphertext the receiver would have decrypted.
+  ciphertext the receiver would have decrypted
+  (`test_residual_the_receiver_refuses_a_frame_only_the_outer_mac_was_forged_for`).
 - A message whose outer MAC fails after its AEAD tag verified has its MAC key
   retired anyway (R1 commits at the AEAD); the replay cache refuses any second
-  copy, so nothing can be verified with it.
+  copy, so nothing can be verified with it. An attacker who alters one outer
+  MAC therefore costs that one message, silently, and its key is published
+  (`TestL1Residuals::test_residual_an_altered_outer_mac_costs_the_message_and_its_key_is_published`;
+  docs/CRYPTOGRAPHER_QUESTIONS.md Q1).
 - TOFU: see "Shared residual" above. v2's ML-DSA handshake signatures are
   attributable (SPEC §10.1): participation is not deniable, independently of
   this item (docs/DENIABILITY_LAYERS.md).
@@ -272,8 +290,10 @@ slixmpp against a scripted server on loopback:
 Limits:
 - Confirmed **to the server**, not to the peer. A peer who is offline, or
   whose server does not store messages, may never receive its closing
-  message. No peer is reached offline, either: there the keys are retired and
-  wiped but published nowhere (T7).
+  message. Offline at the press, the closing messages wait in memory and go
+  when the connection is back (`test_offline_at_the_press_they_go_when_it_is_back`);
+  if the app ends first, the keys are retired and wiped but published
+  nowhere.
 - If the server does not answer within the bound, the wipe carries on.
   Nothing waits longer than that, and the report says the closing was not
   confirmed.
@@ -762,6 +782,119 @@ structural security claim, and the additional work is small and additive.
 is the interface, and the package ships no concrete implementation. The test
 double in `tests/test_android_identity.py` uses Option A and is explicitly
 marked development/test only.
+
+---
+
+## P1 — On Android and the desktop, contact pins last one run of the app
+
+**Status: OPEN** (found by the audit of 2026-10-26, docs/AUDIT_THREAT_MODEL.md §4).
+
+### What happens
+
+`TrustDatabase` keeps two pins per contact:
+- the Ed448 fingerprint (`check_or_pin`: a change raises
+  `FingerprintMismatchError`);
+- the ML-DSA key under that identity (`check_or_pin_pq`: `pq_downgrade`,
+  `pq_key_changed`; A2).
+
+It writes them to disk only when the engine's `OTRConfig` has
+`persist_trust=True`. The terminal client sets it. The Android app
+(`ChaquopyOtrCore.kt`) and the desktop host (`desktop_bridge/host.py`)
+build the engine with a bare `OTRConfig()`, where it is False. So on those
+two the pins live in memory. After a restart of the app (a reboot, an
+update, the system ending the process), every contact is a first contact
+again. A key substituted then is pinned without a warning. F3 made the
+user's **own** identity stable across restarts; the contacts' pins did not
+follow.
+
+### What it changes
+
+- A2's claim holds within one run of the app on Android and the desktop,
+  and across runs only in the terminal client. Its row is narrowed to say
+  so.
+- SECURITY.md's "a change is reported, never auto-accepted" holds within a
+  run. It is reworded.
+- The SMP verified mark already said it lasts until the app closes (F3).
+
+### Gate (asserts the residual; fails when it is fixed)
+
+`tests/test_p1_trust_pins_per_run.py`:
+- the app engines are built with a trust database in memory;
+- within one run a changed key is refused;
+- after a restart a changed key is a first contact;
+- the terminal keeps its pins across restarts.
+
+### Proposed fix
+
+Persist the trust database per account, sealed in Rust the way F3 keeps
+identities: the Keystore vault on Android, a 0600 file on the desktop. Name
+it by the same account hash, and destroy it with Wipe & Exit. Then, at the
+first handshake after a restart, a changed key is the ordinary mismatch,
+refused. The pins are public values (fingerprints and key hashes) but
+reveal whom the user talks to, so they must be sealed, not plaintext.
+Not done in the audit pass: it is a storage feature.
+
+---
+
+## P2 — A forced DH step the peer could not follow
+
+**Status: RESOLVED, 2026-10-26** (found by the audit, writing a residual
+test for SPEC §5.1; docs/AUDIT_THREAT_MODEL.md §7).
+
+### What happened
+
+At every rekey boundary (`REKEY_INTERVAL`, 100 messages in one direction,
+or `REKEY_TIMEOUT`, 24 hours), the engine forced a send-side DH step
+toward the peer's current key, even when it had already stepped toward
+that key:
+- by an earlier forced step;
+- or by the receive step that answers a new key from the peer, which also
+  makes our sending chain.
+
+The peer cannot follow a second step toward its own unchanged key. Its
+receive step uses the key it made after our first step. From then on every
+message failed to decrypt: `handle_incoming_message` returned None, the
+session still showed as up, and nothing told either user.
+
+Two ordinary ways in:
+- 100 messages from one side after any round trip;
+- a chat left open across two 24-hour boundaries with an exchange between
+  them.
+
+Reproduced with real engines: a two-day session failed on day three in
+both directions, and a randomised burst test lost 235 messages. A network
+adversary that drops one direction reaches it too.
+
+### The fix
+
+`RustBackedDoubleRatchet._forced_toward` (`client/otrv4+.py`, used by
+Android, the desktop and the terminal) remembers the remote key our last
+send step went toward. It is set by a forced step and by the receive step
+(`_decrypt_new_dh`). A forced step toward that same key is not taken; the
+next step comes from the peer's reply, as in the double ratchet. The Rust
+core is unchanged.
+
+### Gate
+
+- `tests/test_p2_forced_steps.py`:
+  - bursts both ways across many boundaries all decrypt;
+  - one way past two boundaries after a round trip;
+  - a chat open for two days;
+  - one forced step per remote key.
+
+  Each fails on the old engine.
+- Rust `pq_ratchet::p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed`
+  pins the constraint: the Rust ratchet does not refuse such a step, so the
+  engine must never take it.
+
+### Residuals
+
+- A peer on an older build still takes the double step, and our side cannot
+  follow it either. Accepting it would need the Rust receive path to try
+  the previous local key. Not done: it changes the crypto core.
+- SPEC §5.1's "lost encapsulation-key chain, then a forced step" residual
+  described this double step. With the fix it is no longer reachable, and
+  the residual is reworded there.
 
 ---
 
