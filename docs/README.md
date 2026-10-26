@@ -39,6 +39,8 @@ records: they describe the code as it was when they were written.
 - [MIGRATION.md](MIGRATION.md): upgrading old data
 - [ASSETS.md](ASSETS.md): artwork provenance
 - [SECURITY_ISSUES.md](SECURITY_ISSUES.md): tracked security issues
+- [DENIABILITY_LAYERS.md](DENIABILITY_LAYERS.md): what each deniability mechanism denies and still proves (for reviewers)
+- [PQC_DECISIONS.md](PQC_DECISIONS.md): post-quantum choices for the deniability work, with rationale
 
 ## Test plans
 

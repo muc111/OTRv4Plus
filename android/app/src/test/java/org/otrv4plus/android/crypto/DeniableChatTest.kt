@@ -120,6 +120,12 @@ class DeniableChatTest {
                          GroupDeniable.outcome(true, "ok"), GroupDeniable.outcome(false, "x"))
         assertTrue(all.none { "deniable messaging" in it.lowercase() })
         assertTrue("Pending external audit" in GroupDeniable.BODY)
+        // MLS_SECURITY_HARDENING §1: release does not reach back, so no copy
+        // may say the past is deniable.
+        val group = listOf(GroupDeniable.ACTION, GroupDeniable.TITLE, GroupDeniable.BODY,
+                           GroupDeniable.outcome(true, "ok"), GroupDeniable.outcome(false, "x"))
+        assertTrue(group.none { "past messages are deniable" in it.lowercase() })
+        assertTrue(group.none { "past messages" in it.lowercase() && "deniable" in it.lowercase() })
         assertTrue("copied before they are published stays signed" in GroupDeniable.BODY)
         assertTrue("stay encrypted" in GroupDeniable.BODY)
         assertTrue("stays secret" in GroupDeniable.BODY, "says the new key is not published")

@@ -80,8 +80,8 @@ object GroupDeniable {
 
     const val BODY =
         "Gives you a new signing key in this group, then publishes your earlier " +
-            "ones to its members, so any member could have signed what they " +
-            "signed. New messages are signed with the new key, which stays " +
+            "ones to its members, so a copy of the group shown after that no " +
+            "longer proves who signed what. New messages are signed with the new key, which stays " +
             "secret. Messages stay encrypted. Earlier keys are also published " +
             "by themselves some minutes after each automatic key change. " +
             "Anything copied before they are published stays signed. This " +

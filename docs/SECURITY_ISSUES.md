@@ -9,36 +9,68 @@ Status vocabulary:
 
 - **OPEN** — present in the shipped code, not remediated.
 - **MITIGATED** — cannot currently be reached, but the underlying code remains.
-- **RESOLVED** — fixed, with a regression test named here.
+- **RESOLVED** — a defect fixed, with a regression test named here. Used for
+  bugs; it asserts no security property beyond the fix.
+- **RESOLVED-CODE** — a security mechanism is implemented and its behaviour
+  is tested, but **no property is claimed** for it. It waits for review, or
+  its residuals are too large for a defensible sentence. The tests show what
+  the code does, not that it achieves the property.
+- **RESOLVED-CLAIM** — the mechanism is tested **and** a worded claim is
+  defensible: a regression gate demonstrates the claim and names its
+  residual. Only these may be described to users as providing the property.
+
+## Shared residual: unauthenticated first contact (TOFU)
+
+A2 (PQ authentication), L1 (deniability) and X1 (server identity) all rest on
+the first contact being genuine:
+- **A2:** the peer's ML-DSA-87 key is pinned on the first v2 handshake.
+- **L1:** the session whose keys are published is with whoever that first
+  handshake reached.
+- **X1:** a server's I2P destination is pinned on first successful use.
+
+An active adversary at that first contact is pinned as the genuine party.
+Later checks then protect the adversary's position: they catch a change, not
+a substitute that was there from the start. Fixing TOFU fixes all three.
+
+No primitive can close it. Authenticating a party with whom nothing is
+shared needs a trusted third party or a pre-shared secret
+(docs/PQC_DECISIONS.md (e)). The mitigation is out-of-band verification:
+the hybrid SMP, or comparing fingerprints. Each issue below refers here
+instead of restating it.
 
 | ID | Title | Severity | Status |
 |----|-------|----------|--------|
-| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED (2026-10-26); "deniability pending external audit", of what was said only** -- an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`, `tests/test_deniability_wire_audit.py` (an outsider re-MACs every line from the wire alone), `tests/test_deniable_confirmation.py` (the server confirms the closing messages before the new session). Residual: the retirement rule wants formal expert review, and until then no "deniable messaging" claim is made; first contact stays trust-on-first-use |
+| L1 | MAC-key revelation reveals all-zeros; deniability not achieved | Design | **RESOLVED-CODE** (2026-10-26). No property is claimed in this file; the app's wording "deniability pending external audit" is the owner's decision, qualified as such (see L1). Mechanism: an exact retirement rule in the Rust ratchet (SPEC §5.8: R1 received, R2 skipped key deleted, R3 close; never a sender's own key), publication only as the encoded wire field, closing publication on Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's end and errors, for every session. Gate: `tests/test_l1_revelation_gate.py` (T1-T8), `ratchet::l1_retirement`, `tests/test_mac_revelation_end_to_end.py`, `tests/test_deniability_wire_audit.py` (an outsider re-MACs every line from the wire alone), `tests/test_deniable_confirmation.py` (the server confirms the closing messages before the new session), `TestMultiPartClose`, `TestCrashDuringClose`. Residuals: expert review of the rule; a lost closing part (partial close); the kill-to-confirmation window; TOFU (shared residual) |
 | U1 | Signed out, About -> back reached the signed-in chat list, and the device's identity fingerprint could be read before any login | Medium (privacy: device-account binding) | **RESOLVED** (2026-10-26) -- the bridge withholds the fingerprint until a login succeeds (`OtrApp.local_fingerprint`, security details, the desktop host's start-up message); Android shows only public screens while signed out and About goes back to sign-in; sign-out keeps nothing to navigate back to; the desktop and terminal show no fingerprint before login. `tests/test_u1_signed_out_surfaces.py`, `AuthGateTest`. Its residual (one identity shared by accounts) is resolved by F2 |
 | F2 | Two accounts used one after the other in one app process (Android, desktop) or on one machine (terminal) presented the same long-term identity key, which every DAKE1 carries past the server: the accounts could be linked | Medium (privacy) | **RESOLVED** (2026-10-26) -- one identity per account (SPEC §3.1): a non-persisted identity is replaced, old handles zeroized in Rust, when a connection is prepared for a different account, before any byte is sent as it; the terminal keeps one sealed record per account, named by a hash. Key generation and sealing unchanged. `tests/test_f2_per_account_identity.py` |
 | F3 | After F2, every sign-in on Android and the desktop showed a new fingerprint (identity per process): contacts were warned of a key change at each restart and verification had to be redone | Medium (usability of TOFU) | **RESOLVED** (2026-10-26) -- each account's random identity is kept per install, sealed in Rust, on Android also in the Keystore vault (SPEC §3.1): the same account on the same install keeps its fingerprint; accounts stay unlinkable. `tests/test_f3_stable_account_identity.py`. Residual: kept on the phone between runs, so code running as the app on an unlocked phone can use it |
-| F4 | Secure-group (MLS) signatures were evidence for ever: every member's message carries a signature a third party can check, and a rekey only stopped the key signing more (docs/MLS_SECURITY_HARDENING.md §1, D1) | Medium (deniability) | **RESOLVED** (2026-10-26), as a mechanism, not reviewed -- retired signing keys are published to the group after a delay (epochal signatures), at once on "Make Group Deniable"; built and checked in Rust, the keys never reach Python. `retired_key_tests`, `tests/test_f4_group_key_publication.py`. Residual: what was leaked before the publication stays signed |
+| F4 | Secure-group (MLS) signatures were evidence for ever: every member's message carries a signature a third party can check, and a rekey only stopped the key signing more (docs/MLS_SECURITY_HARDENING.md §1, D1) | Medium (deniability) | **RESOLVED-CODE** (2026-10-26), not reviewed, no claim -- retired signing keys are published to the group after a delay (epochal signatures), at once on "Make Group Deniable"; built and checked in Rust, the keys never reach Python. `retired_key_tests` (incl. `a_publication_carries_both_halves_of_the_composite_key`), `tests/test_f4_group_key_publication.py`. Residual (cryptographic, permanent): a signature captured and verified before the release stays attributable for ever; release only makes the epoch's signatures forgeable from then on |
 | N1 | The route chosen from the server name (route.py) was followed by the code written to follow it, but not enforced on the process: a library, a mistyped flag or a new feature could open another socket or resolve a name | Medium (anonymity) | **RESOLVED for the app's own code** (2026-10-26) -- a process-wide audit hook (`otrv4plus_egress`) enforces the route from the gate every sign-in, account creation and server test passes first: on I2P and Tor only loopback and the configured bridge are reachable and nothing is resolved; no `.i2p` or `.onion` name reaches DNS on any route. `tests/test_n1_network_isolation.py`. Residual: the bundled i2pd is a separate process with its own reseed and router links; not yet confirmed by a device packet capture |
 | M3 | Legacy DAKE path can hand session keys to Python as PyBytes | Medium | **RESOLVED** |
 | G1 | `RustDAKEAdapter.is_expired()` is a stub; DAKE handshake timeout absent | Low | **RESOLVED** (2026-10-24) -- `tests/test_dake_timeout.py`; `test_08_dake_timeout` no longer an expected failure |
 | G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **RESOLVED** (2026-10-24) -- one copy, `tests/otrv4_testlib.py`; `tests/test_dake_timeout.py::test_there_is_one_test_library` |
 | B1-seed | Persisting an identity requires the seed to exist in Python | Design | **RESOLVED** |
 | A1 | Ratchet brace key is never folded into root/chain keys (SPEC §5.2 not implemented): no post-quantum post-compromise recovery | Design / High (spec divergence) | **MITIGATED** (2026-10-24) -- mitigated by the new v2 ratchet, which rotates ML-KEM secrets about every round trip once the first DH ratchet step has happened (after 100 messages in one direction or 24 hours; before it the handshake's ML-KEM secret protects the keys) and folds each into the root (SPEC §5.1-5.2; `ratchet::pq_ratchet`, `tests/test_pq_ratchet_v2.py`). A peer without v2 is refused by default (`require_pq_v2`, code `pq_v2_required`), so the v1 derivation is no longer reached; its code remains for that switch and stays pinned by `ratchet::audit_brace_folding`. Kept listed as a known limitation: the combiner and its interleaving with loss want expert review (CRYPTO_AUDIT §7 item 3), and SPEC §5.1 states a residual |
-| A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **RESOLVED** (2026-10-24; Android rc.159; requires both peers to list `PQ_RATCHET_VERSION` 0x50 and `PQ_AUTH_VERSION` 0x51) -- each identity has one long-term ML-DSA-87 key, sealed beside it; the responder signs the transcript in DAKE2 (`KDF_1(0x06, DAKE1 \|\| DAKE2-to-signature)`: both ephemeral X448 keys, the initiator's ML-KEM key and the responder's ciphertext, both profiles, both ML-DSA keys) and the initiator verifies it before DAKE3 or any data; the initiator signs DAKE3; both mandatory. An older peer is refused outright (`pq_v2_required`), and a known contact's ML-DSA key is pinned, so dropping or changing it under the same Ed448 identity is refused (`pq_downgrade`, `pq_key_changed`) even with the policy relaxed. SPEC §4.3. `dake::pq_auth_tests`, `mldsa::tests`, `tests/test_pq_auth_v2.py`. Residual: first contact is trust-on-first-use. Deniability cost: SPEC §10.1 |
+| A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **RESOLVED-CLAIM** (2026-10-24; claim: the v2 handshake authenticates both sides with ML-DSA-87 and refuses downgrade or key change for a pinned contact; Android rc.159; requires both peers to list `PQ_RATCHET_VERSION` 0x50 and `PQ_AUTH_VERSION` 0x51) -- each identity has one long-term ML-DSA-87 key, sealed beside it; the responder signs the transcript in DAKE2 (`KDF_1(0x06, DAKE1 \|\| DAKE2-to-signature)`: both ephemeral X448 keys, the initiator's ML-KEM key and the responder's ciphertext, both profiles, both ML-DSA keys) and the initiator verifies it before DAKE3 or any data; the initiator signs DAKE3; both mandatory. An older peer is refused outright (`pq_v2_required`), and a known contact's ML-DSA key is pinned, so dropping or changing it under the same Ed448 identity is refused (`pq_downgrade`, `pq_key_changed`) even with the policy relaxed. SPEC §4.3. `dake::pq_auth_tests`, `mldsa::tests`, `tests/test_pq_auth_v2.py`. Residual: TOFU (shared residual). Deniability cost: SPEC §10.1 |
 | A3 | Crafted `.otrv` header overflowed `8 * p` before bounding p: process abort (overflow-checks + panic=abort) | Medium (DoS) | **RESOLVED** -- `container::tests::a_huge_lane_count_is_refused_not_an_overflow`; found by `fuzz/container_header` |
 | A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
-| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED (Android and the terminal client), with stated residuals** -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: see the X1 section. NOT yet confirmed by a handset login |
+| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED-CLAIM** (Android and the terminal client; claim: a changed destination receives no byte, and no password is sent where certificate checks are off) -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: TOFU (shared residual); SCRAM guessing and first registration (X1 section). NOT yet confirmed by a handset login |
 
 ---
 
 ## L1 — MAC-key revelation reveals all-zeros
 
-**Status: RESOLVED, 2026-10-26. What may be said (owner decision,
-2026-10-26): "deniability pending external audit" -- of what was said in a
-one-to-one chat, never of having talked -- worded as `DeniableChat` has it
-and no stronger. The external audit of the retirement rule is still owed.**
+**Status: RESOLVED-CODE, 2026-10-26.** The mechanism is implemented and
+tested end to end; this file claims no property for it until the external
+audit of the retirement rule (SPEC §5.8). The app's dialog says
+"deniability pending external audit", of what was said in a one-to-one chat
+and never of having talked. That wording is the owner's decision
+(2026-10-26), qualified by "pending", and is pinned by `DeniableChatTest`.
+It is not a RESOLVED-CLAIM. If the owner wants the file and the app to
+agree, either the audit lands, or the dialog drops the word. See
+docs/DENIABILITY_LAYERS.md.
 
 ### What the claim rests on, and what it does not cover
 
@@ -84,9 +116,26 @@ It rests on four things, each with a test:
   as it reads our closing message (the audit covers both sides). A contact
   whose app never closes keeps the MAC keys of what we sent unrevealed. That
   copy is still not proof against us, by point 1.
-- **Unconfirmed when the app closes.** The re-sending lives in memory. If the
-  app is closed before the server confirms, those keys are retired and wiped
-  but never published.
+- **Residual: the kill-to-confirmation window.** The re-sending lives in
+  memory only. If the process dies between `retire_all` and the server's
+  confirmation, the keys are retired and wiped, never published, and that
+  close's transcript stays provable. Exactly the lines the lost closing
+  messages would have covered, as `TestCrashDuringClose`
+  (`tests/test_l1_crash_during_close.py`) shows with a real process killed by
+  SIGKILL. Persisting the closing messages so they could be sent on the next
+  launch was considered and rejected: it would leave a record on the device
+  of whom the chat was just made deniable with. The app reports such a close
+  as unconfirmed before the window opens (`made_deniable_unconfirmed`).
+- **Residual: a partial close.** A close with more than 2000 retired keys
+  goes out in several closing messages, each publishing its own range,
+  oldest first. A lost part leaves exactly its range provable until the
+  client re-sends it; it keeps every part until the server confirms. Gate:
+  Rust `ratchet::l1_retirement::a_close_over_the_bound_is_several_messages`,
+  `::each_part_publishes_only_its_own_range_oldest_first`,
+  `::residual_a_lost_later_part_takes_its_range_with_it`, and
+  `TestMultiPartClose` in `tests/test_deniability_wire_audit.py`. There, the
+  outsider's audit rejects a transcript whose second part is missing, and
+  accepts it once the part is re-sent.
 - **Forgery cuts both ways.** Once the keys are public, anyone holding the
   traffic can produce lines whose MAC verifies for that closed session,
   including someone fabricating "evidence" against you. The transcript then
@@ -188,9 +237,9 @@ none. Also `tests/test_mac_revelation_end_to_end.py`, `test_reveal_ordering.py`,
 - A message whose outer MAC fails after its AEAD tag verified has its MAC key
   retired anyway (R1 commits at the AEAD); the replay cache refuses any second
   copy, so nothing can be verified with it.
-- First contact is trust-on-first-use (A2), and v2's ML-DSA handshake
-  signatures are attributable (SPEC §10.1): participation deniability against
-  a transcript holder is given up there, independently of this item.
+- TOFU: see "Shared residual" above. v2's ML-DSA handshake signatures are
+  attributable (SPEC §10.1): participation is not deniable, independently of
+  this item (docs/DENIABILITY_LAYERS.md).
 
 ### The closing messages leave before the connection does (2026-10-26)
 
@@ -718,8 +767,11 @@ marked development/test only.
 
 ## X1 — Password to a substituted `.i2p` server
 
-**Status: RESOLVED on Android (2026-09-28), with the residuals below. Not yet
-exercised by a handset login (PHYSICAL_TEST_PLAN.md §0).**
+**Status: RESOLVED-CLAIM on Android (2026-09-28) and the terminal client
+(2026-10-24). The claim: a changed destination receives no byte, and no
+password is sent where certificate checks are off. It is demonstrated by
+the tests below, which mutation-check both layers, with the residuals
+named. Not yet exercised by a handset login (PHYSICAL_TEST_PLAN.md §0).**
 
 ### The defect
 
@@ -774,9 +826,8 @@ negotiated (`tls_required`).
 
 ### Residual risks, stated
 
-1. **First contact is trust-on-first-use.** If the very first resolution of a
-   name is already substituted, that destination is pinned. Layer A then
-   still keeps the password off the wire, but:
+1. **TOFU:** see "Shared residual" above. If the very first resolution is
+   already substituted, layer A still keeps the password off the wire, but:
 2. **A SCRAM exchange with an impostor permits an offline guessing attack**
    on a weak password: the impostor picks the salt and iteration count and
    receives the client proof, against which it can test guesses offline. It

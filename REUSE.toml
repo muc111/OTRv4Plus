@@ -50,8 +50,10 @@ path = [
     "docs/CHANGES.md",
     "CONTRIBUTING.md",
     "docs/CRYPTO_AUDIT_2026-09.md",
+    "docs/DENIABILITY_LAYERS.md",
     "docs/SECURITY_AUDIT_2026-10-11.md",
     "docs/PHYSICAL_TEST_PLAN.md",
+    "docs/PQC_DECISIONS.md",
     "docs/CRYPTO_SOURCE_OF_TRUTH.md",
     "docs/DEVELOPMENT.md",
     "docs/FEASIBILITY_REPORT.md",
@@ -94,6 +96,7 @@ path = [
     "docs/VOICE_PATH_INVESTIGATION.md",
     "docs/VOICE_SOAK_TEST.md",
     "docs/WHY.md",
+    "research/epochal-mldsa/ANALYSIS.md",
 ]
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"

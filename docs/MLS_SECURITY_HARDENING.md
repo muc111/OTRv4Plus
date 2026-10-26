@@ -92,11 +92,30 @@ prefix, so a client from before F4 drops it without showing it. Gate:
   survives a restart, bounded, published in batches);
 - `tests/test_f4_group_key_publication.py`.
 
-What it does not do: a member who records traffic and leaks it **before**
-the publication holds signatures made by a key that was private at the
-time. The window is the rekey period (at most 50 messages or 30 minutes)
-plus the delay. The construction has not been independently reviewed, and
-the app says so.
+**What release does, and what it cannot do (the F4 residual, stated
+exactly).** Release makes the epoch's signatures **forgeable from the moment
+of release on**: a transcript produced or shown after it cannot prove who
+signed any message of that epoch, because any member could have made it.
+It does **not** reach back. A signature that someone captured and verified
+while the key was still private was valid evidence at that moment, and stays
+attributable for ever to anyone who trusts that capture. Release cannot undo
+a verification already made. This residual is cryptographic and permanent;
+no later mechanism removes it. The window in which a capture is still
+attributable is the rekey period (at most 50 messages or 30 minutes) plus
+the delay (10 minutes), or none after Make Group Deniable.
+
+**UI copy constraint.** No text in any client may say "past messages are
+deniable", or anything equivalent. Group copy may say only that earlier keys
+are published, so a transcript shown afterwards proves nothing, and that
+anything copied before the publication stays signed. Pinned by
+`DeniableChatTest`. The construction has not been independently reviewed,
+and the app says so.
+
+The composite key is released as a unit, the Ed448 seed and the ML-DSA-87
+key together, so "both halves must verify" is unaffected: a forgery from the
+publication satisfies both, and neither half is released alone
+(docs/PQC_DECISIONS.md (c);
+`retired_key_tests::a_publication_carries_both_halves_of_the_composite_key`).
 
 Even with all three, a member who records traffic **before** rotation holds
 signatures made by a key that was then private. Full OTRv4-style
