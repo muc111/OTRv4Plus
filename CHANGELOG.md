@@ -4,6 +4,30 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.181 — 2026-10-26 — The creator answers requests to join; desktop zoom pans (core 0.13.2)
+
+Device reports (2026-10-25): the creator was not told that someone asked to
+join their group, and a zoomed picture on the desktop could not be moved.
+
+- **The creator decides who joins.** A request to join an encrypted group now
+  goes to the group's creator, and only to them. It prompts on whatever
+  screen is open (Accept / Deny / Later) and raises the notification when the
+  app is in the background. A request replayed from the room's history (the
+  creator was away when it came) prompts too.
+- **Deny makes a pest wait.** After a denial the same person's next request is
+  not shown for 15 minutes, then 30, then 60, doubling with each denial. The
+  count is kept in the group's sealed state, so restarting the app does not
+  reset it. Accept sends the usual OTRv4+ invitation and clears the count. A
+  request that was already denied, replayed from history, is never asked
+  about again.
+- **Desktop viewer:** a zoomed picture can be dragged to pan, has both scroll
+  bars, and stays centred at each zoom step.
+- Tests: `test_group_entry_requests.py` (creator only, history, 15/30-minute
+  waits, replay, accept), `test_join_request_creator_decides.py` (real MLS:
+  the creator is the first member, denials survive a restart, leave forgets),
+  `test_join_request_prompt.py`, `EntryRequestTextTest`, and
+  `test_desktop_file_viewer.py::test_a_zoomed_picture_can_be_moved`.
+
 ## Android 0.7.0-experimental.rc.180 — 2026-10-25 — Verify once, creator removes who failed; members view for 100; New chat lists who is online (core 0.13.2)
 
 Owner requests (2026-10-25): verification happens once and whoever got the
