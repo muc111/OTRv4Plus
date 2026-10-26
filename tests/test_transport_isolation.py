@@ -101,9 +101,10 @@ class TestTheStoresAreInDifferentPlaces:
         xmpp = pytest.importorskip("otrv4plus_xmpp")
         assert xmpp._host.XMPP_STATE_DIR.rstrip("/").endswith("/xmpp")
 
-    def test_every_xmpp_path_is_under_that_directory(self):
+    def test_every_xmpp_path_is_under_that_directory(self, monkeypatch):
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        cfg = xmpp._xmpp_otr_config()
+        monkeypatch.setattr(xmpp._host, "XMPP_STATE_DIR", __import__("tempfile").mkdtemp())
+        cfg = xmpp._xmpp_otr_config("me@example.test")
         for name in ("trust_db_path", "smp_secrets_path", "identity_path",
                      "identity_dek_path"):
             value = getattr(cfg, name)
@@ -111,9 +112,10 @@ class TestTheStoresAreInDifferentPlaces:
             assert value.startswith(xmpp._host.XMPP_STATE_DIR), (
                 "%s escapes the XMPP state directory: %s" % (name, value))
 
-    def test_the_xmpp_config_turns_both_switches_on(self):
+    def test_the_xmpp_config_turns_both_switches_on(self, monkeypatch):
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        cfg = xmpp._xmpp_otr_config()
+        monkeypatch.setattr(xmpp._host, "XMPP_STATE_DIR", __import__("tempfile").mkdtemp())
+        cfg = xmpp._xmpp_otr_config("me@example.test")
         assert cfg.persist_identity is True
         assert cfg.persist_trust is True
 

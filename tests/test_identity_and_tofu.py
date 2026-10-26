@@ -233,9 +233,10 @@ class TestIrcStaysEphemeral:
 
 class TestXmppAndIrcStoresAreSeparate:
 
-    def test_the_xmpp_client_uses_its_own_paths(self):
+    def test_the_xmpp_client_uses_its_own_paths(self, monkeypatch):
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        cfg = xmpp._xmpp_otr_config()
+        monkeypatch.setattr(xmpp._host, "XMPP_STATE_DIR", __import__("tempfile").mkdtemp())
+        cfg = xmpp._xmpp_otr_config("me@example.test")
         legacy = os.path.expanduser("~/.otrv4plus")
         for path in (cfg.trust_db_path, cfg.smp_secrets_path,
                      cfg.identity_path, cfg.identity_dek_path):
@@ -243,9 +244,10 @@ class TestXmppAndIrcStoresAreSeparate:
             assert os.path.dirname(path.rstrip("/")) != legacy, (
                 "%s is still in the shared directory" % path)
 
-    def test_the_xmpp_client_asks_for_persistence(self):
+    def test_the_xmpp_client_asks_for_persistence(self, monkeypatch):
         xmpp = pytest.importorskip("otrv4plus_xmpp")
-        cfg = xmpp._xmpp_otr_config()
+        monkeypatch.setattr(xmpp._host, "XMPP_STATE_DIR", __import__("tempfile").mkdtemp())
+        cfg = xmpp._xmpp_otr_config("me@example.test")
         assert cfg.persist_identity is True
         assert cfg.persist_trust is True
 

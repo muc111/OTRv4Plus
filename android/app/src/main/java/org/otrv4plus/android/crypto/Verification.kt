@@ -165,8 +165,10 @@ object Verification {
      * learned as noise.
      */
     const val IDENTITY_LIFETIME: String =
-        "Your identity on this device is new each time the app starts. " +
-            "Nothing about it is kept after you close the app. Contacts who " +
+        "Your identity on this device is new each time the app starts, and " +
+            "each account you sign in to has its own, so accounts used on one " +
+            "phone cannot be linked by their key. Nothing about it is kept " +
+            "after you close the app. Contacts who " +
             "saved your previous key will be warned that it changed, and any " +
             "verification has to be done again."
 

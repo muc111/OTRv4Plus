@@ -1488,6 +1488,10 @@ def controller_for(app: Any, jid: str = "",
            if v}
     )
     _follow_sam_udp_port(int(profile.sam_port))
+    # F2: this account's identity before any byte is sent as it.
+    bind = getattr(app, "bind_identity_account", None)
+    if bind is not None and jid:
+        bind(jid)
     return ConnectionController(app, profile)
 
 

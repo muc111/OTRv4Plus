@@ -329,6 +329,8 @@ class VerificationTest {
         val said = Verification.outcome(SmpState.VERIFIED)!!
         assertTrue("until the app closes" in said, said)
         assertTrue("new each" in Verification.IDENTITY_LIFETIME)
+        // F2: one identity per account, and said so.
+        assertTrue("each account you sign in to has its own" in Verification.IDENTITY_LIFETIME)
         assertTrue("warned" in Verification.IDENTITY_LIFETIME,
             "the user is not told their contacts will see a key change")
     }

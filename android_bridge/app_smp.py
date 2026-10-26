@@ -255,6 +255,31 @@ class SmpMixin:
         if account and "@" in account and not getattr(self, "_wiped", False):
             self._signed_in = True
 
+    def bind_identity_account(self, account: str) -> bool:
+        """F2: the identity is the ACCOUNT's, not the process's.
+
+        Called when a connection (sign-in or account creation) is prepared for
+        [account], before anything is sent. The first account in this process
+        takes the identity generated at start-up, which nobody has seen yet;
+        a different account afterwards gets a new one
+        (`EnhancedSessionManager.rotate_identity`) -- the old key wiped in
+        Rust, its sessions ended -- so no two accounts ever present the same
+        long-term key. The same account again keeps it. Returns whether the
+        identity was rotated."""
+        bare = str(account or "").split("/", 1)[0].strip().lower()
+        if "@" not in bare or getattr(self, "_wiped", False):
+            return False
+        current = getattr(self, "_identity_account", None)
+        if current == bare:
+            return False
+        rotated = False
+        if current is not None:
+            self._signed_in = False
+            self._engine.rotate_identity("account changed")
+            rotated = True
+        self._identity_account = bare
+        return rotated
+
     def note_signed_out(self) -> None:
         """U1: no authenticated session any more (disconnect, sign-out)."""
         self._signed_in = False

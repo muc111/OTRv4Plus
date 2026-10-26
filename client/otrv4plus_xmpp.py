@@ -304,11 +304,39 @@ def _migrate_legacy_smp_secrets() -> None:
               "re-enter them with /smp-secret" % exc.__class__.__name__)
 
 
-def _xmpp_otr_config():
+def _identity_path_for(account):
+    """F2: the sealed identity record of ONE account (SPEC §3.1).
+
+    One identity per account, so two accounts used on this machine never
+    present the same long-term key -- which every DAKE1 carries, readable by
+    the server -- and cannot be linked by it. The file is named by a
+    domain-separated hash, never by the JID itself.
+
+    The record from before per-account identities (identity.sealed) is kept
+    by the first account to sign in afterwards, so its contacts see no key
+    change; any other account starts with a new identity.
+    """
+    import hashlib
+    bare = str(account or "").split("/", 1)[0].strip().lower()
+    if "@" not in bare:
+        raise ValueError("a persistent identity needs the account (user@server)")
+    tag = hashlib.sha3_256(b"OTRv4+ identity record v1\x00" + bare.encode("utf-8")).hexdigest()[:32]
+    path = _xmpp_state_path("identity.%s.sealed" % tag)
+    legacy = _xmpp_state_path("identity.sealed")
+    if not os.path.exists(path) and os.path.exists(legacy):
+        for suffix in ("", ".mldsa"):
+            if os.path.exists(legacy + suffix):
+                os.replace(legacy + suffix, path + suffix)
+        print("[identity] the identity kept from before is now %s's" % bare)
+    return path
+
+
+def _xmpp_otr_config(account=""):
     """OTRConfig for XMPP: persistent identity, persistent trust, own paths.
 
     This is the only place the two protocols diverge in configuration, and the
-    divergence is deliberate. See _host.XMPP_STATE_DIR above.
+    divergence is deliberate. See _host.XMPP_STATE_DIR above. The identity is
+    [account]'s own (F2, `_identity_path_for`).
     """
     _migrate_legacy_smp_secrets()
     return OTRConfig(
@@ -317,7 +345,7 @@ def _xmpp_otr_config():
         persist_trust=True,
         trust_db_path=_xmpp_state_path("trust.json"),
         smp_secrets_path=_xmpp_state_path("smp_secrets.json"),
-        identity_path=_xmpp_state_path("identity.sealed"),
+        identity_path=_identity_path_for(account),
         identity_dek_path=_xmpp_state_path(".identity_dek"),
     )
 
@@ -928,7 +956,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                 except Exception:
                     pass
             tracer.set_emit_callback(_trace_emit)
-        cfg = _xmpp_otr_config()
+        cfg = _xmpp_otr_config(str(self.boundjid.bare))
         try:
             self.otr = EnhancedSessionManager(config=cfg, tracer=tracer)
         except Exception as exc:

@@ -10014,6 +10014,63 @@ class EnhancedSessionManager:
     def wiped(self) -> bool:
         return self._wiped
 
+    def rotate_identity(self, reason: str = "account changed") -> str:
+        """A new identity for the next account (F2, SPEC §3.1).
+
+        For an engine whose identity is NOT persisted (Android, desktop: one
+        per process): the Ed448 and ML-DSA identity it would present next is
+        replaced by freshly generated ones -- by the same generation code as
+        at start-up -- and the old handles are zeroized in Rust. Every
+        session and handshake that used the old identity is ended first
+        (deniably, L1), and in-memory trust pins go with it: nothing of the
+        previous account reaches the next one. Without this, signing out of
+        one account and into another in the same process presented the same
+        long-term key -- in every DAKE1, readable by the server -- for both,
+        linking them.
+
+        A persisted identity is per account by its path instead
+        (`identity_path_for`); asking to rotate one is a programming error.
+        Returns the new fingerprint (public).
+        """
+        with self.lock:
+            self._refuse_if_wiped()
+            if self.config.persist_identity:
+                raise RuntimeError("a persisted identity is per account by its path")
+            for peer in list(self.sessions):
+                self.end_session(peer, reason, announce=True)
+            for peer, engine in list(self.dake_engines.items()):
+                try:
+                    engine.zeroize()
+                except Exception:
+                    pass
+            for peer, session in list(self._pending_sessions.items()):
+                try:
+                    session.terminate(reason)
+                except Exception:
+                    pass
+            self.dake_engines.clear()
+            self._pending_sessions.clear()
+            self._sent_dake1.clear()
+            self._answering_dake1.clear()
+            self._orphan_data.clear()
+            old = self.client_profile
+            self.client_profile = self._build_client_profile()
+            for name in ("identity_key", "prekey", "mldsa_identity"):
+                handle = getattr(old, name, None)
+                if handle is not None and hasattr(handle, "zeroize"):
+                    try:
+                        handle.zeroize()
+                    except Exception:
+                        pass
+            if not self.config.persist_trust:
+                try:
+                    with self.trust_db._lock:
+                        self.trust_db._db.clear()
+                except Exception:
+                    pass
+            self.tracer.trace("SYSTEM", "IDENTITY", "OLD", "ROTATED", reason)
+            return self.client_profile.get_fingerprint()
+
     def wipe(self, reason: str = "wipe") -> Dict[str, int]:
         """Destroy every secret this engine holds, then refuse all further use.
 
