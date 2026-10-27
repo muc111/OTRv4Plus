@@ -933,8 +933,15 @@ Which of the two happened on that phone is not known; the diagnostic trace
 now records the cause (`identity trust_unavailable`, with `reason`
 `marker_without_record` or `unseal_failed`).
 
-The rule still holds: a record that will not open is refused, every time,
-and never replaced by itself. On a phone nobody can move a file aside, so
+**Create account is not stopped by it** (owner's second report, the same
+day). Registration is a username and a password sent to the server; it
+signs nothing with the account's OTR identity and checks no contact pin, so
+a bind refusal does not apply to it
+(`test_a_refused_bind_does_not_stop_create_account`). Sign-in, where the
+identity and the pins are used, stays refused.
+
+The rule still holds for sign-in: a record that will not open is refused,
+every time, and never replaced by itself. On a phone nobody can move a file aside, so
 the refusal now offers **Forget saved contact keys…**: two presses, and the
 dialog says what it costs (every contact of the account is a first contact
 again, to be compared once more). It is the phone's equivalent of the
