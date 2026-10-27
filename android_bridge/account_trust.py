@@ -44,7 +44,7 @@ from otrv4plus_identity import TermuxFileDekProvider, _read_record, _write_recor
 from .secure_store import AesGcmSealedStore, UnsealError
 
 __all__ = ["TrustUnavailable", "trust_dir", "trust_tag", "for_android", "for_desktop",
-           "for_terminal"]
+           "for_terminal", "destroy_local"]
 
 RECORD_TYPE = "otr.trust"
 SCHEMA = 1
@@ -52,7 +52,12 @@ SCHEMA = 1
 
 class TrustUnavailable(RuntimeError):
     """The account's trust record exists and will not open. It is not
-    replaced; the connection is refused (`trust_unavailable`)."""
+    replaced; the connection is refused (`trust_unavailable`). [reason] is a
+    fixed token for the diagnostic trace, never data."""
+
+    def __init__(self, message: str, reason: str = "unopenable"):
+        super().__init__(message)
+        self.reason = reason
 
 
 def trust_dir() -> str:
@@ -89,6 +94,12 @@ class _FileTrustRecords:
     def put(self, name: str, sealed: bytes) -> None:
         _write_record(os.path.join(self._dir, name), sealed)
 
+    def remove(self, name: str) -> None:
+        try:
+            os.remove(os.path.join(self._dir, name))
+        except FileNotFoundError:
+            pass
+
 
 class _VaultTrustRecords:
     """Sealed records in the Keystore vault's trust section (Android), with
@@ -111,13 +122,21 @@ class _VaultTrustRecords:
         if blob is not None and len(blob):
             return bytes(blob)
         if os.path.exists(self._marker(name)):
-            raise TrustUnavailable("the vault holds a trust record it cannot open")
+            raise TrustUnavailable("the vault holds a trust record it cannot open",
+                                   reason="marker_without_record")
         return None
 
     def put(self, name: str, sealed: bytes) -> None:
         self._vault.put(self.PREFIX + name, bytes(sealed))
         if not os.path.exists(self._marker(name)):
             _write_record(self._marker(name), b"")
+
+    def remove(self, name: str) -> None:
+        self._vault.remove(self.PREFIX + name)
+        try:
+            os.remove(self._marker(name))
+        except FileNotFoundError:
+            pass
 
 
 class AccountTrustRecord:
@@ -137,7 +156,8 @@ class AccountTrustRecord:
             plain = self._sealed.unseal(RECORD_TYPE, self._name, SCHEMA, blob)
             data = json.loads(bytes(plain).decode("utf-8"))
         except (UnsealError, ValueError, UnicodeDecodeError):
-            raise TrustUnavailable("the account's trust record would not open") from None
+            raise TrustUnavailable("the account's trust record would not open",
+                                   reason="unseal_failed") from None
         except Exception as exc:
             raise TrustUnavailable("trust record: %s" % exc.__class__.__name__) from None
         if not isinstance(data, dict):
@@ -150,6 +170,12 @@ class AccountTrustRecord:
 
     def where(self) -> str:
         return "sealed, %s" % self._records.where(self._name)
+
+    def forget(self) -> None:
+        """The user's deliberate answer to a record that will not open: it
+        and its marker go, and the account's contacts are first contacts
+        again. Never called by itself (P1: refused, never replaced)."""
+        self._records.remove(self._name)
 
 
 class _TerminalTrustRecord(AccountTrustRecord):
@@ -228,6 +254,16 @@ def for_terminal(dek_path: str, legacy_path: Optional[str] = None,
     return _TerminalTrustRecord(_FileTrustRecords(directory),
                                 AesGcmSealedStore(TermuxFileDekProvider(dek_path)),
                                 "trust.terminal.sealed", legacy_path, read_legacy)
+
+
+def destroy_local() -> None:
+    """Wipe & Exit, with the other secrets: the trust key file, the Android
+    markers and the desktop records under ~/.otrv4plus/trust. Done before the
+    vault is destroyed, so a wipe cut short after that step can no longer
+    leave markers naming records nothing can open."""
+    import shutil
+    path = os.path.join(os.path.expanduser("~"), ".otrv4plus", "trust")
+    shutil.rmtree(path, ignore_errors=True)
 
 
 def for_desktop() -> AccountTrust:

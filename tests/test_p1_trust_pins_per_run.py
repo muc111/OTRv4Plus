@@ -406,3 +406,47 @@ def test_the_terminal_keeps_its_pins_across_restarts_as_before():
     otr.TrustDatabase(path, persistent=True).check_or_pin(PEER, "a" * 64)
     with pytest.raises(otr.TrustDatabase.FingerprintMismatchError):
         otr.TrustDatabase(path, persistent=True).check_or_pin(PEER, "b" * 64)
+
+
+def test_a_marker_whose_record_is_gone_is_refused_until_the_user_forgets_it(home):
+    """The handset state of 2026-10-27: Create account answered "This
+    account's saved contact keys on this device would not open" -- a marker
+    naming a record the vault no longer opens (its key or its records gone,
+    the marker kept: a wipe cut short, or two keys made at once). Refused
+    every time, never replaced; the user can discard it, and only then is
+    the account usable again, every contact a first contact."""
+    from android_bridge.app_base import BridgeError
+    from android_bridge.trace import TRACE
+    from android_bridge import connection as C
+    install = Install("android")
+    _talk(install, _Contact())                       # a pin: record + marker
+    install.trust_vault = DictVault()                # the vault cannot open it now
+    TRACE.clear()
+    for _ in range(2):
+        with pytest.raises(BridgeError) as refused:
+            install.start()
+        assert refused.value.code == "trust_unavailable"
+    events = [ev for ev in TRACE.events() if ev["event"] == "trust_unavailable"]
+    assert events and events[-1]["fields"].get("reason") == "marker_without_record"
+    # What Kotlin sees: Create account answers the code, nothing raises.
+    from android_bridge.app import OtrApp
+    from android_bridge import account_identity, account_trust
+    a = OtrApp.__new__(OtrApp)
+    a._engine, a._signed_in, a._wiped = E._manager(), False, False
+    a.use_identity_store(account_identity.for_android(install.identity_vault))
+    a.use_trust_store(account_trust.for_android(install.trust_vault, True))
+    assert C.controller_for(a, ME, "", "127.0.0.1", 1).register("pw")["code"] == "trust_unavailable"
+    # The user's deliberate answer.
+    assert a.forget_account_trust(ME) is True
+    a.bind_identity_account(ME)
+    assert a._engine.trust_db.list_trusted() == {}
+    assert install.start()._engine.trust_db.check_or_pin(PEER, "A1" * 56) is False
+
+
+def test_wipe_crypto_removes_the_trust_markers_before_the_vault_is_destroyed(home):
+    install = Install("android")
+    alice, _p, _e, _r = _talk(install, _Contact())
+    trust = os.path.join(home, ".otrv4plus", "trust")
+    assert any(f.endswith(".present") for f in os.listdir(trust))
+    alice.wipe_crypto()
+    assert not os.path.exists(trust), "a wipe cut short after this left markers behind"

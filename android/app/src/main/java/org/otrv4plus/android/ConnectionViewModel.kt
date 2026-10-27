@@ -360,6 +360,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      * Refused while connected: the service is holding a live session.
      */
     fun register(jid: String, password: String, server: String = "") {
+        lastAccount = jid
         if (status.connected) {
             registration = RegistrationOutcome(
                 ok = false, code = "already_connected",
@@ -451,6 +452,32 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         registration = null
     }
 
+    /** The account of the last Log in or Create account. */
+    private var lastAccount: String = ""
+
+    /** Whether the last attempt was refused because the account's saved
+     *  contact keys would not open (P1). */
+    val savedKeysUnopenable: Boolean
+        get() = registration?.code == TRUST_UNAVAILABLE || connectionFailure == TRUST_UNAVAILABLE
+
+    /**
+     * The user confirmed discarding the saved contact keys that would not
+     * open. Nothing connects here; they press Log in or Create account again.
+     */
+    fun forgetSavedContactKeys() {
+        val c = core ?: return
+        val account = lastAccount.ifBlank { return }
+        viewModelScope.launch {
+            val done = withContext(Dispatchers.IO) { c.forgetAccountTrust(account) }
+            if (done) {
+                registration = null
+                connectionFailure = null
+            } else {
+                error = "forget_failed"
+            }
+        }
+    }
+
     /**
      * Connect, for real.
      *
@@ -461,6 +488,7 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
      * the UI renders.
      */
     fun connect(jid: String, password: String, server: String = "") {
+        lastAccount = jid
         error = null
         // The previous attempt's verdict, dropped the moment a new one is
         // asked for. Leaving it would put the old failure next to the new
@@ -570,5 +598,8 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
 
         /** The file of trusted server destinations would not open (X1). */
         const val PINS_UNREADABLE = "i2p_server_pins_unreadable"
+
+        /** The account's saved contact keys would not open (P1). */
+        const val TRUST_UNAVAILABLE = "trust_unavailable"
     }
 }

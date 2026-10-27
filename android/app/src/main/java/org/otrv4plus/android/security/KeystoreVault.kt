@@ -188,6 +188,14 @@ class KeystoreVault private constructor(
             return keyGone
         }
 
+        /**
+         * One key for every section, made once. Synchronized: the default,
+         * identity and trust sections are opened from different threads at
+         * start-up, and two openers each finding no key would each make one
+         * -- the second replaces the first under the alias, and whatever was
+         * sealed under the first could never be opened again.
+         */
+        @Synchronized
         private fun loadOrCreateKey(): SecretKey {
             val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
             (store.getEntry(ALIAS, null) as? KeyStore.SecretKeyEntry)

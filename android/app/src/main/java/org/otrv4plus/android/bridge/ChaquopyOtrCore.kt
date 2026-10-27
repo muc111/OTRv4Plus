@@ -268,6 +268,16 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     private fun requireApp(): PyObject =
         app ?: throw OtrBridgeException("not_initialized")
 
+    /**
+     * P1: the user, told what it costs, discards [jid]'s saved contact keys
+     * after they would not open (`trust_unavailable`). Every contact of the
+     * account is a first contact again. Only ever on that explicit request.
+     */
+    fun forgetAccountTrust(jid: String): Boolean =
+        runCatching {
+            requireApp().callAttr("forget_account_trust", jid)?.toBoolean() ?: false
+        }.getOrDefault(false)
+
     /** Whether the engine is up: false before [initialize] and after
      *  [shutdown], which Sign out runs. */
     val isInitialized: Boolean get() = app != null

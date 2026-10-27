@@ -212,6 +212,13 @@ class WipeMixin:
             _sync.ArchiveCursor(os.path.expanduser(CURSOR_PATH)).forget()
         except Exception as exc:
             report["errors"].append("sync_cursor:%s" % type(exc).__name__)
+        # P1: the contact pins' key file and markers, before Kotlin destroys
+        # the vault they point into.
+        try:
+            from . import account_trust as _trust
+            _trust.destroy_local()
+        except Exception as exc:
+            report["errors"].append("trust_store:%s" % type(exc).__name__)
         getattr(self, "_invite_after_otr", {}).clear()
         getattr(self, "_message_requested", set()).clear()
         getattr(self, "_entry_seen", {}).clear()

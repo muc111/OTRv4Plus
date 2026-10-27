@@ -475,6 +475,10 @@ private fun ConnectOutcome(model: ConnectionViewModel) {
         Text(it.detail, style = MaterialTheme.typography.bodySmall)
     }
 
+    if (model.savedKeysUnopenable) {
+        ForgetSavedKeys(onForget = { model.forgetSavedContactKeys() })
+    }
+
     model.identityChange?.let { change ->
         ServerIdentityWarning(
             change = change,
@@ -535,6 +539,38 @@ private fun ConnectOutcome(model: ConnectionViewModel) {
                 (if (BuildConfig.DEV_DIAGNOSTICS) " ($it)." else ". Please try again."),
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+/**
+ * P1, the way out on a phone. The account's saved contact keys would not
+ * open (`trust_unavailable`); they are never replaced by themselves, and
+ * nobody can move a file aside here. Discarding them takes two presses, and
+ * says what it costs: every contact is a first contact again.
+ */
+@Composable
+private fun ForgetSavedKeys(onForget: () -> Unit) {
+    var confirming by remember { mutableStateOf(false) }
+    OutlinedButton(onClick = { confirming = true }) { Text("Forget saved contact keys\u2026") }
+    if (confirming) {
+        AlertDialog(
+            onDismissRequest = { confirming = false },
+            title = { Text("Forget this account's saved contact keys?") },
+            text = {
+                Text(
+                    "They cannot be opened on this phone, so they protect nothing " +
+                        "now. After this, every contact of this account is a first " +
+                        "contact again: a changed key can no longer be noticed until " +
+                        "you compare fingerprints with each of them again.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { confirming = false; onForget() }) { Text("Forget them") }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirming = false }) { Text("Cancel") }
+            },
         )
     }
 }

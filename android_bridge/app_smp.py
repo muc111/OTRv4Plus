@@ -360,6 +360,10 @@ class SmpMixin:
                 record.load()
             except Exception as exc:
                 _log.warning("trust pins of the account unavailable: %s", exc.__class__.__name__)
+                from .trace import TRACE as _TRACE
+                _TRACE.record("identity", "trust_unavailable", "error",
+                              cause=exc.__class__.__name__,
+                              reason=str(getattr(exc, "reason", "") or "-"))
                 raise BridgeError(
                     "trust_unavailable",
                     "this account's saved contact keys could not be opened; "
@@ -387,6 +391,22 @@ class SmpMixin:
         self._identity_account = bare
         self._attach_trust(record)
         return rotated
+
+    def forget_account_trust(self, account: str) -> bool:
+        """The user, told what it costs, discards [account]'s saved contact
+        keys: the answer to `trust_unavailable` on a device where nobody can
+        move a file aside. Every contact of the account is a first contact
+        again, to be compared once more. Only on an explicit request; a
+        record that will not open is never replaced by itself (P1)."""
+        bare = str(account or "").split("/", 1)[0].strip().lower()
+        trust = getattr(self, "_trust_store", None)
+        if trust is None or "@" not in bare:
+            return False
+        trust.for_account(bare).forget()
+        _log.warning("saved contact keys of an account discarded by the user")
+        if getattr(self, "_identity_account", None) == bare:
+            self._attach_trust(trust.for_account(bare))
+        return True
 
     def _attach_trust(self, record) -> None:
         """P1: the engine checks handshakes against [record]'s pins from now
