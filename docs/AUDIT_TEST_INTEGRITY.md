@@ -131,6 +131,16 @@ database-level test would have passed both.
 - Round 2: every survivor is killed by a new or strengthened test, except
   PM6, which is equivalent.
 - Round 3 (P1): 14 mutants, 14 killed.
+- Round 4 (the terminal follow-up): 8 mutants, 8 killed: the fail-open
+  load restored, the table check removed, the plaintext file kept after
+  the move, differing files resolved silently, an unopenable sealed record
+  read as empty, a corrupt plaintext file moved in as empty, the XMPP
+  config without its trust key file, the engine without `otrv4plus_repo`
+  (a terminal started from `client/` could not have started). Two existing
+  guards failed on the first version and were satisfied by changing the
+  code: `test_no_client_passes_persistent` (the opener now takes
+  `persistent` from the config) and
+  `test_every_client_module_that_imports_the_bridge_asks_for_the_path_first`.
 
 ## The tests, one by one
 
@@ -172,7 +182,8 @@ database-level test would have passed both.
 | L1 | the queue bound (4000) | `l1_retirement::the_retired_queue_keeps_up_to_its_bound_and_never_drops_early` | -- |
 | L1, A2, X1 | TOFU at first contact | `test_both_ends_pin_the_others_long_term_ml_dsa_key` shows what is pinned | no test can show that a pinned key is the person's |
 | A2 | pins last one run without a working Keystore (P1, after the fix; before it, on every Android and desktop install) | `test_residual_without_a_working_keystore_the_pins_last_one_run` | -- |
-| P1 | the terminal's `trust.json` is plaintext and fails open on a corrupt file | -- | unchanged by the fix; stated in the P1 entry, not asserted |
+| P1 | the terminal's `trust.json` was plaintext and failed open on a corrupt file | fixed by the follow-up: `test_a_plaintext_trust_file_that_will_not_open_is_refused_not_emptied`, `test_a_sealed_record_that_will_not_open_is_refused_and_not_replaced` | -- |
+| P1 | going back to an older build after the move: that build reads no `trust.json` as a first run | `test_both_files_differing_are_refused_and_neither_is_touched` (the current build's side) | what an older build does cannot be tested from this one |
 | F4 | a capture before release stays attributable | `residual_a_signature_checked_before_release_still_checks_after_it` | that a third party *trusts* a capture time is not testable |
 | F4 | the forgers are the members only | `residual_only_the_groups_members_receive_the_published_key` | -- |
 | F4 | the 16-key bound | `retired_keys_are_bounded_and_published_in_batches` | -- |

@@ -392,7 +392,8 @@ list `PQ_AUTH_VERSION` (`0x51`):
    its next v2 handshake. Resetting trust for the peer clears the pin; in the
    apps, if the open session is the one whose key changed, its keys (both
    halves) are pinned in place of the old ones instead. Pins
-   outlive a run of the client. The terminal client keeps them in a file;
+   outlive a run of the client. The terminal client keeps them sealed in a
+   file of its own;
    the Android and desktop apps keep them per account, sealed in a store of
    their own, and check the fingerprint pin when a session comes up: a
    changed key is reported (FINGERPRINT_MISMATCH) and never auto-accepted

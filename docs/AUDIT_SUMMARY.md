@@ -45,7 +45,9 @@ The record:
     the old code; `test_wipe_and_exit_destroys_the_trust_store` proves the
     wipe. 14 of 14 mutants killed.
   - Residuals: an Android device whose Keystore does not work keeps pins
-    for one run; the terminal's `trust.json` is plaintext; TOFU.
+    for one run; TOFU. The terminal's plaintext `trust.json`, which failed
+    open on a corrupt file, was brought to the same rules the same day
+    (sealed, refused when it will not open; `tests/test_terminal_trust_sealed.py`).
   - The claim matrix was then re-run end to end
     (docs/AUDIT_CLAIM_MATRIX.md, "Re-run after P1"). It found one stale
     sentence left from row 1.14, and two places where the P1 fix itself

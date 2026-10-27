@@ -9,7 +9,7 @@ counterexample, and each says what the code changes under either answer.
 An answer to any one of them is useful. Two matter most: **Q1** and **Q2**,
 on 1:1 content deniability.
 
-**What this describes.** The `dev` branch at `ffff38a` (2026-10-27). The
+**What this describes.** The `dev` branch at `1cc0efc` (2026-10-27). The
 latest release, rc.184 on `main`, predates two fixes made in this audit
 (P1 and P2, below). The questions are about the constructions, which are
 the same in both.
@@ -76,8 +76,12 @@ All are in docs/SECURITY_ISSUES.md with their tests.
     decapsulation completes (SECURITY.md, memory model);
   - the key-encryption key of the at-rest stores (B1), a Python `bytes`,
     which cannot be wiped.
-- **The terminal client's pins** are a plaintext file, which loads as
-  empty if it is corrupt (it fails open).
+- **Pin stores that will not open.** The contact pins of every client
+  are refused, never replaced, when they will not open; the terminal
+  client's were plaintext and failed open until 2026-10-27. The X1 server
+  pins still read an unopenable file as empty: the next connection to a
+  changed server is first use, with the password still protected by
+  SCRAM-only (SECURITY_ISSUES.md X1, residual 5).
 
 ## How to check the work
 
@@ -109,7 +113,7 @@ python -m pytest -q tests/test_deniability_wire_audit.py \
 
 These steps were run as written in a fresh environment on 2026-10-27.
 The Rust suites gave 199 and 70 passing tests. The full Python suite
-(8141 passing) needs more packages; `.github/workflows/python.yml`
+(8163 passing) needs more packages; `.github/workflows/python.yml`
 installs them. `raw-key-test-api` builds a test-only accessor, and
 `tests/test_release_guard.py` checks that the shipped build has no such
 entry point.

@@ -24,6 +24,11 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   store of their own, and Wipe & Exit destroys it. A store that will not
   open is refused, not replaced. On an Android device whose Keystore does
   not work the pins still last one run. `tests/test_p1_trust_pins_per_run.py`.
+- **The terminal client's trust pins are sealed, and refused when they will
+  not open.** `~/.otrv4plus/xmpp/trust.json` was plaintext, and a corrupt one
+  loaded as empty, so every contact became a first contact. The pins are now
+  sealed under their own key file in `~/.otrv4plus/xmpp/trust/`; the old file
+  is moved in once and removed. `tests/test_terminal_trust_sealed.py`.
 - **"Make Chat Deniable…" is now "Publish Chat Keys…", and "Make Group
   Deniable…" is "Publish Group Keys…"** (confirm: "Publish keys"). The
   labels name what the action does, as the dialogs do; deniability itself

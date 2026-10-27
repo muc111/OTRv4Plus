@@ -241,3 +241,26 @@ only in code identifiers and comments, kept by the owner's decision. Row
 - 3.10: new, the P2 residual for older v2 builds.
 
 No row went down. No EXTERNAL row moved.
+
+### Follow-up the same day: the terminal client, and P1's neighbours
+
+P1's rule ("a trust store that will not open is refused, never replaced")
+was applied to the two other pin stores.
+- **The terminal client's contact pins** were plaintext, and a corrupt
+  `trust.json` loaded as empty, so every contact became a first contact.
+  The A2 claim (3.2) said "across restarts on the terminal", which held only
+  while the file was intact. Fixed: sealed, refused when they will not
+  open, moved in once (docs/SECURITY_ISSUES.md P1, follow-up;
+  `tests/test_terminal_trust_sealed.py`, 8 of 8 mutants killed).
+  Composition: IRC still writes nothing (INV-10,
+  `test_irc_still_keeps_its_pins_in_memory_and_writes_nothing`);
+  `persist_trust` keeps its meaning, and the tests that pin it are
+  unchanged; the identity's refusal to start now covers the pins too.
+- **The X1 server pins** (row 4.2) are read as empty when the file will not
+  open, so the next connection to a changed destination is first use. The
+  password stays protected (SCRAM-only); the destination check does not
+  hold for that connection. The residual was not stated, so row 4.2 was
+  PARTIAL on this point. It is now stated (X1 residual 5) and asserted by
+  `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`.
+  The behaviour is unchanged: the opposite of P1's rule, kept as an owner
+  decision.

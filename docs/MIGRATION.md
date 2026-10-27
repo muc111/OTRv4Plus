@@ -11,6 +11,17 @@ and any manual steps.
 
 ---
 
+## Unreleased: the terminal client's trust pins are sealed
+
+On the first start, `~/.otrv4plus/xmpp/trust.json` is sealed into
+`~/.otrv4plus/xmpp/trust/` (with its own key file, `trust.dek`) and then
+removed. Nothing to do. Back up the `trust/` directory whole, or not at all.
+If the client refuses to start because both files exist and differ, an older
+build wrote `trust.json` after the upgrade: move it aside to keep the sealed
+pins. A trust file that will not open is refused, not read as empty.
+
+---
+
 ## To v10.15.0
 
 **Rebuild required**, and this release exists partly because the previous one

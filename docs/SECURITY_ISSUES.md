@@ -56,9 +56,9 @@ instead of restating it.
 | A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
-| P1 | On Android and the desktop the contact pins were never checked, and lived in memory: a contact under a new identity was accepted in any run, and after a restart any changed key was a first contact, without a warning | High (authentication) | **RESOLVED** (found 2026-10-26, fixed 2026-10-27) -- the bridge checks the pin when a session comes up (`_check_contact_pin`): a changed key is FINGERPRINT_MISMATCH, `FingerprintChanged`, the pin kept, nothing queued sent. Each account's pins are kept sealed (`android_bridge.account_trust`): Android in the Keystore vault's own trust section, the desktop in 0600 files; apart from identities, server pins and history; destroyed by Wipe & Exit; a record that will not open is refused (`trust_unavailable`), retried, never replaced. `tests/test_p1_trust_pins_per_run.py` (24 tests; 14 mutants killed). Residuals: no working Keystore on Android, pins for one run; the terminal's plaintext `trust.json` (P1 section) |
+| P1 | On Android and the desktop the contact pins were never checked, and lived in memory: a contact under a new identity was accepted in any run, and after a restart any changed key was a first contact, without a warning | High (authentication) | **RESOLVED** (found 2026-10-26, fixed 2026-10-27) -- the bridge checks the pin when a session comes up (`_check_contact_pin`): a changed key is FINGERPRINT_MISMATCH, `FingerprintChanged`, the pin kept, nothing queued sent. Each account's pins are kept sealed (`android_bridge.account_trust`): Android in the Keystore vault's own trust section, the desktop in 0600 files; apart from identities, server pins and history; destroyed by Wipe & Exit; a record that will not open is refused (`trust_unavailable`), retried, never replaced. `tests/test_p1_trust_pins_per_run.py` (24 tests; 14 mutants killed). Residuals: no working Keystore on Android, pins for one run; the terminal's pins are one record per install (P1 section). Follow-up the same day: the terminal client's pins sealed too, and refused when they will not open (`tests/test_terminal_trust_sealed.py`) |
 | P2 | A forced DH step toward a remote key already stepped toward could not be followed by the peer: every later message failed to decrypt, silently. Reached by 100 messages from one side after a round trip, or by a chat open across two 24-hour boundaries | High (availability; silent message loss) | **RESOLVED** (2026-10-26) -- one send step per remote key (`RustBackedDoubleRatchet._forced_toward`). `tests/test_p2_forced_steps.py` (every test fails on the old engine), Rust `pq_ratchet::p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed`. Residual: a peer on an older build can still take the double step |
-| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED-CLAIM** (Android and the terminal client; claim: a changed destination receives no byte, and no password is sent where certificate checks are off) -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: TOFU (shared residual); SCRAM guessing and first registration (X1 section). NOT yet confirmed by a handset login |
+| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED-CLAIM** (Android and the terminal client; claim: a changed destination receives no byte, and no password is sent where certificate checks are off) -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: TOFU (shared residual); SCRAM guessing and first registration; an unreadable pins file is read as empty (X1 section). NOT yet confirmed by a handset login |
 
 ---
 
@@ -912,14 +912,50 @@ the next start would otherwise be a first contact again.
 
 Mutation: 14 mutants of the fix, each killed (docs/AUDIT_TEST_INTEGRITY.md).
 
+### Follow-up: the terminal client (2026-10-27)
+
+The terminal client kept its pins in plaintext in
+`~/.otrv4plus/xmpp/trust.json`, and a file that would not parse loaded as
+empty. That is P1's failure in the third client: every pinned contact a
+first contact, with no warning. It now meets the same rules:
+- **Fails closed.** A plaintext trust file that is there and will not open
+  (not JSON, empty, not a table) is refused (`TrustDatabase.StoreUnavailable`),
+  never read as empty, and the client does not start, as for an identity.
+  This holds for any persistent trust database.
+- **Sealed.** The XMPP config names a trust key file
+  (`trust_dek_path`, `~/.otrv4plus/xmpp/trust/trust.dek`). The pins are
+  then one sealed record beside it, on the apps' sealing path
+  (`android_bridge.account_trust.for_terminal`), in a directory apart from
+  the identity's. `persist_trust` keeps its meaning; IRC still keeps its
+  pins in memory and writes nothing.
+- **Moved in once.** On the first start, a plaintext `trust.json` is read
+  (one that will not open is refused and left as it is), sealed, read
+  back, and only then removed. If both files exist and say the same, the
+  plaintext one is removed; if they differ, neither is touched and the
+  client refuses to start, saying which file to move aside.
+- `/trust` says where the pins are (`TrustDatabase.where`).
+
+Gate: `tests/test_terminal_trust_sealed.py` (18 tests).
+`test_a_plaintext_trust_file_that_will_not_open_is_refused_not_emptied`
+fails on the old code. A terminal started from `client/` alone opens its
+sealed pins (`test_a_terminal_started_from_client_alone_opens_its_sealed_pins`;
+the engine now imports `otrv4plus_repo`, which the guard
+`tests/test_client_finds_the_bridge.py` required). 8 mutants of the
+follow-up, each killed.
+
 ### Residuals
 
 - **No working Keystore (Android).** The vault falls back to memory, so
   there is no trust store and the pins last one run, as before
   (`test_residual_without_a_working_keystore_the_pins_last_one_run`).
-- **The terminal client** keeps its pins in `~/.otrv4plus/xmpp/trust.json`.
-  It is plaintext (0600), and a file that will not parse loads as empty: it
-  fails open. Unchanged here, and listed for the terminal.
+- **The terminal client's pins are one record for the install**, as its
+  `trust.json` was, not one per account. Kept that way so that moving the
+  file in loses no account's pins.
+- **Going back to a build before the follow-up** finds no `trust.json`, and
+  that build reads a missing file as a first run: every contact is a first
+  contact there. The next start of a current build then finds both files
+  differing and refuses (above). Nothing in the current build can prevent
+  what an older build does.
 - **The record's name is a hash of the account.** No file or vault entry
   names the JID, but the name is an unkeyed hash, so whoever holds the
   files can confirm a guessed account. F3's identity records are named the
@@ -1077,6 +1113,15 @@ negotiated (`tls_required`).
    reconnect. A changed destination is shown with both addresses; only typing
    the new address in full approves it, and a reconnect never retries one.
    Residuals 1-3 apply to it as to the app.
+5. **A pins file that will not open is read as empty** (found 2026-10-27,
+   checking P1's neighbours). `ServerPins._load` keeps nothing, so the next
+   connection to a changed destination is first use, not a refused change.
+   The password stays protected by SCRAM-only (layer A); the destination
+   check (layer B) does not hold for that one connection. Writes are atomic,
+   so this takes tampering or a disk fault. P1's rule for contact pins is
+   the opposite (refuse, never replace), and changing this one is an owner
+   decision, not made here. Asserted by
+   `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`.
 
 ### Tests
 

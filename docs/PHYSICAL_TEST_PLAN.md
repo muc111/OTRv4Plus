@@ -222,7 +222,53 @@ bridge event paths.
 6. A public/discoverable room is NOT E2EE unless it is a secure group: check
    the room screen says which.
 
-## 8. Not part of this session
+## 8. Contact pins across restarts, and long sessions (P1, P2)
+
+Automated coverage: `tests/test_p1_trust_pins_per_run.py`,
+`tests/test_terminal_trust_sealed.py`, `tests/test_p2_forced_steps.py`,
+`ProfileIdentityTest`. Added 2026-10-27: before P1 the apps never checked a
+contact's key, so none of this could be seen on a device.
+
+**Every device on the same dev build.** A phone on rc.184 can still take
+P2's double step, and a dev phone cannot follow it (matrix row 3.10).
+
+1. **First contact.** A and B chat. On A, compare fingerprints with B in
+   person and tap "They match". **Pass:** "Fingerprint confirmed".
+2. **Restart.** Force-stop A (or reboot it), reopen, chat with B.
+   **Pass:** no warning, and "Fingerprint confirmed" is still shown.
+3. **A changed key.** On B: Wipe & Exit, then sign in to the same account
+   (a new identity). A sends B a message. **Pass:** A shows "Their key has
+   changed"; the message waits and does not arrive on B; A cannot call B
+   or send B a file.
+4. **The warning survives a restart.** Force-stop A and reopen. **Pass:**
+   B is still shown with a changed key, and the message still waits.
+5. **Reset trust.** On A, with B's chat open: Profile → Reset trust. Read
+   the dialog: it must say the new key shown is pinned in place of the old
+   one. Confirm. **Pass:** the waiting message arrives on B. Compare
+   fingerprints again.
+6. **The checked key is kept.** Force-stop A and reopen. **Pass:** no
+   warning for B.
+7. **Wipe & Exit destroys the pins.** On A: Wipe & Exit, sign in again,
+   chat with B. **Pass:** a first contact for A's new identity; on B, A's
+   key shows as changed (step 3 from B's side).
+8. **Desktop.** Repeat 1-3 between the laptop (D) and A, restarting the
+   desktop app at step 2.
+9. **Terminal, first start after the upgrade.** On T, before starting:
+   `ls ~/.otrv4plus/xmpp`. Start, then run `/identity`. **Pass:**
+   `trust.json` is gone, `trust/` holds `trust.dek` and
+   `trust.terminal.sealed`, `/identity` says the pins are sealed, and a
+   contact T knew before connects with no warning.
+10. **Terminal, a damaged record (optional).** Copy `trust/` aside, append
+    a byte to `trust.terminal.sealed`, start T. **Pass:** T refuses to start
+    and says the pins were not replaced. Restore the copy; T starts.
+11. **A long one-way run (P2).** A and B exchange one message each way, then
+    A sends B 120 messages with no reply. **Pass:** all 120 decrypt on B,
+    and B's reply decrypts on A.
+12. **Two days (P2, optional).** Leave A and B's chat open across two
+    24-hour boundaries, with one exchange each day. **Pass:** day three's
+    messages decrypt both ways.
+
+## 9. Not part of this session
 
 Physical flash erasure (never claimed), router-applied tunnel length (not
 measured; the app only requests it). X1 is implemented and covered by §0.
