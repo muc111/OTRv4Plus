@@ -41,8 +41,8 @@ The record:
 | L1 in README.md | "1:1 deniability of what was said, pending external audit" | the chats "can publish the keys that authenticated their messages, a mechanism not yet independently reviewed" |
 | L1 in SECURITY_ISSUES.md | "The claim is that a copy ... does not prove who wrote what" | "What the mechanism does": the aim, and what the tests show |
 | Make Chat Deniable waits for confirmation | "waits until our server confirms ... before the new session starts" (SECURITY_ISSUES, CHANGELOG rc.186) | it *asks*, then starts the new session whatever the answer, and says which |
-| Re-sending unconfirmed closing messages | "keeps sending it until it does" (the dialog), "until the server confirms" (CHANGELOG) | up to 40 times while the app runs (the terminal: 5); lost if the app closes |
-| Offline closing messages | "dropped" (SPEC §5.8, SECURITY_ISSUES L1, `app_deniable.py`) | kept in memory and sent when back: the code did that already |
+| Re-sending unconfirmed closing messages | "keeps sending it until it does" (the dialog), "until the server confirms" (CHANGELOG) | up to 40 times while the app runs (the terminal: 5), from memory only; lost if the app closes |
+| Offline closing messages | "dropped" (SPEC §5.8, SECURITY_ISSUES L1, `app_deniable.py`) | kept **in memory only, never written to disk**, and sent when back while the app runs; lost if it ends first. The code did that already. The privacy decision is unchanged: nothing on the device records whom a chat was made deniable with (`TestCrashDuringClose`) |
 | The new session | "unlinked to the old one", "no cryptographic link" | "shares no key with the old one"; both handshakes are signed by the same identities |
 | F4 in the app | "so a copy of the group shown after that no longer proves who signed what. Pending external audit." | "so any of them can make signatures under those keys too ... Not independently reviewed." |
 | F4 window (MLS_SECURITY_HARDENING §1) | "... or none after Make Group Deniable" | Make Group Deniable shortens how long keys stay secret from the press on; it does nothing for a capture already made |

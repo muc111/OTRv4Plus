@@ -895,8 +895,8 @@ ratchet runs `retire_all`, then encrypts closing messages (`encrypt_final`)
 until the queue is empty, flagged IGNORE_UNREADABLE; when this side ends the
 session the last carries the DISCONNECTED TLV. The ratchet is then closed: it
 encrypts and decrypts nothing more. Without a network the closing messages are
-kept (Confirmation, below) and sent when it is back; if the client ends first
-they are lost, and the keys are retired and wiped all the same. A new handshake
+kept in memory only (Confirmation, below) and sent when it is back; if the
+client ends first they are lost, and the keys are retired and wiped all the same. A new handshake
 always creates a new session: nothing of an ended one -- ratchet, instance tags
 -- is reused, so the new session shares no key with the old one. Both
 handshakes are signed by the same long-term identities (§10.1), so they are
@@ -912,9 +912,11 @@ before it:
 
 Make Chat Deniable starts the new session only after asking, whatever the
 answer, and reports whether the server confirmed. A closing message not
-confirmed is kept and sent again until it is, or until the client gives it
-up (the reference clients: 40 sends on Android and the desktop, 5 in the
-terminal, in memory only). A client MUST NOT report the keys as published before
+confirmed is kept in memory and sent again until it is, or until the client
+gives it up (the reference clients: 40 sends on Android and the desktop, 5 in the
+terminal). A client SHOULD NOT write closing messages to disk to send them
+after a restart: one on disk is a record, on the device, of whom the chat
+was made deniable with. The reference clients keep them in memory only. A client MUST NOT report the keys as published before
 confirmation. Confirmation is by the sender's server, not by the peer.
 
 **Late messages.** A message from an older chain whose skipped key is still held

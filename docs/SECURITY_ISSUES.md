@@ -100,7 +100,8 @@ rests on four things:
    whether the server confirmed. The server answers a XEP-0199 ping only
    after reading everything before it. Wipe & Exit and sign-out end the
    stream and wait for the server's end. Unconfirmed closing messages are
-   kept in memory and sent again, up to 40 times while the app runs
+   kept in memory only -- never written to disk -- and sent again, up to
+   40 times while the app runs
    (Android, desktop; the terminal 5 times). Gate:
    `tests/test_deniable_confirmation.py` (real slixmpp against a scripted
    server, including
@@ -210,9 +211,13 @@ depends on it.
   inbound frame, at sign-out, at Wipe & Exit before the transport closes) and
   the terminal client (`/deniable`, `/quit`). "Make Chat Deniable…" in every
   established 1:1 chat on Android and desktop, `/deniable [jid]` in the
-  terminal. Offline, the closing messages are kept in memory and sent when
-  the connection is back; the keys are retired and wiped in Rust all the
-  same.
+  terminal. Offline, the closing messages are kept in memory only and sent
+  when the connection is back; they are never written to disk (see "the
+  kill-to-confirmation window": a closing message on disk would record whom
+  the chat was made deniable with), so if the app ends first they are lost.
+  The keys are retired and wiped in Rust all the same. Gate:
+  `TestCrashDuringClose::test_no_mac_key_is_on_disk_after_the_kill`,
+  `::test_the_next_launch_holds_no_key_and_re_sends_nothing`.
 
 ### Regression gate
 

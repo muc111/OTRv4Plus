@@ -47,3 +47,21 @@ def test_the_terminal_words_state_no_property_and_name_the_residuals():
                    "a copy made before the keys are published",
                    "a close that does not finish", "can still be proof"):
         assert phrase in words, phrase
+
+
+def test_kept_closing_messages_are_always_said_to_be_in_memory():
+    """Closing messages waiting for confirmation are kept in memory only:
+    one written to disk would record whom a chat was made deniable with
+    (TestCrashDuringClose). Audit 2026-10-27: "kept" alone read as if that
+    decision had been reversed. Every sentence of the security record that
+    says closing messages are kept says where."""
+    docs = ("docs/SECURITY_ISSUES.md", "docs/SPEC.md", "docs/AUDIT_SUMMARY.md",
+            "docs/AUDIT_THREAT_MODEL.md", "docs/DENIABILITY_LAYERS.md")
+    bad = []
+    for doc in docs:
+        text = re.sub(r"\s+", " ", open(os.path.join(ROOT, doc), encoding="utf-8").read())
+        for sentence in re.split(r"(?<=[.;|])\s", text):
+            low = sentence.lower()
+            if "closing" in low and re.search(r"\bkept\b", low) and "memory" not in low:
+                bad.append("%s: %s" % (doc, sentence.strip()[:160]))
+    assert bad == [], "\n".join(bad)

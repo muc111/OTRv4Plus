@@ -23,7 +23,9 @@ from .trace import TRACE as _TRACE
 class DeniableMixin:
     """Closing messages, and the Make Chat Deniable action. Mixed into OtrApp."""
 
-    #: Closing messages kept until the server confirms them (bounded).
+    #: Closing messages kept until the server confirms them (bounded), in
+    #: memory only: never written to disk, where one would record whom a
+    #: chat was made deniable with (TestCrashDuringClose).
     MAX_UNCONFIRMED_CLOSINGS = 256
     #: How often `resend_unconfirmed_closings` tries, and how many times.
     CLOSING_RETRY_SECONDS = 30.0
@@ -69,7 +71,7 @@ class DeniableMixin:
     def _send_closing(self, entry) -> bool:
         transport = self._transport
         if transport is None or not getattr(transport, "is_connected", True):
-            return False                    # offline: kept, sent when back
+            return False                    # offline: kept (in memory), sent when back
         entry[3] += 1
         try:
             transport.send(entry[0], entry[1])
@@ -153,7 +155,8 @@ class DeniableMixin:
         whatever it answers. Returns "made_deniable" (confirmed),
         "made_deniable_unconfirmed" (the session is closed and its keys are
         retired, but the server did not confirm in time: the closing messages
-        are kept and sent again until it does), or "no_session"."""
+        are kept in memory and sent again, up to CLOSING_MAX_TRIES times),
+        or "no_session"."""
         peer = self.canonical_peer(peer)
         before = self.security_state(peer)
         try:

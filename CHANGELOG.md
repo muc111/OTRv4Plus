@@ -32,8 +32,9 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 > external audit": no deniability property is claimed (L1 is
 > RESOLVED-CODE). Make Chat Deniable *asks* the server to confirm and
 > starts the new session whatever the answer. Unconfirmed closing messages
-> are re-sent up to 40 times while the app runs, not "until the server
-> confirms".
+> are kept in memory only (never written to disk) and re-sent up to 40
+> times while the app runs, not "until the server confirms"; if the app
+> closes first, they are lost.
 
 **One-to-one chats: deniability of what was said, pending external audit**
 (security issue L1). "Pending external audit" is how the app now describes
