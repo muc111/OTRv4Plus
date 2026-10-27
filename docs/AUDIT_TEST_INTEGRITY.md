@@ -42,10 +42,10 @@ every test set on the unmutated code was green first. 34 mutants were run
 | PM1 confirmation always yes | confirmed only when the server answers | killed (4) | `test_unconfirmed_it_says_so_keeps_them_and_sends_them_again` |
 | PM2 offline closings dropped | offline closing messages are kept | killed (1) | `test_offline_at_the_press_they_go_when_it_is_back` |
 | PM3 never gives up | a closing message is given up after its tries | killed (1), by a 15-minute timeout | `test_a_closing_message_is_given_up_after_its_tries` |
-| PM4 Make Chat Deniable sends nothing | the closing messages are sent | killed (14) | `TestMultiPartClose` |
+| PM4 Publish Chat Keys sends nothing | the closing messages are sent | killed (14) | `TestMultiPartClose` |
 | **PM5 `_cleanup_resources` skips publication** | termination and failure publish | **SURVIVED** | -- (see round 2) |
 | **PM6 the peer's end skips publication** | we publish when the peer ends it | **SURVIVED** | -- (see round 2) |
-| PM7 closings not IGNORE_UNREADABLE | closing messages are flagged | killed (5) | `TestT5MakeChatDeniable::test_final_publication_disconnect_and_a_fresh_session_sharing_no_key` |
+| PM7 closings not IGNORE_UNREADABLE | closing messages are flagged | killed (5) | `TestT5PublishChatKeys::test_final_publication_disconnect_and_a_fresh_session_sharing_no_key` |
 | **PM8 closing frames written to disk** | nothing of the close on disk (kill window) | **SURVIVED** | -- (see round 2) |
 | PM9 no way to ask is yes | not knowing is never yes | killed (2) | `test_offline_at_the_press_they_go_when_it_is_back` |
 | PA1 a changed ML-DSA key allowed | A2: `pq_key_changed` | killed (2) | `test_a_different_ml_dsa_key_is_refused` |
@@ -97,7 +97,7 @@ every test set on the unmutated code was green first. 34 mutants were run
 | `TestT2NoPrematureRevelation` | No published key verifies a message its publisher had not received, over a lossy conversation with DH steps; the predicate catches a doctored transcript. | yes | -- |
 | `TestT3SkippedMessages` | A held skipped key stays unpublished across DH steps and is published after a late receipt or a close. | yes | -- |
 | `TestT4PublishedKeysAreNotHeld` | A published key is no longer held by the ratchet (test-build accessor), and close leaves nothing retired or skipped. | **No**: was `TestT4Zeroization`; it cannot see an overwrite | Renamed; the overwrite is noted as zeroize-on-drop |
-| `TestT5MakeChatDeniable` | The final publication covers every received line, is IGNORE_UNREADABLE, ends the peer's side too, and no old key verifies the new session. | **No**: "fresh_unlinked_session" was broader | Renamed `..._fresh_session_sharing_no_key` |
+| `TestT5PublishChatKeys` | The final publication covers every received line, is IGNORE_UNREADABLE, ends the peer's side too, and no old key verifies the new session. | **No**: "fresh_unlinked_session" was broader | Renamed `..._fresh_session_sharing_no_key` |
 | `TestT6SignOutWipeQuit` | Sign-out, wipe, termination and failure publish before keys go; the bridge sends each closing message once, before the transport closes. | **No**: one test was named "...drops_them_offline" and never tested offline | Renamed `test_the_bridge_sends_each_closing_message_once`; termination and failure added (PM5) |
 | `TestT7WireCompatibility` | The field is outside the MAC; real keys of the right length; a peer accounts for every key shown. | yes | -- |
 | `TestT8NoMacKeyBytesInPython` | The ratchet hands Python the encoded field and handles; no production path unpacks keys. Partly a source-level check. | yes | -- |
@@ -108,7 +108,7 @@ every test set on the unmutated code was green first. 34 mutants were run
 | `tests/test_p1_trust_pins_per_run.py` (new) | The app engines keep pins in memory, so after a restart a changed key is a first contact; the terminal keeps them. | yes | new |
 | `tests/test_p2_forced_steps.py` (new) | Bursts, one-way runs past two boundaries and a two-day chat all decrypt; every test fails on the old engine. | yes | new |
 | `retired_key_tests` (Rust, F4) | Rotation retires the key; the publication reaches members, forges, cannot sign into the group, is refused for a current or mismatched key, is bounded and batched. | yes, but the ML-DSA-half check was untested (MM1) | Spliced-key case added; two residual tests added |
-| `tests/test_f4_group_key_publication.py` | The bridge publishes after the delay, at once on Make Group Deniable, never shows it as text, and only fingerprints leave Rust. | yes | -- |
+| `tests/test_f4_group_key_publication.py` | The bridge publishes after the delay, at once on Publish Group Keys, never shows it as text, and only fingerprints leave Rust. | yes | -- |
 | `tests/test_pq_auth_v2.py` (A2) | Both ends pin the ML-DSA key; a downgrade or a changed key is refused, within one process. | yes (the limit across restarts is P1) | -- |
 | X1 classes | A changed destination receives no byte; SCRAM only where certificates are off; pins persist (server pins, unlike P1). | yes | -- |
 | `DeniableChatTest` (Kotlin) | The dialog's words, history deletion and group words. | **No**: "the words claim what the tests show and no more" pinned the presence of a property claim | Renamed `the words describe the mechanism and its residuals and state no property`; pins the absence of property words |

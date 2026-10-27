@@ -71,7 +71,8 @@ commit lands. Rust keeps it, sealed with the MLS state, and publishes it to
 the group:
 - automatically, `REVEAL_DELAY_SECONDS` (10 minutes) after the rekey landed,
   from `maintain`;
-- at once after "Make Group Deniable", which rekeys first.
+- at once after "Publish Group Keys…" (called "Make Group Deniable…" until
+  2026-10-27: the label now names the mechanism), which rekeys first.
 
 The publication is one MLS application message built and encrypted in Rust.
 It carries the public and private halves of up to four retired keys. A
@@ -103,7 +104,7 @@ a verification already made. This residual is cryptographic and permanent;
 no later mechanism removes it. How long a key stays secret, and so how long
 a capture of its signatures can be made and checked against a secret key,
 is the rekey period (at most 50 messages or 30 minutes) plus the delay (10
-minutes); Make Group Deniable cuts the delay to nothing from the press on.
+minutes); Publish Group Keys cuts the delay to nothing from the press on.
 It does nothing for a capture already made. The forgers after release are
 the group's members who received the publication, not anyone: it is an
 MLS message encrypted to them

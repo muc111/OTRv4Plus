@@ -39,6 +39,13 @@ class DeniableChatTest {
             assertTrue(all.none { word in it.lowercase() }, word)
         }
         assertTrue("Not independently reviewed." in DeniableChat.BODY)
+        // The label names the mechanism, as the dialog does (owner,
+        // 2026-10-27: "mechanism is a fact, property is unproven").
+        assertEquals("Publish Chat Keys…", DeniableChat.ACTION)
+        assertEquals("Publish keys", DeniableChat.CONFIRM)
+        for (label in listOf(DeniableChat.ACTION, DeniableChat.TITLE, DeniableChat.CONFIRM)) {
+            assertFalse("deniab" in label.lowercase(), label)
+        }
         // The mechanism.
         assertTrue("Publishes the keys used to authenticate this chat's messages" in DeniableChat.BODY)
         assertTrue("stay encrypted" in DeniableChat.BODY)
@@ -136,6 +143,10 @@ class DeniableChatTest {
             assertTrue(all.none { word in it.lowercase() }, word)
         }
         assertTrue("Not independently reviewed." in GroupDeniable.BODY)
+        assertEquals("Publish Group Keys…", GroupDeniable.ACTION)
+        for (label in listOf(GroupDeniable.ACTION, GroupDeniable.TITLE, GroupDeniable.CONFIRM)) {
+            assertFalse("deniab" in label.lowercase(), label)
+        }
         assertTrue("any of them can make signatures under those keys" in GroupDeniable.BODY)
         assertTrue("while the app is running" in GroupDeniable.BODY)
         // MLS_SECURITY_HARDENING §1: release does not reach back, so no copy

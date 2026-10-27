@@ -305,7 +305,7 @@ internal fun ConversationMenu(model: ChatViewModel, jid: String, onOpenProfile: 
     }
 }
 
-/** "Make this chat deniable?": every word from [DeniableChat]. */
+/** "Publish this chat's keys and start again?": every word from [DeniableChat]. */
 @Composable
 internal fun MakeDeniableDialog(model: ChatViewModel, jid: String) {
     val text = org.otrv4plus.android.crypto.DeniableChat

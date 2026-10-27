@@ -24,7 +24,7 @@ must be checked before this file is quoted anywhere outside the project.
 1. **Epoch key release (as shipped).** The MLS leaf signing key is
    rotated by a self-update every 50 messages or 30 min. The retired private
    key is published inside the group 10 min after the rotation lands, or at
-   once on Make Group Deniable.
+   once on Publish Group Keys.
 2. **A forward-secure signature construction.** One long-lived public key,
    with a signing key that evolves and erases its past, e.g. hash-based
    XMSS or LMS (NIST SP 800-208), or the Hülsing and Weber (2024) epochal

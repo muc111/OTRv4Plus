@@ -16,9 +16,12 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 - **Found (P1, open): on Android and the desktop, contact pins last one run
   of the app.** After a restart a changed key is accepted as a first
   contact. The terminal client keeps its pins. `tests/test_p1_trust_pins_per_run.py`.
-- **Make Chat Deniable / Make Group Deniable / `/deniable` describe the
-  mechanism and its residuals and no longer say "deniability pending
-  external audit"**: "Not independently reviewed. A copy made before the
+- **"Make Chat Deniable…" is now "Publish Chat Keys…", and "Make Group
+  Deniable…" is "Publish Group Keys…"** (confirm: "Publish keys"). The
+  labels name what the action does, as the dialogs do; deniability itself
+  is not demonstrated, so no label claims it. `/deniable` keeps its name.
+- **The dialogs and `/deniable` describe the mechanism and its residuals
+  and no longer say "deniability pending external audit"**: "Not independently reviewed. A copy made before the
   keys are published, or a close that does not finish, can still be proof."
 - Corrected claims across README, SECURITY.md, SPEC, SECURITY_ISSUES and
   the MLS hardening notes; the record is docs/AUDIT_CLAIM_MATRIX.md,

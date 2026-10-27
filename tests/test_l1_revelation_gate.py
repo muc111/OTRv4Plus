@@ -290,7 +290,7 @@ class TestT4PublishedKeysAreNotHeld:
 
 # ── T5 ───────────────────────────────────────────────────────────────────────
 
-class TestT5MakeChatDeniable:
+class TestT5PublishChatKeys:
     # Renamed (audit 2026-10-26): "unlinked" was broader than the test --
     # it shows the new session shares no key with the old one; both
     # handshakes are signed by the same identities (SPEC §10.1).

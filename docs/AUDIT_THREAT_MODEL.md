@@ -61,7 +61,7 @@ under it. A transcript shown after that does not single out Alice.
 
 | Attack | J sees / tries | The code | The test | Matches? |
 |---|---|---|---|---|
-| **Pre-publication capture** | a member forwards a signed message to J while the key is still secret; J verifies it at once | nothing can undo a verification already made | `residual_a_signature_checked_before_release_still_checks_after_it` (new) | yes: permanent, as MLS_SECURITY_HARDENING §1 says. The "window ... or none after Make Group Deniable" sentence was wrong and is corrected |
+| **Pre-publication capture** | a member forwards a signed message to J while the key is still secret; J verifies it at once | nothing can undo a verification already made | `residual_a_signature_checked_before_release_still_checks_after_it` (new) | yes: permanent, as MLS_SECURITY_HARDENING §1 says. The "window ... or none after Publish Group Keys" sentence was wrong and is corrected |
 | A non-member forges after release | not in the group; wants the published key | the publication is an MLS message encrypted to the members | `residual_only_the_groups_members_receive_the_published_key` (new) | yes; the forger set (members) is now named |
 | A member offline at rekey time | publication due after 10 min; the app is not running | nothing is published until `maintain` runs; past 16 retired keys the oldest go unpublished | `retired_keys_are_bounded_and_published_in_batches` | yes; the residual added to the F4 row |
 | A published key signs into the group | a member tries to post with the released key | the tree holds the new key; refused | `the_published_key_forges_old_signatures_but_cannot_sign_into_the_group` | yes |

@@ -17,12 +17,18 @@ KOTLIN = os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otr
                       "android", "crypto", "DeniableChat.kt")
 TERMINAL = os.path.join(ROOT, "client", "otrv4plus_xmpp.py")
 PROPERTY = ("pending external audit", "no longer proves", "could have forged",
-            "deniable messaging", "until it does", "unlinked", "past messages are deniable")
+            "deniable messaging", "until it does", "unlinked", "past messages are deniable",
+            # the labels (owner, 2026-10-27): the button names the mechanism
+            "make chat deniable", "make group deniable", "make deniable",
+            "make this chat deniable", "make this group deniable")
 
 
 def _strings(path):
-    """The string literals of [path], joined the way the code joins them."""
+    """The string literals of [path]'s code (not its comments, which may
+    cite an old wording on purpose), joined the way the code joins them."""
     src = open(path, encoding="utf-8").read()
+    src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    src = re.sub(r"(?m)^\s*//.*$", "", src)
     return " ".join(re.findall(r'"((?:[^"\\]|\\.)*)"', src)).replace("\\n", " ")
 
 

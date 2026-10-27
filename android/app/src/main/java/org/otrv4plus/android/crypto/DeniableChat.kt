@@ -5,8 +5,11 @@ package org.otrv4plus.android.crypto
 import org.otrv4plus.android.bridge.SecurityState
 
 /**
- * "Make Chat Deniable" (L1, SPEC §5.8): what the action is offered for and
- * what it says. Shared by the phone and the desktop; `DeniableChatTest`.
+ * "Publish Chat Keys" (L1, SPEC §5.8; "Make Chat Deniable" before
+ * 2026-10-27): what the action is offered for and what it says. Shared by
+ * the phone and the desktop; `DeniableChatTest`. The label names the
+ * mechanism, like the dialog: a property the code does not demonstrate is
+ * named nowhere (docs/AUDIT_CLAIM_MATRIX.md 1.10).
  *
  * The words describe the mechanism and its residuals; they state no
  * deniability property (docs/SECURITY_ISSUES.md L1 is RESOLVED-CODE; audit
@@ -21,9 +24,9 @@ import org.otrv4plus.android.bridge.SecurityState
  */
 object DeniableChat {
 
-    const val ACTION = "Make Chat Deniable…"
+    const val ACTION = "Publish Chat Keys…"
     const val TITLE = "Publish this chat's keys and start again?"
-    const val CONFIRM = "Make deniable"
+    const val CONFIRM = "Publish keys"
 
     const val BODY =
         "Publishes the keys used to authenticate this chat's messages, so a copy " +
@@ -69,7 +72,8 @@ object DeniableChat {
 }
 
 /**
- * "Make Group Deniable" (F4, docs/MLS_SECURITY_HARDENING.md §1) for a secure group: a new signing key
+ * "Publish Group Keys" ("Make Group Deniable" before 2026-10-27; F4,
+ * docs/MLS_SECURITY_HARDENING.md §1) for a secure group: a new signing key
  * for us in the group, then our earlier ones published to its members
  * (epochal signatures). Shared by the phone and the desktop;
  * `DeniableChatTest`. Like [DeniableChat], it describes the mechanism and
@@ -77,9 +81,9 @@ object DeniableChat {
  */
 object GroupDeniable {
 
-    const val ACTION = "Make Group Deniable…"
-    const val TITLE = "Make this group deniable?"
-    const val CONFIRM = "Make deniable"
+    const val ACTION = "Publish Group Keys…"
+    const val TITLE = "Publish your earlier keys in this group?"
+    const val CONFIRM = "Publish keys"
 
     const val BODY =
         "Gives you a new signing key in this group, then publishes your earlier " +

@@ -180,11 +180,13 @@ CI on the pushed head of `dev`:
 
 ## Owner decisions
 
-1. **The action's name.** "Make Chat Deniable…" and "Make Group
-   Deniable…" are the feature names you chose. They still name a
-   property. The dialog title is reworded ("Publish this chat's keys and
-   start again?"); the buttons are unchanged. A neutral name would be
-   "Publish Chat Keys…".
+1. **The action's name. Decided 2026-10-27: renamed.** "Make Chat
+   Deniable…" and "Make Group Deniable…" named a property the code does
+   not demonstrate. They are now **Publish Chat Keys…** and **Publish
+   Group Keys…**, with the confirm button "Publish keys". The labels name
+   the mechanism, as the dialogs do; `DeniableChatTest` and
+   `tests/test_deniable_wording.py` pin them. The terminal's `/deniable`
+   command keeps its name: its `/help` describes the mechanism.
 2. **P1.** Persist the trust pins sealed per account (proposal in the
    P1 entry), so A2's claim can say "across restarts" on Android and the
    desktop too.

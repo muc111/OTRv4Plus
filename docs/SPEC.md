@@ -889,7 +889,7 @@ keys, so a part lost on the way leaves exactly its range unpublished until
 the client sends that frame again. A client SHOULD keep every part until
 its server confirms it (Confirmation, below).
 
-**Close.** Make Chat Deniable, sign-out, Wipe & Exit, quit, the peer's
+**Close.** Publish Chat Keys, sign-out, Wipe & Exit, quit, the peer's
 DISCONNECTED, an error or expiry: before any session key is destroyed the
 ratchet runs `retire_all`, then encrypts closing messages (`encrypt_final`)
 until the queue is empty, flagged IGNORE_UNREADABLE; when this side ends the
@@ -907,10 +907,10 @@ sender's own server has confirmed receiving it. A server reads a stream in
 order and answers in order, so either of two answers confirms everything sent
 before it:
 - the server's end of stream, after ours (sign-out, Wipe & Exit);
-- the answer to a XEP-0199 ping (Make Chat Deniable, where the stream stays
+- the answer to a XEP-0199 ping (Publish Chat Keys, where the stream stays
   up).
 
-Make Chat Deniable starts the new session only after asking, whatever the
+Publish Chat Keys starts the new session only after asking, whatever the
 answer, and reports whether the server confirmed. A closing message not
 confirmed is kept in memory and sent again until it is, or until the client
 gives it up (the reference clients: 40 sends on Android and the desktop, 5 in the
