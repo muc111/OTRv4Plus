@@ -6,6 +6,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ## Unreleased (dev) — audit and hardening pass, 2026-10-26
 
+- **Fixed: the terminal could not join a group after the chat's keys were
+  published.** A session that had ended still reported its old level, so
+  the apps could show a lock for a chat that had none, and the terminal's
+  "y" to an invitation failed with `otr_required`. The level now follows
+  the live session; the terminal starts a new session and accepts the
+  invitation once it is up.
+- **Fixed: the terminal sent queued messages and invitations before its
+  handshake finished.** When the terminal started the session, what was
+  waiting went out ahead of its last handshake message and the other side
+  dropped it. It now goes after.
 - **Fixed (F4): a published group key stayed live for a member behind.**
   A member that had not yet processed the rotation would accept a message
   signed with the published key as the publisher's. Keys are now

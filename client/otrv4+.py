@@ -8821,10 +8821,14 @@ class SessionManager:
         return self.sessions.get(peer)
 
     def get_security_level(self, peer: str) -> UIConstants.SecurityLevel:
-        """Get security level for session with peer"""
-        if peer not in self.sessions:
+        """Get security level for session with peer. A session that is not
+        ENCRYPTED now (finished, failed, or a new handshake under way) is
+        PLAINTEXT, whatever level it reached before: nothing can be sent in
+        it (`has_encrypted_session`)."""
+        session = self.sessions.get(peer)
+        if session is None or not session.is_encrypted():
             return UIConstants.SecurityLevel.PLAINTEXT
-        return self.sessions[peer].security_level
+        return session.security_level
 
     def encrypt_message(self, peer: str, plaintext: str) -> Optional[str]:
         """Encrypt message for peer"""
@@ -10443,7 +10447,13 @@ class EnhancedSessionManager:
         """Return current security level for peer."""
         with self.lock:
             sess = self.sessions.get(peer)
-            if sess is None:
+            # Not ENCRYPTED now (finished -- the peer published its keys or
+            # ended it --, failed, or re-keying): PLAINTEXT. The level the
+            # session reached is kept on it and was reported as current, so
+            # the apps showed a lock and the group code went ahead to send
+            # into a session that no longer existed (terminal report,
+            # 2026-10-27: "accept failed: otr_required").
+            if sess is None or not sess.is_encrypted():
                 return UIConstants.SecurityLevel.PLAINTEXT
             return getattr(sess, "security_level", UIConstants.SecurityLevel.PLAINTEXT)
 

@@ -871,6 +871,59 @@ class TestTheAppCreatesAndTermuxJoins:
         assert w.server.room_bounced == []
 
 
+class TestAcceptWhenTheSessionHasEnded:
+    """Terminal report, 2026-10-27: the app invited the terminal, the
+    terminal answered y and got "accept failed: otr_required". The session
+    the invitation came over had ended by then (the app published its keys,
+    or was re-keying). Now the terminal starts a new session and answers the
+    invitation when it is up, as /group invite does."""
+
+    def test_the_answer_waits_for_a_new_session_and_the_group_is_joined(self, world):
+        w = world
+
+        # /otr's own start, as the harness sends it (the client here is not
+        # fully set up for the interactive one).
+        w.b.client.start_otr = w.b.start_otr
+        # The harness stubs the DAKE-complete display hook; on a device that
+        # hook is what calls on_otr_ready (checked below).
+        w.b.client._check_dake_complete = lambda peer: (
+            w.b.client._groups.on_otr_ready(peer)
+            if w.b.client.otr.has_encrypted_session(peer) else None)
+
+        async def go():
+            w.c.app.start_session(w.b.jid)          # the app opens it
+            await w.server.pump()
+            w.server.rooms.setdefault(ROOM, {})[w.c.jid] = w.c.jid.split("@")[0]
+            w.c.app.note_room_joined(ROOM)
+            w.c.app.groups.create(ROOM)
+            w.c.app.groups.invite(ROOM, w.b.jid)
+            await w.server.pump()
+            assert w.b.lines("invites you to the secure group " + ROOM)
+            # The session ends on both sides before the terminal answers, as
+            # after the app published its keys and before a new one is up.
+            for engine, peer in ((w.b.client.otr, w.c.jid), (w.c.app._engine, w.b.jid)):
+                engine.sessions[peer].transition_session(
+                    otr.SessionState.FINISHED, "the keys were published")
+            await w.b.cmd("/group accept " + ROOM)
+            assert w.b.lines("has ended: starting a new one"), "\n".join(w.b.printed[-8:])
+            assert not w.b.lines("accept failed")
+            for _ in range(3):              # new session, KeyPackage, Welcome
+                await w.server.pump()
+
+        run(go())
+        assert w.b.client.otr.has_encrypted_session(w.c.jid)
+        assert w.b.groups.groups.is_secure(ROOM), "\n".join(w.b.printed[-12:])
+        assert w.c.app.send_user_text(ROOM, "after the new session") == OtrApp.SEND_ENCRYPTED
+        run(w.server.pump())
+        assert w.b.lines("after the new session")
+
+    def test_a_new_session_answers_the_waiting_invitations(self):
+        src = open(X.__file__, encoding="utf-8").read()
+        hook = src[src.index("    def _check_dake_complete(self, peer):"):]
+        hook = hook[:hook.index("\n    def ")]
+        assert "groups.on_otr_ready(peer)" in hook
+
+
 def test_room_fragments_fit_a_stock_prosody():
     """Every room fragment, header included, under mod_muc_limits' default
     5664 characters, for the largest frame a group posts (a commit adding a

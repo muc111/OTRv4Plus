@@ -618,6 +618,14 @@ except ImportError:
 # it at all.
 OTR_PREFIX = _frag.OTR_PREFIX
 OTR_PREFIX_B = OTR_PREFIX.encode("utf-8")
+
+
+def _is_otr_frame(out) -> bool:
+    """Whether the engine's answer to a frame is an OTR frame to send back
+    (a handshake reply), not plaintext to show."""
+    if isinstance(out, str):
+        return out.startswith(OTR_PREFIX)
+    return isinstance(out, (bytes, bytearray)) and bytes(out).startswith(OTR_PREFIX_B)
 #: Secure-group setup signals (android_bridge.groups.SIGNAL_PREFIX). Restated
 #: so this module still imports without the android_bridge package;
 #: tests/test_termux_groups.py holds the two equal.
@@ -1562,7 +1570,13 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             self._dbg(f"[otr-crypto] done processing DATA from {peer} ({_t.time() - t0:.1f}s).")
 
         self._report_pq_refusal(peer)
-        self._check_dake_complete(peer)
+        # Not while [out] is a handshake reply still to be sent: as the
+        # initiator we are ENCRYPTED on DAKE2, before our DAKE3 has gone, and
+        # what the hook sends (queued messages, invitations, the answer to
+        # one) reached the peer ahead of the DAKE3 it needed, and was dropped
+        # (terminal report, 2026-10-27). That case reaches the call at the end.
+        if not _is_otr_frame(out):
+            self._check_dake_complete(peer)
         self._recover_if_orphaned(peer)
 
         # Did the engine park an SMP1 because we have no passphrase for this

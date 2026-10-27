@@ -190,6 +190,10 @@ class TermuxGroups:
         #: Group voice (android_bridge.group_call + otrv4plus_groupcall),
         #: made on first use so a client that never calls opens nothing.
         self._invite_after_otr: Dict[str, List[str]] = {}
+        #: peer -> rooms whose invitation we accepted while no OTRv4+ session
+        #: with the inviter was up (it had ended, or was being replaced): the
+        #: answer goes when one is.
+        self._accept_after_otr: Dict[str, List[str]] = {}
         self._calls = None
         self._media = None
         self._call_tick = None
@@ -685,8 +689,23 @@ class TermuxGroups:
         if start is not None:
             start(peer)
 
+    def _inviter(self, room: str) -> str:
+        for inv in self.groups.pending_invites():
+            if inv["room"] == room:
+                return _canon(inv["peer"])
+        return ""
+
     def on_otr_ready(self, peer: str) -> None:
-        """OTRv4+ with `peer` is up: send the invitations that waited."""
+        """OTRv4+ with `peer` is up: send the invitations and the answers to
+        invitations that waited."""
+        for room in self._accept_after_otr.pop(_canon(peer), []):
+            try:
+                self.groups.accept(room)
+                self._print("[group %s] invitation accepted; setting up end-to-end "
+                            "encryption (waiting for the group's keys)" % room[:64])
+            except GroupError as exc:
+                self._print("[group %s] accepting the invitation failed: %s"
+                            % (room[:64], exc.code))
         for room in self._invite_after_otr.pop(_canon(peer), []):
             try:
                 self.groups.invite(room, _canon(peer))
@@ -1461,9 +1480,24 @@ class TermuxGroups:
             return
         try:
             self.groups.accept(room)
-        except GroupError:
-            self._leave_muc(room)
-            raise
+        except GroupError as exc:
+            inviter = self._inviter(room)
+            if exc.code != "otr_required" or not inviter:
+                self._leave_muc(room)
+                raise
+            # The session the invitation came over has ended (the inviter
+            # published its keys, or is re-keying): start a new one, and
+            # answer when it is up, as /group invite does.
+            waiting = self._accept_after_otr.setdefault(inviter, [])
+            if room not in waiting:
+                waiting.append(room)
+            self._print("[group %s] the OTRv4+ session with %s has ended: starting "
+                        "a new one; the invitation is accepted when it is ready "
+                        "(usually 1-2 min over I2P)" % (room[:64], inviter))
+            start = getattr(self.host, "start_otr", None)
+            if start is not None:
+                start(inviter)
+            return
         self._print("[group %s] invitation accepted; setting up end-to-end "
                     "encryption (waiting for the group's keys, can take a minute "
                     "over I2P). Nothing can be sent until it is ready." % room[:64])
