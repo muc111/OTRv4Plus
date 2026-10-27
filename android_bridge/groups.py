@@ -2459,6 +2459,10 @@ class SecureGroups:
             self._activity.pop(room, None)
             self._queued_kps.pop(room, None)
             self.save()
+            # A device test reads this (a deleted group still listed on a
+            # member, 2026-10-27): the removal arrived, before or without the
+            # room's destroy (`muc room_destroyed`).
+            _TRACE.record("groups", "removed_us", "info", epoch=epoch)
             return GroupChanged(peer=room, change="removed_us", epoch=epoch)
         if ev.get("dropped_ours"):
             self._welcome_for.pop(room, None)
