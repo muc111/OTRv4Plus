@@ -55,6 +55,22 @@ def test_the_terminal_words_state_no_property_and_name_the_residuals():
         assert phrase in words, phrase
 
 
+def test_no_source_says_offline_closing_messages_are_dropped():
+    """Audit row 1.14: offline closing messages are kept in memory only, not
+    dropped. The claim was corrected in the docs and the bridge, and the
+    re-run of 2026-10-27 found it still in the engine's teardown docstring."""
+    srcs = ["docs/SPEC.md", "docs/SECURITY_ISSUES.md", "client/otrv4+.py",
+            "android_bridge/app_deniable.py", "android_bridge/app.py"]
+    bad = []
+    for src in srcs:
+        text = re.sub(r"\s+", " ", open(os.path.join(ROOT, src), encoding="utf-8").read())
+        for sentence in re.split(r"(?<=[.;])\s", text):
+            low = sentence.lower()
+            if re.search(r"\b(without a network|offline)\b", low) and "dropped" in low:
+                bad.append("%s: %s" % (src, sentence.strip()[:160]))
+    assert bad == [], "\n".join(bad)
+
+
 def test_kept_closing_messages_are_always_said_to_be_in_memory():
     """Closing messages waiting for confirmation are kept in memory only:
     one written to disk would record whom a chat was made deniable with

@@ -10281,8 +10281,10 @@ class EnhancedSessionManager:
         deniably -- its retired MAC keys are published and the last closing
         message says DISCONNECTED -- and the messages wait in
         `take_final_revelations` for the client to send before it closes the
-        transport. Without a network they are dropped; the keys are retired
-        and wiped in Rust all the same.
+        transport. Without a network the client keeps them in memory only,
+        never on disk, and sends them when it is back if it is still running;
+        if it ends first they are lost. The keys are retired and wiped in Rust
+        all the same.
 
         The trust database is untouched, deliberately. A pinned fingerprint is
         long-term identity and survives a session ending; forgetting it here
