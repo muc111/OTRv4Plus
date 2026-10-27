@@ -83,6 +83,10 @@ SIGNAL_PREFIX = "?OTRv4-MLS:"
 #: before it hands it to the verification handler, which drops anything that
 #: is not its JSON, rather than showing it as a line.
 GROUP_KEYS_MARK = "\x00OTRv4GV1:keys-published"
+#: Posted to the group by its creator just before Delete removes everyone:
+#: each member's app ends its copy on it, if MLS says the creator sent it.
+#: Behind the verification prefix, as GROUP_KEYS_MARK, so an older app drops it.
+GROUP_DELETED_MARK = "\x00OTRv4GV1:group-deleted"
 #: Sent by the creator over each member's OTRv4+ session when it deletes the
 #: group: `GROUP_DELETED_SIGNAL + room`. A client that does not know it
 #: counts it as malformed and drops it.
@@ -2100,6 +2104,24 @@ class SecureGroups:
         """Whether this account is the group's creator (`coordinator`)."""
         return bool(self._account) and self.coordinator(room) == self._account
 
+    def announce_deleted(self, room: str) -> bool:
+        """The creator is about to delete [room]: say so in the group
+        (GROUP_DELETED_MARK), before the removal, so every member in the room
+        ends its copy at once. Creator only. Whether it went."""
+        if not self.is_creator(room):
+            return False
+        with self._lock:
+            client = self._client
+            if client is None or self._wiped or not client.has_group(room.encode()):
+                return False
+            try:
+                wire = bytes(client.encrypt(room.encode(), GROUP_DELETED_MARK.encode()))
+            except ValueError:
+                return False                       # a commit of ours is pending
+        self._post(room, wire)
+        _TRACE.record("groups", "deleted_announced", "info")
+        return True
+
     def remove_everyone(self, room: str) -> List[str]:
         """Every other member removed, in one commit: the first step of the
         creator deleting the group (owner, 2026-10-26: "must remove everyone
@@ -2331,6 +2353,7 @@ class SecureGroups:
                 return True
             kind = ev.get("kind")
             control = None
+            ended_by_creator = False
             vcontrol = None
             fcontrol = None
             if kind == "application":
@@ -2339,7 +2362,15 @@ class SecureGroups:
                 fp = bytes(client.member_fingerprint(room.encode(), bytes(ev["sender"]))).hex()
                 known = self._bound.get(room, {}).get(sender)
                 verified = bool(known and known[0] == fp and known[1])
-            if kind == "application" and text == GROUP_KEYS_MARK:
+            if kind == "application" and text == GROUP_DELETED_MARK:
+                # The creator is deleting the group: our copy ends now, said
+                # in the group itself before the removal (owner, 2026-10-27).
+                # Only from the creator; MLS authenticated the sender.
+                ended_by_creator = sender == self.coordinator(room)
+                if not ended_by_creator:
+                    self.stats.malformed += 1
+                event = None
+            elif kind == "application" and text == GROUP_KEYS_MARK:
                 # A member pressed Publish Group Keys and its keys are out:
                 # what we have of the group until now goes. Never shown.
                 event = KeysPublished(peer=room, before_ms=int(time.time() * 1000),
@@ -2387,6 +2418,10 @@ class SecureGroups:
                 event = None                      # recorded in Rust; never shown
             else:
                 event = None
+        if ended_by_creator:
+            _TRACE.record("groups", "deleted_by_creator", "info")
+            self.on_room_destroyed(room)            # emits "deleted"
+            return True
         if event is not None:
             self._emit(event)
         if kind == "commit" and settled and self._queued_kps.get(room):

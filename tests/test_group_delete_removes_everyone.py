@@ -29,10 +29,20 @@ class _Rooms:
         self.world, self.members, self.calls = world, members, []
 
     def destroy_room(self, room, reason):
+        # Whether each member's copy had ended by then: by the creator's
+        # word in the group ("deleted", since 2026-10-27) or by the removal
+        # commit ("removed_us", for an app that does not know that word).
         self.calls.append(("destroy_room", room, {
-            m.jid: ("removed_us" in m.changes(), m.groups.is_secure(room))
+            m.jid: (bool({"removed_us", "deleted"} & set(m.changes())),
+                    m.groups.is_secure(room))
             for m in self.members}, len(self.world.room.log)))
         return ("ok", "", None)
+
+
+def _older_app(member):
+    """[member]'s app predates the creator's word in the group: it drops it
+    (the verification prefix), so only the removal commit ends its copy."""
+    member.groups.coordinator = lambda room: ""
 
 
 def _controller(member, rooms):
@@ -60,6 +70,8 @@ def test_a_removed_member_cannot_read_what_follows():
     """Membership ended by MLS, not only by the room: the epoch has moved on
     without them, so the group's later traffic is not theirs to open."""
     w, (a, b, c) = _group(3)
+    _older_app(b)
+    _older_app(c)                      # the commit is what ends their copies
     rooms = _Rooms(w, [b, c])
     _controller(a, rooms).delete_secure_group(ROOM)
     assert "removed_us" in b.changes() and "removed_us" in c.changes()
@@ -80,6 +92,11 @@ def test_unconfirmed_removal_deletes_nothing_and_a_retry_finishes(monkeypatch):
     w, (a, b, c) = _group(3)
     rooms = _Rooms(w, [b, c])
     ctl = _controller(a, rooms)
+    # The removal's confirmation is the subject: the word in the group,
+    # posted first, is left out so drop_next takes the commit.
+    a.groups.announce_deleted = lambda room: False
+    _older_app(b)
+    _older_app(c)
     w.room.drop_next = 1                    # the room loses the removal commit
     out = ctl.delete_secure_group(ROOM)
     assert not out["ok"] and out["code"] == "group_removal_unconfirmed"
@@ -169,8 +186,11 @@ def test_a_member_who_was_away_ends_its_copy_on_the_creators_notice():
 
 def test_a_notice_after_the_removal_takes_the_room_off_the_list_too():
     w, (d, c) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p"])
+    real = c.groups.coordinator
+    _older_app(c)                      # removed by the commit, the room still listed
     _controller(d, _Rooms(w, [c])).delete_secure_group(ROOM)
     assert "removed_us" in c.changes() and "deleted" not in c.changes()
+    c.groups.coordinator = real
     c.groups.on_signal(d.jid, GROUP_DELETED_SIGNAL + ROOM)
     assert "deleted" in c.changes()
 
@@ -210,4 +230,41 @@ def test_members_are_told_even_when_the_server_refuses_the_destroy():
     out = ctl.delete_secure_group(ROOM)
     assert not out["ok"], "the destroy was refused, and Delete says so"
     assert told == [(ROOM, ["charlie@x.i2p"])], "removed, so told regardless"
-    assert "removed_us" in c.changes()
+    assert not c.groups.is_secure(ROOM)
+
+
+# ── said in the group first (owner, 2026-10-27) ─────────────────────────────
+
+def test_delete_is_said_in_the_group_before_the_removal():
+    from android_bridge.groups import GROUP_DELETED_MARK  # noqa: F401
+    w, (d, c, e) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p", "erin@x.i2p"])
+    before = len(w.room.log)
+    rooms = _Rooms(w, [c, e])
+    assert _controller(d, rooms).delete_secure_group(ROOM)["ok"]
+    for m in (c, e):
+        assert "deleted" in m.changes(), "ended by the group's own message"
+        assert not m.groups.is_secure(ROOM)
+        assert m.texts() == [], "never shown as a line of text"
+    posted = [frm for frm, _b in w.room.log[before:]]
+    assert posted and posted[0] == d.jid
+
+
+def test_only_the_creators_word_in_the_group_ends_it():
+    from android_bridge.groups import GROUP_DELETED_MARK
+    w, (d, c, e) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p", "erin@x.i2p"])
+    wire = bytes(c.groups._client.encrypt(ROOM.encode(), GROUP_DELETED_MARK.encode()))
+    c.groups._post(ROOM, wire)                    # charlie is no creator
+    assert d.groups.is_secure(ROOM) and e.groups.is_secure(ROOM)
+    assert "deleted" not in e.changes()
+    assert not c.groups.announce_deleted(ROOM), "and his app would not send it"
+
+
+def test_an_older_app_is_still_removed_by_the_commit():
+    w, (d, c, e) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p", "erin@x.i2p"])
+    _older_app(e)
+    rooms = _Rooms(w, [c, e])
+    assert _controller(d, rooms).delete_secure_group(ROOM)["ok"]
+    assert "deleted" in c.changes(), "a current app ends on the word in the group"
+    assert "removed_us" in e.changes(), "an older one by the removal commit"
+    [(_op, _room, seen, _log)] = rooms.calls
+    assert all(ended and not secure for ended, secure in seen.values())

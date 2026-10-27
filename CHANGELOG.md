@@ -17,7 +17,9 @@ Dev builds from 2026-10-27 are **rc.187** (versionCode 188) and **desktop
   kept the group. The creator is now read from the group itself (the first
   member of its tree). Delete also tells each member over their OTRv4+
   chat, at once or when a session is up, and their app ends its copy and
-  takes the group off the list. Only the creator can do this. The same
+  takes the group off the list. Before any of that, the creator says so in
+  the group itself, so every member in the room ends its copy at once.
+  Only the creator can do this. The same
   mistake had picked the wrong person to run group verification.
 - **Fixed: Termux users were not shown as online in the apps.** The apps
   list who is online from the server's Welcome room, which the terminal

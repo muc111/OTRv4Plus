@@ -332,6 +332,13 @@ class GroupsControlMixin:
             if not _wait_for(confirmed, self.REMOVE_BEFORE_DELETE_SECONDS):
                 return {"ok": False, "code": "group_removal_unconfirmed", "value": None,
                         "detail": self.REMOVAL_UNCONFIRMED}
+        # Said in the group first (owner, 2026-10-27: "notified over the mls
+        # group chat before it's deleted"): every member in the room ends its
+        # copy on it; the removal and the OTRv4+ notice follow for the rest.
+        try:
+            groups.announce_deleted(room)
+        except Exception:
+            _TRACE.record("groups", "deleted_announce_failed", "warning")
         try:
             removed = groups.remove_everyone(room)
         except GroupErrorAlias as exc:
