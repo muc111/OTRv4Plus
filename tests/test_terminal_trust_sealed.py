@@ -172,6 +172,8 @@ def test_both_files_differing_are_refused_and_neither_is_touched(state):
     with pytest.raises(Exception) as caught:
         _start(state)
     assert type(caught.value).__name__ == "TrustUnavailable"
+    assert _plain(state) in str(caught.value) and _sealed(state) in str(caught.value), \
+        "both files are named"
     assert open(_sealed(state), "rb").read() == sealed_before
     assert json.load(open(_plain(state)))[PEER]["fingerprint"] == OTHER_FP
 

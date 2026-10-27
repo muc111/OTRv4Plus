@@ -185,10 +185,11 @@ class _TerminalTrustRecord(AccountTrustRecord):
             sealed = plain
         elif sealed != plain:
             raise TrustUnavailable(
-                "both %s (plaintext) and the sealed trust record exist, and they "
-                "differ: an older build may have written the file after the "
+                "both %s (plaintext) and %s (sealed) exist, and they differ: "
+                "an older build may have written the plaintext file after the "
                 "upgrade. Neither has been changed. Move the plaintext file "
-                "aside to keep the sealed pins." % self._legacy)
+                "aside to keep the sealed pins."
+                % (self._legacy, self._records.where(self._name)))
         os.remove(self._legacy)
         return sealed
 
