@@ -25,6 +25,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   store of their own, and Wipe & Exit destroys it. A store that will not
   open is refused, not replaced. On an Android device whose Keystore does
   not work the pins still last one run. `tests/test_p1_trust_pins_per_run.py`.
+- **Create account says why it failed, and works from every app.** On
+  Android, Create account could end with only "The account could not be
+  created (PyException)": anything Python raised while preparing the
+  account crossed into Kotlin bare, and the app kept only the class name.
+  Now the account's refusal (`identity_unavailable`, `trust_unavailable`)
+  comes back as a code and a sentence with nothing sent, registration
+  never raises, and any other failure is named by its code or its Python
+  type, never its text. The terminal client gains `--register`: it creates
+  the account the apps' way (same route rules, X1 check, SCRAM-only), then
+  signs in. `tests/test_account_creation_never_raises.py`,
+  `tests/test_terminal_register.py`.
 - **A server pins file that will not open stops the connection.** The file
   recording which I2P destination each server was trusted at was read as
   empty when it was damaged, so a changed server looked like a first visit.

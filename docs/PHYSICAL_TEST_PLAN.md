@@ -37,6 +37,15 @@ Automated coverage: `tests/test_transport_route.py`,
    On FAIL, export the diagnostic report: the `failed_at` line names the
    stage and the OS reason (e.g. `tcp_failure reasons=ENETUNREACH`).
    Try once on Wi-Fi and once on mobile data (IPv6 differs).
+1a. **Create account on every app (2026-10-27).** The handset report was
+   "The account could not be created (PyException)". With a new username on
+   each: Android (Create account), the desktop (Create account), the
+   terminal (`otrv4plus_xmpp.py --jid new@server --register`, the password
+   typed twice). **Pass:** each creates the account and then signs in, or
+   names its failure as a sentence with a code (`conflict`, `network`,
+   `identity_unavailable`, ...). "PyException" or any bare class name is a
+   FAIL: export the diagnostic report (Debug → Export); its trace has the
+   `registration raised` or `identity bind_refused` line with the cause.
 2. **Clearnet failure is named.** A non-existent domain → a DNS/TCP/TLS
    failure sentence, never a router one.
 3. **Default I2P server, router running.** "Checking for an I2P router" then
