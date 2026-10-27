@@ -43,7 +43,8 @@ from otrv4plus_identity import TermuxFileDekProvider, _read_record, _write_recor
 
 from .secure_store import AesGcmSealedStore, UnsealError
 
-__all__ = ["TrustUnavailable", "trust_dir", "trust_tag", "for_android", "for_desktop"]
+__all__ = ["TrustUnavailable", "trust_dir", "trust_tag", "for_android", "for_desktop",
+           "for_terminal"]
 
 RECORD_TYPE = "otr.trust"
 SCHEMA = 1
@@ -76,6 +77,9 @@ class _FileTrustRecords:
     def __init__(self, directory: str):
         self._dir = directory
 
+    def where(self, name: str) -> str:
+        return os.path.join(self._dir, name)
+
     def get(self, name: str) -> Optional[bytes]:
         blob = _read_record(os.path.join(self._dir, name))
         if blob is None and os.path.exists(os.path.join(self._dir, name)):
@@ -95,6 +99,9 @@ class _VaultTrustRecords:
     def __init__(self, vault, marker_dir: str):
         self._vault = vault
         self._markers = marker_dir
+
+    def where(self, name: str) -> str:
+        return "the Keystore vault's trust section"
 
     def _marker(self, name: str) -> str:
         return os.path.join(self._markers, name + ".present")
@@ -141,6 +148,50 @@ class AccountTrustRecord:
         plain = json.dumps(db, sort_keys=True, separators=(",", ":")).encode("utf-8")
         self._records.put(self._name, self._sealed.seal(RECORD_TYPE, self._name, SCHEMA, plain))
 
+    def where(self) -> str:
+        return "sealed, %s" % self._records.where(self._name)
+
+
+class _TerminalTrustRecord(AccountTrustRecord):
+    """The terminal client's pins: one sealed record for the install, as its
+    plaintext `trust.json` was, so moving them in loses no account's pins.
+
+    The first load moves a plaintext `trust.json` in: read it (one that will
+    not open is refused, as the record is), seal it, read it back, and only
+    then remove the plaintext. If both are there -- the move was cut short,
+    or an older build wrote the file afterwards -- the plaintext is removed
+    when it says what the record says, and refused otherwise: picking either
+    side would silently drop pins."""
+
+    def __init__(self, records, sealed, name, legacy_path, read_legacy):
+        super().__init__(records, sealed, name)
+        self._legacy = legacy_path
+        self._read_legacy = read_legacy
+
+    def load(self) -> Optional[dict]:
+        sealed = super().load()
+        if not self._legacy or not os.path.exists(self._legacy):
+            return sealed
+        if self._read_legacy is None:
+            raise TrustUnavailable("no reader for the plaintext trust pins")
+        try:
+            plain = dict(self._read_legacy(self._legacy))
+        except Exception as exc:
+            raise TrustUnavailable(str(exc)) from None
+        if sealed is None:
+            self.save(plain)
+            if super().load() != plain:
+                raise TrustUnavailable("the sealed trust record did not read back")
+            sealed = plain
+        elif sealed != plain:
+            raise TrustUnavailable(
+                "both %s (plaintext) and the sealed trust record exist, and they "
+                "differ: an older build may have written the file after the "
+                "upgrade. Neither has been changed. Move the plaintext file "
+                "aside to keep the sealed pins." % self._legacy)
+        os.remove(self._legacy)
+        return sealed
+
 
 class AccountTrust:
     """Every account's trust record on this install."""
@@ -163,6 +214,19 @@ def for_android(vault, persistent: bool) -> Optional[AccountTrust]:
     directory = trust_dir()
     return AccountTrust(_VaultTrustRecords(vault, directory),
                         os.path.join(directory, "trust.dek"))
+
+
+def for_terminal(dek_path: str, legacy_path: Optional[str] = None,
+                 read_legacy=None) -> AccountTrustRecord:
+    """The terminal client's sealed pins: one record for the install, beside
+    its own key file [dek_path] (a directory of its own, as the apps'), with
+    a plaintext [legacy_path] moved in on first load. [read_legacy] reads
+    that file as the engine does and raises if it will not open."""
+    directory = os.path.dirname(os.path.abspath(dek_path))
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    return _TerminalTrustRecord(_FileTrustRecords(directory),
+                                AesGcmSealedStore(TermuxFileDekProvider(dek_path)),
+                                "trust.terminal.sealed", legacy_path, read_legacy)
 
 
 def for_desktop() -> AccountTrust:

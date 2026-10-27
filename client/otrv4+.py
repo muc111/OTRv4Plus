@@ -75,6 +75,7 @@ import otrv4plus_smpflow as _smpflow
 # Address rules shared with the Android app, including the project server's
 # shipped address (SHIPPED_SERVERS). Standard library only.
 import otrv4plus_address as _address
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/: sealed trust pins)
 
 try:
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
@@ -3049,6 +3050,11 @@ class OTRConfig:
     #: persist_identity.  See TermuxFileDekProvider for what this does and,
     #: more importantly, what it does not do.
     identity_dek_path: Optional[str] = None
+    #: Key file sealing the trust pins (P1).  Only read when persist_trust.
+    #: Set, the pins are kept sealed beside it (`android_bridge.account_trust`,
+    #: F3's sealing path), and a plaintext `trust_db_path` from before is moved
+    #: in once and removed.  Unset, they are the plaintext `trust_db_path`.
+    trust_dek_path: Optional[str] = None
 
 
 @dataclass
@@ -5499,6 +5505,10 @@ class TrustDatabase:
         if self.persistent:
             self._load()
 
+    class StoreUnavailable(RuntimeError):
+        """The trust pins are there and will not open. Not replaced: the
+        client refuses to start, as it does for an identity (P1)."""
+
     class StoreFailed(RuntimeError):
         """The sealed trust store (P1) could not be written. Raised, not
         swallowed: a pin that is not kept would make the next start a first
@@ -5518,6 +5528,15 @@ class TrustDatabase:
             self._db = self._migrated(data or {})
             self._store = store
             self._unsaved = False
+
+    def where(self) -> str:
+        """Where the pins are kept, for the user."""
+        if self._store is not None:
+            describe = getattr(self._store, "where", None)
+            return describe() if callable(describe) else "a sealed store"
+        if self.persistent:
+            return "%s (plaintext)" % self.db_path
+        return "IN MEMORY ONLY"
 
     def detach_store(self) -> None:
         """Stop writing to the store (another account, or a wipe). The pins
@@ -5557,18 +5576,24 @@ class TrustDatabase:
             if not os.path.exists(self.db_path):
                 self._db = {}
                 return
+            # A file that is there and will not open is refused, never read
+            # as empty: an empty database in its place makes every pinned
+            # contact a first contact, the failure P1 fixed in the apps.
+            # Writes are atomic (`_save`), so a torn file is not an ordinary
+            # crash either.
             try:
                 with open(self.db_path, "r") as f:
                     raw = json.load(f)
+                if not isinstance(raw, dict):
+                    raise ValueError("not a table")
                 self._db = self._migrated(raw)
-            except (json.JSONDecodeError, IOError, OSError) as e:
-                if DEBUG_MODE:
-                    print(f"[TrustDatabase] Error loading: {e }")
-                self._db = {}
             except Exception as e:
-                if DEBUG_MODE:
-                    print(f"[TrustDatabase] Unexpected error loading: {e }")
-                self._db = {}
+                raise TrustDatabase.StoreUnavailable(
+                    "the trust pins in %s would not open (%s). They have NOT "
+                    "been replaced: starting with none would make every "
+                    "pinned contact a first contact. If you know why, move "
+                    "the file aside and expect to check your contacts again."
+                    % (self.db_path, e.__class__.__name__)) from None
 
     def _save(self):
         """Save database to disk atomically with error handling"""
@@ -8503,6 +8528,27 @@ def _refuse_old_protocol(manager, peer: str, dake) -> bool:
         f"{[hex (v ) for v in needed ]} (A1, A2 fixed). Connection refused.")
 
 
+def _open_trust_db(config) -> "TrustDatabase":
+    """The trust database [config] asks for.
+
+    In memory unless persist_trust (the IRC contract: nothing written). With
+    persist_trust and a `trust_dek_path`, the pins are sealed (P1); the
+    import happens only on that path, as the identity's does, so IRC never
+    loads the persistence machinery. A record that will not open raises,
+    and the client does not start.
+    """
+    if not config.persist_trust:
+        return TrustDatabase(config.trust_db_path, persistent=False)
+    if not getattr(config, "trust_dek_path", None):
+        return TrustDatabase(config.trust_db_path, persistent=config.persist_trust)
+    from android_bridge.account_trust import for_terminal
+    db = TrustDatabase(config.trust_db_path, persistent=False)
+    db.use_store(for_terminal(
+        config.trust_dek_path, legacy_path=config.trust_db_path,
+        read_legacy=lambda path: TrustDatabase(path, persistent=config.persist_trust)._db))
+    return db
+
+
 def _refuse_pq_identity(manager, peer: str, dake) -> bool:
     """A2: the version policy, then the peer's ML-DSA pin, once its DAKE
     message has verified.
@@ -8530,8 +8576,7 @@ class SessionManager:
         self.config = config or OTRConfig(test_mode=True)
         self.logger = logger or NullLogger()
 
-        self.trust_db = TrustDatabase(self.config.trust_db_path,
-                                      persistent=self.config.persist_trust)
+        self.trust_db = _open_trust_db(self.config)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
         _remove_retired_key_storage(self.config.key_storage_path)
 
@@ -9083,8 +9128,7 @@ class EnhancedSessionManager:
         self.tracer = tracer or OTRTracer(enabled=True)
         self.logger = logger or NullLogger()
 
-        self.trust_db = TrustDatabase(self.config.trust_db_path,
-                                      persistent=self.config.persist_trust)
+        self.trust_db = _open_trust_db(self.config)
         self.smp_storage = SMPAutoRespondStorage(self.config.smp_secrets_path)
         _remove_retired_key_storage(self.config.key_storage_path)
 

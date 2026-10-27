@@ -165,9 +165,7 @@ class TrustMixin:
         try:
             cfg = self.otr.config
             print("[identity] identity record: %s" % getattr(cfg, "identity_path", "?"))
-            print("[identity] trust store    : %s%s"
-                  % (self.otr.trust_db.db_path,
-                     "" if self.otr.trust_db.persistent else "  (IN MEMORY ONLY)"))
+            print("[identity] trust store    : %s" % self.otr.trust_db.where())
         except Exception:
             pass
 

@@ -331,6 +331,9 @@ def _identity_path_for(account):
 def _xmpp_otr_config(account=""):
     """OTRConfig for XMPP: persistent identity, persistent trust, own paths.
 
+    The trust pins are sealed under their own key file in `trust/` (P1); the
+    plaintext `trust.json` of earlier versions is moved in on the first start.
+
     This is the only place the two protocols diverge in configuration, and the
     divergence is deliberate. See _host.XMPP_STATE_DIR above. The identity is
     [account]'s own (F2, `_identity_path_for`).
@@ -341,6 +344,7 @@ def _xmpp_otr_config(account=""):
         persist_identity=True,
         persist_trust=True,
         trust_db_path=_xmpp_state_path("trust.json"),
+        trust_dek_path=_xmpp_state_path(os.path.join("trust", "trust.dek")),
         smp_secrets_path=_xmpp_state_path("smp_secrets.json"),
         identity_path=_identity_path_for(account),
         identity_dek_path=_xmpp_state_path(".identity_dek"),
