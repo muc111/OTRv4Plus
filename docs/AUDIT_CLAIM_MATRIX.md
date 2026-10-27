@@ -120,7 +120,7 @@ wire, so a bridge that skips the check fails them.
 | # | Claim (verbatim) | Where | Code | Test(s) | Residual(s) | Status | Fix |
 |---|---|---|---|---|---|---|---|
 | 4.1 | "No primitive can close it." | SECURITY_ISSUES.md TOFU; PQC_DECISIONS.md (e) | -- | -- | -- | **EXTERNAL** (a reasoned argument, not testable) | -- |
-| 4.2 | "a changed destination receives no byte, and no password is sent where certificate checks are off" | SECURITY_ISSUES.md X1 | `server_pins.py`, `transport._restrict_to_scram`, `otrv4plus_xmpp.py` | `TestSubstitutionIsBlocked`, `TestScramOnlyOnTheWire`, `tests/test_x1_terminal_client.py` | TOFU; SCRAM offline guessing; first registration | **DEMONSTRATED** (re-checked by mutation in B) | -- |
+| 4.2 | "a changed destination receives no byte, and no password is sent where certificate checks are off" | SECURITY_ISSUES.md X1 | `server_pins.py`, `transport._restrict_to_scram`, `otrv4plus_xmpp.py` | `TestSubstitutionIsBlocked`, `TestScramOnlyOnTheWire`, `tests/test_x1_terminal_client.py` | TOFU; SCRAM offline guessing; first registration | **DEMONSTRATED** (re-checked by mutation in B) | -- . 2026-10-27: PARTIAL on an unreadable pins file (X1 residual 5, below); **then fixed**: refused before any byte, `TestAnUnreadablePinsFileIsRefused` |
 | 4.3 | Server pins survive a restart | X1 "Pins are public data ... stored at `~/.otrv4plus/server_pins.json`" | `server_pins.py` | `TestPersistence::test_pins_survive_a_restart_and_are_private` | -- | **DEMONSTRATED** (unlike 3.2, server pins are persisted) | -- |
 | 4.4 | "Active MITM at first contact — Hybrid PQC SMP zero-knowledge proof out-of-band" | SECURITY.md | `smp.rs` | the SMP suites | needs the user to run SMP with a secret shared out of band | **DEMONSTRATED** (mechanism; it defends only when used) | -- |
 
@@ -260,7 +260,123 @@ was applied to the two other pin stores.
   open, so the next connection to a changed destination is first use. The
   password stays protected (SCRAM-only); the destination check does not
   hold for that connection. The residual was not stated, so row 4.2 was
-  PARTIAL on this point. It is now stated (X1 residual 5) and asserted by
-  `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`.
-  The behaviour is unchanged: the opposite of P1's rule, kept as an owner
-  decision.
+  PARTIAL on this point. It was then stated (X1 residual 5) and asserted
+  by `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`,
+  which the fix below removed.
+
+## Re-run after the X1 fix (2026-10-27, residual 5 closed)
+
+X1 residual 5 was closed: a server pins file that will not open is refused
+before any byte reaches the router, never read as empty
+(docs/SECURITY_ISSUES.md X1). Every row was re-run against the tree before
+the fix (`28c170d`) and after it.
+
+**Method.**
+1. The verbatim claim of every row searched for in both trees' documents
+   and sources (as in the first re-run). The output is identical for all
+   64 rows: no claim sentence appeared or disappeared.
+2. Every test a row cites checked to exist in both trees. All do. The six
+   names the scan reports as missing in both are Rust test modules
+   (`dake::pq_auth_tests`, `client::retired_key_tests`) and one refusal
+   code (`pq_v2_required`), not functions.
+3. Each row's effective status in both trees, from its Status and Fix
+   columns. 4.2 is set by hand, from the follow-up above (PARTIAL on the
+   unreadable-file case at `28c170d`).
+
+**The row-level diff.** One row changed. Status words: "(after E)" means
+the sentence was reworded to what a test shows; "(after T)" a test was
+added; "(after F)" the issue entry's status or residuals changed.
+
+| # | Status at 28c170d | Status now | Changed | Cited tests: exist at 28c170d / now |
+|---|---|---|---|---|
+| 1.1 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.2 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.3 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 1/1 / 1/1 |
+| 1.4 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 2/2 / 2/2 |
+| 1.5 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 1.6 | DEMONSTRATED | DEMONSTRATED | no | 0/1 / 0/1 |
+| 1.7 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 1.8 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.9 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 2/2 / 2/2 |
+| 1.10 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.11 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 1/1 / 1/1 |
+| 1.12 | DEMONSTRATED (after E/F) | DEMONSTRATED (after E/F) | no | 0/0 / 0/0 |
+| 1.13 | DEMONSTRATED (after E; T) | DEMONSTRATED (after E; T) | no | 1/1 / 1/1 |
+| 1.14 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 2/2 / 2/2 |
+| 1.15 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.16 | DEMONSTRATED | DEMONSTRATED | no | 3/3 / 3/3 |
+| 1.17 | EXTERNAL (mechanism DEMONSTRATED) | EXTERNAL (mechanism DEMONSTRATED) | no | 0/0 / 0/0 |
+| 1.18 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 1.19 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.20 | DEMONSTRATED + EXTERNAL (Q2) | DEMONSTRATED + EXTERNAL (Q2) | no | 0/0 / 0/0 |
+| 1.21 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 1/1 / 1/1 |
+| 1.22 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 1/1 / 1/1 |
+| 1.23 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 1/1 / 1/1 |
+| 1.24 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 1.25 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.1 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/1 / 0/1 |
+| 2.2 | DEMONSTRATED | DEMONSTRATED | no | 0/1 / 0/1 |
+| 2.3 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 2.4 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.5 | DEMONSTRATED | DEMONSTRATED | no | 0/1 / 0/1 |
+| 2.6 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.7 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.8 | EXTERNAL (mechanism DEMONSTRATED) | EXTERNAL (mechanism DEMONSTRATED) | no | 0/0 / 0/0 |
+| 2.9 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.10 | SUPERSEDED (marked) | SUPERSEDED (marked) | no | 0/0 / 0/0 |
+| 2.11 | DEMONSTRATED (after F) | DEMONSTRATED (after F) | no | 1/1 / 1/1 |
+| 2.12 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 3.1 | DEMONSTRATED | DEMONSTRATED | no | 0/1 / 0/1 |
+| 3.2 | DEMONSTRATED | DEMONSTRATED | no | 2/2 / 2/2 |
+| 3.3 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 3.4 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 3.5 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 3.6 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 3.7 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 0/0 / 0/0 |
+| 3.8 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 3.9 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 3.10 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 1/2 / 1/2 |
+| 4.1 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 4.2 | PARTIAL (residual 5 stated: an unreadable pins file read as empty) | DEMONSTRATED (corrupt-file case refused and tested) | **yes** | 2/2 / 2/2 |
+| 4.3 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 4.4 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 5.1 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 5.2 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 5.3 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 5.4 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 6.1 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 6.2 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 6.3 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.1 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.2 | DEMONSTRATED | DEMONSTRATED | no | 2/2 / 2/2 |
+| 7.3 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.4 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 7.5 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.6 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+
+**Neighbours checked by hand.**
+- 4.3 (server pins survive a restart): unchanged. A readable file loads as
+  before (`TestPersistence`); a missing one is a first run
+  (`test_a_missing_pins_file_is_a_first_run_and_proceeds`).
+- 4.4 (SMP at first contact) and 7.1 (no plaintext): untouched by the
+  transport's pre-flight, which runs only on the I2P route.
+- The shipped server and typed `.b32.i2p` addresses: their check never
+  read the pins, and they still connect with an unreadable file
+  (`test_a_shipped_or_typed_b32_server_does_not_consult_the_pins`).
+- Wipe & Exit: still destroys the file, a file that will not open included
+  (`test_wipe_still_destroys_a_pins_file_that_would_not_open`).
+- Registration (Create account): it goes through the same transport, so
+  it is refused the same way, before NAMING LOOKUP, under its own
+  `server_identity_changed` code (`test_registration_is_refused_too`).
+- A new cost, not a weakening: a damaged pins file now blocks sign-in to a
+  pinned server name until the user moves it aside. Stated in X1.
+
+No row weakened. No EXTERNAL row moved. The seven questions in
+docs/CRYPTOGRAPHER_QUESTIONS.md are unchanged.
+
+**One record corrected outside the matrix in the same pass.** P2's trigger
+was stated as "100 messages from one side after a round trip". Measured at
+the production interval, it is the 101st message after a DH round trip (up
+to the 200th with no DH step yet), pinned by
+`test_the_boundary_is_the_101st_message_after_a_dh_round_trip`. Row 3.10's
+status is unaffected.

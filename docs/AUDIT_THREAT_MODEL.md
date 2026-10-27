@@ -20,8 +20,8 @@ walk itself turned up. Nothing was added to look thorough.
   Android and the desktop, contact pins lasted one run of the app; fixing
   it found the apps never checked the fingerprint pin at all.
 - **P2 (High, RESOLVED in this pass).** A forced DH step the peer could not
-  follow silently broke a session after two days, or after 100 messages
-  from one side.
+  follow silently broke a session after two days, or at the 101st message
+  from one side after a DH round trip.
 
 ## 1. One-to-one content (L1)
 
@@ -113,6 +113,7 @@ entry; a library that opens its own socket.
 |---|---|---|---|---|
 | A `.i2p` name to DNS | any resolver call on an I2P route | the audit hook refuses it | `tests/test_n1_network_isolation.py` | yes, for the app's own code; i2pd's reseed is its own process; no device capture yet |
 | Substituted destination | re-points the name | refused before `SESSION CREATE`; zero bytes reach it | `TestSubstitutionIsBlocked` (re-checked by mutation in this pass) | yes |
+| Make the pins fail open | damages `server_pins.json` (or a disk fault does), then re-points the name | before 2026-10-27 the file was read as empty and the substitute was a first visit. Now refused before HELLO, SESSION CREATE and NAMING LOOKUP; the file is named and never rewritten | `TestAnUnreadablePinsFileIsRefused`; the terminal: `test_the_terminal_refuses_an_unreadable_pins_file_before_the_router_is_asked` | yes (X1 residual 5, fixed) |
 | Collect the password | offers PLAIN only | no `<auth>` sent | `TestScramOnlyOnTheWire` | yes; SCRAM offline guessing stays a residual |
 
 ## 6. Identity at rest (F2, F3)
@@ -141,7 +142,8 @@ ratchet was not unaffected. Every later message failed to decrypt, with
 `handle_incoming_message` returning None and the session still shown as up.
 
 This needed no adversary. The same double step happened to ordinary use:
-- any 100 messages from one side after a DH round trip;
+- the 101st message from one side after a DH round trip (measured
+  2026-10-27; up to the 200th when the session had no DH step yet);
 - or a chat left open across two 24-hour boundaries with a normal exchange
   between them.
 

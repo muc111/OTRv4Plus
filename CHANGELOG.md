@@ -8,8 +8,9 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 - **Fixed (P2): a chat could stop decrypting silently.** The engine forced
   a DH step at every rekey boundary even toward a key it had already
-  stepped toward, which the other side cannot follow: after 100 messages
-  from one side following a round trip, or in a chat open across two days,
+  stepped toward, which the other side cannot follow: from the 101st message
+  from one side after a key change (up to the 200th before any), or in a
+  chat open across two days,
   every later message failed to decrypt with no error shown. Now at most
   one step goes toward each key; the next comes with the reply.
   `tests/test_p2_forced_steps.py`.
@@ -24,6 +25,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   store of their own, and Wipe & Exit destroys it. A store that will not
   open is refused, not replaced. On an Android device whose Keystore does
   not work the pins still last one run. `tests/test_p1_trust_pins_per_run.py`.
+- **A server pins file that will not open stops the connection.** The file
+  recording which I2P destination each server was trusted at was read as
+  empty when it was damaged, so a changed server looked like a first visit.
+  Now the app and the terminal stop before anything reaches the router,
+  name the file, and change nothing: move it aside or restore it, then log
+  in again. The default server and typed `.b32.i2p` addresses are not
+  affected. `TestAnUnreadablePinsFileIsRefused`.
 - **The terminal client's trust pins are sealed, and refused when they will
   not open.** `~/.otrv4plus/xmpp/trust.json` was plaintext, and a corrupt one
   loaded as empty, so every contact became a first contact. The pins are now

@@ -57,8 +57,8 @@ instead of restating it.
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
 | P1 | On Android and the desktop the contact pins were never checked, and lived in memory: a contact under a new identity was accepted in any run, and after a restart any changed key was a first contact, without a warning | High (authentication) | **RESOLVED** (found 2026-10-26, fixed 2026-10-27) -- the bridge checks the pin when a session comes up (`_check_contact_pin`): a changed key is FINGERPRINT_MISMATCH, `FingerprintChanged`, the pin kept, nothing queued sent. Each account's pins are kept sealed (`android_bridge.account_trust`): Android in the Keystore vault's own trust section, the desktop in 0600 files; apart from identities, server pins and history; destroyed by Wipe & Exit; a record that will not open is refused (`trust_unavailable`), retried, never replaced. `tests/test_p1_trust_pins_per_run.py` (24 tests; 14 mutants killed). Residuals: no working Keystore on Android, pins for one run; the terminal's pins are one record per install (P1 section). Follow-up the same day: the terminal client's pins sealed too, and refused when they will not open (`tests/test_terminal_trust_sealed.py`) |
-| P2 | A forced DH step toward a remote key already stepped toward could not be followed by the peer: every later message failed to decrypt, silently. Reached by 100 messages from one side after a round trip, or by a chat open across two 24-hour boundaries | High (availability; silent message loss) | **RESOLVED** (2026-10-26) -- one send step per remote key (`RustBackedDoubleRatchet._forced_toward`). `tests/test_p2_forced_steps.py` (every test fails on the old engine), Rust `pq_ratchet::p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed`. Residual: a peer on an older build can still take the double step |
-| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED-CLAIM** (Android and the terminal client; claim: a changed destination receives no byte, and no password is sent where certificate checks are off) -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: TOFU (shared residual); SCRAM guessing and first registration; an unreadable pins file is read as empty (X1 section). NOT yet confirmed by a handset login |
+| P2 | A forced DH step toward a remote key already stepped toward could not be followed by the peer: every later message failed to decrypt, silently. Reached by the 101st message from one side after a DH round trip (measured; up to the 200th with no DH step yet), or by a chat open across two 24-hour boundaries | High (availability; silent message loss) | **RESOLVED** (2026-10-26) -- one send step per remote key (`RustBackedDoubleRatchet._forced_toward`). `tests/test_p2_forced_steps.py` (every test fails on the old engine), Rust `pq_ratchet::p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed`. Residual: a peer on an older build can still take the double step |
+| X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED-CLAIM** (Android and the terminal client; claim: a changed destination receives no byte, and no password is sent where certificate checks are off) -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: TOFU (shared residual); SCRAM guessing and first registration (X1 section). An unreadable pins file is refused, never read as empty (residual 5, fixed 2026-10-27; `TestAnUnreadablePinsFileIsRefused`). NOT yet confirmed by a handset login |
 
 ---
 
@@ -987,10 +987,22 @@ receive step uses the key it made after our first step. From then on every
 message failed to decrypt: `handle_incoming_message` returned None, the
 session still showed as up, and nothing told either user.
 
-Two ordinary ways in:
-- 100 messages from one side after any round trip;
+Two ordinary ways in (measured with real engines at the production
+interval, 2026-10-27; `test_the_boundary_is_the_101st_message_after_a_dh_round_trip`):
+- **a one-way run.** `message_counter_send` counts every message a side
+  sends and resets only at a forced step, so a side forces a step when
+  the counter reaches 100 (measured: its 101st message, then every 100
+  after it). After
+  a DH round trip (the peer's reply carried a new key, which follows a
+  rekey), the 101st message from one side with no reply was the first
+  that failed. With no DH step yet in the session, the first forced step
+  is harmless and the second one fails: the 200th one-way message after a
+  single exchange (199 after two, 198 after three: the earlier messages
+  count). Earlier wording ("100 messages from one side after a round
+  trip") was off by one and did not say the round trip had to be a DH one;
 - a chat left open across two 24-hour boundaries with an exchange between
-  them.
+  them (the timer step, the peer's reply with a new key, then the next
+  timer step).
 
 Reproduced with real engines: a two-day session failed on day three in
 both directions, and a randomised burst test lost 235 messages. A network
@@ -1113,15 +1125,63 @@ negotiated (`tls_required`).
    reconnect. A changed destination is shown with both addresses; only typing
    the new address in full approves it, and a reconnect never retries one.
    Residuals 1-3 apply to it as to the app.
-5. **A pins file that will not open is read as empty** (found 2026-10-27,
-   checking P1's neighbours). `ServerPins._load` keeps nothing, so the next
-   connection to a changed destination is first use, not a refused change.
-   The password stays protected by SCRAM-only (layer A); the destination
-   check (layer B) does not hold for that one connection. Writes are atomic,
-   so this takes tampering or a disk fault. P1's rule for contact pins is
-   the opposite (refuse, never replace), and changing this one is an owner
-   decision, not made here. Asserted by
-   `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`.
+5. ~~A pins file that will not open is read as empty.~~ **Fixed
+   2026-10-27, with regression tests named below.** Found the same day,
+   checking P1's neighbours: `ServerPins._load` kept nothing, so the next
+   connection to a changed destination was a first visit, not a refused
+   change (the password stayed protected by SCRAM-only; the destination
+   check did not hold for that connection). Now P1's rule applies, refused,
+   never replaced:
+   - a missing file is a first run, and the connection proceeds;
+   - a file that will not open, will not parse, or is not the shape pins
+     have (a table of name -> `{"b32": a .b32.i2p address, "since": an
+     integer}`; one malformed entry refuses the file) is refused
+     (`server_pins.PinsUnreadable`). The connection stops before the
+     forwarder starts, so before HELLO, SESSION CREATE and NAMING LOOKUP,
+     and before any byte reaches the router (`i2p_server_pins_unreadable`).
+     The file is named, and never rewritten, replaced or backed up: nothing
+     is pinned or approved over it. It is read again at the next attempt,
+     after the user has moved it aside or restored it;
+   - the app shows the X1 warning in this form: it names the file and
+     offers nothing to approve, since approving would rewrite it. The
+     reconnect loop does not retry it (`ConnectProblem.NEEDS_YOU`);
+   - the terminal applies the same rule through `check_destination`, at
+     start (`_server_identity`, before the SAM forwarder) and on every
+     reconnect (its `preflight`), and stops with the file named;
+   - a shipped server address and a typed `.b32.i2p` never consult the
+     pins (their check is the address itself), so they still connect;
+   - Wipe & Exit still destroys the file.
+
+   Server pins are public data (names and destination hashes). They are not
+   sealed, by decision.
+
+   Tests: `TestAnUnreadablePinsFileIsRefused` in
+   `tests/test_x1_destination_pinning.py`:
+   `test_a_corrupt_pins_file_refuses_the_connection_and_names_the_file`,
+   `test_a_missing_pins_file_is_a_first_run_and_proceeds`,
+   `test_a_structurally_invalid_pins_file_refuses` (seven shapes),
+   `test_the_refusal_fires_before_naming_lookup_and_session_create`,
+   `test_the_file_is_read_again_once_it_is_moved_aside_and_never_rewritten`,
+   `test_a_shipped_or_typed_b32_server_does_not_consult_the_pins`,
+   `test_the_warning_names_the_file_and_offers_nothing_to_approve`,
+   `test_registration_is_refused_too`,
+   `test_wipe_still_destroys_a_pins_file_that_would_not_open`. In
+   `tests/test_x1_terminal_client.py`:
+   `test_the_terminal_applies_the_same_rule_via_check_destination`,
+   `test_the_terminal_refuses_an_unreadable_pins_file_before_the_router_is_asked`,
+   `test_a_terminal_reconnect_stops_at_an_unreadable_pins_file`,
+   `test_a_missing_pins_file_is_a_first_run_for_the_terminal`. Kotlin:
+   `ConnectProblemTest` (`an unreadable server pins file is an error at
+   once and says nothing was sent`) and `ReconnectPolicyTest` (`an
+   unreadable server pins file stops the retry loop`).
+
+   Mutation: disabling the refusal (the file read as empty again) fails 15
+   of these tests. 12 mutants of the fix: 8 killed, 4 equivalent (the
+   second guards against writing, pinning or approving over an unreadable
+   file, and Wipe & Exit's reset, which no public path reaches;
+   docs/AUDIT_TEST_INTEGRITY.md round 5). The test that asserted the
+   residual, `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`,
+   is removed with it.
 
 ### Tests
 

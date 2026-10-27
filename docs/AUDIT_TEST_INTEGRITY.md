@@ -141,6 +141,28 @@ database-level test would have passed both.
   code: `test_no_client_passes_persistent` (the opener now takes
   `persistent` from the config) and
   `test_every_client_module_that_imports_the_bridge_asks_for_the_path_first`.
+- Round 5 (X1 residual 5, the server pins refused when they will not
+  open): 12 mutants, 8 killed, 4 equivalent. Disabling the refusal (the
+  file read as empty again) fails 15 tests across the app and the
+  terminal. Killed: the refusal off; the app's pre-flight off (the refusal
+  then comes only after NAMING LOOKUP: 9 fail); malformed entries filtered
+  instead of refused (5); the terminal's start pre-flight off (2); its
+  reconnect pre-flight off (1); `check` answering NEW over an unreadable
+  file (2); the warning without the file (1); the file not read again
+  after it is moved aside (1). Equivalent: the guards against writing,
+  pinning or approving over an unreadable file, and Wipe & Exit's reset of
+  the unreadable state. No public path reaches them (`check` raises before
+  anything is pending or recorded, and the next read after the wipe finds
+  no file); they stay as second locks on the writer.
+- The test that asserted the residual,
+  `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`,
+  failed on the fix by design and was removed with it (listed as removed in
+  `tests/test_security_doc_references.py`).
+- P2's trigger was measured at the production interval and pinned
+  (`test_the_boundary_is_the_101st_message_after_a_dh_round_trip`, which
+  fails with the P2 guard removed). The documented "100 messages after a
+  round trip" was off by one and missed that the round trip has to carry a
+  new DH key.
 
 ## The tests, one by one
 
@@ -189,6 +211,8 @@ database-level test would have passed both.
 | F4 | the 16-key bound | `retired_keys_are_bounded_and_published_in_batches` | -- |
 | F4 | needs the app running | `test_a_rekey_retires_the_old_key_and_maintain_publishes_it_after_the_delay` shows publication only from `maintain` | that an offline app publishes nothing follows from that; not separately tested |
 | X1 | SCRAM offline guessing | -- | an offline dictionary attack is outside the code; stated |
+| X1 | ~~an unreadable pins file read as empty~~ fixed 2026-10-27 | `TestAnUnreadablePinsFileIsRefused`, `test_the_terminal_applies_the_same_rule_via_check_destination` | -- |
+| X1 | a damaged pins file blocks sign-in to a pinned name until it is moved aside (the cost of the fix) | `test_a_corrupt_pins_file_refuses_the_connection_and_names_the_file` | -- |
 | X1 | first registration unpinned | -- | stated; the pinning tests start from first use |
 | A1 / §5.1 | the lost-Ek residual | reworded: unreachable since P2 (`tests/test_p2_forced_steps.py`) | the combiner is Q4 |
 | N1 | i2pd reseed; no device capture | -- | a separate process; needs a PCAPdroid capture on a phone |

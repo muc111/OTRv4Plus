@@ -222,15 +222,20 @@ bridge event paths.
 6. A public/discoverable room is NOT E2EE unless it is a secure group: check
    the room screen says which.
 
-## 8. Contact pins across restarts, and long sessions (P1, P2)
+## 8. Contact pins, server pins, long sessions, closing messages (P1, X1, P2, L1)
 
 Automated coverage: `tests/test_p1_trust_pins_per_run.py`,
-`tests/test_terminal_trust_sealed.py`, `tests/test_p2_forced_steps.py`,
-`ProfileIdentityTest`. Added 2026-10-27: before P1 the apps never checked a
-contact's key, so none of this could be seen on a device.
+`tests/test_terminal_trust_sealed.py`, `TestAnUnreadablePinsFileIsRefused`
+(`tests/test_x1_destination_pinning.py`), `tests/test_x1_terminal_client.py`,
+`tests/test_p2_forced_steps.py`, `TestCrashDuringClose`,
+`ProfileIdentityTest`, `ConnectProblemTest`, `ReconnectPolicyTest`. Added
+2026-10-27: before P1 the apps never checked a contact's key, so none of
+this could be seen on a device.
 
 **Every device on the same dev build.** A phone on rc.184 can still take
 P2's double step, and a dev phone cannot follow it (matrix row 3.10).
+
+**Contact pins (P1).**
 
 1. **First contact.** A and B chat. On A, compare fingerprints with B in
    person and tap "They match". **Pass:** "Fingerprint confirmed".
@@ -253,20 +258,84 @@ P2's double step, and a dev phone cannot follow it (matrix row 3.10).
    key shows as changed (step 3 from B's side).
 8. **Desktop.** Repeat 1-3 between the laptop (D) and A, restarting the
    desktop app at step 2.
-9. **Terminal, first start after the upgrade.** On T, before starting:
-   `ls ~/.otrv4plus/xmpp`. Start, then run `/identity`. **Pass:**
-   `trust.json` is gone, `trust/` holds `trust.dek` and
-   `trust.terminal.sealed`, `/identity` says the pins are sealed, and a
-   contact T knew before connects with no warning.
-10. **Terminal, a damaged record (optional).** Copy `trust/` aside, append
-    a byte to `trust.terminal.sealed`, start T. **Pass:** T refuses to start
+
+**The terminal's pins after the upgrade.**
+
+9. **First start after upgrading from a build that wrote a plaintext
+   `trust.json`.** On T, before starting the new build: note a contact
+   T knew, and `ls -l ~/.otrv4plus/xmpp` (there is a `trust.json`). Start,
+   then run `/identity`. **Pass:** `trust.json` is gone; `trust/` holds
+   `trust.dek` (0600) and `trust.terminal.sealed`; `/identity` says
+   "trust store : sealed, …/trust/trust.terminal.sealed"; the contact T
+   knew connects with no warning (its pin was sealed, checked and kept).
+10. **Both files, disagreeing.** Copy `trust/` aside. Put back an older
+    `trust.json` whose pins differ from the sealed ones (for example the
+    one saved before step 9 with one fingerprint edited), start T.
+    **Pass:** T refuses to start, names both `trust.json` and
+    `trust/trust.terminal.sealed` and says they differ; neither file changed (compare them with `sha256sum` before and
+    after). Remove the `trust.json`; T starts.
+11. **A damaged sealed record (optional).** Copy `trust/` aside, append a
+    byte to `trust.terminal.sealed`, start T. **Pass:** T refuses to start
     and says the pins were not replaced. Restore the copy; T starts.
-11. **A long one-way run (P2).** A and B exchange one message each way, then
-    A sends B 120 messages with no reply. **Pass:** all 120 decrypt on B,
-    and B's reply decrypts on A.
-12. **Two days (P2, optional).** Leave A and B's chat open across two
-    24-hour boundaries, with one exchange each day. **Pass:** day three's
-    messages decrypt both ways.
+
+**Server pins that will not open (X1, residual 5 closed).**
+
+12. **Refused before any byte leaves the device.** On A, connected to a
+    human-readable `.i2p` server name (not the default server, which needs
+    no pin): Log out. On the debug APK, with
+    `adb shell run-as org.otrv4plus.android` (on T, directly), replace
+    `.otrv4plus/server_pins.json` under the app's home with `{not json`,
+    keeping a copy. Log
+    in. **Pass:** "Security warning: the server's trusted address could not
+    be read", naming the file, with only "OK" (nothing to approve); no
+    retry follows by itself. Debug → trace shows `server_pins_unreadable`
+    and no `hostname_resolved`, `destination_accepted` or tunnel line after
+    it; the router's console shows no new client tunnel for the attempt.
+    The file is unchanged (`sha256sum`). Restore the copy, log in:
+    `basis=pinned`. On T: the same file broken, T stops at start with the
+    file named and the router is not asked (no SAM session in its log).
+
+**Long sessions (P2).** Measured triggers on the engine before the fix
+(`test_the_boundary_is_the_101st_message_after_a_dh_round_trip`): after a
+DH round trip -- a rekey on one side, then a reply from the other -- the
+101st message from one side with no reply failed, and every message after
+it, in both directions. With no rekey yet, the 200th one-way message after
+a single exchange failed. The fix closes this: it never takes the step the
+peer cannot follow, and the rekey waits for the next reply (the double
+ratchet's own limit), so the boundary is skipped, not moved.
+
+13. **Long one-way runs, across every boundary.** A and B exchange a
+    message each way. A sends B 220 messages with no reply: this crosses
+    A's first two rekeys (measured: at A's 101st message, then every 100
+    after it, counted across replies); the engine before the fix lost the 200th and
+    every one after. B replies once, A answers once, then A sends B 220
+    more with no reply: this crosses a rekey after a key change, where the
+    old engine failed 101 messages after the change. **Pass:** all 442
+    arrive, and B's reply after the last run arrives on A. Record the number
+    of the first message that did not arrive, if any, and in which run; a
+    failure near 100, 101 or 200 of a run is P2 still present. A device
+    cannot show where the rekey fell (the counter is internal); the exact
+    boundary is pinned by the test named above.
+14. **Two days (optional).** Leave A and B's chat open across two 24-hour
+    boundaries, with one exchange each day. **Pass:** day three's messages
+    arrive both ways.
+
+**Closing messages (L1): kept in memory only.** The code keeps an
+unconfirmed closing message in memory while the app runs and never writes
+it to disk (`TestCrashDuringClose`); this checks that the device does the
+same. Nothing here expects it on disk: if it were, that would reverse a
+privacy decision (a record of whom a chat was published with) and is a
+finding, not a test step.
+
+15. **Offline, then back.** In A's chat with B, turn A's network off,
+    Publish Chat Keys…, confirm. Turn the network on without closing the
+    app. **Pass:** the closing message goes once A is back (B's side ends
+    the old session; Debug trace on A shows the closing message sent).
+16. **Offline, then the app ends.** As 15, but force-stop A before turning
+    the network on, then reopen it online. **Pass:** nothing is re-sent at
+    launch (the trace shows no closing message after the restart), which is
+    what "in memory only" means: the close stays unpublished, as the
+    dialog says it can.
 
 ## 9. Not part of this session
 

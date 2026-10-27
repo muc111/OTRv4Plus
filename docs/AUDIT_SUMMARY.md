@@ -19,8 +19,9 @@ The record:
 **Two new issues, both in docs/SECURITY_ISSUES.md:**
 - **P2 (High, RESOLVED).** A forced DH step toward a key the engine had
   already stepped toward could not be followed by the peer. Every later
-  message failed to decrypt, silently. It was reached by 100 messages from
-  one side after a round trip, or by a chat open across two days.
+  message failed to decrypt, silently. It was reached by the 101st message
+  from one side after a DH round trip (measured; up to the 200th with no
+  DH step yet), or by a chat open across two days.
   - Found while writing a residual test for SPEC §5.1, whose residual it
     turned out to be.
   - Fixed in the engine every client shares; the Rust core is unchanged.
@@ -53,6 +54,12 @@ The record:
     sentence left from row 1.14, and two places where the P1 fix itself
     weakened a neighbour (the file gate, the Reset trust dialog). All three
     are fixed and gated. No row went down.
+- **X1 residual 5 (closed 2026-10-27).** A server pins file that would not
+  open was read as empty, so the next connection to a changed server was a
+  first visit. Now refused before any byte reaches the router, the file
+  named and never rewritten, in the app and the terminal
+  (`TestAnUnreadablePinsFileIsRefused`). The matrix re-run moved one row:
+  4.2, PARTIAL to DEMONSTRATED. No row weakened.
 
 ## (a) Claims downgraded
 
