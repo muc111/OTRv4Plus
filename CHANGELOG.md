@@ -6,6 +6,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ## Unreleased (dev) — audit and hardening pass, 2026-10-26
 
+- **Checked (F4): what a published group key cannot do.** Five tests
+  (`client::f4_containment_tests`) show a published leaf key signs nothing
+  a member accepts after its retirement, derives no later key, is refused
+  by a member in a later epoch and is no key in another group. The refusal
+  rests on OpenMLS keeping no past epoch (its default); a member that has
+  not yet processed the rotating commit still accepts old-epoch messages
+  (docs/SECURITY_ISSUES.md F4).
 - **Fixed (P2): a chat could stop decrypting silently.** The engine forced
   a DH step at every rekey boundary even toward a key it had already
   stepped toward, which the other side cannot follow: from the 101st message

@@ -1457,3 +1457,187 @@ mod retired_key_tests {
         assert_eq!(a.reveal_retired(G), Err(MlsError::CommitPending));
     }
 }
+
+#[cfg(test)]
+mod f4_containment_tests {
+    //! F4 CONTAINMENT (owner's task, 2026-10-27). What these check, in the
+    //! code's own terms: F4 publishes a member's retired LEAF signing key --
+    //! one per member per group, made at that member's self-update, replaced
+    //! at its next one, published only after the replacement is in the tree.
+    //! (The task's "epoch N key" is this key; it may span several epochs,
+    //! because other members' commits advance the epoch without rotating it.)
+    //!
+    //! INVARIANT. A published key can produce only signatures that verify
+    //! under its own retired public key -- forgeries for a transcript of what
+    //! it signed. It cannot sign anything a member accepts after its
+    //! retirement; no later key is derived from it; a message it signed for
+    //! an epoch now closed is refused by a member in a later epoch; and it
+    //! is no key in any other group.
+    //!
+    //! The binding that refuses an old-epoch message is not an "epoch
+    //! authenticator" check on application messages (MLS has none there):
+    //! it is OpenMLS's `process_message` -- the message must carry the
+    //! current epoch, decrypt under that epoch's secrets, and verify against
+    //! the sender's leaf key in the CURRENT tree -- with no past epoch kept
+    //! (no past-epoch policy set: OpenMLS 0.9.1's default, `MaxEpochs(0)`).
+    use super::*;
+    use crate::provider::composite_verify;
+    use openmls_traits::signatures::Signer;
+
+    const G: &[u8] = b"team@conference.example.i2p";
+    const H: &[u8] = b"other@conference.example.i2p";
+
+    fn copy_of(key: &SignatureKeyPair) -> SignatureKeyPair {
+        SignatureKeyPair::from_parts(key.public().to_vec(),
+                                     Zeroizing::new(key.secret().to_vec())).unwrap()
+    }
+
+    /// Alice creates [group] and adds each of [others], in room order.
+    fn group_of(group: &[u8], a: &mut MlsClient, others: &mut [&mut MlsClient]) {
+        a.create_group(group).unwrap();
+        for i in 0..others.len() {
+            let commit = a.add_members(group, &[others[i].key_package().unwrap()]).unwrap();
+            let welcome = match a.process(group, &commit).unwrap() {
+                Event::Commit { welcome: Some(w), .. } => w,
+                other => panic!("{other:?}"),
+            };
+            // Members already in process the add (all before the new one).
+            for m in others[..i].iter_mut() { m.process(group, &commit).unwrap(); }
+            others[i].join(&welcome).unwrap();
+        }
+    }
+
+    /// Alice rotates her leaf key; [members] process the commit.
+    fn rotate(group: &[u8], a: &mut MlsClient, members: &mut [&mut MlsClient]) -> SignatureKeyPair {
+        let commit = a.self_update(group).unwrap();
+        a.process(group, &commit).unwrap();
+        for m in members.iter_mut() { m.process(group, &commit).unwrap(); }
+        copy_of(&a.retired[group][0])               // what F4 will publish
+    }
+
+    fn is_application(e: &Result<Event>) -> bool {
+        matches!(e, Ok(Event::Application { .. }))
+    }
+
+    /// 1. Positive control first: the published key forges a transcript
+    /// signature that verifies under its own public key (the deniability
+    /// mechanism). Then: a message it signs in the next epoch is refused.
+    #[test]
+    #[allow(non_snake_case)]
+    fn releasing_epoch_N_key_cannot_sign_for_epoch_N_plus_1() {
+        let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
+        group_of(G, &mut a, &mut [&mut b]);
+        let epoch_n = a.groups[G].epoch().as_u64();
+        let published = rotate(G, &mut a, &mut [&mut b]);
+        assert_eq!(b.groups[G].epoch().as_u64(), epoch_n + 1);
+        let forged = Signer::sign(&published, b"a line alice never wrote in epoch N").unwrap();
+        assert!(composite_verify(published.public(), b"a line alice never wrote in epoch N",
+                                 &forged).is_ok(), "positive control: transcript forgery");
+        let (provider, group) = (&a.provider, a.groups.get_mut(G).unwrap());
+        let msg = group.create_message(provider, &published, b"forged into epoch N+1").unwrap();
+        let got = b.process(G, &out_bytes(&msg).unwrap());
+        assert!(got.is_err() && !is_application(&got), "{got:?}");
+    }
+
+    /// 2. Derivation tree: every leaf key is `SignatureKeyPair::generate_for`
+    /// (`generate()` is `generate_for(COMPOSITE)`) -- ML-DSA-87 from its
+    /// keygen and an Ed448 seed from `getrandom`, fresh each time -- at
+    /// create_group, at each KeyPackage, and at each self_update. No key is computed from another; the old key only SIGNS
+    /// the commit that brings in the new one. So K(N+1) is independent of
+    /// K(N), and releasing K(N) reveals nothing about K(N+1).
+    #[test]
+    #[allow(non_snake_case)]
+    fn epoch_N_plus_1_key_cannot_be_derived_from_epoch_N_key() {
+        let src = include_str!("client.rs");
+        let body = &src[src.find("pub fn self_update(").unwrap()..];
+        let body = &body[..body.find("\n    }\n").unwrap()];
+        assert!(body.contains("SignatureKeyPair::generate_for(scheme)"), "fresh keygen");
+        for derive in ["secret()", "from_parts", "Sha384", "hkdf", "derive"] {
+            assert!(!body.contains(derive), "the new key must not be computed from the old ({derive})");
+        }
+        let prov = include_str!("provider.rs");
+        let gen = &prov[prov.find("pub fn generate_for(").unwrap()..];
+        let gen = &gen[..gen.find("\n    }\n").unwrap()];
+        assert!(gen.contains("mldsa87::keypair()") && gen.contains("getrandom::getrandom"));
+        // And behaviourally: three rotations, four unrelated keys.
+        let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
+        group_of(G, &mut a, &mut [&mut b]);
+        let mut seen = vec![a.signers[G].public().to_vec()];
+        for _ in 0..3 {
+            rotate(G, &mut a, &mut [&mut b]);
+            seen.push(a.signers[G].public().to_vec());
+        }
+        let ed: Vec<_> = seen.iter().map(|k| k[..57].to_vec()).collect();
+        for i in 0..ed.len() { for j in i + 1..ed.len() { assert_ne!(ed[i], ed[j]); } }
+    }
+
+    /// 3. The strongest old-epoch message there is: one alice really signed
+    /// with the key in epoch N and really encrypted under epoch N, held back,
+    /// then presented after the rotation. Bob, in epoch N+1, refuses it and
+    /// surfaces nothing; Carol, still in epoch N, accepts the same bytes (the
+    /// refusal is the epoch's doing, not a broken message).
+    #[test]
+    fn a_message_signed_with_a_released_epoch_key_is_rejected_by_a_client_in_a_later_epoch() {
+        let (mut a, mut b, mut c) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"),
+                                     MlsClient::new(b"carol"));
+        group_of(G, &mut a, &mut [&mut b, &mut c]);
+        let held = a.encrypt(G, b"signed with the key that will be published").unwrap();
+        let commit = a.self_update(G).unwrap();
+        a.process(G, &commit).unwrap();
+        b.process(G, &commit).unwrap();              // carol has not, yet
+        let _published = a.reveal_retired(G).unwrap().expect("the key is published");
+        let epoch_before = b.groups[G].epoch().as_u64();
+        let got = b.process(G, &held);
+        assert!(got.is_err(), "accepted in a later epoch: {got:?}");
+        assert!(!is_application(&got), "no plaintext reached the application");
+        assert_eq!(b.groups[G].epoch().as_u64(), epoch_before, "state untouched");
+        let control = c.process(G, &held);
+        assert!(is_application(&control), "positive control in epoch N: {control:?}");
+    }
+
+    /// 4. The binding test 3 rests on (see the module note): no past epoch
+    /// is kept by either configuration, and an old-epoch message is refused
+    /// by `process_message` before any content is produced.
+    #[test]
+    fn the_epoch_authenticator_is_checked_before_any_group_message_is_accepted() {
+        let src = include_str!("client.rs");
+        for config in ["fn create_config()", "fn join_config()"] {
+            let body = &src[src.find(config).unwrap()..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            for keep in ["max_past_epochs", "past_epoch_deletion_policy", "KeepAll"] {
+                assert!(!body.contains(keep),
+                        "{config}: a kept past epoch would accept a retired key's messages");
+            }
+        }
+        let process = &src[src.find("pub fn process(").unwrap()..];
+        let check = process.find("group.process_message(provider, protocol)").unwrap();
+        assert!(check < process.find("ProcessedMessageContent::ApplicationMessage").unwrap(),
+                "the check comes before any application content");
+        let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
+        group_of(G, &mut a, &mut [&mut b]);
+        let held = a.encrypt(G, b"epoch N").unwrap();
+        rotate(G, &mut a, &mut [&mut b]);
+        assert!(matches!(b.process(G, &held), Err(MlsError::Refused(_))));
+    }
+
+    /// 5. Alice is in two groups at the same epoch. Her published G key is
+    /// not her H key; it forges nothing that H's key accepts; signed into H
+    /// it is refused; her genuine H messages still verify.
+    #[test]
+    fn epoch_keys_are_not_shared_between_groups() {
+        let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
+        group_of(G, &mut a, &mut [&mut b]);
+        group_of(H, &mut a, &mut [&mut b]);
+        assert_eq!(a.groups[G].epoch(), a.groups[H].epoch(), "same epoch number");
+        let published = rotate(G, &mut a, &mut [&mut b]);
+        let h_key = a.signers[H].public().to_vec();
+        assert_ne!(published.public(), h_key.as_slice());
+        let forged = Signer::sign(&published, b"in group H").unwrap();
+        assert!(composite_verify(&h_key, b"in group H", &forged).is_err());
+        let (provider, group) = (&a.provider, a.groups.get_mut(H).unwrap());
+        let msg = group.create_message(provider, &published, b"forged into H").unwrap();
+        assert!(b.process(H, &out_bytes(&msg).unwrap()).is_err());
+        let genuine = a.encrypt(H, b"really alice, in H").unwrap();
+        assert!(is_application(&b.process(H, &genuine)), "H unforged and still verifying");
+    }
+}

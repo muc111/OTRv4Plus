@@ -94,7 +94,7 @@ cd Rust && cargo test --release
 
 # MLS+: the provider, the composite keys, F4 publication
 cd Rust/mls && cargo test --release
-#   client::retired_key_tests
+#   client::retired_key_tests, client::f4_containment_tests
 
 # The Python engine and the apps' bridge, over the Rust extension.
 # Python 3.12 or later (Rust/pyproject.toml); 3.11 cannot parse the engine.
