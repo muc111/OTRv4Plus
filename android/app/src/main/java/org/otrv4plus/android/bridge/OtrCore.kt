@@ -1193,5 +1193,25 @@ class OtrBridgeException(val code: String) : RuntimeException(code) {
         fun codeFromMessage(message: String?): String? =
             message?.lineSequence()?.firstOrNull()?.trim()
                 ?.let { BRIDGE_ERROR.find(it)?.groupValues?.get(1) }
+
+        // A Python exception's TYPE, from "<module>.<Type>: text". The type is
+        // a class name the code chose; the text after it is dropped.
+        private val PYTHON_TYPE =
+            Regex("""^(?:[\w.]+\.)?([A-Z][A-Za-z0-9]{0,63}(?:Error|Exception|Exit|Interrupt|Refused|Unavailable|Failed)):""")
+
+        /**
+         * What a failure is called on screen and in the trace, when it can be
+         * named better than by its Kotlin class: the bridge's code when Python
+         * sent one, else the Python exception's type. Null otherwise; the
+         * caller then uses the class name. "PyException" alone was the whole
+         * of a handset report for a failed Create account (2026-10-27): the
+         * code that said why had been thrown away.
+         */
+        fun reportableCode(t: Throwable): String? {
+            (t as? OtrBridgeException)?.let { return it.code }
+            codeFromMessage(t.message)?.let { return it }
+            return t.message?.lineSequence()?.firstOrNull()?.trim()
+                ?.let { PYTHON_TYPE.find(it)?.groupValues?.get(1) }
+        }
     }
 }

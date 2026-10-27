@@ -126,6 +126,7 @@ object ConnectProblem {
     val NEEDS_YOU: Set<String> = setOf(
         "auth_failed", "password_not_applied", "profile_incomplete",
         "i2p_destination_changed", "i2p_server_pins_unreadable", "i2p_name_invalid",
+        "identity_unavailable", "trust_unavailable",
         "tls_required", "certificate_failure", "no_safe_auth_mechanism",
         "route_refused", "malformed_server", "bad_transport", "no_server",
         SIGNED_IN_ELSEWHERE, ACCOUNT_BANNED,
@@ -213,6 +214,12 @@ object ConnectProblem {
         "i2p_destination_changed" ->
             "The server's I2P address now points at a different key. Nothing " +
                 "was sent. Check it with the server's owner before trusting it."
+        "identity_unavailable" ->
+            "This account's stored identity on this phone would not open, so " +
+                "nothing was sent. It has not been replaced."
+        "trust_unavailable" ->
+            "This account's saved contact keys on this phone would not open, so " +
+                "nothing was sent. They have not been replaced."
         "i2p_server_pins_unreadable" ->
             "The file of trusted server addresses would not open, so a changed " +
                 "address could not be told from a first visit. Nothing was " +

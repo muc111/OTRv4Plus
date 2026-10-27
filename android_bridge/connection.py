@@ -44,7 +44,7 @@ import logging
 import os
 import socket
 import threading
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 _log = logging.getLogger("otrv4plus.bridge.connection")
 
@@ -270,6 +270,11 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         self._connecting = False
         #: Set by `wipe`; a wiped controller never connects again.
         self._wiped = False
+        #: (code, detail) when the account could not be bound before this
+        #: controller was built (`controller_for`): the account's stored
+        #: identity or contact pins would not open. Every attempt then answers
+        #: that code and sends nothing; nothing about them is replaced.
+        self._refused: Optional[Tuple[str, str]] = None
 
         # Installed here rather than at connect time: a DAKE frame can arrive
         # in the same breath as session_start, and an event emitted before the
@@ -537,6 +542,8 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
 
     def _connect(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
+        if self._refused is not None:
+            return self._fail(*self._refused)
         refused = self._gate_route()
         if refused is not None:
             return self._fail(refused.code, refused.detail)
@@ -731,6 +738,15 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             self._connecting = True
         try:
             return self._register(password)
+        except Exception as exc:
+            # Documented never to raise, and now it cannot: anything left
+            # crossed into Kotlin as a bare "PyException", the whole of the
+            # handset report. The type is traced; its text never leaves.
+            _TRACE.record("registration", "raised", "error", error=type(exc).__name__)
+            code, detail = _registration.classify(exc)
+            self._enter("failed")
+            self._last = {"ok": False, "stage": "failed", "code": code, "detail": detail}
+            return dict(self._last)
         finally:
             with self._connect_lock:
                 self._connecting = False
@@ -738,6 +754,11 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
     def _register(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
         _TRACE.record("registration", "started", "info")
+        if self._refused is not None:
+            code, detail = self._refused
+            self._enter("failed")
+            self._last = {"ok": False, "stage": "failed", "code": code, "detail": detail}
+            return dict(self._last)
         refused = self._gate_route()
         if refused is not None:
             # The same first gate `connect` has: a route that cannot be used
@@ -1523,11 +1544,43 @@ def controller_for(app: Any, jid: str = "",
            if v}
     )
     _follow_sam_udp_port(int(profile.sam_port))
-    # F2: this account's identity before any byte is sent as it.
+    # F2: this account's identity before any byte is sent as it. A stored
+    # identity or contact pins that will not open refuse the account (F3,
+    # P1) -- carried by the controller as a code, so Create account and Log
+    # in say which, instead of raising into Kotlin as a bare PyException.
+    refused = None
     bind = getattr(app, "bind_identity_account", None)
     if bind is not None and jid:
-        bind(jid)
+        try:
+            bind(jid)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if not isinstance(code, str) or not code:
+                code = "identity_unavailable"
+            _TRACE.record("identity", "bind_refused", "error", code=code)
+            refused = (code, _BIND_REFUSALS.get(code) or str(getattr(exc, "detail", "") or "")
+                       or "This account could not be opened on this device.")
+    if refused is not None:
+        return _refusing_controller(app, profile, refused)
     return ConnectionController(app, profile)
+
+
+def _refusing_controller(app: Any, profile: ConnectionProfile,
+                         refused: Tuple[str, str]) -> ConnectionController:
+    """A controller whose every attempt answers [refused] and sends nothing."""
+    controller = ConnectionController(app, profile)
+    controller._refused = refused
+    return controller
+
+
+#: What the person is told when the account cannot be bound. Codes from
+#: `bind_identity_account`; the sentences say what was kept.
+_BIND_REFUSALS = {
+    "identity_unavailable": "This account's stored identity on this device would not "
+                            "open. It has not been replaced.",
+    "trust_unavailable": "This account's saved contact keys on this device would not "
+                         "open. They have not been replaced.",
+}
 
 
 def _follow_sam_udp_port(tcp_port: int) -> None:

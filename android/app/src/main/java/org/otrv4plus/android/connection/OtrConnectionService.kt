@@ -1112,8 +1112,11 @@ class OtrConnectionService : Service() {
         }
     }
 
+    // The bridge's code or the Python type when there is one, else the TYPE
+    // only: a PyException's text can carry what the engine was handling.
     private fun codeOf(t: Throwable): String =
-        t::class.simpleName ?: "error"
+        org.otrv4plus.android.bridge.OtrBridgeException.reportableCode(t)
+            ?: t::class.simpleName ?: "error"
 
     // ── telling the user something arrived ──────────────────────────────────
 

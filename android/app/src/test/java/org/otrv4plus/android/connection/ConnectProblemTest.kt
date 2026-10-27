@@ -57,6 +57,33 @@ class ConnectProblemTest {
     }
 
     @Test
+    fun `an account that will not open is the user's to fix and says nothing was sent`() {
+        for (code in listOf("identity_unavailable", "trust_unavailable")) {
+            val l = line(code, retrying = false)!!
+            assertEquals(ConnectProblem.Tone.ERROR, l.tone, code)
+            assertTrue("nothing was sent" in l.text, l.text)
+            assertTrue("not been replaced" in l.text, l.text)
+            assertEquals(ConnectProblem.Kind.NEEDS_YOU, ConnectProblem.kind(code))
+        }
+    }
+
+    @Test
+    fun `a failure is reported by its code or its type, never its text`() {
+        // The handset report for a failed Create account was "PyException"
+        // and nothing else (2026-10-27).
+        val code = org.otrv4plus.android.bridge.OtrBridgeException::reportableCode
+        assertEquals("trust_unavailable",
+            code(RuntimeException("android_bridge.app_base.BridgeError: trust_unavailable")))
+        assertEquals("ModuleNotFoundError",
+            code(RuntimeException("ModuleNotFoundError: No module named 'secret_thing'\n  tb")))
+        assertEquals("not_prepared",
+            code(org.otrv4plus.android.bridge.OtrBridgeException("not_prepared")))
+        assertNull(code(IllegalStateException("password hunter2 rejected")),
+            "no code or Python type: the caller uses the class name")
+        assertEquals("ValueError", code(RuntimeException("ValueError: hunter2")))
+    }
+
+    @Test
     fun `nothing while connected, nothing without a failure`() {
         assertNull(line("timeout", retrying = false, connected = true))
         assertNull(line(null, retrying = true))
