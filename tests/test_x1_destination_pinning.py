@@ -411,6 +411,20 @@ class TestPersistence:
         assert b.pinned(NAME) == B32_A
         assert b.check(NAME, B32_B) == SP.CHANGED
 
+    def test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use(self):
+        """Stated residual (SECURITY_ISSUES X1, 5): a pins file that will not
+        open is read as empty, so a changed destination is first use, not a
+        refused change. SCRAM-only still keeps the password off the wire.
+        Asserted so that a change to this behaviour is a decision, not a
+        surprise (owner decision pending, 2026-10-27)."""
+        path = os.path.join(tempfile.mkdtemp(), "server_pins.json")
+        a = SP.ServerPins(path)
+        a.check(NAME, B32_A)
+        a.confirm(NAME)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        assert SP.ServerPins(path).check(NAME, B32_B) == SP.NEW
+
     def test_forget_removes_the_file(self):
         path = os.path.join(tempfile.mkdtemp(), "server_pins.json")
         a = SP.ServerPins(path)
