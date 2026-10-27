@@ -912,6 +912,35 @@ the next start would otherwise be a first contact again.
 
 Mutation: 14 mutants of the fix, each killed (docs/AUDIT_TEST_INTEGRITY.md).
 
+### Found on a handset (2026-10-27): refused, with no way out
+
+Create account for `hen@otrv4plus.i2p` on the owner's phone answered "This
+account's saved contact keys on this device would not open" (before the
+fix below, a bare "PyException"). The state behind it: an Android marker
+naming a record the vault no longer opens. Two ways in, both now closed:
+- **a Wipe & Exit cut short.** The vault and its key go at DESTROY_VAULT;
+  the markers lived in Python's home until WIPE_APP_DATA, after the
+  engine's teardown. A process ended in between left markers behind. The
+  markers, the trust key file and the desktop records are now removed in
+  `wipe_crypto`, before the vault is destroyed
+  (`test_wipe_crypto_removes_the_trust_markers_before_the_vault_is_destroyed`);
+- **two Keystore keys.** The default, identity and trust sections open from
+  different threads at start-up, and `loadOrCreateKey` was not
+  synchronized: two openers finding no key could each make one, the second
+  replacing the first. It is now `@Synchronized`.
+
+Which of the two happened on that phone is not known; the diagnostic trace
+now records the cause (`identity trust_unavailable`, with `reason`
+`marker_without_record` or `unseal_failed`).
+
+The rule still holds: a record that will not open is refused, every time,
+and never replaced by itself. On a phone nobody can move a file aside, so
+the refusal now offers **Forget saved contact keys…**: two presses, and the
+dialog says what it costs (every contact of the account is a first contact
+again, to be compared once more). It is the phone's equivalent of the
+terminal's "move the file aside" (`OtrApp.forget_account_trust`;
+`test_a_marker_whose_record_is_gone_is_refused_until_the_user_forgets_it`).
+
 ### Follow-up: the terminal client (2026-10-27)
 
 The terminal client kept its pins in plaintext in

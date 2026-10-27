@@ -46,6 +46,14 @@ Automated coverage: `tests/test_transport_route.py`,
    `identity_unavailable`, ...). "PyException" or any bare class name is a
    FAIL: export the diagnostic report (Debug → Export); its trace has the
    `registration raised` or `identity bind_refused` line with the cause.
+1b. **Saved contact keys that will not open (the `hen` report).** On the
+   phone that showed "This account's saved contact keys on this device
+   would not open": update to the new build, try Create account (or Log in)
+   once more and export the diagnostic report (Debug → Export); its
+   `trust_unavailable` line names the reason. Then press **Forget saved
+   contact keys…**, read the dialog, confirm, and press Create account
+   again. **Pass:** the account is created and signed in; every contact is
+   a first contact (compare fingerprints again).
 2. **Clearnet failure is named.** A non-existent domain → a DNS/TCP/TLS
    failure sentence, never a router one.
 3. **Default I2P server, router running.** "Checking for an I2P router" then

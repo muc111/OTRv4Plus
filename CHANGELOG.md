@@ -36,6 +36,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   the account the apps' way (same route rules, X1 check, SCRAM-only), then
   signs in. `tests/test_account_creation_never_raises.py`,
   `tests/test_terminal_register.py`.
+- **Saved contact keys that will not open: a way out on the phone.** A
+  refused account (`trust_unavailable`) now offers "Forget saved contact
+  keys…", with a dialog saying every contact becomes a first contact
+  again; nothing is discarded without it. Wipe & Exit now removes the
+  markers before the vault, and the Keystore key is made once even when
+  the vault sections open at the same moment: the two ways a marker could
+  outlive its record.
 - **A server pins file that will not open stops the connection.** The file
   recording which I2P destination each server was trusted at was read as
   empty when it was damaged, so a changed server looked like a first visit.
