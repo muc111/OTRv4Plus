@@ -168,9 +168,9 @@ answer changes in the code:
 - **Q3.** Offline participation deniability of the v2 DAKE. We expect it
   fails in every setting.
 - **Q4.** The SHAKE-256 combiner, and the loss interleaving after P2.
-- **Q5.** F4. The premise in the brief was corrected: both composite
-  halves are epoch-scoped. What is long-lived is the attributable 1:1
-  handshakes around the group.
+- **Q5.** F4 containment: zero past epochs kept, and acknowledgement
+  before publication. Is that (a) an invariant, (b) a wire-level mandate,
+  or (c) is acknowledgement enough? (Rewritten 2026-10-27.)
 - **Q6.** A KEM-based v3 handshake.
 - **Q7.** SMP's message-prefix binding.
 
@@ -550,3 +550,90 @@ CI on the pushed head of `dev`:
 | `tests/test_xmpp_transcript_shape.py` | 23 | 0 | 0 | 0 |
 
 </details>
+
+## Final pass (2026-10-27): F4 containment, X1, external review
+
+On `dev` from `5231cbc`. `main` (rc.184) is untouched. The physical test
+(docs/PHYSICAL_TEST_PLAN.md §8) and the external review gate it.
+
+**What changed.**
+- **F4 containment is now a stated rule, not a library default.** At
+  `5231cbc` a published group key was still live for any member that had
+  not yet processed the rotation: that member accepted a message signed
+  with the key as the publisher's. This was shown on the `5231cbc` code
+  itself. F4 was never in a release. Now a key is published only after
+  every other member has acknowledged the rotation, and both group
+  configurations state `max_past_epochs(0)` (SPEC §10, requirement 11).
+  F4 stays RESOLVED-CODE, with containment conditional on that
+  acknowledgement (docs/SECURITY_ISSUES.md F4). The gap is pinned by
+  `residual_a_member_that_has_not_processed_the_rotation_accepts_the_retired_key_until_it_does`.
+  The cost: publication waits for every member to come online, and costs
+  one acknowledgement, about 6.5 KB, per member per rotation.
+- **Test 4 renamed.** It is now `max_past_epochs_is_zero_in_every_group_config`,
+  a source check. Its old name claimed an "epoch authenticator" check that
+  MLS does not make.
+- **Q5 rewritten** around the containment condition, with (a)-(c) and what
+  each answer changes.
+- **X1 residual 5** was already fixed before this pass. Re-verified: 55
+  tests pass, and 15 fail with the refusal disabled. The one requirement
+  not adopted is routing an unreadable file to the "approve the new
+  address" screen. The same screen is shown, in its "could not be read"
+  form, with nothing to approve, because approving would rewrite the file.
+- **Claim matrix re-run** (docs/AUDIT_CLAIM_MATRIX.md, last section): 3
+  rows changed and 2 were added. 2.5 was re-rated PARTIAL at `5231cbc`
+  and is now DEMONSTRATED. 2.6 (the capture window) is the one neighbour
+  that weakened: it is longer by the wait. That is kept and stated.
+- **Mutation round 6** (docs/AUDIT_TEST_INTEGRITY.md): 12 mutants, 11
+  killed, 1 equivalent. Two survivors of the first version were killed by
+  new cases.
+- **Brief** (docs/CRYPTOGRAPHER_BRIEF.md): one page, opening with the
+  statement below.
+
+**Build and test status, final tree.**
+
+| What | Result |
+|---|---|
+| `cargo test --release` (Rust/) | **199 passed, 0 failed** |
+| `cargo clippy --release --all-targets -D warnings`: default, `mls`, `raw-key-test-api,mls` (with its opt-in) | clean, all three; without the opt-in the test feature is refused, as required |
+| `cargo build --features legacy-dake-keys` without opt-in | **refused**: `REFUSING TO BUILD: legacy-dake-keys is enabled`, exit 101 |
+| `cargo test --release` (Rust/mls) | **78 passed, 0 failed** (37 + 8 + 5 + 4 + 4 + 11 + 9) |
+| `cargo clippy --release --all-targets -D warnings` (Rust/mls) | clean |
+| Full Python suite (test wheel) | **8213 passed, 0 failed, 47 skipped**, 1 deselected (the production check, below) |
+| Release guard + DAKE3 authority + diagnostics, against the **production** wheel | **52 passed, 4 skipped** (`test_release_guard.py` alone: 12 passed, 4 skipped) |
+| Kotlin `DeniableChatTest` (JVM harness) | 10 passed |
+| Desktop type-check | only the harness's known "Couldn't inline Column" error |
+| Android build, Android/Desktop/Python CI | run in CI on the pushed head (no Android SDK here) |
+
+## Closing statement
+
+What deniability the shipped code provides, stated precisely:
+
+- **1:1 content.** After a closed chat's MAC keys are published, anyone
+  holding them can compute a valid outer MAC for any message of that
+  session, so the MAC no longer singles out its sender. Whether a
+  transcript then proves who wrote what is Q1 and Q2. It still proves that
+  two identities ran a handshake, and the AEAD tag remains a second
+  authenticator (Q2).
+- **Group content.** After a member's retired signing key is published,
+  every member who received the publication can make signatures under it
+  that verify exactly as the member's do. This holds only after every
+  member has processed the rotation and deleted the old epoch secrets.
+  Before every other member has acknowledged the rotation, the key is not
+  published (SPEC §10, requirement 11). It stays on the publisher's device,
+  and a copy of what it signed is still provable.
+- **Participation.** Not claimed. The v2 handshake's ML-DSA-87 signatures
+  are attributable (A2, SPEC §10.1). Protocol v3's KEM-based handshake is
+  the proposed fix, pending Q6a-6c.
+- **What is not claimed:** pre-publication capture, partial close,
+  crash-before-confirm, the second-closing gap, first contact (TOFU), and
+  the A1 combiner under loss. All are recorded as residuals with named
+  tests, or as explicit review debt.
+
+No deniability claim is made until Q1-Q7 are answered by an external
+cryptographer. The mechanisms are built and demonstrated; the claim is not.
+
+Two sentences differ from the owner's draft of this statement, because the
+draft claimed more than a test shows. "A transcript ... does not prove who
+wrote what" became what the tests show: anyone can compute the MAC. "Cannot
+be attributed to the member" became: every member who received the key can
+make signatures that verify as the member's.
