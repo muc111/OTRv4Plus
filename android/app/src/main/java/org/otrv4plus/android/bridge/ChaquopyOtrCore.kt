@@ -383,15 +383,25 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
      * [password] is passed straight through, not retained here, not logged,
      * and not put in any status field.
      */
+    /**
+     * Said once after the last successful [register], not blocking: an
+     * earlier account's contact keys under that username were discarded.
+     * Blank otherwise. Kept beside the outcome, which stays ok/code/detail.
+     */
+    @Volatile
+    var lastRegistrationNotice: String = ""
+        private set
+
     fun register(password: String): RegistrationOutcome {
+        lastRegistrationNotice = ""
         val ctl = controller ?: throw OtrBridgeException("not_prepared")
         val result = ctl.callAttr("register", password)
         fun str(k: String) = result?.callAttr("get", k)?.toString() ?: ""
+        lastRegistrationNotice = str("notice")
         return RegistrationOutcome(
             ok = result?.callAttr("get", "ok")?.toBoolean() ?: false,
             code = str("code").ifBlank { "unknown" },
             detail = str("detail"),
-            notice = str("notice"),
         )
     }
 

@@ -84,10 +84,16 @@ class DesktopCore(private val engine: Engine) : OtrCore {
 
     /** Create the account [prepare] named (in-band registration). Does not
      *  sign in: the caller connects next. [password] is not kept. */
+    /** As on Android: the last successful registration's notice, or "". */
+    @Volatile
+    var lastRegistrationNotice: String = ""
+        private set
+
     fun register(password: String): RegistrationOutcome {
         val r = call("register", "password" to password) as? JsonObject ?: JsonObject(emptyMap())
+        lastRegistrationNotice = r.str("notice")
         return RegistrationOutcome(ok = r["ok"].asBool(), code = r.str("code").ifBlank { "unknown" },
-                                   detail = r.str("detail"), notice = r.str("notice"))
+                                   detail = r.str("detail"))
     }
 
     fun disconnect() { call("disconnect") }

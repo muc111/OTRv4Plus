@@ -94,6 +94,9 @@ class AppModel(
         private set
     /** Creating an account (then signing straight in). */
     var registering by mutableStateOf(false)
+
+    /** An earlier account's contact keys were cleared by the last Create account. */
+    var registrationNotice by mutableStateOf("")
         private set
     /** The last Create account outcome, shown under the buttons. */
     var registration by mutableStateOf<org.otrv4plus.android.bridge.RegistrationOutcome?>(null)
@@ -305,6 +308,7 @@ class AppModel(
                 }
             }
             registering = false
+            registrationNotice = if (outcome.ok) core.lastRegistrationNotice else ""
             registration = outcome
             changed()
             if (outcome.ok) connect(password)
