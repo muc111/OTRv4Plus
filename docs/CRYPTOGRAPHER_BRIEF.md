@@ -9,7 +9,7 @@ counterexample, and each says what the code changes under either answer.
 An answer to any one of them is useful. Two matter most: **Q1** and **Q2**,
 on 1:1 content deniability.
 
-**What this describes.** The `dev` branch at `1cc0efc` (2026-10-27). The
+**What this describes.** The `dev` branch at `cc3a030` (2026-10-27). The
 latest release, rc.184 on `main`, predates two fixes made in this audit
 (P1 and P2, below). The questions are about the constructions, which are
 the same in both.
@@ -62,8 +62,9 @@ All are in docs/SECURITY_ISSUES.md with their tests.
 - **P2 (High, resolved 2026-10-26).** The engine could take a second DH
   send step toward a remote key it had already stepped toward. The peer
   cannot follow that step, so every later message failed to decrypt,
-  silently. It happened in ordinary use. The fix is in the engine, not the
-  Rust core.
+  silently. It happened in ordinary use: measured, the 101st message from
+  one side after a DH round trip, or a chat open across two days. The fix
+  is in the engine, not the Rust core.
   - **Residual:** any v2 build before the fix, the released rc.184
     included, still takes the step. Our side cannot follow it either. It
     ends when the peer updates. The owner chose not to change the Rust
@@ -76,12 +77,10 @@ All are in docs/SECURITY_ISSUES.md with their tests.
     decapsulation completes (SECURITY.md, memory model);
   - the key-encryption key of the at-rest stores (B1), a Python `bytes`,
     which cannot be wiped.
-- **Pin stores that will not open.** The contact pins of every client
-  are refused, never replaced, when they will not open; the terminal
-  client's were plaintext and failed open until 2026-10-27. The X1 server
-  pins still read an unopenable file as empty: the next connection to a
-  changed server is first use, with the password still protected by
-  SCRAM-only (SECURITY_ISSUES.md X1, residual 5).
+- **Pin stores that will not open** are refused, never replaced: contact
+  pins in every client, and the X1 server pins. Until 2026-10-27 the
+  terminal's contact pins were plaintext and failed open, and the server
+  pins read a damaged file as empty. Both are fixed, with tests.
 
 ## How to check the work
 
@@ -108,12 +107,12 @@ python -m pytest -q tests/test_deniability_wire_audit.py \
   tests/test_l1_revelation_gate.py tests/test_l1_crash_during_close.py \
   tests/test_pq_auth_v2.py tests/test_p1_trust_pins_per_run.py \
   tests/test_p2_forced_steps.py
-#   88 tests, in about half a minute after the build
+#   89 tests, in under a minute after the build
 ```
 
 These steps were run as written in a fresh environment on 2026-10-27.
 The Rust suites gave 199 and 70 passing tests. The full Python suite
-(8163 passing) needs more packages; `.github/workflows/python.yml`
+(8182 passing) needs more packages; `.github/workflows/python.yml`
 installs them. `raw-key-test-api` builds a test-only accessor, and
 `tests/test_release_guard.py` checks that the shipped build has no such
 entry point.
