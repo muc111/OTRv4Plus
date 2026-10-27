@@ -48,15 +48,31 @@ class _RefusingApp:
         pass
 
 
-@pytest.mark.parametrize("code", ["identity_unavailable", "trust_unavailable"])
-def test_a_refused_bind_answers_create_account_with_its_code(code):
+class _Registers:
+    """Stands in for XmppTransport during registration."""
     built = []
-    ctl = C.controller_for(_RefusingApp(code), "new@example.i2p")
-    ctl._transport_factory = lambda *a, **kw: built.append(a) or pytest.fail("built")
+
+    def __init__(self, profile, password, **kw):
+        type(self).built.append(profile.jid)
+
+    def register_account(self):
+        return ("ok", "The account was created.")
+
+    def close(self):
+        pass
+
+
+@pytest.mark.parametrize("code", ["identity_unavailable", "trust_unavailable"])
+def test_a_refused_bind_does_not_stop_create_account(code):
+    """Owner's handset, 2026-10-27: "saved contact keys would not open"
+    stopped Create account. Registration uses neither the identity nor the
+    pins, so it goes ahead; sign-in is what stays refused."""
+    _Registers.built = []
+    ctl = C.controller_for(_RefusingApp(code), "new@example.com", "127.0.0.1")
+    ctl._transport_factory = _Registers
     result = ctl.register("correct horse battery staple 9")
-    assert result["ok"] is False and result["code"] == code
-    assert "not been replaced" in result["detail"]
-    assert built == [], "a transport was built for a refused account"
+    assert result["ok"] is True, result
+    assert _Registers.built == ["new@example.com"]
 
 
 @pytest.mark.parametrize("code", ["identity_unavailable", "trust_unavailable"])
@@ -123,11 +139,11 @@ def test_android_reports_a_failure_by_its_code_not_its_class():
 
 
 @pytest.mark.parametrize("code", ["identity_unavailable", "trust_unavailable"])
-def test_the_desktop_host_answers_create_account_with_the_code_too(code):
+def test_the_desktop_host_answers_log_in_with_the_code_too(code):
     from desktop_bridge import host as H
     host = H.Host(lambda *a: None, app_factory=lambda: _RefusingApp(code),
                   controller_factory=C.controller_for)
     host.app = host._app_factory()
     host.call("prepare", {"jid": "new@example.i2p"})
-    result = host.call("register", {"password": "correct horse battery staple 9"})
-    assert result["ok"] is False and result["code"] == code
+    result = host.call("connect", {"password": "correct horse battery staple 9"})
+    assert result["last"]["ok"] is False and result["last"]["code"] == code

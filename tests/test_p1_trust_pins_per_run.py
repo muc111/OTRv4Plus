@@ -428,14 +428,15 @@ def test_a_marker_whose_record_is_gone_is_refused_until_the_user_forgets_it(home
         assert refused.value.code == "trust_unavailable"
     events = [ev for ev in TRACE.events() if ev["event"] == "trust_unavailable"]
     assert events and events[-1]["fields"].get("reason") == "marker_without_record"
-    # What Kotlin sees: Create account answers the code, nothing raises.
+    # What Kotlin sees: Log in answers the code, nothing raises. (Create
+    # account is not stopped by it: registration uses no pins.)
     from android_bridge.app import OtrApp
     from android_bridge import account_identity, account_trust
     a = OtrApp.__new__(OtrApp)
     a._engine, a._signed_in, a._wiped = E._manager(), False, False
     a.use_identity_store(account_identity.for_android(install.identity_vault))
     a.use_trust_store(account_trust.for_android(install.trust_vault, True))
-    assert C.controller_for(a, ME, "", "127.0.0.1", 1).register("pw")["code"] == "trust_unavailable"
+    assert C.controller_for(a, ME, "", "127.0.0.1", 1).connect("pw")["code"] == "trust_unavailable"
     # The user's deliberate answer.
     assert a.forget_account_trust(ME) is True
     a.bind_identity_account(ME)

@@ -755,10 +755,14 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         self._password_present = bool(password)
         _TRACE.record("registration", "started", "info")
         if self._refused is not None:
-            code, detail = self._refused
-            self._enter("failed")
-            self._last = {"ok": False, "stage": "failed", "code": code, "detail": detail}
-            return dict(self._last)
+            # NOT refused here (owner's handset, 2026-10-27: Create account
+            # stopped by "saved contact keys would not open"). Registration
+            # is a username and a password to the server: it sends nothing
+            # signed or checked with the account's OTR identity or contact
+            # pins. The refusal stands for sign-in (`_connect`), where they
+            # are used, and is answered there.
+            _TRACE.record("registration", "bind_refusal_not_needed", "info",
+                          code=self._refused[0])
         refused = self._gate_route()
         if refused is not None:
             # The same first gate `connect` has: a route that cannot be used
