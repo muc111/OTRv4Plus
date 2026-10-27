@@ -1796,6 +1796,23 @@ An implementation claiming conformance MUST:
 10. Enforce the skipped-key bounds (`MAX_SKIP`, `MAX_MESSAGE_KEYS`) and reject
     replayed `(dh_pub, msg_num)` pairs (§5.5).
 
+11. In a secure group (MLS+, F4: publication of retired leaf signing keys):
+    - delete each epoch's secrets when a commit moves the group past it, and
+      keep no past epoch (OpenMLS: `max_past_epochs(0)`, set explicitly in
+      every group configuration), so that no message of a closed epoch is
+      accepted;
+    - publish a retired signing key only after every other current member
+      has shown, by a message from it that verified in the epoch the key was
+      retired in or a later one, that it has processed the rotation. A member
+      that joined at or after that epoch needs to show nothing. Each member
+      sends such a message (an acknowledgement) after processing a commit
+      that rotated another member's key.
+
+    Reason: a member still in the old epoch accepts a message signed with the
+    old key and encrypted under that epoch's secrets, which every member
+    holds. Publishing first would hand any member a key to impersonate the
+    publisher to that lagging member.
+
 ### 10.1 Known Limitations (Non-Normative)
 
 - The SMP Schnorr ZKP scalar arithmetic (the `d = r - c*x` computation) uses
@@ -1821,6 +1838,14 @@ An implementation claiming conformance MUST:
   for the Signal handshake by Hashimoto et al. and Brendel et al.); adopting it
   is a protocol change that needs expert review.
 - ClientProfile signatures are Ed448 only, not hybrid.
+- Group content (F4): publishing a retired group signing key makes what
+  it signed forgeable by the members who received the publication, from
+  then on. A copy captured and verified before the publication stays
+  attributable. Requirement 11 relies on every member's client deleting
+  past epochs; an honest member cannot verify that another member's client
+  did, and a modified client may keep them. That client can forge only
+  toward members still in the old epoch, and requirement 11 waits until
+  there are none.
 
 ---
 

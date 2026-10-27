@@ -26,11 +26,20 @@
 //! not dropped at once. It is kept, sealed with the rest of this state, until
 //! `reveal_retired` publishes its private half to the group in one group
 //! message -- after which any member could have produced any signature it
-//! made, while the keys in use now stay secret. A published key cannot sign
-//! into the group any more: the rotation commit is earlier in room order, so
-//! every member has replaced it in the tree before the publication reaches
-//! them, and a message signed with it does not verify in a later epoch. A
-//! publication received is checked (each private half must sign for its
+//! made, while the keys in use now stay secret.
+//!
+//! A published key must be dead for every member, not only for most. A
+//! member that has not yet processed the rotating commit is still in the old
+//! epoch and would accept a message signed with the old key (and encrypted
+//! under that epoch's secrets, which members hold). So a retired key is
+//! published only after EVERY other member has shown it is past the
+//! rotation: a message from that member, in the rotation's epoch or later,
+//! authenticated by MLS (`acknowledge` sends one; any message counts).
+//! Members who joined after the rotation never held the old epoch and need
+//! not show anything. Neither do we keep a past epoch: both configurations
+//! set `max_past_epochs(0)`, so after the commit no member accepts a
+//! message of the old epoch, and the old key signs nothing anyone accepts
+//! (SPEC §10, requirement 11). A publication received is checked (each private half must sign for its
 //! public half, and none may be a key the sender uses now) and reported as
 //! `Event::KeysRevealed` with fingerprints only; the private halves are
 //! wiped here, never handed out.
@@ -87,6 +96,12 @@ const MAX_REVEAL_PER_MESSAGE: usize = 4;
 /// before F4 hands such a message to its verification handler, which drops
 /// anything that is not its JSON, rather than showing it as a line of text.
 pub const REVEAL_MAGIC: &[u8] = b"\x00OTRv4GV1:OTRv4+ MLS retired signing keys v1\x00";
+/// An acknowledgement (F4): "I am in this epoch", so past any rotation
+/// before it. Its content says nothing more; that it decrypted and verified
+/// in this epoch is the proof. Never shown: `process` reports it as
+/// `Event::Acknowledged`. Same control prefix as REVEAL_MAGIC, for the same
+/// reason.
+pub const ACK_MAGIC: &[u8] = b"\x00OTRv4GV1:OTRv4+ MLS epoch acknowledged v1\x00";
 /// The caller's own state sealed alongside ours (bindings, pending work).
 pub const MAX_APP_DATA: usize = 1 << 20;
 const STATE_KDF_INFO: &[u8] = b"OTRv4Plus MLS sealed state v1";
@@ -111,6 +126,10 @@ struct StateOut<'a> {
     app_data: &'a serde_bytes::Bytes,
     /// (group, a retired signing key's public, private): F4.
     retired: Vec<(&'a serde_bytes::Bytes, &'a serde_bytes::Bytes, &'a serde_bytes::Bytes)>,
+    /// The epoch each of `retired` was retired in, in the same order.
+    retired_epochs: Vec<u64>,
+    /// (group, member leaf, the latest epoch that member is known in): F4.
+    seen: Vec<(&'a serde_bytes::Bytes, u32, u64)>,
 }
 
 #[derive(serde::Deserialize)]
@@ -127,6 +146,13 @@ struct StateIn {
     /// Absent in state sealed before F4.
     #[serde(default)]
     retired: Vec<(serde_bytes::ByteBuf, serde_bytes::ByteBuf, serde_bytes::ByteBuf)>,
+    /// Absent before acknowledgements: each such key is taken as retired in
+    /// its group's current epoch, so it waits for every member again.
+    #[serde(default)]
+    retired_epochs: Vec<u64>,
+    /// Absent before acknowledgements: no member is known past any epoch.
+    #[serde(default)]
+    seen: Vec<(serde_bytes::ByteBuf, u32, u64)>,
 }
 
 /// Version 1: one signing key for the whole client.
@@ -267,6 +293,9 @@ pub enum Event {
     /// A member published retired signing keys (F4): the fingerprints of
     /// those that checked out. The private halves are wiped, never returned.
     KeysRevealed { sender: Vec<u8>, fingerprints: Vec<Vec<u8>> },
+    /// A member acknowledged the current epoch (F4, `acknowledge`). Nothing
+    /// to show; recorded here, it may let our retired keys be published.
+    Acknowledged { sender: Vec<u8> },
 }
 
 struct Pending {
@@ -288,6 +317,12 @@ pub struct MlsClient {
     /// group -> our signing keys a rotation retired, oldest first, until
     /// `reveal_retired` publishes them (F4).
     retired: HashMap<Vec<u8>, Vec<SignatureKeyPair>>,
+    /// group -> the epoch each of `retired` was retired in (same order).
+    retired_epochs: HashMap<Vec<u8>, Vec<u64>>,
+    /// group -> member leaf -> the latest epoch we know that member is in:
+    /// a message from it verified in that epoch, or the epoch it joined in.
+    /// A leaf with no entry is known in no epoch.
+    seen: HashMap<Vec<u8>, HashMap<u32, u64>>,
     app_data: Zeroizing<Vec<u8>>,
     wiped: bool,
 }
@@ -308,6 +343,9 @@ fn create_config() -> MlsGroupCreateConfig {
         .use_ratchet_tree_extension(true)
         // Handshake messages are encrypted too: the room sees ciphertext only.
         .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+        // No past epoch is kept (F4): after a commit, nothing of the epoch
+        // before it is accepted. Stated here, not left to the default.
+        .max_past_epochs(0)
         .build()
 }
 
@@ -315,6 +353,7 @@ fn join_config() -> MlsGroupJoinConfig {
     MlsGroupJoinConfig::builder()
         .use_ratchet_tree_extension(true)
         .wire_format_policy(PURE_CIPHERTEXT_WIRE_FORMAT_POLICY)
+        .max_past_epochs(0)                     // as create_config (F4)
         .build()
 }
 
@@ -348,19 +387,56 @@ impl MlsClient {
             groups: HashMap::new(),
             pending: HashMap::new(),
             retired: HashMap::new(),
+            retired_epochs: HashMap::new(),
+            seen: HashMap::new(),
             app_data: Zeroizing::new(Vec::new()),
             wiped: false,
         }
     }
 
-    /// Keep a key a rotation retired, for `reveal_retired` (F4).
-    fn retire(&mut self, group_id: &[u8], key: SignatureKeyPair) {
+    /// Keep a key a rotation retired in [epoch], for `reveal_retired` (F4).
+    fn retire(&mut self, group_id: &[u8], key: SignatureKeyPair, epoch: u64) {
         let list = self.retired.entry(group_id.to_vec()).or_default();
+        let epochs = self.retired_epochs.entry(group_id.to_vec()).or_default();
         list.push(key);
+        epochs.push(epoch);
         if list.len() > MAX_RETIRED {
             let excess = list.len() - MAX_RETIRED;
             list.drain(..excess);                      // dropped: zeroized
+            epochs.drain(..excess);
         }
+    }
+
+    /// Every member's leaf and identity in [group], ours excluded.
+    fn others(group: &MlsGroup) -> HashMap<u32, Vec<u8>> {
+        let own = group.own_leaf_index();
+        group.members().filter(|m| m.index != own)
+            .map(|m| (m.index.u32(), identity_of(&m.credential))).collect()
+    }
+
+    /// After a commit took [group] to [epoch]: a leaf that is new, or now
+    /// holds someone else, joined in [epoch] and never held an earlier one;
+    /// a leaf that left is forgotten. [before] is `others` before the commit.
+    fn after_commit(&mut self, group_id: &[u8], before: &HashMap<u32, Vec<u8>>, epoch: u64) {
+        let Some(group) = self.groups.get(group_id) else { return };
+        let now = Self::others(group);
+        let seen = self.seen.entry(group_id.to_vec()).or_default();
+        seen.retain(|leaf, _| now.contains_key(leaf));
+        for (leaf, who) in &now {
+            if before.get(leaf) != Some(who) {
+                seen.insert(*leaf, epoch);
+            }
+        }
+    }
+
+    /// The lowest epoch every other member is known to be in, or None when
+    /// we are alone.
+    fn all_seen_in(&self, group_id: &[u8]) -> Option<u64> {
+        let group = self.groups.get(group_id)?;
+        let seen = self.seen.get(group_id);
+        Self::others(group).keys()
+            .map(|leaf| seen.and_then(|s| s.get(leaf)).copied().unwrap_or(0))
+            .min()
     }
 
     /// How many retired signing keys of ours wait to be published here.
@@ -368,16 +444,51 @@ impl MlsClient {
         self.retired.get(group_id).map_or(0, |l| l.len())
     }
 
+    /// How many of those every other member is known to be past, so that
+    /// `reveal_retired` may publish them now.
+    pub fn publishable_count(&self, group_id: &[u8]) -> usize {
+        let Some(epochs) = self.retired_epochs.get(group_id) else { return 0 };
+        match self.all_seen_in(group_id) {
+            None => epochs.len(),                      // alone: nobody to wait for
+            Some(min) => epochs.iter().take_while(|&&e| e <= min).count(),
+        }
+    }
+
+    /// The members our retired keys wait for: those not yet known to be in
+    /// the epoch the newest was retired in, so holding up at least one.
+    /// Empty when nothing is waiting.
+    pub fn awaiting(&self, group_id: &[u8]) -> Vec<Vec<u8>> {
+        let (Some(epochs), Some(group)) = (self.retired_epochs.get(group_id),
+                                           self.groups.get(group_id)) else { return vec![] };
+        let Some(&newest) = epochs.last() else { return vec![] };
+        let seen = self.seen.get(group_id);
+        let mut out: Vec<Vec<u8>> = Self::others(group).into_iter()
+            .filter(|(leaf, _)| seen.and_then(|s| s.get(leaf)).copied().unwrap_or(0) < newest)
+            .map(|(_, who)| who).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// An acknowledgement of the epoch we are in (F4, ACK_MAGIC), to post to
+    /// the room after a commit that retired someone's key. Refused while one
+    /// of our commits is pending (as `encrypt`).
+    pub fn acknowledge(&mut self, group_id: &[u8]) -> Result<Vec<u8>> {
+        self.encrypt(group_id, ACK_MAGIC)
+    }
+
     /// Publish our retired signing keys in this group (F4): one group
     /// message, signed with the key in use now and encrypted to the members,
     /// carrying the oldest MAX_REVEAL_PER_MESSAGE retired keys' public and
-    /// private halves. None when there are none. Refused while one of our
-    /// commits is pending (as `encrypt`). The keys published are dropped
-    /// here; the caller posts the message to the room.
+    /// private halves -- only keys every other member is known to be past
+    /// (`publishable_count`). None when there are none, including while
+    /// keys wait for members (`awaiting`). Refused while one of our commits
+    /// is pending (as `encrypt`). The keys published are dropped here; the
+    /// caller posts the message to the room.
     pub fn reveal_retired(&mut self, group_id: &[u8]) -> Result<Option<Vec<u8>>> {
         self.live()?;
         self.refuse_if_pending(group_id)?;
-        let count = self.retired_count(group_id).min(MAX_REVEAL_PER_MESSAGE);
+        let count = self.publishable_count(group_id).min(MAX_REVEAL_PER_MESSAGE);
         if count == 0 {
             return Ok(None);
         }
@@ -399,6 +510,9 @@ impl MlsClient {
         let out = out_bytes(&msg)?;
         if let Some(list) = self.retired.get_mut(group_id) {
             list.drain(..count);                       // dropped: zeroized
+        }
+        if let Some(epochs) = self.retired_epochs.get_mut(group_id) {
+            epochs.drain(..count);
         }
         Ok(Some(out))
     }
@@ -672,6 +786,7 @@ impl MlsClient {
         let signer = self.kp_signers.remove(at);
         self.groups.insert(id.clone(), group);
         self.signers.insert(id.clone(), signer);
+        self.seen.remove(&id);                 // no member is known past any epoch
         Ok(id)
     }
 
@@ -698,9 +813,11 @@ impl MlsClient {
                 let p = self.pending.remove(group_id).expect("present");
                 let provider = &self.provider;
                 let group = self.groups.get_mut(group_id).expect("present");
+                let before = Self::others(group);
                 group.merge_pending_commit(provider)
                     .map_err(|_| MlsError::Failed("merge own commit"))?;
                 let epoch = group.epoch().as_u64();
+                self.after_commit(group_id, &before, epoch);
                 let mut rekeyed = Vec::new();
                 if let Some(new_signer) = p.new_signer {
                     // The new key is in the group. The old one is retired:
@@ -711,7 +828,7 @@ impl MlsClient {
                             rekeyed.push((self.identity.clone(), fingerprint(old.public()),
                                           fingerprint(new.public())));
                         }
-                        self.retire(group_id, old);
+                        self.retire(group_id, old, epoch);
                     }
                 }
                 return Ok(Event::Commit { epoch, ours: true, welcome: p.welcome,
@@ -734,6 +851,15 @@ impl MlsClient {
             Sender::Member(index) => Some(*index),
             _ => None,
         };
+        // It verified in the epoch it carries: its sender is in that one (F4).
+        let in_epoch = processed.epoch().as_u64();
+        let before = Self::others(group);
+        if let Some(leaf) = sender_leaf {
+            let at = self.seen.entry(group_id.to_vec()).or_default()
+                .entry(leaf.u32()).or_insert(0);
+            *at = (*at).max(in_epoch);
+        }
+        let group = self.groups.get_mut(group_id).expect("present");
         match processed.into_content() {
             ProcessedMessageContent::ApplicationMessage(m) => {
                 let plaintext = Zeroizing::new(m.into_bytes());
@@ -743,6 +869,9 @@ impl MlsClient {
                     let fingerprints = revealed_fingerprints(
                         &plaintext[REVEAL_MAGIC.len()..], current.as_deref());
                     return Ok(Event::KeysRevealed { sender, fingerprints });
+                }
+                if plaintext.as_slice() == ACK_MAGIC {
+                    return Ok(Event::Acknowledged { sender });
                 }
                 Ok(Event::Application { sender, plaintext })
             }
@@ -788,6 +917,8 @@ impl MlsClient {
                 let epoch = group.epoch().as_u64();
                 if removed_us {
                     self.forget_group(group_id);
+                } else {
+                    self.after_commit(group_id, &before, epoch);
                 }
                 Ok(Event::Commit { epoch, ours: false, welcome: None, removed_us, dropped_ours,
                                    committer: sender, rekeyed })
@@ -852,6 +983,8 @@ impl MlsClient {
         self.pending.remove(group_id);
         self.signers.remove(group_id);           // dropped: zeroized
         self.retired.remove(group_id);           // unpublished: zeroized
+        self.retired_epochs.remove(group_id);
+        self.seen.remove(group_id);
         if let Some(mut group) = self.groups.remove(group_id) {
             let _ = group.delete(self.provider.storage());
         }
@@ -865,6 +998,8 @@ impl MlsClient {
         self.provider.wipe();         // every stored entry, zeroized
         self.signers.clear();         // signing keys zeroize on drop
         self.retired.clear();
+        self.retired_epochs.clear();
+        self.seen.clear();
         self.kp_signers.clear();
         self.app_data = Zeroizing::new(Vec::new());
         self.wiped = true;
@@ -937,6 +1072,12 @@ impl MlsClient {
             retired: self.retired.iter()
                 .flat_map(|(g, keys)| keys.iter().map(move |s| (b(g), b(s.public()), b(s.secret()))))
                 .collect(),
+            retired_epochs: self.retired.keys()
+                .flat_map(|g| self.retired_epochs.get(g).into_iter().flatten().copied())
+                .collect(),
+            seen: self.seen.iter()
+                .flat_map(|(g, m)| m.iter().map(move |(leaf, e)| (b(g), *leaf, *e)))
+                .collect(),
         };
         let key_bytes = |s: &SignatureKeyPair| s.public().len() + s.secret().len() + 16;
         let need = storage.len() + self.identity.len() + self.app_data.len()
@@ -947,7 +1088,8 @@ impl MlsClient {
                 + p.welcome.as_ref().map_or(0, |w| w.len())
                 + p.new_signer.as_ref().map_or(0, key_bytes) + 32).sum::<usize>()
             + self.retired.iter().map(|(g, keys)| keys.iter()
-                .map(|s| g.len() + key_bytes(s)).sum::<usize>()).sum::<usize>()
+                .map(|s| g.len() + key_bytes(s) + 9).sum::<usize>()).sum::<usize>()
+            + self.seen.iter().map(|(g, m)| m.len() * (g.len() + 16)).sum::<usize>()
             + 256;
         let mut plain = Zeroizing::new(Vec::with_capacity(need));
         ciborium::ser::into_writer(&state, &mut *plain).map_err(|_| MlsError::Failed("encode"))?;
@@ -1041,18 +1183,32 @@ impl MlsClient {
                                           new_signer });
         }
         let mut retired: HashMap<Vec<u8>, Vec<SignatureKeyPair>> = HashMap::new();
-        for (gid, public, secret) in state.retired {
+        let mut retired_epochs: HashMap<Vec<u8>, Vec<u64>> = HashMap::new();
+        // Epochs from before acknowledgements, or that do not line up, are
+        // taken as the group's current epoch: those keys wait for everyone.
+        let epochs_known = state.retired_epochs.len() == state.retired.len();
+        for (i, (gid, public, secret)) in state.retired.into_iter().enumerate() {
             let gid = gid.into_vec();
-            if !groups.contains_key(&gid) {
+            let Some(group) = groups.get(&gid) else {
                 return Err(MlsError::Refused("retired signing key for an unknown group"));
-            }
-            let list = retired.entry(gid).or_default();
+            };
+            let now = group.epoch().as_u64();
+            let epoch = if epochs_known { state.retired_epochs[i].min(now) } else { now };
+            let list = retired.entry(gid.clone()).or_default();
             if list.len() < MAX_RETIRED {
                 list.push(signer_from(public, secret)?);
+                retired_epochs.entry(gid).or_default().push(epoch);
             }
         }
-        Ok(Self { identity, provider, signers, kp_signers, groups, pending, retired, app_data,
-                  wiped: false })
+        let mut seen: HashMap<Vec<u8>, HashMap<u32, u64>> = HashMap::new();
+        for (gid, leaf, epoch) in state.seen {
+            let gid = gid.into_vec();
+            if groups.contains_key(&gid) {
+                seen.entry(gid).or_default().insert(leaf, epoch);
+            }
+        }
+        Ok(Self { identity, provider, signers, kp_signers, groups, pending, retired,
+                  retired_epochs, seen, app_data, wiped: false })
     }
 
     /// A version-1 state (one signing key for everything) in today's shape:
@@ -1072,6 +1228,8 @@ impl MlsClient {
             storage: old.storage,
             app_data: serde_bytes::ByteBuf::new(),
             retired: Vec::new(),
+            retired_epochs: Vec::new(),
+            seen: Vec::new(),
         })
     }
 
@@ -1263,11 +1421,14 @@ mod retired_key_tests {
         (a, b)
     }
 
-    /// Alice rotates; both process the commit, in room order.
+    /// Alice rotates; both process the commit, in room order, and Bob
+    /// acknowledges it (F4: nothing is published before he has).
     fn rotate(a: &mut MlsClient, b: &mut MlsClient) {
         let commit = a.self_update(G).unwrap();
         a.process(G, &commit).unwrap();
         b.process(G, &commit).unwrap();
+        let ack = b.acknowledge(G).unwrap();
+        assert!(matches!(a.process(G, &ack).unwrap(), Event::Acknowledged { .. }));
     }
 
     fn copy_of(key: &SignatureKeyPair) -> SignatureKeyPair {
@@ -1460,26 +1621,30 @@ mod retired_key_tests {
 
 #[cfg(test)]
 mod f4_containment_tests {
-    //! F4 CONTAINMENT (owner's task, 2026-10-27). What these check, in the
-    //! code's own terms: F4 publishes a member's retired LEAF signing key --
-    //! one per member per group, made at that member's self-update, replaced
-    //! at its next one, published only after the replacement is in the tree.
-    //! (The task's "epoch N key" is this key; it may span several epochs,
-    //! because other members' commits advance the epoch without rotating it.)
+    //! F4 CONTAINMENT. What these check, in the code's own terms: F4
+    //! publishes a member's retired LEAF signing key -- one per member per
+    //! group, made at that member's self-update, replaced at its next one.
+    //! ("Epoch N key" in the names below is this key; it may span several
+    //! epochs, because other members' commits advance the epoch without
+    //! rotating it.)
     //!
     //! INVARIANT. A published key can produce only signatures that verify
     //! under its own retired public key -- forgeries for a transcript of what
     //! it signed. It cannot sign anything a member accepts after its
     //! retirement; no later key is derived from it; a message it signed for
-    //! an epoch now closed is refused by a member in a later epoch; and it
-    //! is no key in any other group.
+    //! an epoch now closed is refused by a member in a later epoch; and it is
+    //! no key in any other group.
     //!
-    //! The binding that refuses an old-epoch message is not an "epoch
-    //! authenticator" check on application messages (MLS has none there):
-    //! it is OpenMLS's `process_message` -- the message must carry the
-    //! current epoch, decrypt under that epoch's secrets, and verify against
-    //! the sender's leaf key in the CURRENT tree -- with no past epoch kept
-    //! (no past-epoch policy set: OpenMLS 0.9.1's default, `MaxEpochs(0)`).
+    //! WHY, AND WHEN. MLS checks no "epoch authenticator" on application
+    //! messages. A member refuses an old-epoch message because OpenMLS's
+    //! `process_message` takes only the epoch it is in, under that epoch's
+    //! secrets, against the sender's leaf in its current tree, and because
+    //! both configurations keep no past epoch (`max_past_epochs(0)`, stated
+    //! in the code). A member that has not yet processed the rotation is
+    //! still in the old epoch and would accept such a message
+    //! (`residual_...accepts_the_retired_key_until_it_does`). So the key is
+    //! published only once every other member has acknowledged an epoch at
+    //! or after the rotation (`publication_waits_...`).
     use super::*;
     use crate::provider::composite_verify;
     use openmls_traits::signatures::Signer;
@@ -1507,19 +1672,28 @@ mod f4_containment_tests {
         }
     }
 
-    /// Alice rotates her leaf key; [members] process the commit.
+    /// [member] acknowledges the epoch it is in, and Alice receives it.
+    fn ack(group: &[u8], a: &mut MlsClient, member: &mut MlsClient) {
+        let wire = member.acknowledge(group).unwrap();
+        assert!(matches!(a.process(group, &wire).unwrap(), Event::Acknowledged { .. }));
+    }
+
+    /// Alice rotates her leaf key; [members] process the commit and
+    /// acknowledge it. Returns the key F4 then publishes.
     fn rotate(group: &[u8], a: &mut MlsClient, members: &mut [&mut MlsClient]) -> SignatureKeyPair {
         let commit = a.self_update(group).unwrap();
         a.process(group, &commit).unwrap();
         for m in members.iter_mut() { m.process(group, &commit).unwrap(); }
-        copy_of(&a.retired[group][0])               // what F4 will publish
+        for m in members.iter_mut() { ack(group, a, m); }
+        assert_eq!(a.publishable_count(group), a.retired_count(group));
+        copy_of(&a.retired[group][0])
     }
 
     fn is_application(e: &Result<Event>) -> bool {
         matches!(e, Ok(Event::Application { .. }))
     }
 
-    /// 1. Positive control first: the published key forges a transcript
+    /// Test 1: Positive control first: the published key forges a transcript
     /// signature that verifies under its own public key (the deniability
     /// mechanism). Then: a message it signs in the next epoch is refused.
     #[test]
@@ -1539,12 +1713,13 @@ mod f4_containment_tests {
         assert!(got.is_err() && !is_application(&got), "{got:?}");
     }
 
-    /// 2. Derivation tree: every leaf key is `SignatureKeyPair::generate_for`
+    /// Test 2: Derivation tree: every leaf key is `SignatureKeyPair::generate_for`
     /// (`generate()` is `generate_for(COMPOSITE)`) -- ML-DSA-87 from its
     /// keygen and an Ed448 seed from `getrandom`, fresh each time -- at
-    /// create_group, at each KeyPackage, and at each self_update. No key is computed from another; the old key only SIGNS
-    /// the commit that brings in the new one. So K(N+1) is independent of
-    /// K(N), and releasing K(N) reveals nothing about K(N+1).
+    /// create_group, at each KeyPackage, and at each self_update. No key is
+    /// computed from another; the old key only SIGNS the commit that brings
+    /// in the new one. So K(N+1) is independent of K(N), and releasing K(N)
+    /// reveals nothing about K(N+1).
     #[test]
     #[allow(non_snake_case)]
     fn epoch_N_plus_1_key_cannot_be_derived_from_epoch_N_key() {
@@ -1571,56 +1746,51 @@ mod f4_containment_tests {
         for i in 0..ed.len() { for j in i + 1..ed.len() { assert_ne!(ed[i], ed[j]); } }
     }
 
-    /// 3. The strongest old-epoch message there is: one alice really signed
+    /// Test 3: The strongest old-epoch message there is: one Alice really signed
     /// with the key in epoch N and really encrypted under epoch N, held back,
-    /// then presented after the rotation. Bob, in epoch N+1, refuses it and
-    /// surfaces nothing; Carol, still in epoch N, accepts the same bytes (the
-    /// refusal is the epoch's doing, not a broken message).
+    /// then presented after the key is published. Carol takes it in epoch N
+    /// (the positive control: the bytes are good), then processes the
+    /// rotation. After publication, Bob and Carol, both in epoch N+1, refuse
+    /// it and surface nothing. Also covers the configuration: with a past
+    /// epoch kept, Bob accepts it (the `max_past_epochs(1)` mutant).
     #[test]
     fn a_message_signed_with_a_released_epoch_key_is_rejected_by_a_client_in_a_later_epoch() {
         let (mut a, mut b, mut c) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"),
                                      MlsClient::new(b"carol"));
         group_of(G, &mut a, &mut [&mut b, &mut c]);
         let held = a.encrypt(G, b"signed with the key that will be published").unwrap();
-        let commit = a.self_update(G).unwrap();
-        a.process(G, &commit).unwrap();
-        b.process(G, &commit).unwrap();              // carol has not, yet
-        let _published = a.reveal_retired(G).unwrap().expect("the key is published");
-        let epoch_before = b.groups[G].epoch().as_u64();
-        let got = b.process(G, &held);
-        assert!(got.is_err(), "accepted in a later epoch: {got:?}");
-        assert!(!is_application(&got), "no plaintext reached the application");
-        assert_eq!(b.groups[G].epoch().as_u64(), epoch_before, "state untouched");
         let control = c.process(G, &held);
         assert!(is_application(&control), "positive control in epoch N: {control:?}");
+        rotate(G, &mut a, &mut [&mut b, &mut c]);
+        let _published = a.reveal_retired(G).unwrap().expect("the key is published");
+        for m in [&mut b, &mut c] {
+            let epoch_before = m.groups[G].epoch().as_u64();
+            let got = m.process(G, &held);
+            assert!(got.is_err(), "accepted in a later epoch: {got:?}");
+            assert!(!is_application(&got), "no plaintext reached the application");
+            assert_eq!(m.groups[G].epoch().as_u64(), epoch_before, "state untouched");
+        }
     }
 
-    /// 4. The binding test 3 rests on (see the module note): no past epoch
-    /// is kept by either configuration, and an old-epoch message is refused
-    /// by `process_message` before any content is produced.
+    /// Test 4: Source check only (renamed 2026-10-27: under its earlier name it
+    /// claimed a behavioural check test 3 already makes). Both group
+    /// configurations state `max_past_epochs(0)`, and nothing else about
+    /// past epochs: containment does not rest on OpenMLS's default.
     #[test]
-    fn the_epoch_authenticator_is_checked_before_any_group_message_is_accepted() {
+    fn max_past_epochs_is_zero_in_every_group_config() {
         let src = include_str!("client.rs");
         for config in ["fn create_config()", "fn join_config()"] {
             let body = &src[src.find(config).unwrap()..];
             let body = &body[..body.find("\n}\n").unwrap()];
-            for keep in ["max_past_epochs", "past_epoch_deletion_policy", "KeepAll"] {
-                assert!(!body.contains(keep),
-                        "{config}: a kept past epoch would accept a retired key's messages");
+            assert_eq!(body.matches("max_past_epochs(").count(), 1, "{config}");
+            assert!(body.contains(".max_past_epochs(0)"), "{config}: zero, stated");
+            for keep in ["past_epoch_deletion_policy", "KeepAll"] {
+                assert!(!body.contains(keep), "{config}: {keep}");
             }
         }
-        let process = &src[src.find("pub fn process(").unwrap()..];
-        let check = process.find("group.process_message(provider, protocol)").unwrap();
-        assert!(check < process.find("ProcessedMessageContent::ApplicationMessage").unwrap(),
-                "the check comes before any application content");
-        let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
-        group_of(G, &mut a, &mut [&mut b]);
-        let held = a.encrypt(G, b"epoch N").unwrap();
-        rotate(G, &mut a, &mut [&mut b]);
-        assert!(matches!(b.process(G, &held), Err(MlsError::Refused(_))));
     }
 
-    /// 5. Alice is in two groups at the same epoch. Her published G key is
+    /// Test 5: Alice is in two groups at the same epoch. Her published G key is
     /// not her H key; it forges nothing that H's key accepts; signed into H
     /// it is refused; her genuine H messages still verify.
     #[test]
@@ -1639,5 +1809,123 @@ mod f4_containment_tests {
         assert!(b.process(H, &out_bytes(&msg).unwrap()).is_err());
         let genuine = a.encrypt(H, b"really alice, in H").unwrap();
         assert!(is_application(&b.process(H, &genuine)), "H unforged and still verifying");
+    }
+
+    /// THE GAP, demonstrated. Carol has not processed Alice's rotation, so
+    /// she is still in epoch N. A message signed with Alice's retired key and
+    /// encrypted under epoch N is accepted by her as Alice's -- an
+    /// impersonation, not a transcript forgery. After she processes the
+    /// commit, the same kind of message is refused. The forger is a copy of
+    /// Alice's state at epoch N, standing in for any member who kept epoch
+    /// N's secrets: MLS derives every leaf's message keys from the epoch
+    /// secret all members share, so a member could build these bytes, though
+    /// OpenMLS gives no call to send as another leaf. Publication is what
+    /// would hand that member the key; so it waits (next test).
+    #[test]
+    fn residual_a_member_that_has_not_processed_the_rotation_accepts_the_retired_key_until_it_does() {
+        let (mut a, mut b, mut c) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"),
+                                     MlsClient::new(b"carol"));
+        group_of(G, &mut a, &mut [&mut b, &mut c]);
+        let dek = [9u8; 32];
+        let mut forger = MlsClient::import_sealed(&dek, b"x", &a.export_sealed(&dek, b"x").unwrap())
+            .unwrap();                                          // epoch N's secrets
+        let commit = a.self_update(G).unwrap();
+        a.process(G, &commit).unwrap();
+        b.process(G, &commit).unwrap();
+        ack(G, &mut a, &mut b);
+        let retired = copy_of(&a.retired[G][0]);
+        let forge = |forger: &mut MlsClient, text: &[u8]| {
+            let (provider, group) = (&forger.provider, forger.groups.get_mut(G).unwrap());
+            out_bytes(&group.create_message(provider, &retired, text).unwrap()).unwrap()
+        };
+        let first = forge(&mut forger, b"alice did not write this");
+        match c.process(G, &first) {
+            Ok(Event::Application { sender, plaintext }) => {
+                assert_eq!(sender, b"alice");
+                assert_eq!(plaintext.as_slice(), b"alice did not write this");
+            }
+            other => panic!("the gap is not where this test says it is: {other:?}"),
+        }
+        assert_eq!(a.reveal_retired(G).unwrap(), None, "so nothing is published to Bob yet");
+        assert_eq!(a.awaiting(G), vec![b"carol".to_vec()]);
+        c.process(G, &commit).unwrap();
+        let second = forge(&mut forger, b"nor this");
+        assert!(c.process(G, &second).is_err(), "past the rotation, refused");
+    }
+
+    /// Option A, firing. The key waits for every other member: Bob's
+    /// acknowledgement alone publishes nothing while Carol is behind; once
+    /// Carol is past the rotation, it goes. Any message of hers in that
+    /// epoch counts, not only an acknowledgement. A member added after the
+    /// rotation never held epoch N and is not waited for; a member removed
+    /// is no longer waited for.
+    #[test]
+    fn publication_waits_until_every_member_has_acknowledged_the_rotation() {
+        let (mut a, mut b, mut c) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"),
+                                     MlsClient::new(b"carol"));
+        group_of(G, &mut a, &mut [&mut b, &mut c]);
+        // Carol speaks in epoch N, before the rotation: that proves epoch N,
+        // not the one after it.
+        let said = c.encrypt(G, b"before").unwrap();
+        assert!(is_application(&a.process(G, &said)));
+        let commit = a.self_update(G).unwrap();
+        a.process(G, &commit).unwrap();
+        assert_eq!(a.awaiting(G), vec![b"bob".to_vec(), b"carol".to_vec()]);
+        b.process(G, &commit).unwrap();
+        ack(G, &mut a, &mut b);
+        assert_eq!(a.awaiting(G), vec![b"carol".to_vec()]);
+        assert_eq!(a.reveal_retired(G).unwrap(), None, "Carol is still in epoch N");
+        assert_eq!(a.retired_count(G), 1, "kept, not dropped");
+        c.process(G, &commit).unwrap();
+        let said = c.encrypt(G, b"hello").unwrap();             // a message counts too
+        assert!(is_application(&a.process(G, &said)));
+        assert!(a.awaiting(G).is_empty());
+        let wire = a.reveal_retired(G).unwrap().expect("everyone is past it");
+        assert!(matches!(b.process(G, &wire).unwrap(), Event::KeysRevealed { .. }));
+
+        // A newcomer after a rotation is not waited for.
+        let mut d = MlsClient::new(b"dave");
+        let commit = a.self_update(G).unwrap();
+        a.process(G, &commit).unwrap();
+        for m in [&mut b, &mut c] { m.process(G, &commit).unwrap(); ack(G, &mut a, m); }
+        let add = a.add_members(G, &[d.key_package().unwrap()]).unwrap();
+        let welcome = match a.process(G, &add).unwrap() {
+            Event::Commit { welcome: Some(w), .. } => w,
+            other => panic!("{other:?}"),
+        };
+        d.join(&welcome).unwrap();
+        assert!(a.awaiting(G).is_empty(), "dave joined after it: {:?}", a.awaiting(G));
+        // A removed member is not waited for: Bob is behind on a new rotation,
+        // then removed.
+        for m in [&mut b, &mut c] { m.process(G, &add).unwrap(); }
+        let commit = a.self_update(G).unwrap();
+        a.process(G, &commit).unwrap();
+        for m in [&mut c, &mut d] { m.process(G, &commit).unwrap(); ack(G, &mut a, m); }
+        assert_eq!(a.awaiting(G), vec![b"bob".to_vec()]);
+        let rm = a.remove_members(G, &[b"bob".to_vec()]).unwrap();
+        a.process(G, &rm).unwrap();
+        assert!(a.awaiting(G).is_empty());
+        assert!(a.reveal_retired(G).unwrap().is_some());
+    }
+
+    /// The waiting survives a restart: the retirement epochs and what each
+    /// member is known to be in are sealed with the rest.
+    #[test]
+    fn what_a_retired_key_waits_for_survives_a_restart() {
+        let (mut a, mut b, mut c) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"),
+                                     MlsClient::new(b"carol"));
+        group_of(G, &mut a, &mut [&mut b, &mut c]);
+        let commit = a.self_update(G).unwrap();
+        a.process(G, &commit).unwrap();
+        b.process(G, &commit).unwrap();
+        ack(G, &mut a, &mut b);
+        let dek = [7u8; 32];
+        let mut again = MlsClient::import_sealed(&dek, b"alice", &a.export_sealed(&dek, b"alice")
+            .unwrap()).unwrap();
+        assert_eq!(again.awaiting(G), vec![b"carol".to_vec()]);
+        assert_eq!(again.reveal_retired(G).unwrap(), None);
+        c.process(G, &commit).unwrap();
+        ack(G, &mut again, &mut c);
+        assert!(again.reveal_retired(G).unwrap().is_some());
     }
 }

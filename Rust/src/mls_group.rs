@@ -237,6 +237,8 @@ impl RustMlsClient {
     ///   {"kind": "keys_revealed", "sender": bytes, "fingerprints": [bytes, ...]}
     ///    -- a member published retired signing keys (F4); only their
     ///    fingerprints, never the keys
+    ///   {"kind": "acknowledged", "sender": bytes}
+    ///    -- a member acknowledged the current epoch (F4); nothing to show
     fn process<'py>(&self, py: Python<'py>, group_id: &[u8], message: &[u8])
         -> PyResult<Bound<'py, PyDict>>
     {
@@ -270,13 +272,18 @@ impl RustMlsClient {
                 let fps: Vec<_> = fingerprints.iter().map(|f| PyBytes::new(py, f)).collect();
                 d.set_item("fingerprints", fps)?;
             }
+            Event::Acknowledged { sender } => {
+                d.set_item("kind", "acknowledged")?;
+                d.set_item("sender", PyBytes::new(py, &sender))?;
+            }
         }
         Ok(d)
     }
 
     /// Publish our retired signing keys in this group (F4): a group message
-    /// (MLS wire bytes) for the room, or None when there are none. The keys
-    /// stay in Rust until they are inside that encrypted message.
+    /// (MLS wire bytes) for the room, or None when there are none that every
+    /// other member is past yet (`awaiting`). The keys stay in Rust until
+    /// they are inside that encrypted message.
     fn reveal_retired<'py>(&self, py: Python<'py>, group_id: &[u8])
         -> PyResult<Option<Bound<'py, PyBytes>>>
     {
@@ -287,6 +294,20 @@ impl RustMlsClient {
     /// How many retired signing keys of ours wait to be published here.
     fn retired_count(&self, group_id: &[u8]) -> PyResult<usize> {
         self.with(|c| Ok(c.retired_count(group_id)))
+    }
+
+    /// The members our retired keys wait for (F4): identities not yet known
+    /// to be past the rotation that retired them. Sorted; empty when none.
+    fn awaiting<'py>(&self, py: Python<'py>, group_id: &[u8]) -> PyResult<Vec<Bound<'py, PyBytes>>> {
+        let who = self.with(|c| Ok(c.awaiting(group_id)))?;
+        Ok(who.iter().map(|w| PyBytes::new(py, w)).collect())
+    }
+
+    /// An acknowledgement of the epoch we are in (F4), MLS wire bytes for
+    /// the room. Sent after a commit that rotated another member's key.
+    fn acknowledge<'py>(&self, py: Python<'py>, group_id: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
+        let out = self.with(|c| c.acknowledge(group_id))?;
+        Ok(PyBytes::new(py, &out))
     }
 
     /// Media keys for call `call_id` in this group, from the current
