@@ -38,7 +38,9 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   `tests/test_terminal_register.py`.
 - **Saved contact keys that will not open: a way out on the phone.**
   They no longer stop Create account, which uses neither the keys nor the
-  identity. A refused sign-in (`trust_unavailable`) offers "Forget saved
+  identity, and once the server has created the account, keys saved
+  under that username (an earlier account's) are cleared with a notice and
+  the sign-in goes on. A refused sign-in (`trust_unavailable`) offers "Forget saved
   contact keys…", with a dialog saying every contact becomes a first contact
   again; nothing is discarded without it. Wipe & Exit now removes the
   markers before the vault, and the Keystore key is made once even when

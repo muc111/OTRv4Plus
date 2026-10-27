@@ -940,6 +940,19 @@ a bind refusal does not apply to it
 (`test_a_refused_bind_does_not_stop_create_account`). Sign-in, where the
 identity and the pins are used, stays refused.
 
+**After a successful Create account the stale keys go by themselves**
+(owner's decision, 2026-10-27). The server's yes confirms the username was
+free, so contact keys saved under it on this device belong to an earlier,
+different account and serve no one. They are discarded at that moment,
+opening or not, with a notice ("An old account's contact keys were found
+and cleared."), and the sign-in that follows goes ahead. Only there:
+`ConnectionController._register` calls `discard_stale_account_trust` after
+the server's success and nowhere else; a refused registration discards
+nothing (`test_create_account_clears_stale_unopenable_keys_and_signs_in`,
+`test_create_account_clears_stale_readable_keys_too`,
+`test_a_refused_create_account_discards_nothing_and_sign_in_stays_refused`,
+`test_the_stale_discard_runs_only_after_a_confirmed_create_account`).
+
 The rule still holds for sign-in: a record that will not open is refused,
 every time, and never replaced by itself. On a phone nobody can move a file aside, so
 the refusal now offers **Forget saved contact keys…**: two presses, and the

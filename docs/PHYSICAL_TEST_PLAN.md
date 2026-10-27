@@ -50,13 +50,13 @@ Automated coverage: `tests/test_transport_route.py`,
    phone that showed "This account's saved contact keys on this device
    would not open": update to the new build, try Create account (or Log in)
    once more and export the diagnostic report (Debug → Export); its
-   `trust_unavailable` line names the reason. **Pass, first:** Create
-   account creates the account (it is no longer stopped by the saved
-   keys). The sign-in that follows stops with "This account's saved contact
-   keys on this phone would not open" and the **Forget saved contact
-   keys…** button. Press it, read the dialog, confirm, press Log in.
-   **Pass:** signed in; every contact is a first contact (compare
-   fingerprints again).
+   `trust_unavailable` line names the reason. **Pass:** Create account
+   creates the account, the notice "An old account's contact keys were
+   found and cleared." shows once (it does not block), and the sign-in
+   goes on by itself: no Forget button. Every contact is a first contact
+   (compare fingerprints again). Then, separately: **Log in** (not Create
+   account) to an account whose saved keys will not open still stops with
+   the "would not open" line and the Forget button.
 2. **Clearnet failure is named.** A non-existent domain → a DNS/TCP/TLS
    failure sentence, never a router one.
 3. **Default I2P server, router running.** "Checking for an I2P router" then
