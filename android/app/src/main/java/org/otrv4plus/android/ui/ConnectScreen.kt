@@ -530,7 +530,11 @@ private fun ConnectOutcome(model: ConnectionViewModel) {
         }
     }
 
-    error?.let {
+    if (error == "forget_failed") {
+        Text(org.otrv4plus.android.connection.ConnectProblem.FORGET_FAILED,
+             color = MaterialTheme.colorScheme.error,
+             style = MaterialTheme.typography.bodySmall)
+    } else error?.let {
         // A Kotlin-side throw, as opposed to a reported Python failure.
         // The class name only, and only in a debug build: an exception's
         // message can carry what the engine was handling.

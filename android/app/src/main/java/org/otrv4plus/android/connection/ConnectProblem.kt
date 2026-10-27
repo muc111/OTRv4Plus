@@ -29,6 +29,13 @@ object ConnectProblem {
 
     enum class Kind { NEEDS_YOU, TRANSIENT, OTHER }
 
+    /** "Forget saved contact keys" did not finish (device report,
+     *  2026-10-27: it said only "something went wrong"). The reason is in
+     *  the trace, `forget_trust`, by outcome. */
+    const val FORGET_FAILED =
+        "The saved contact keys could not be cleared, so nothing changed. " +
+            "Debug, then Trace, says why (look for forget_trust)."
+
     /** How a line is shown: not at all, quietly, or as an error. */
     enum class Tone { QUIET, ERROR }
 

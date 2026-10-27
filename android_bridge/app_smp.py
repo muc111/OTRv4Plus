@@ -398,12 +398,25 @@ class SmpMixin:
         move a file aside. Every contact of the account is a first contact
         again, to be compared once more. Only on an explicit request; a
         record that will not open is never replaced by itself (P1)."""
+        from .trace import TRACE as _TRACE
         bare = str(account or "").split("/", 1)[0].strip().lower()
         trust = getattr(self, "_trust_store", None)
-        if trust is None or "@" not in bare:
+        # Each outcome traced (device report, 2026-10-27: "something went
+        # wrong" on Forget, with nothing to say which of these it was).
+        if trust is None:
+            _TRACE.record("identity", "forget_trust", "warning", outcome="no_trust_store")
             return False
-        trust.for_account(bare).forget()
+        if "@" not in bare:
+            _TRACE.record("identity", "forget_trust", "warning", outcome="not_an_account")
+            return False
+        try:
+            trust.for_account(bare).forget()
+        except Exception as exc:
+            _TRACE.record("identity", "forget_trust", "error",
+                          outcome="raised", error=type(exc).__name__)
+            return False
         _log.warning("saved contact keys of an account discarded by the user")
+        _TRACE.record("identity", "forget_trust", "info", outcome="forgotten")
         if getattr(self, "_identity_account", None) == bare:
             self._attach_trust(trust.for_account(bare))
         return True

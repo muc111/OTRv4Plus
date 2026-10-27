@@ -200,4 +200,9 @@ class ConnectProblemTest {
         assertFalse(ConnectProblem.settling("server_closed_connection",
                                             ConnectProblem.ROUTER_SETTLING_MS + 1))
     }
+
+    @Test fun `a failed forget says nothing changed and where the reason is`() {
+        assertTrue("nothing changed" in ConnectProblem.FORGET_FAILED)
+        assertTrue("forget_trust" in ConnectProblem.FORGET_FAILED)
+    }
 }

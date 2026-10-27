@@ -276,6 +276,11 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     fun forgetAccountTrust(jid: String): Boolean =
         runCatching {
             requireApp().callAttr("forget_account_trust", jid)?.toBoolean() ?: false
+        }.onFailure {
+            // The Python side traces its own outcomes; a failure before it
+            // (no engine, the call itself) is traced here, by type only.
+            runCatching { note("identity", "forget_trust_call_failed", "warning",
+                               OtrBridgeException.reportableCode(it) ?: it.javaClass.simpleName) }
         }.getOrDefault(false)
 
     /** Whether the engine is up: false before [initialize] and after

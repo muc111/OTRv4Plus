@@ -444,6 +444,33 @@ def test_a_marker_whose_record_is_gone_is_refused_until_the_user_forgets_it(home
     assert install.start()._engine.trust_db.check_or_pin(PEER, "A1" * 56) is False
 
 
+def test_forget_says_in_the_trace_why_it_did_not(home):
+    """Device report, 2026-10-27: "something went wrong" on Forget saved
+    contact keys, with nothing to say why. Each outcome is traced."""
+    from android_bridge.app import OtrApp
+    from android_bridge import account_trust
+    from android_bridge.trace import TRACE
+
+    def last():
+        return [ev["fields"]["outcome"] for ev in TRACE.events()
+                if ev["event"] == "forget_trust"][-1]
+
+    a = OtrApp.__new__(OtrApp)
+    a._engine, a._signed_in, a._wiped = E._manager(), False, False
+    assert a.forget_account_trust(ME) is False and last() == "no_trust_store"
+    a.use_trust_store(account_trust.for_android(DictVault(), True))
+    assert a.forget_account_trust("charliebrown") is False and last() == "not_an_account"
+    assert a.forget_account_trust(ME) is True and last() == "forgotten"
+
+    class Broken(DictVault):
+        def remove(self, name):
+            raise OSError("read-only")
+    a.use_trust_store(account_trust.for_android(Broken(), True))
+    assert a.forget_account_trust(ME) is False and last() == "raised"
+    assert [ev["fields"].get("error") for ev in TRACE.events()
+            if ev["event"] == "forget_trust"][-1] == "OSError"
+
+
 def test_wipe_crypto_removes_the_trust_markers_before_the_vault_is_destroyed(home):
     install = Install("android")
     alice, _p, _e, _r = _talk(install, _Contact())
