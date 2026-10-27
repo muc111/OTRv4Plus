@@ -3592,6 +3592,8 @@ def _register_account(args, password):
     if not result.get("ok"):
         sys.exit("[register] The account was not created: %s (%s)"
                  % (result.get("detail") or "no reason given", result.get("code") or "unknown"))
+    if result.get("notice"):
+        print("[register] %s" % result["notice"])
     print("[register] account created; signing in")
 
 

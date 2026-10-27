@@ -87,7 +87,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun register(password: String): RegistrationOutcome {
         val r = call("register", "password" to password) as? JsonObject ?: JsonObject(emptyMap())
         return RegistrationOutcome(ok = r["ok"].asBool(), code = r.str("code").ifBlank { "unknown" },
-                                   detail = r.str("detail"))
+                                   detail = r.str("detail"), notice = r.str("notice"))
     }
 
     fun disconnect() { call("disconnect") }

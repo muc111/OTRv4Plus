@@ -751,6 +751,33 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             with self._connect_lock:
                 self._connecting = False
 
+    def _after_account_created(self) -> str:
+        """After the server's yes to Create account, and only then: contact
+        keys saved under this username belong to an earlier account (the
+        name was free) and are discarded, so the sign-in that follows is not
+        stopped by them. Returns the notice for the person, or ""."""
+        jid = self._profile.jid
+        discard = getattr(self._app, "discard_stale_account_trust", None)
+        if discard is None or not jid:
+            return ""
+        try:
+            if not discard(jid):
+                return ""
+        except Exception as exc:
+            _TRACE.record("registration", "stale_trust_not_discarded", "warning",
+                          error=type(exc).__name__)
+            return ""
+        if self._refused is not None and self._refused[0] == "trust_unavailable":
+            bind = getattr(self._app, "bind_identity_account", None)
+            try:
+                if bind is not None:
+                    bind(jid)
+                self._refused = None
+            except Exception as exc:
+                code = getattr(exc, "code", None) or "identity_unavailable"
+                self._refused = (code, _BIND_REFUSALS.get(code, self._refused[1]))
+        return STALE_TRUST_NOTICE
+
     def _register(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
         _TRACE.record("registration", "started", "info")
@@ -815,10 +842,13 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
                 _log.warning("the registration transport did not close cleanly")
 
         ok = code == _registration.OK
+        notice = self._after_account_created() if ok else ""
         self._enter("registered" if ok else "failed")
         self._last = {"ok": ok,
                       "stage": "registered" if ok else "failed",
                       "code": code, "detail": detail}
+        if notice:
+            self._last["notice"] = notice
         _TRACE.record("registration", "finished", "info" if ok else "warn",
                       code=code)
         return dict(self._last)
@@ -1575,6 +1605,11 @@ def _refusing_controller(app: Any, profile: ConnectionProfile,
     controller = ConnectionController(app, profile)
     controller._refused = refused
     return controller
+
+
+#: Shown once, not blocking, after Create account discarded an earlier
+#: account's contact keys saved under the same username.
+STALE_TRUST_NOTICE = "An old account's contact keys were found and cleared."
 
 
 #: What the person is told when the account cannot be bound. Codes from

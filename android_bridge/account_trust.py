@@ -171,6 +171,13 @@ class AccountTrustRecord:
     def where(self) -> str:
         return "sealed, %s" % self._records.where(self._name)
 
+    def exists(self) -> bool:
+        """Whether anything is saved under this account, opening or not."""
+        try:
+            return self._records.get(self._name) is not None
+        except TrustUnavailable:
+            return True
+
     def forget(self) -> None:
         """The user's deliberate answer to a record that will not open: it
         and its marker go, and the account's contacts are first contacts

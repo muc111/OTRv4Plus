@@ -675,6 +675,9 @@ data class RegistrationOutcome(
     val ok: Boolean,
     val code: String,
     val detail: String,
+    /** Said once after success, not blocking: an earlier account's contact
+     *  keys under this username were discarded. Blank otherwise. */
+    val notice: String = "",
 ) {
     /**
      * Whether retyping the username is the remedy, so the UI can put the

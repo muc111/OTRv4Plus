@@ -391,6 +391,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             ok = result?.callAttr("get", "ok")?.toBoolean() ?: false,
             code = str("code").ifBlank { "unknown" },
             detail = str("detail"),
+            notice = str("notice"),
         )
     }
 

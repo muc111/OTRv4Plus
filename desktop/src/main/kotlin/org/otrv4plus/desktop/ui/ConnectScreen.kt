@@ -157,6 +157,8 @@ fun ConnectScreen(model: AppModel) {
                                  else MaterialTheme.colorScheme.error)
                     if (!r.ok) Text(r.detail.ifBlank { "The server said: ${r.code}" },
                                     style = MaterialTheme.typography.bodySmall)
+                    if (r.ok && r.notice.isNotBlank()) Text(r.notice,
+                                    style = MaterialTheme.typography.bodySmall)
                 }
                 model.problemLine()?.let { line ->
                     Text(line.text, style = MaterialTheme.typography.bodyMedium,

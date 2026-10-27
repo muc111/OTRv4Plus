@@ -652,6 +652,16 @@ class OtrConnectionService : Service() {
             }
             if (out.ok) {
                 runCatching { credentials.save(Credentials(jid, password)) }
+                // An earlier account's contact keys were discarded: said once,
+                // in passing; the sign-in goes on regardless.
+                if (out.notice.isNotBlank()) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        runCatching {
+                            android.widget.Toast.makeText(
+                                applicationContext, out.notice, android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
                 startConnection()
             } else {
                 registration = out

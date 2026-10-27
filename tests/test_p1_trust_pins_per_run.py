@@ -451,3 +451,100 @@ def test_wipe_crypto_removes_the_trust_markers_before_the_vault_is_destroyed(hom
     assert any(f.endswith(".present") for f in os.listdir(trust))
     alice.wipe_crypto()
     assert not os.path.exists(trust), "a wipe cut short after this left markers behind"
+
+
+class _Created:
+    """Stands in for XmppTransport: the server answers [answer]."""
+    answer = ("ok", "The account was created.")
+
+    def __init__(self, profile, password, **kw):
+        pass
+
+    def register_account(self):
+        return type(self).answer
+
+    def close(self):
+        pass
+
+
+def _android_app(install):
+    from android_bridge.app import OtrApp
+    from android_bridge import account_identity, account_trust
+    a = OtrApp.__new__(OtrApp)
+    a._engine, a._signed_in, a._wiped = E._manager(), False, False
+    a.use_identity_store(account_identity.for_android(install.identity_vault))
+    a.use_trust_store(account_trust.for_android(install.trust_vault, True))
+    return a
+
+
+def _create(app, answer=("ok", "The account was created.")):
+    from android_bridge import connection as C
+    _Created.answer = answer
+    ctl = C.controller_for(app, ME, "127.0.0.1")
+    ctl._transport_factory = _Created
+    return ctl, ctl.register("correct horse battery staple 9")
+
+
+def test_create_account_clears_stale_unopenable_keys_and_signs_in(home):
+    """Owner, 2026-10-27: after a successful Create account the server has
+    confirmed the username was free, so keys saved under it are an earlier
+    account's. Discarded at once, a notice said, and the sign-in that follows
+    is not stopped: no refusal, so no Forget button."""
+    from android_bridge import connection as C
+    install = Install("android")
+    _talk(install, _Contact())
+    install.trust_vault = DictVault()                # unopenable now
+    a = _android_app(install)
+    ctl, result = _create(a)
+    assert result["ok"] is True
+    assert result["notice"] == C.STALE_TRUST_NOTICE
+    assert ctl._refused is None, "the sign-in on this controller is not refused"
+    assert C.controller_for(a, ME, "127.0.0.1")._refused is None, "nor on a new one"
+    a.bind_identity_account(ME)
+    assert a._engine.trust_db.list_trusted() == {}
+
+
+def test_create_account_clears_stale_readable_keys_too(home):
+    from android_bridge import connection as C
+    install = Install("android")
+    _talk(install, _Contact())                       # pins that open
+    _ctl, result = _create(_android_app(install))
+    assert result["notice"] == C.STALE_TRUST_NOTICE
+    assert install.start()._engine.trust_db.list_trusted() == {}
+
+
+def test_a_refused_create_account_discards_nothing_and_sign_in_stays_refused(home):
+    from android_bridge.app_base import BridgeError
+    install = Install("android")
+    _talk(install, _Contact())
+    install.trust_vault = DictVault()
+    a = _android_app(install)
+    ctl, result = _create(a, ("conflict", "That username is already taken."))
+    assert result["ok"] is False and "notice" not in result
+    assert ctl.connect("pw")["code"] == "trust_unavailable"
+    with pytest.raises(BridgeError):
+        install.start()
+
+
+def test_a_new_name_with_nothing_saved_says_nothing(home):
+    _ctl, result = _create(_android_app(Install("android")))
+    assert result["ok"] is True and "notice" not in result
+
+
+def test_the_stale_discard_runs_only_after_a_confirmed_create_account():
+    import glob
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    users = set()
+    for path in glob.glob(os.path.join(root, "*_bridge", "*.py")) + \
+            glob.glob(os.path.join(root, "client", "*.py")) + \
+            glob.glob(os.path.join(root, "android", "app", "src", "main", "java", "**", "*.kt"),
+                      recursive=True):
+        if os.path.islink(path):
+            continue
+        src = open(path, encoding="utf-8").read()
+        if "discard_stale_account_trust" in src or "_after_account_created" in src:
+            users.add(os.path.basename(path))
+    # Defined in app_smp.py; reached from connection.py alone.
+    assert users == {"app_smp.py", "connection.py"}, users
+    src = open(os.path.join(root, "android_bridge", "connection.py"), encoding="utf-8").read()
+    assert 'notice = self._after_account_created() if ok else ""' in src

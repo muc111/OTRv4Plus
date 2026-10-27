@@ -408,6 +408,29 @@ class SmpMixin:
             self._attach_trust(trust.for_account(bare))
         return True
 
+    def discard_stale_account_trust(self, account: str) -> bool:
+        """Create account has just SUCCEEDED for [account]: the server has
+        confirmed the username was free, so any contact keys saved under it
+        on this device belong to an earlier, different account and serve no
+        one. They go, without asking. Called from that one place only
+        (`ConnectionController._register`, after the server's yes); every
+        other path keeps P1's rule -- a record that will not open is refused,
+        never replaced by itself. Returns whether anything was discarded."""
+        bare = str(account or "").split("/", 1)[0].strip().lower()
+        trust = getattr(self, "_trust_store", None)
+        if trust is None or "@" not in bare:
+            return False
+        record = trust.for_account(bare)
+        if not record.exists():
+            return False
+        record.forget()
+        _log.warning("an earlier account's contact keys discarded after Create account")
+        from .trace import TRACE as _TRACE
+        _TRACE.record("identity", "stale_trust_discarded", "warning")
+        if getattr(self, "_identity_account", None) == bare:
+            self._attach_trust(trust.for_account(bare))
+        return True
+
     def _attach_trust(self, record) -> None:
         """P1: the engine checks handshakes against [record]'s pins from now
         on, and keeps every new pin in it."""
