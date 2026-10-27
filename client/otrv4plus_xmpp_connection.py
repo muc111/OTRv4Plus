@@ -535,6 +535,19 @@ class ConnectionMixin:
             try:
                 if self._is_i2p and self._sam_params:
                     p = self._sam_params
+                    check = getattr(self, "_server_check", None)
+                    try:
+                        # X1: the pins file must open before the router is
+                        # asked for anything (residual 5, closed).
+                        getattr(check, "preflight", lambda: None)()
+                    except Exception as e:
+                        if type(e).__name__ == "PinsUnreadable":
+                            print("[reconnect] REFUSING: the server pins file "
+                                  "would not open (%s): %s. Nothing was sent. "
+                                  "Move it aside or restore it, then restart."
+                                  % (e.reason, e.path))
+                            return
+                        raise
                     try:
                         host, port = await _tunnels.start_i2p_sam_forwarder(
                             p["server_b32"],

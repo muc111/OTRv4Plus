@@ -809,7 +809,15 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         if route.kind != _route.I2P_SAM or route.self_authenticating:
             return {}
         from . import server_pins as _pins
-        change = _pins.default_store().last_change(route.host)
+        store = _pins.default_store()
+        reason = (None if _address.shipped_server_address(route.host)
+                  else store.unreadable())
+        if reason is not None:
+            # The pins file will not open: the same warning, naming the file,
+            # with nothing to approve -- approving would rewrite it.
+            return {"server": route.host, "trusted": "", "seen": "",
+                    "unreadable": store.path or "", "reason": reason}
+        change = store.last_change(route.host)
         if not change:
             return {}
         return {"server": route.host, "trusted": change[0], "seen": change[1]}

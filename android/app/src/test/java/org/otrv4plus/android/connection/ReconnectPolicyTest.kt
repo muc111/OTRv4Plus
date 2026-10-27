@@ -159,6 +159,16 @@ class ReconnectPolicyTest {
     }
 
     @Test
+    fun `an unreadable server pins file stops the retry loop`() {
+        // X1 residual 5, closed: refused until the user moves the file aside.
+        val p = policy()
+        assertTrue(p.onFailure("i2p_server_pins_unreadable"))
+        assertTrue(p.suppressed)
+        assertNull(p.nextDelayMs())
+        assertFalse(p.beginAttempt())
+    }
+
+    @Test
     fun `TLS and SASL refusals also wait for the user`() {
         for (code in listOf("tls_required", "no_safe_auth_mechanism",
                             "route_refused", "malformed_server",

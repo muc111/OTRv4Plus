@@ -125,7 +125,7 @@ object ConnectProblem {
     /** Codes no retry can fix. Kept equal to ReconnectPolicy.NEEDS_THE_USER. */
     val NEEDS_YOU: Set<String> = setOf(
         "auth_failed", "password_not_applied", "profile_incomplete",
-        "i2p_destination_changed", "i2p_name_invalid",
+        "i2p_destination_changed", "i2p_server_pins_unreadable", "i2p_name_invalid",
         "tls_required", "certificate_failure", "no_safe_auth_mechanism",
         "route_refused", "malformed_server", "bad_transport", "no_server",
         SIGNED_IN_ELSEWHERE, ACCOUNT_BANNED,
@@ -213,6 +213,10 @@ object ConnectProblem {
         "i2p_destination_changed" ->
             "The server's I2P address now points at a different key. Nothing " +
                 "was sent. Check it with the server's owner before trusting it."
+        "i2p_server_pins_unreadable" ->
+            "The file of trusted server addresses would not open, so a changed " +
+                "address could not be told from a first visit. Nothing was " +
+                "sent. Move the file aside or restore it, then log in again."
         "i2p_name_invalid", "malformed_server", "no_server" ->
             "The server address is not valid. Check it."
         "no_safe_auth_mechanism" ->

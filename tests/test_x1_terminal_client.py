@@ -162,3 +162,92 @@ def test_reconnects_check_the_destination_and_never_retry_a_change():
     block = src[src.index("_tunnels.start_i2p_sam_forwarder("):][:1500]
     assert 'verify=getattr(self, "_server_check", None)' in block
     assert "DestinationChanged" in block and "return" in block
+
+
+# -- a pins file that will not open (X1 residual 5, closed) ---------------------
+
+def _unreadable_store(monkeypatch, content="{not json"):
+    import tempfile
+    path = os.path.join(tempfile.mkdtemp(prefix="otrv4plus-x1-term-"), "pins.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    s = P.ServerPins(path)
+    monkeypatch.setattr(P, "default_store", lambda: s)
+    return s, path
+
+
+def test_the_terminal_applies_the_same_rule_via_check_destination(monkeypatch):
+    store, path = _unreadable_store(monkeypatch)
+    a = _dest(11)
+    with pytest.raises(P.PinsUnreadable) as refused:
+        P.check_destination("chat.i2p", P.b32_of_destination(a), store,
+                            shipped=None, self_authenticating=False)
+    assert refused.value.path == path
+    # A typed b32 and a shipped name never consult the pins, as in the app.
+    b32 = P.b32_of_destination(a)
+    assert P.check_destination(b32, b32, store, shipped=None,
+                               self_authenticating=True) == "b32 address"
+    with pytest.raises(P.PinsUnreadable):
+        xmpp._server_identity("chat.i2p")
+    verify, _confirm, _pins = xmpp._server_identity(b32)
+    verify(a)
+
+
+def test_the_terminal_refuses_an_unreadable_pins_file_before_the_router_is_asked(
+        monkeypatch, capsys):
+    import asyncio
+    import otrv4plus_egress
+    _store, path = _unreadable_store(monkeypatch, '{"chat.i2p": {"b32": 5}}')
+    started = []
+
+    async def _forwarder(*a, **kw):
+        started.append(a)
+        raise AssertionError("the router was asked")
+
+    monkeypatch.setattr(xmpp._tunnels, "start_i2p_sam_forwarder", _forwarder)
+    monkeypatch.setattr(otrv4plus_egress, "enter", lambda *a, **kw: None)
+    client = types.SimpleNamespace(loop=asyncio.new_event_loop(),
+                                   connect=lambda *a: pytest.fail("connected"))
+    args = argparse.Namespace(port=5222, sam_host="127.0.0.1", sam_port=7656)
+    try:
+        with pytest.raises(SystemExit):
+            xmpp._open_connection(client, args, "chat.i2p", True, False)
+    finally:
+        client.loop.close()
+    assert started == [], "the SAM forwarder was started"
+    err = capsys.readouterr().err
+    assert path in err and "Nothing was sent" in err
+    assert open(path, encoding="utf-8").read() == '{"chat.i2p": {"b32": 5}}'
+
+
+def test_a_terminal_reconnect_stops_at_an_unreadable_pins_file(monkeypatch):
+    path = os.path.join(os.path.dirname(os.path.realpath(xmpp.__file__)),
+                        "otrv4plus_xmpp_connection.py")
+    src = open(path, encoding="utf-8").read()
+    block = src[src.index('getattr(check, "preflight"'):]
+    assert block.index("PinsUnreadable") < block.index("_tunnels.start_i2p_sam_forwarder(")
+    assert "return" in block[:block.index("_tunnels.start_i2p_sam_forwarder(")]
+    # ...and the preflight it calls is the client's own, refusing once the
+    # file will not open (made unreadable after start, then read again).
+    import tempfile
+    pins_path = os.path.join(tempfile.mkdtemp(prefix="otrv4plus-x1-term-"), "pins.json")
+    store = P.ServerPins(pins_path)
+    monkeypatch.setattr(P, "default_store", lambda: store)
+    verify, _c, _p = xmpp._server_identity("chat.i2p")
+    verify.preflight()
+    with open(pins_path, "w", encoding="utf-8") as fh:
+        fh.write("{not json")
+    store._load()                       # what a fresh process would read
+    with pytest.raises(P.PinsUnreadable):
+        verify.preflight()
+
+
+def test_a_missing_pins_file_is_a_first_run_for_the_terminal(monkeypatch):
+    import tempfile
+    s = P.ServerPins(os.path.join(tempfile.mkdtemp(prefix="otrv4plus-x1-term-"), "pins.json"))
+    monkeypatch.setattr(P, "default_store", lambda: s)
+    a = _dest(12)
+    verify, confirm, _pins = xmpp._server_identity("chat.i2p")
+    verify(a)
+    confirm()
+    assert s.pinned("chat.i2p") == P.b32_of_destination(a)

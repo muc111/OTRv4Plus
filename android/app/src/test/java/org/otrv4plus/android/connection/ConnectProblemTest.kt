@@ -48,6 +48,15 @@ class ConnectProblemTest {
     }
 
     @Test
+    fun `an unreadable server pins file is an error at once and says nothing was sent`() {
+        val l = line("i2p_server_pins_unreadable", retrying = false)!!
+        assertEquals(ConnectProblem.Tone.ERROR, l.tone)
+        assertTrue("Nothing was sent" in l.text, l.text)
+        assertTrue("Move the file aside" in l.text, l.text)
+        assertEquals(ConnectProblem.Kind.NEEDS_YOU, ConnectProblem.kind("i2p_server_pins_unreadable"))
+    }
+
+    @Test
     fun `nothing while connected, nothing without a failure`() {
         assertNull(line("timeout", retrying = false, connected = true))
         assertNull(line(null, retrying = true))

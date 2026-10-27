@@ -46,8 +46,8 @@ import threading
 import time
 from typing import Dict, Optional
 
-__all__ = ["check_destination", "b32_of_destination", "ServerPins", "DestinationChanged",
-           "MATCH", "NEW", "CHANGED", "default_store"]
+__all__ = ["check_destination", "ensure_pins_usable", "b32_of_destination", "ServerPins",
+           "DestinationChanged", "PinsUnreadable", "MATCH", "NEW", "CHANGED", "default_store"]
 
 MATCH, NEW, CHANGED = "match", "new", "changed"
 
@@ -74,6 +74,31 @@ class DestinationChanged(Exception):
     def __init__(self, name: str, pinned: str, seen: str):
         super().__init__("%s: destination changed" % name)
         self.name, self.pinned, self.seen = name, pinned, seen
+
+
+class PinsUnreadable(Exception):
+    """The pins file is there and will not open, will not parse, or is not
+    the shape pins have (X1 residual 5, closed 2026-10-27). Refused, never
+    replaced: read as empty, the next connection to a changed destination
+    would be a first visit. Carries the file and why."""
+
+    def __init__(self, path: str, reason: str):
+        super().__init__("%s: server pins unreadable (%s)" % (path, reason))
+        self.path, self.reason = path, reason
+
+
+def ensure_pins_usable(host: str, store: "ServerPins", *,
+                       shipped: Optional[str], self_authenticating: bool) -> None:
+    """Before any byte goes to the router: raise PinsUnreadable if the
+    connection to [host] would consult the pins and they will not open.
+
+    A shipped address and a typed .b32.i2p never consult the pins (their
+    check is the address itself, `check_destination`), so an unreadable file
+    cannot weaken them, and they proceed. Every other name is refused until
+    the user moves the file aside or fixes it."""
+    if shipped or self_authenticating:
+        return
+    store.ensure_usable()
 
 
 def check_destination(host: str, seen: str, store: "ServerPins", *,
@@ -120,34 +145,55 @@ class ServerPins:
         #: name -> (pinned, seen) for the last refused change, so the UI can
         #: show both and approve exactly the one that was refused.
         self._changes: Dict[str, tuple] = {}
+        #: Why the file will not open, while it will not; None when usable.
+        self._unreadable: Optional[str] = None
         self._load()
 
     # -- persistence ---------------------------------------------------------
 
     def _load(self) -> None:
+        """A missing file is a first run. A file that is there and will not
+        open, will not parse, or is not the shape pins have is REFUSED, never
+        read as empty and never rewritten (P1's rule): `ensure_usable` and
+        `check` raise PinsUnreadable, and the file is read again at the next
+        attempt, after the user has moved it aside or fixed it."""
+        self._pins, self._unreadable = {}, None
         if not self._path or not os.path.exists(self._path):
             return
         try:
             with open(self._path, encoding="utf-8") as f:
                 data = json.load(f)
-            if isinstance(data, dict):
-                self._pins = {str(k).lower(): v for k, v in data.items()
-                              if isinstance(v, dict) and "b32" in v}
-        except (OSError, ValueError):
-            # Unreadable: fail CLOSED for names we can no longer vouch for by
-            # keeping nothing -- the next contact is a first contact again,
-            # which SCRAM-only still protects. Never silently "match".
-            self._pins = {}
+            self._pins = _validated(data)
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            self._unreadable = ("not a pins file: %s" % exc if isinstance(exc, _NotPins)
+                                else exc.__class__.__name__)
 
     def _save(self) -> None:
-        if not self._path:
-            return
+        if not self._path or self._unreadable is not None:
+            return                      # never write over a file that would not open
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
         tmp = self._path + ".tmp"
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(self._pins, f, sort_keys=True)
         os.replace(tmp, self._path)
+
+    def unreadable(self) -> Optional[str]:
+        """Why the pins file will not open, read again now; None if usable."""
+        with self._lock:
+            if self._unreadable is not None:
+                self._load()
+            return self._unreadable
+
+    def ensure_usable(self) -> None:
+        """Raise PinsUnreadable while the file will not open."""
+        reason = self.unreadable()
+        if reason is not None:
+            raise PinsUnreadable(self._path or "", reason)
+
+    @property
+    def path(self) -> Optional[str]:
+        return self._path
 
     # -- the rule ------------------------------------------------------------
 
@@ -157,7 +203,10 @@ class ServerPins:
             return str(entry["b32"]) if entry else None
 
     def check(self, name: str, b32: str) -> str:
-        """MATCH, NEW or CHANGED. Never changes a pin by itself."""
+        """MATCH, NEW or CHANGED. Never changes a pin by itself. Raises
+        PinsUnreadable while the file will not open: never NEW for a name
+        whose pin could not be read."""
+        self.ensure_usable()
         name, b32 = name.lower(), b32.lower()
         with self._lock:
             entry = self._pins.get(name)
@@ -183,6 +232,8 @@ class ServerPins:
         Returns the pinned b32, or None if nothing was pending."""
         name = name.lower()
         with self._lock:
+            if self._unreadable is not None:
+                return None             # nothing is pinned over an unreadable file
             b32 = self._pending.pop(name, None)
             if b32 is None:
                 return None
@@ -211,6 +262,8 @@ class ServerPins:
         name, b32 = name.lower(), b32.lower().strip()
         if not b32.endswith(".b32.i2p") or len(b32) != 60:
             raise ValueError("not a .b32.i2p address")
+        if self.unreadable() is not None:
+            raise ValueError("the pins file would not open; move it aside first")
         with self._lock:
             change = self._changes.get(name)
             if change is None or change[1] != b32:
@@ -219,13 +272,39 @@ class ServerPins:
             self._approved[name] = b32
 
     def forget(self) -> None:
+        """Wipe & Exit: the user destroys every pin, a file that would not
+        open included."""
         with self._lock:
+            self._unreadable = None
             self._pins.clear()
             self._pending.clear()
             self._approved.clear()
             self._changes.clear()
             if self._path and os.path.exists(self._path):
                 os.remove(self._path)
+
+
+class _NotPins(ValueError):
+    """Valid JSON, but not the shape the pins file has."""
+
+
+def _validated(data) -> Dict[str, Dict[str, object]]:
+    """The pins in [data], or _NotPins: a table of server name -> {"b32": a
+    .b32.i2p address, optionally "since": seconds}. Nothing is dropped
+    quietly: one malformed entry refuses the file."""
+    if not isinstance(data, dict):
+        raise _NotPins("not a table")
+    pins = {}
+    for name, entry in data.items():
+        b32 = entry.get("b32") if isinstance(entry, dict) else None
+        if not (isinstance(name, str) and name.strip()
+                and isinstance(b32, str) and b32.endswith(".b32.i2p") and len(b32) == 60):
+            raise _NotPins("an entry is not a pin")
+        since = entry.get("since", 0)
+        if isinstance(since, bool) or not isinstance(since, int):
+            raise _NotPins("an entry is not a pin")
+        pins[name.lower()] = dict(entry)
+    return pins
 
 
 _DEFAULT: Optional[ServerPins] = None

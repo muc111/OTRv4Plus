@@ -427,8 +427,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         val ctl = controller ?: return null
         val d = ctl.callAttr("destination_change")
         fun str(k: String) = d?.callAttr("get", k)?.toString() ?: ""
-        if (str("seen").isBlank()) return null
-        return ServerIdentityChange(str("server"), str("trusted"), str("seen"))
+        if (str("seen").isBlank() && str("unreadable").isBlank()) return null
+        return ServerIdentityChange(str("server"), str("trusted"), str("seen"),
+            unreadable = str("unreadable"))
     }
 
     /**

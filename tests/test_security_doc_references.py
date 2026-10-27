@@ -39,6 +39,8 @@ REMOVED = {
         "P1: the residual it asserted is fixed",
     "test_the_app_engines_are_built_with_a_trust_database_in_memory":
         "P1: the residual it asserted is fixed",
+    "test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use":
+        "X1 residual 5: the residual it asserted is fixed",
 }
 
 

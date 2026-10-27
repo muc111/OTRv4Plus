@@ -1459,6 +1459,29 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
                     "Tor did not open a circuit to the server (%s). Nothing "
                     "was sent any other way." % type(exc).__name__)
 
+        # X1: a pins file that will not open is refused here, before the
+        # forwarder exists -- so before HELLO, SESSION CREATE and NAMING
+        # LOOKUP, and before any byte reaches the router. Read as empty, it
+        # would make a changed destination a first visit (residual 5, closed).
+        from . import server_pins as _pins_mod
+        try:
+            _pins_mod.ensure_pins_usable(
+                route.host, self._pins(),
+                shipped=_address.shipped_server_address(route.host),
+                self_authenticating=route.self_authenticating)
+        except _pins_mod.PinsUnreadable as exc:
+            self._emit_state("failed")
+            _TRACE.record("i2p", "server_pins_unreadable", "error")
+            _TRACE.record("auth", "blocked", "error", reason="server pins unreadable")
+            raise TransportError(
+                "i2p_server_pins_unreadable",
+                "SECURITY: the file that records which I2P destination each "
+                "server was trusted at would not open (%s):\n  %s\n"
+                "Nothing was sent and you were not signed in: without it, a "
+                "changed server address could not be told from a first visit. "
+                "The file has not been changed. Move it aside, or restore it, "
+                "then log in again." % (exc.reason, exc.path))
+
         # Inside its own try, and separately coded. This import pulls in
         # otrv4plus_xmpp and therefore the whole engine, and it sat outside the
         # try below -- so a failure here escaped as a bare exception and was

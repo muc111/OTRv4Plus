@@ -3876,17 +3876,28 @@ def _server_identity(name):
     raises DestinationChanged before any byte reaches a destination the
     rule refuses (android_bridge.server_pins.check_destination). `confirm()`
     pins a first-use or approved destination once sign-in succeeded.
+
+    Raises PinsUnreadable at once, before anything is sent to the router,
+    when the pins file will not open and this name would consult it
+    (`ensure_pins_usable`, the app's rule; X1 residual 5, closed).
     """
     from android_bridge import server_pins as pins_mod
     pins = pins_mod.default_store()
     name = name.strip().lower()
     shipped = _address.shipped_server_address(name)
     typed_b32 = name.endswith(".b32.i2p")
+    def preflight():
+        pins_mod.ensure_pins_usable(name, pins, shipped=shipped,
+                                    self_authenticating=typed_b32)
 
     def verify(dest_b64):
         seen = pins_mod.b32_of_destination(dest_b64)
         pins_mod.check_destination(name, seen, pins, shipped=shipped,
                                    self_authenticating=typed_b32)
+
+    # The reconnect loop runs this before it asks the router for anything.
+    verify.preflight = preflight
+    preflight()
 
     def confirm():
         if not shipped and not typed_b32:
@@ -3917,6 +3928,19 @@ def _ask_to_trust(changed, pins):
         return False
     pins.approve(changed.name, changed.seen)
     return True
+
+
+def _pins_unreadable(exc):
+    """The server pins file will not open: say which, and stop before any
+    byte reaches the router. Nothing is rewritten or replaced."""
+    print("\n[i2p] SECURITY: the server pins file would not open (%s):"
+          % exc.reason, file=sys.stderr)
+    print("[i2p]   %s" % exc.path, file=sys.stderr)
+    print("[i2p] Nothing was sent. Without it a changed server address could "
+          "not be told from a first visit.", file=sys.stderr)
+    print("[i2p] The file has not been changed. Move it aside, or restore it, "
+          "and start again.", file=sys.stderr)
+    sys.exit(1)
 
 
 def _sam_failed(e, args):
@@ -3957,8 +3981,11 @@ def _open_connection(client, args, server_b32, use_i2p, use_tor):
         # needs no local note.
         if server_b32.endswith(".b32.i2p"):
             client._i2p_server_dest = server_b32
-        from android_bridge.server_pins import DestinationChanged
-        verify, client._confirm_server, pins = _server_identity(server_b32)
+        from android_bridge.server_pins import DestinationChanged, PinsUnreadable
+        try:
+            verify, client._confirm_server, pins = _server_identity(server_b32)
+        except PinsUnreadable as unreadable:
+            _pins_unreadable(unreadable)
         client._server_check = verify
         for attempt in (1, 2):
             try:

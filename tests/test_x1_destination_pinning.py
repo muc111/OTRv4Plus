@@ -395,6 +395,124 @@ class TestReapproval:
             SP._DEFAULT = saved
 
 
+# ── a pins file that will not open (X1 residual 5, closed) ───────────────────
+
+def _pins_file(content):
+    """A pins file with [content], in a directory of its own."""
+    path = os.path.join(tempfile.mkdtemp(prefix="otrv4plus-x1-pins-"), "server_pins.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    return path
+
+
+def _refused(sam, path):
+    """One attempt with the pins at [path]: the TransportError it raised."""
+    with pytest.raises(TransportError) as e:
+        _connect(sam, SP.ServerPins(path))
+    return e.value
+
+
+NOT_PINS = ["[]", '"pins"', "{\"%s\": \"%s\"}" % (NAME, B32_A),
+            '{"%s": {"b32": 5}}' % NAME, '{"%s": {"b32": "short.b32.i2p"}}' % NAME,
+            '{"%s": {"b32": "%s", "since": "yesterday"}}' % (NAME, B32_A),
+            '{"%s": {"since": 1}}' % NAME]
+
+
+class TestAnUnreadablePinsFileIsRefused:
+    """Refused, never replaced (P1's rule). Read as empty, the file let the
+    next connection to a changed destination count as a first visit."""
+
+    def test_a_corrupt_pins_file_refuses_the_connection_and_names_the_file(self, sam):
+        path = _pins_file("{not json")
+        err = _refused(sam, path)
+        assert err.code == "i2p_server_pins_unreadable"
+        assert path in str(err)
+        assert open(path, encoding="utf-8").read() == "{not json", "the file was changed"
+        assert not os.path.exists(path + ".tmp")
+        assert sam.streams_to() == [] and not sam.received
+        assert not _password_reached(sam, DEST_A)
+
+    def test_a_missing_pins_file_is_a_first_run_and_proceeds(self, sam):
+        path = os.path.join(tempfile.mkdtemp(prefix="otrv4plus-x1-pins-"), "server_pins.json")
+        pins = SP.ServerPins(path)
+        t = _transport(sam, pins)
+        try:
+            t.connect()
+            assert _wait_for(lambda: _password_reached(sam, DEST_A))
+        finally:
+            t.close()
+        assert pins.pinned(NAME) == B32_A
+        assert SP.ServerPins(path).pinned(NAME) == B32_A, "pinned and written"
+
+    @pytest.mark.parametrize("content", NOT_PINS)
+    def test_a_structurally_invalid_pins_file_refuses(self, sam, content):
+        path = _pins_file(content)
+        err = _refused(sam, path)
+        assert err.code == "i2p_server_pins_unreadable" and path in str(err)
+        assert open(path, encoding="utf-8").read() == content
+
+    def test_the_refusal_fires_before_naming_lookup_and_session_create(self, sam):
+        err = _refused(sam, _pins_file("{not json"))
+        assert err.code == "i2p_server_pins_unreadable"
+        assert not any(c.startswith(("NAMING LOOKUP", "SESSION CREATE", "STREAM CONNECT"))
+                       for c in sam.commands), sam.commands
+        events = [(ev["component"], ev["event"]) for ev in TRACE.events()]
+        assert ("i2p", "server_pins_unreadable") in events
+
+    def test_the_file_is_read_again_once_it_is_moved_aside_and_never_rewritten(self, sam):
+        path = _pins_file("{not json")
+        pins = SP.ServerPins(path)
+        with pytest.raises(TransportError):
+            _connect(sam, pins)
+        assert pins.confirm(NAME) is None and open(path).read() == "{not json"
+        os.replace(path, path + ".aside")               # the user moves it aside
+        _connect(sam, pins)
+        assert pins.pinned(NAME) == B32_A
+        assert open(path + ".aside").read() == "{not json"
+
+    def test_a_shipped_or_typed_b32_server_does_not_consult_the_pins(self):
+        pins = SP.ServerPins(_pins_file("{not json"))
+        SP.ensure_pins_usable(B32_A, pins, shipped=None, self_authenticating=True)
+        SP.ensure_pins_usable("x.i2p", pins, shipped=B32_A, self_authenticating=False)
+        with pytest.raises(SP.PinsUnreadable):
+            SP.ensure_pins_usable("x.i2p", pins, shipped=None, self_authenticating=False)
+        with pytest.raises(SP.PinsUnreadable):
+            pins.check("x.i2p", B32_A)                  # never NEW
+        with pytest.raises(ValueError):
+            pins.approve("x.i2p", B32_A)
+
+    def test_the_warning_names_the_file_and_offers_nothing_to_approve(self):
+        path = _pins_file("{not json")
+        saved = SP._DEFAULT
+        SP._DEFAULT = SP.ServerPins(path)
+        try:
+            ctl = ConnectionController(object(), ConnectionProfile(jid=JID))
+            change = ctl.destination_change()
+            assert change["unreadable"] == path and change["seen"] == ""
+            assert not ctl.approve_server_destination(B32_B)["ok"]
+        finally:
+            SP._DEFAULT = saved
+        assert open(path).read() == "{not json"
+
+    def test_registration_is_refused_too(self, sam):
+        path = _pins_file("{not json")
+        t = _transport(sam, SP.ServerPins(path))
+        try:
+            code, _detail = t.register_account()
+        finally:
+            t.close()
+        assert code == "server_identity_changed"
+        assert not any(c.startswith(("NAMING LOOKUP", "SESSION CREATE")) for c in sam.commands)
+        assert open(path, encoding="utf-8").read() == "{not json"
+
+    def test_wipe_still_destroys_a_pins_file_that_would_not_open(self):
+        path = _pins_file("{not json")
+        pins = SP.ServerPins(path)
+        pins.forget()
+        assert not os.path.exists(path)
+        assert pins.unreadable() is None
+
+
 # ── persistence ──────────────────────────────────────────────────────────────
 
 class TestPersistence:
@@ -410,20 +528,6 @@ class TestPersistence:
         b = SP.ServerPins(path)
         assert b.pinned(NAME) == B32_A
         assert b.check(NAME, B32_B) == SP.CHANGED
-
-    def test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use(self):
-        """Stated residual (SECURITY_ISSUES X1, 5): a pins file that will not
-        open is read as empty, so a changed destination is first use, not a
-        refused change. SCRAM-only still keeps the password off the wire.
-        Asserted so that a change to this behaviour is a decision, not a
-        surprise (owner decision pending, 2026-10-27)."""
-        path = os.path.join(tempfile.mkdtemp(), "server_pins.json")
-        a = SP.ServerPins(path)
-        a.check(NAME, B32_A)
-        a.confirm(NAME)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write("{not json")
-        assert SP.ServerPins(path).check(NAME, B32_B) == SP.NEW
 
     def test_forget_removes_the_file(self):
         path = os.path.join(tempfile.mkdtemp(), "server_pins.json")

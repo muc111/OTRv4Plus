@@ -39,6 +39,7 @@ _REGISTRATION_CODES = {
     "forwarder_import_failed": "unknown",
     # X1 and the Tor route: their own codes, never folded into "network".
     "i2p_destination_changed": "server_identity_changed",
+    "i2p_server_pins_unreadable": "server_identity_changed",
     "tor_unavailable": "tor_unavailable",
     "client_build_failed": "unknown",
     "cancelled": "cancelled",

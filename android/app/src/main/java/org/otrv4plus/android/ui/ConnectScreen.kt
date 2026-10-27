@@ -557,6 +557,29 @@ private fun ServerIdentityWarning(
 ) {
     var confirming by remember { mutableStateOf(false) }
     Spacer(Modifier.height(4.dp))
+    if (change.unreadable.isNotBlank()) {
+        // The same warning, for a file of trusted addresses that would not
+        // open: refused, never replaced, so there is nothing to approve here.
+        Text(
+            "Security warning: the server's trusted address could not be read",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+        Text(
+            "The file that records which I2P destination ${change.server} was " +
+                "trusted at would not open. Without it, a changed address could " +
+                "not be told from a first visit, so the connection was stopped " +
+                "before anything was sent, and you were not signed in. The file " +
+                "has not been changed. Move it aside or restore it, then log in " +
+                "again.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        SelectionContainer {
+            Text("File: ${change.unreadable}", style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedButton(onClick = onKeep) { Text("OK") }
+        return
+    }
     Text(
         "Security warning: the server's address changed",
         style = MaterialTheme.typography.titleSmall,

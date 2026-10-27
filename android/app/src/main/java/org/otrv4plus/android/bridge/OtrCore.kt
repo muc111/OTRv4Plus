@@ -625,6 +625,14 @@ data class ServerIdentityChange(
     val server: String,
     val trusted: String,
     val seen: String,
+    /**
+     * Not blank when the file of trusted destinations would not open (X1
+     * residual 5, closed): its path. Then [trusted] and [seen] are blank, the
+     * attempt stopped before anything reached the router, and there is
+     * nothing to approve -- approving would rewrite the file. The user moves
+     * it aside or restores it.
+     */
+    val unreadable: String = "",
 )
 
 /**

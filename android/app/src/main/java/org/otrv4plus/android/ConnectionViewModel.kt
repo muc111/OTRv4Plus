@@ -269,8 +269,8 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
                     // service into `error` would have wiped a probe failure on
                     // the next tick.
                     // Looked up once per refusal, on the tick it first appears.
-                    if (it.failure == DESTINATION_CHANGED &&
-                        connectionFailure != DESTINATION_CHANGED) {
+                    if ((it.failure == DESTINATION_CHANGED || it.failure == PINS_UNREADABLE) &&
+                        connectionFailure != it.failure) {
                         loadIdentityChange()
                     }
                     connectionFailure = it.failure
@@ -567,5 +567,8 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
 
         /** The transport's code for an X1 refusal (android_bridge.transport). */
         const val DESTINATION_CHANGED = "i2p_destination_changed"
+
+        /** The file of trusted server destinations would not open (X1). */
+        const val PINS_UNREADABLE = "i2p_server_pins_unreadable"
     }
 }
