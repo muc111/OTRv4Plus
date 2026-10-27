@@ -3553,12 +3553,62 @@ async def _input_loop(client):
 # Entry point
 # =============================================================================
 
+class _RegistrationOnly:
+    """What `ConnectionController.register` needs of an app: nothing arrives
+    over a registration stream, so there is nothing to deliver."""
+
+    def set_event_sink(self, _sink):
+        pass
+
+    def note_presence_lost(self):
+        pass
+
+
+def _register_account(args, password):
+    """--register: create the account exactly as the apps' Create account
+    does (`android_bridge.connection.ConnectionController.register`): the
+    route decided the same way, the egress rule, the X1 destination check
+    and SCRAM-only, the same codes and sentences. Exits on failure; the
+    sign-in that follows uses the password just set."""
+    if getattr(args, "insecure_tls", False):
+        sys.exit("[register] Not with --insecure-tls: a new account's password is "
+                 "never sent to a server whose certificate is not checked.")
+    from android_bridge.connection import ConnectionController
+    from android_bridge.settings import ConnectionProfile
+    server = (args.server or "").strip()
+    if args.port and int(args.port) != 5222:
+        server = "%s:%d" % (server or _address.jid_domain(args.jid), int(args.port))
+    transport = ("tor" if getattr(args, "tor", False)
+                 else "clearnet_tls" if getattr(args, "no_i2p", False) else "auto")
+    try:
+        profile = ConnectionProfile(
+            jid=args.jid, server=server, sam_host=args.sam_host,
+            sam_port=int(args.sam_port), transport=transport,
+            socks_host=args.socks_host, socks_port=int(args.socks_port))
+    except Exception as exc:
+        sys.exit("[register] %s" % exc)
+    print("[register] creating %s ..." % args.jid)
+    result = ConnectionController(_RegistrationOnly(), profile).register(password)
+    if not result.get("ok"):
+        sys.exit("[register] The account was not created: %s (%s)"
+                 % (result.get("detail") or "no reason given", result.get("code") or "unknown"))
+    print("[register] account created; signing in")
+
+
 def _parser():
     """The command line. Kept apart so `main` reads as the steps it takes."""
     ap = argparse.ArgumentParser(
         description=f"OTRv4+ XMPP {XMPP_VERSION} - full OTR + SMP over I2P SAM"
     )
     ap.add_argument("--jid", required=True, help="your full JID")
+    ap.add_argument(
+        "--register",
+        action="store_true",
+        help="create the account on the server first (XEP-0077), then sign "
+             "in: the same rules as the Android and desktop apps' Create "
+             "account (SCRAM-only where certificates are not checked, the "
+             "server's I2P destination pinned)",
+    )
     ap.add_argument("--peer", help="default peer JID for /otr, /smp, chat")
     ap.add_argument(
         "--server",
@@ -4149,6 +4199,10 @@ def main():
               "on its name, not on its .b32.i2p address)")
 
     password = getpass.getpass(f"Password for {args.jid}: ")
+    if args.register:
+        if getpass.getpass("Same password again: ") != password:
+            sys.exit("[register] The two passwords differ; nothing was sent.")
+        _register_account(args, password)
     try:
         client = OTRv4PlusXMPP(args.jid, password, peer=args.peer,
                                debug=args.debug)
