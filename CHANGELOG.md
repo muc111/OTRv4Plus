@@ -6,6 +6,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ## Unreleased (dev) — audit and hardening pass, 2026-10-26
 
+- **Changed: both copies of a chat or group go when its keys are published.**
+  "Publish Chat Keys" is now **End chat & publish keys…**. When either
+  person presses it, the other person's app also removes the chat's earlier
+  messages, once its own keys are published and confirmed by its own
+  server, and both show one line saying so. The same for Publish Group
+  Keys: once the keys are out, every member's app removes the group's
+  earlier messages. Only the button does this; signing out, quitting and
+  automatic key publication clear nothing. The terminal keeps no history
+  and prints the line.
 - **Fixed: the terminal could not join a group after the chat's keys were
   published.** A session that had ended still reported its old level, so
   the apps could show a lock for a chat that had none, and the terminal's

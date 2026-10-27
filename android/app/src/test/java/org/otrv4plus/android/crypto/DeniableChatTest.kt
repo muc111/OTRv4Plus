@@ -40,8 +40,9 @@ class DeniableChatTest {
         }
         assertTrue("Not independently reviewed." in DeniableChat.BODY)
         // The label names the mechanism, as the dialog does (owner,
-        // 2026-10-27: "mechanism is a fact, property is unproven").
-        assertEquals("Publish Chat Keys…", DeniableChat.ACTION)
+        // 2026-10-27: "mechanism is a fact, property is unproven"), and says
+        // the chat ends (owner, the same day: "End chat & publish keys").
+        assertEquals("End chat & publish keys…", DeniableChat.ACTION)
         assertEquals("Publish keys", DeniableChat.CONFIRM)
         for (label in listOf(DeniableChat.ACTION, DeniableChat.TITLE, DeniableChat.CONFIRM)) {
             assertFalse("deniab" in label.lowercase(), label)
@@ -120,6 +121,51 @@ class DeniableChatTest {
         DeniableChat.apply("made_deniable", chat, alice)
         say(store, "new", alice)
         assertEquals(listOf("new"), store.messages(alice).map { it.id })
+    }
+
+    // ── the other side's copy goes too (owner, 2026-10-27) ──────────────────
+
+    private fun at(store: PersistentMessageStore, id: String, to: String, ms: Long) =
+        store.append(Message(id, to, "hi $id", false, ms, SendState.NONE,
+                             SecurityLabel.ENCRYPTED, ""))
+
+    @Test fun `keys published, what came before goes and the line and what came after stay`() {
+        val disk = Disk()
+        val (chat, store) = process(disk)
+        at(store, "old1", alice, 1_000L); at(store, "old2", alice, 2_000L)
+        at(store, "new", alice, 9_000L); at(store, "b", bob, 1_500L)
+        chat.handle(org.otrv4plus.android.bridge.OtrEvent.KeysPublished(alice, 5_000L, false, alice))
+        val left = store.messages(alice)
+        assertEquals(listOf("keys:5000:$alice", "new"), left.map { it.id })
+        assertEquals(SecurityLabel.SYSTEM, left[0].security)
+        assertTrue("$alice ended this chat and published its keys" in left[0].body, left[0].body)
+        assertTrue("Earlier messages were removed from this device." in left[0].body)
+        assertEquals(1, store.messages(bob).size, "another chat is untouched")
+        val (_, restarted) = process(disk)
+        assertEquals(listOf("keys:5000:$alice", "new"), restarted.messages(alice).map { it.id },
+                     "the vault holds what the screen shows")
+    }
+
+    @Test fun `the same event twice leaves one line`() {
+        val (chat, store) = process(Disk())
+        at(store, "old", alice, 1_000L)
+        val event = org.otrv4plus.android.bridge.OtrEvent.KeysPublished(alice, 5_000L, false, "")
+        chat.handle(event); chat.handle(event)
+        assertEquals(listOf("keys:5000:"), store.messages(alice).map { it.id })
+    }
+
+    @Test fun `the published lines describe what happened and claim nothing more`() {
+        val lines = listOf(DeniableChat.published("", false), DeniableChat.published(alice, false),
+                           DeniableChat.published("", true), DeniableChat.published(alice, true))
+        for (line in lines) {
+            assertFalse("deniab" in line.lowercase(), line)
+            assertFalse("no longer proves" in line.lowercase(), line)
+            assertTrue("removed from this device" in line, line)
+        }
+        assertTrue("your server confirmed them" in DeniableChat.published("", false))
+        assertTrue("group keys" in DeniableChat.published(alice, true))
+        assertTrue("your contact's app deletes its copy once its own keys are published" in
+                   DeniableChat.BODY)
     }
 
     @Test fun `no session, nothing deleted`() {

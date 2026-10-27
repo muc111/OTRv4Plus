@@ -264,3 +264,40 @@ def test_an_acknowledgement_that_could_not_go_is_sent_by_maintain():
     b.groups.maintain()
     assert [frm for frm, _ in w.room.log[before:]].count(b.jid) >= 1, "it went"
     assert ROOM not in b.groups._ack_owed
+
+
+# ── every member's copy goes, on the button (owner, 2026-10-27) ────────────
+
+def _cleared(m):
+    from android_bridge.events import KeysPublished
+    return [e for e in m.events if isinstance(e, KeysPublished)]
+
+
+def test_publish_group_keys_clears_every_members_copy_once_the_keys_are_out():
+    w, (a, b, c) = _group(3)
+    a.groups.make_deniable(ROOM)
+    [ours] = _cleared(a)
+    assert ours.peer == ROOM and ours.group and ours.by == "" and ours.before_ms > 0
+    for m in (b, c):
+        [theirs] = _cleared(m)
+        assert theirs.peer == ROOM and theirs.group and theirs.by == a.jid
+    assert a.texts() == [] and b.texts() == [] and c.texts() == [], "never shown"
+
+
+def test_the_members_copies_wait_until_the_keys_are_published():
+    w, (a, b, c) = _group(3)
+    since = _offline(w, c)
+    a.groups.make_deniable(ROOM)
+    assert _cleared(a) == [] and _cleared(b) == [], "the keys wait for Carol"
+    _back(w, c, since)
+    assert len(_cleared(a)) == 1 and len(_cleared(b)) == 1 and len(_cleared(c)) == 1
+
+
+def test_an_automatic_publication_clears_nothing():
+    w, (a, b, c) = _group(3)
+    now = _clocked([a, b, c])
+    a.groups.rekey(ROOM)
+    now[0] += a.groups.REVEAL_DELAY_SECONDS + 1
+    assert "published:" + ROOM in a.groups.maintain()
+    assert _published_to(b) == [a.jid]
+    assert _cleared(a) == [] and _cleared(b) == [] and _cleared(c) == []

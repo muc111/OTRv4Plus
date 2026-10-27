@@ -554,6 +554,10 @@ class ChatState(
             // [count] still queued, in order. Labelled with what actually
             // happened -- encrypted, or in the clear for a contact without
             // OTRv4+.
+            is OtrEvent.KeysPublished -> {
+                keysPublished(event)
+                false
+            }
             is OtrEvent.QueuedSent -> {
                 promoteQueued(bare(event.peer), event.count, event.encrypted)
                 true
@@ -566,6 +570,31 @@ class ChatState(
             }
             else -> false
         }
+    }
+
+    /**
+     * Someone published this conversation's keys on purpose (owner,
+     * 2026-10-27: "wipe all chat history behind this print") and they are
+     * out. Its messages from before [OtrEvent.KeysPublished.beforeMs] go, from
+     * memory and from the vault; one line says so; what came after (the new
+     * session's messages) stays, below it.
+     */
+    private fun keysPublished(event: OtrEvent.KeysPublished) {
+        val peer = bare(event.peer)
+        if (peer.isEmpty() || !account.isAuthenticated) return
+        val keep = store.messages(peer).filter { it.at > event.beforeMs }
+        store.delete(peer)
+        store.append(Message(
+            id = "keys:${event.beforeMs}:${event.by}",
+            conversationId = peer,
+            body = org.otrv4plus.android.crypto.DeniableChat.published(event.by, event.group),
+            outgoing = false,
+            at = event.beforeMs,
+            sendState = SendState.NONE,
+            security = SecurityLabel.SYSTEM,
+        ))
+        for (m in keep) store.append(m)
+        deleted.restore(peer)
     }
 
     // -- file transfers --------------------------------------------------------

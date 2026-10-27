@@ -1078,6 +1078,12 @@ sealed interface OtrEvent {
      *  now gone: encrypted, or ([encrypted] false) in the clear because the
      *  contact's app turned out not to support OTRv4+. */
     data class QueuedSent(val peer: String, val count: Int, val encrypted: Boolean) : OtrEvent
+    /** Someone pressed "End chat & publish keys" ([group] false) or "Publish
+     *  Group Keys" ([group] true) for [peer] and the keys are out: its
+     *  messages from before [beforeMs] go (ChatState). [by] is who pressed
+     *  it, "" for us. */
+    data class KeysPublished(val peer: String, val beforeMs: Long, val group: Boolean,
+                             val by: String) : OtrEvent
     data class SmpProgressed(val peer: String, val progress: SmpProgress) : OtrEvent
     data class SmpFinished(val peer: String, val state: SmpState) : OtrEvent
 

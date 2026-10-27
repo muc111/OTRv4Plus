@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
 from android_bridge.events import (ErrorOccurred, FileTransferChanged,
-                                   GroupChanged, GroupInvite,
+                                   GroupChanged, GroupInvite, KeysPublished,
                                    RoomMessageReceived, SecurityState,
                                    security_state_from_level)
 from android_bridge.groups import (ROOM_PREFIX, SIGNAL_PREFIX, GroupError,
@@ -438,6 +438,12 @@ class TermuxGroups:
                  mark, ev.body))
             self._activate(ev.peer, only_if_idle=True)
             self._sound("message")
+        elif isinstance(ev, KeysPublished):
+            # Publish Group Keys was pressed and the keys are out: the apps
+            # remove the group's earlier messages. The terminal keeps none.
+            p("[group %s] %s published %s group keys; earlier messages are "
+              "removed in the apps (this terminal keeps none)"
+              % (ev.peer[:64], ev.by or "you", "their" if ev.by else "your"))
         elif isinstance(ev, GroupInvite):
             # Answered with a bare y or n (owner request, 2026-10-10): the
             # same kind of question as an SMP request, and only an exact

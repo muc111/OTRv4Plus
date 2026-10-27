@@ -620,6 +620,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                     str("peer"), SubscriptionPolicy.of(str("policy")))
                 "OtrCapabilityChanged" -> OtrEvent.CapabilityChanged(str("peer"), str("state"))
                 "QueuedSent" -> OtrEvent.QueuedSent(str("peer"), int("count"), flag("encrypted"))
+                "KeysPublished" -> OtrEvent.KeysPublished(
+                    str("peer"), e["before_ms"].asLong(), flag("group"), str("by"))
                 "FileTransferChanged" -> OtrEvent.FileTransferChanged(
                     str("peer"), str("transfer_id"), str("filename"), e["size"].asLong(),
                     flag("outgoing"), str("state"), str("reason"), str("path"))

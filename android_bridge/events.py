@@ -40,7 +40,7 @@ __all__ = [
     "FileTransferChanged", "VoiceNoteReceived", "OtrCapabilityChanged", "EventSink",
     "GroupInvite", "GroupChanged", "GroupEntryRequested",
     "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
-    "MessageChanged", "RoomMessageAcked",
+    "MessageChanged", "RoomMessageAcked", "KeysPublished",
 ]
 
 
@@ -286,6 +286,19 @@ class GroupEntryRequested(Event):
 
     requester: str = ""
     live: bool = True
+
+
+@dataclass(frozen=True)
+class KeysPublished(Event):
+    """Someone pressed "End chat & publish keys" ([group] False) or "Publish
+    Group Keys" ([group] True) and the keys are out: for a chat, our own
+    closing messages for it are confirmed by our server; for a group, the
+    publisher's keys went to the room. The app removes [peer]'s messages
+    from before [before_ms] (wall-clock milliseconds, this device's clock)
+    and shows one line. [by] is who pressed it: "" for us."""
+    before_ms: int = 0
+    group: bool = False
+    by: str = ""
 
 
 @dataclass(frozen=True)

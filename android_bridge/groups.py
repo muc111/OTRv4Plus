@@ -68,6 +68,7 @@ import otrv4plus_actions as _actions
 import otrv4plus_fragment as _fragment
 
 from .trace import TRACE as _TRACE
+from .events import KeysPublished
 from .events import (ErrorOccurred, GroupChanged, GroupInvite, MessageChanged,
                      QueuedSent, RoomMessageReceived, SecurityState)
 
@@ -76,6 +77,12 @@ __all__ = ["SecureGroups", "GroupError", "ROOM_PREFIX", "SIGNAL_PREFIX",
 
 ROOM_PREFIX = "?OTRv4MLS1:"
 SIGNAL_PREFIX = "?OTRv4-MLS:"
+#: A group message saying "I pressed Publish Group Keys and my keys are out"
+#: (F4): each member removes the group's messages from before it. Behind the
+#: group verification prefix on purpose, as REVEAL_MAGIC is: an app from
+#: before it hands it to the verification handler, which drops anything that
+#: is not its JSON, rather than showing it as a line.
+GROUP_KEYS_MARK = "\x00OTRv4GV1:keys-published"
 
 #: Bounds on what a peer or a room can make us hold.
 MAX_ROOM_LEN = 256
@@ -537,6 +544,10 @@ class SecureGroups:
         #: Rooms whose retired keys go as soon as every member is past the
         #: rotation (F4); kept until none wait.
         self._reveal_now: set = set()
+        #: room -> when we pressed Publish Group Keys (ms): once those keys
+        #: are out, GROUP_KEYS_MARK tells the members, and each removes what
+        #: came before it.
+        self._history_due: Dict[str, int] = {}
         #: Rooms owing an acknowledgement of another member's rotation (F4)
         #: that could not go yet (a commit of ours was pending).
         self._ack_owed: set = set()
@@ -2077,11 +2088,13 @@ class SecureGroups:
             if client.has_pending_commit(room.encode()) or room in self._unconfirmed:
                 raise GroupError("commit_pending")
             self._reveal_now.add(room)
+            self._history_due[room] = int(time.time() * 1000)
         try:
             self.rekey(room)
         except ValueError:
             with self._lock:
                 self._reveal_now.discard(room)
+                self._history_due.pop(room, None)
             raise GroupError("commit_pending")
         return "rotating"
 
@@ -2114,7 +2127,29 @@ class SecureGroups:
             # What a device test reads (PHYSICAL_TEST_PLAN §8): a count only.
             _TRACE.record("groups", "keys_published_ours", "info", messages=sent)
             self._emit(GroupChanged(peer=room, change="keys_published_ours"))
+        self._mark_history(room)
         return sent
+
+    def _mark_history(self, room: str) -> None:
+        """Publish Group Keys pressed and every key of ours out: tell the
+        members (GROUP_KEYS_MARK), and remove what came before here too."""
+        with self._lock:
+            due = self._history_due.get(room)
+            client = self._client
+            if due is None or client is None or self._wiped:
+                return
+            if not client.has_group(room.encode()):
+                self._history_due.pop(room, None)
+                return
+            if int(client.retired_count(room.encode())):
+                return                          # some still wait for members
+            try:
+                wire = bytes(client.encrypt(room.encode(), GROUP_KEYS_MARK.encode()))
+            except ValueError:
+                return                          # a commit of ours is pending
+            self._history_due.pop(room, None)
+        self._post(room, wire)
+        self._emit(KeysPublished(peer=room, before_ms=due, group=True, by=""))
 
     def keys_waiting(self, room: str) -> List[str]:
         """Who our retired keys for [room] wait for (F4): members not yet
@@ -2248,7 +2283,12 @@ class SecureGroups:
                 fp = bytes(client.member_fingerprint(room.encode(), bytes(ev["sender"]))).hex()
                 known = self._bound.get(room, {}).get(sender)
                 verified = bool(known and known[0] == fp and known[1])
-            if kind == "application" and text.startswith("\x00OTRv4GC1:"):
+            if kind == "application" and text == GROUP_KEYS_MARK:
+                # A member pressed Publish Group Keys and its keys are out:
+                # what we have of the group until now goes. Never shown.
+                event = KeysPublished(peer=room, before_ms=int(time.time() * 1000),
+                                      group=True, by=sender)
+            elif kind == "application" and text.startswith("\x00OTRv4GC1:"):
                 # A call control message: to the call manager, never shown.
                 control = (sender, verified, text[len("\x00OTRv4GC1:"):])
                 event = None

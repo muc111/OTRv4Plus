@@ -924,6 +924,49 @@ class TestAcceptWhenTheSessionHasEnded:
         assert "groups.on_otr_ready(peer)" in hook
 
 
+class TestKeysPublishedReachTheTerminal:
+    """Owner, 2026-10-27: when the app's person publishes a chat's or a
+    group's keys, the other side says so. The terminal keeps no history, so
+    it prints the line only (the apps remove theirs: ChatState)."""
+
+    def test_the_apps_end_chat_and_publish_keys_is_said_on_the_terminal(self, world, capsys):
+        w = world
+
+        async def go():
+            w.c.app.start_session(w.b.jid)
+            await w.server.pump()
+            assert w.c.app.make_chat_deniable(w.b.jid, restart=False).startswith("made_deniable")
+            await w.server.pump()
+
+        run(go())
+        out = capsys.readouterr().out
+        assert "chose to end this chat and publish its keys" in out, out[-600:]
+        assert "PUBLISHED:" not in out, "the signal itself is never shown"
+
+    def test_the_apps_publish_group_keys_is_said_on_the_terminal(self, world):
+        w = world
+
+        async def go():
+            w.c.app.start_session(w.b.jid)
+            await w.server.pump()
+            w.server.rooms.setdefault(ROOM, {})[w.c.jid] = w.c.jid.split("@")[0]
+            w.c.app.note_room_joined(ROOM)
+            w.c.app.groups.create(ROOM)
+            w.c.app.groups.invite(ROOM, w.b.jid)
+            await w.server.pump()
+            await w.b.cmd("/group accept " + ROOM)
+            for _ in range(3):
+                await w.server.pump()
+            assert w.b.groups.groups.is_secure(ROOM)
+            w.c.app.groups.make_deniable(ROOM)
+            for _ in range(3):
+                await w.server.pump()
+
+        run(go())
+        assert w.b.lines("published their group keys"), "\n".join(w.b.printed[-8:])
+        assert not w.b.lines("keys-published")
+
+
 def test_room_fragments_fit_a_stock_prosody():
     """Every room fragment, header included, under mod_muc_limits' default
     5664 characters, for the largest frame a group posts (a commit adding a

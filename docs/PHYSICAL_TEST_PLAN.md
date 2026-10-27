@@ -380,8 +380,30 @@ same. Nothing here expects it on disk: if it were, that would reverse a
 privacy decision (a record of whom a chat was published with) and is a
 finding, not a test step.
 
+**Both copies go (2026-10-27).** On the button only.
+
+14a. **A chat.** A and B (phone and laptop) exchange a few lines. On A: End
+    chat & publish keys…, confirm. **Pass:** on A, the chat shows one line
+    "You ended this chat and published its keys; your server confirmed
+    them. Earlier messages were removed from this device." with the old
+    lines gone. On B, within a minute, one line "<A> ended this chat and
+    published its keys, and this app published its own; …", with the old
+    lines gone. New messages after it stay on both. Restart both apps: the
+    same.
+14b. **Sign-out clears nothing.** Exchange lines again, sign out on A and
+    back in. **Pass:** both keep their history; no such line.
+14c. **A group.** In a group with A, B and D: Publish Group Keys… on A.
+    **Pass:** once the keys go (12a's `keys_published_ours`), A, B and D
+    each show one line ("You published your group keys…" on A, "<A>
+    published their group keys…" on B and D) and the group's earlier
+    messages are gone on all three. An automatic rotation (wait past it)
+    clears nothing.
+14d. **The terminal.** With T in the chat or group: T prints the line
+    ("chose to end this chat and publish its keys", "published their group
+    keys") and nothing else changes on T.
+
 15. **Offline, then back.** In A's chat with B, turn A's network off,
-    Publish Chat Keys…, confirm. Turn the network on without closing the
+    End chat & publish keys…, confirm. Turn the network on without closing the
     app. **Pass:** the closing message goes once A is back (B's side ends
     the old session; Debug trace on A shows the closing message sent).
 16. **Offline, then the app ends.** As 15, but force-stop A before turning

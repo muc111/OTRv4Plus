@@ -37,7 +37,7 @@ import otrv4plus_actions as _actions
 from .trace import TRACE as _TRACE
 from .app_base import BridgeError, _log, _new_message_id, redacting_logger  # noqa: F401
 from .app_calls import CallsMixin
-from .app_deniable import DeniableMixin
+from .app_deniable import KEYS_PUBLISHED_SIGNAL, DeniableMixin
 from .app_files import FilesMixin
 from .app_rooms import RoomChatMixin
 from .app_smp import SmpMixin
@@ -1463,6 +1463,12 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
             self._touch(peer)
             self.files.handle_signal(peer, body)
             self._announce_smp_change(peer, before_smp)
+            return None
+
+        # The contact pressed "End chat & publish keys" (app_deniable).
+        if body.startswith(KEYS_PUBLISHED_SIGNAL):
+            self._touch(peer)
+            self.on_keys_published_signal(peer)
             return None
 
         # GROUP SETUP: an invitation, a KeyPackage or a Welcome for a secure

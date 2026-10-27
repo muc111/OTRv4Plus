@@ -630,6 +630,10 @@ def _is_otr_frame(out) -> bool:
 #: so this module still imports without the android_bridge package;
 #: tests/test_termux_groups.py holds the two equal.
 GROUP_SIGNAL_PREFIX = "?OTRv4-MLS:"
+#: The contact pressed "End chat & publish keys" (android_bridge.app_deniable
+#: KEYS_PUBLISHED_SIGNAL, restated as the prefix above is). Sent inside the
+#: session just before it closes; a client that does not know it drops it.
+KEYS_PUBLISHED_SIGNAL = GROUP_SIGNAL_PREFIX + "PUBLISHED:"
 
 # SMP passphrase length bounds enforced before passing to the Rust engine.
 # Defined in the engine (otrv4+.py) since v10.23.0 so both clients agree;
@@ -1632,6 +1636,13 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                               "transfer subsystem was ready — ignoring")
                     return
 
+                if text.startswith(KEYS_PUBLISHED_SIGNAL):
+                    print("[otr] %s chose to end this chat and publish its keys; "
+                          "their app removes its copy of the chat, and yours "
+                          "publishes its keys as the session ends (this "
+                          "terminal keeps no history)" % _sanitise(peer, 128))
+                    return
+
                 # Secure-group setup (invitation, KeyPackage, Welcome) travels
                 # only inside an OTRv4+ session and is never shown as chat.
                 if text.startswith(GROUP_SIGNAL_PREFIX):
@@ -2106,6 +2117,16 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         """/deniable: publish every MAC key of the session with [peer], tell
         them it has ended, forget it, and start a fresh session that shares
         no key with the one whose MAC keys are now public."""
+        # Tell the contact's app first, inside the session, so it removes its
+        # copy of the chat once its own keys are published.
+        try:
+            if self.otr.has_encrypted_session(peer):
+                frame, ok = self.otr.handle_outgoing_message(peer, KEYS_PUBLISHED_SIGNAL)
+                if ok and frame:
+                    self.send_otr_fragmented(
+                        peer, frame if isinstance(frame, str) else frame.decode("utf-8"))
+        except Exception:
+            pass
         try:
             done = self.otr.make_deniable(peer)
         except Exception as exc:

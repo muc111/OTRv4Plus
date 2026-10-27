@@ -349,8 +349,10 @@ class TestMultiPartClose:
 
     def test_bobs_close_is_two_parts_each_with_its_own_range(self):
         wire, lines, parts = self._run()
-        # Part 2 also carries the key of Alice's closing message (Bob received it).
-        assert [len(p.revealed_mac_keys) for p in parts] == [self.BOUND, self.N - self.BOUND + 1]
+        # Part 2 also carries the keys of what Bob received at the press:
+        # Alice's "keys published" message (app_deniable, 2026-10-27) and her
+        # closing message.
+        assert [len(p.revealed_mac_keys) for p in parts] == [self.BOUND, self.N - self.BOUND + 2]
         first = {bytes(k) for k in parts[0].revealed_mac_keys}
         second = {bytes(k) for k in parts[1].revealed_mac_keys}
         assert not first & second, "no key in two parts"

@@ -24,20 +24,41 @@ import org.otrv4plus.android.bridge.SecurityState
  */
 object DeniableChat {
 
-    const val ACTION = "Publish Chat Keys…"
-    const val TITLE = "Publish this chat's keys and start again?"
+    /** "End chat & publish keys" from 2026-10-27 (owner): it says the chat
+     *  ends, which is true, and names what happens. */
+    const val ACTION = "End chat & publish keys…"
+    const val TITLE = "End this chat and publish its keys?"
     const val CONFIRM = "Publish keys"
 
     const val BODY =
-        "Publishes the keys used to authenticate this chat's messages, so a copy " +
-            "of the chat cannot prove who wrote what. Your messages stay encrypted: " +
+        "Publishes the keys used to authenticate this chat's messages, so anyone " +
+            "holding them can make a message pass that check. Your messages stay encrypted: " +
             "only their authentication keys are published. The app asks your server " +
             "to confirm it received them, then ends this encrypted session and " +
             "starts a new one that shares no keys with it. It does not hide that you " +
             "two talked: starting a session is signed. This chat's history is " +
-            "deleted from this device, so only the new session's messages are shown. " +
+            "deleted from this device, so only the new session's messages are shown, " +
+            "and your contact's app deletes its copy once its own keys are published. " +
             "Not independently reviewed. A copy made before the keys are published, " +
             "or a close that does not finish, can still be proof."
+
+    /**
+     * The line left in a conversation whose keys were published on purpose
+     * (ChatState): who did it, and that the earlier messages were removed
+     * here. For a chat it is said once our own keys are confirmed by our
+     * server; for a group, once the publisher's keys are out.
+     */
+    fun published(by: String, group: Boolean): String = when {
+        group && by.isEmpty() -> "You published your group keys. Earlier messages " +
+            "were removed from this device."
+        group -> "$by published their group keys. Earlier messages were removed " +
+            "from this device."
+        by.isEmpty() -> "You ended this chat and published its keys; your server " +
+            "confirmed them. Earlier messages were removed from this device."
+        else -> "$by ended this chat and published its keys, and this app published " +
+            "its own; your server confirmed them. Earlier messages were removed from " +
+            "this device."
+    }
 
     /** Offered only in an established OTRv4+ session -- not plaintext, and
      *  not a session whose key does not match the one pinned. */

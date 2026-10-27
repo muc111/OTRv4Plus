@@ -16,8 +16,15 @@ from __future__ import annotations
 import threading
 import time
 
-from .events import ErrorOccurred, SessionStateChanged
+from .events import ErrorOccurred, KeysPublished, SessionStateChanged
 from .trace import TRACE as _TRACE
+
+#: Sent inside the session just before "End chat & publish keys" closes it,
+#: so the contact's app knows the person pressed it (a session also ends at
+#: sign-out or quit, and that clears nothing). A group-setup verb: an app or
+#: terminal that does not know it drops it silently (`SecureGroups.on_signal`
+#: counts it as malformed), and never shows it.
+KEYS_PUBLISHED_SIGNAL = "?OTRv4-MLS:PUBLISHED:"
 
 
 class DeniableMixin:
@@ -32,6 +39,45 @@ class DeniableMixin:
     CLOSING_MAX_TRIES = 40
 
     _closing_lock = threading.Lock()
+
+    def _key_marks(self) -> dict:
+        """peer -> [before_ms, by, state] for a chat whose keys someone chose
+        to publish: "open" until the session it came over has ended (the
+        contact's side), then "confirm" until our closing messages for it are
+        confirmed by our server, when KeysPublished goes to the app."""
+        book = getattr(self, "_published_marks", None)
+        if book is None:
+            book = self._published_marks = {}
+        return book
+
+    def on_keys_published_signal(self, peer: str) -> None:
+        """The contact pressed "End chat & publish keys": what we have of
+        this chat until now goes once our own keys for it are published and
+        confirmed (our app publishes them as the session ends)."""
+        if not self._engine.has_encrypted_session(peer):
+            return                              # only from inside the session
+        self._key_marks()[peer] = [int(time.time() * 1000), peer, "open"]
+        _TRACE.record("otr", "keys_published_signal", "info")
+
+    def _advance_marks(self, closed: set) -> None:
+        """After the closing messages of [closed] peers were taken: a marked
+        chat whose session has now ended waits for their confirmation, or,
+        with nothing of ours to publish, is done."""
+        done = []
+        for peer, mark in list(self._key_marks().items()):
+            if mark[2] != "open":
+                continue
+            if peer in closed:
+                mark[2] = "confirm"
+            elif not self._engine.has_encrypted_session(peer):
+                done.append(peer)
+        for peer in done:
+            self._marks_done(peer)
+
+    def _marks_done(self, peer: str) -> None:
+        mark = self._key_marks().pop(peer, None)
+        if mark is not None:
+            self._emit(KeysPublished(peer=peer, before_ms=mark[0], group=False, by=mark[1]))
 
     def _closings(self) -> list:
         book = getattr(self, "_unconfirmed_closings", None)
@@ -66,6 +112,8 @@ class DeniableMixin:
                 sent += 1
         if waiting:
             _TRACE.record("otr", "final_revelation", "info", messages=len(waiting), sent=sent)
+        if self._key_marks():
+            self._advance_marks({peer for peer, _ in waiting})
         return sent
 
     def _send_closing(self, entry) -> bool:
@@ -78,6 +126,15 @@ class DeniableMixin:
         except Exception:
             return False
         entry[2] = True
+        if len(entry) > 4:
+            # The "keys published" message: once is enough (the server's
+            # confirmation of the closing messages after it covers it), and a
+            # second copy, from a session the contact has closed, makes their
+            # app start a new one.
+            with self._closing_lock:
+                book = self._closings()
+                if entry in book:
+                    book.remove(entry)
         return True
 
     def confirm_closings(self) -> bool:
@@ -102,8 +159,12 @@ class DeniableMixin:
                     if e in book:
                         book.remove(e)
             left = bool(book)
+            waiting_for = {e[0] for e in book}
         if ok:
             _TRACE.record("otr", "closing_confirmed", "info", messages=len(sent))
+            for peer, mark in list(self._key_marks().items()):
+                if mark[2] == "confirm" and peer not in waiting_for:
+                    self._marks_done(peer)
         return ok and not left
 
     def resend_unconfirmed_closings(self) -> None:
@@ -159,6 +220,19 @@ class DeniableMixin:
         or "no_session"."""
         peer = self.canonical_peer(peer)
         before = self.security_state(peer)
+        # Tell the contact's app first, inside the session: its copy of this
+        # chat goes too, once its keys are published (KEYS_PUBLISHED_SIGNAL).
+        # Encrypted now, while the session is up, and kept with the closing
+        # messages, ahead of them: offline, it waits and goes with them.
+        marker = None
+        try:
+            if self._engine.has_encrypted_session(peer):
+                frame, ok = self._engine.handle_outgoing_message(peer, KEYS_PUBLISHED_SIGNAL)
+                if ok and frame:
+                    marker = frame if isinstance(frame, str) else frame.decode("utf-8")
+        except Exception:
+            _TRACE.record("otr", "keys_published_signal_not_sent", "warning")
+        pressed = [int(time.time() * 1000), "", "confirm"]
         try:
             done = bool(self._engine.make_deniable(peer))
         except Exception as exc:
@@ -166,8 +240,16 @@ class DeniableMixin:
             done = False
         if not done:
             return "no_session"
+        self._key_marks()[peer] = pressed
+        if marker:
+            entry = [peer, marker, False, 0, "keys_published"]
+            with self._closing_lock:
+                self._closings().append(entry)
+            self._send_closing(entry)
         self._send_final_revelations()
         confirmed = self.confirm_closings()
+        if confirmed and peer in self._key_marks():
+            self._marks_done(peer)              # nothing of ours left unconfirmed
         _TRACE.record("otr", "made_deniable", "info", jid=peer, confirmed=confirmed)
         after = self.security_state(peer)
         if after != before:

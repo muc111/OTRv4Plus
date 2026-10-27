@@ -126,6 +126,11 @@ internal object ChaquopyEvents {
                     str("peer"), int("count"),
                     item.callAttr("get", "encrypted")?.toBoolean() ?: false)
 
+            "KeysPublished" ->
+                OtrEvent.KeysPublished(
+                    str("peer"), item.callAttr("get", "before_ms")?.toLong() ?: 0L,
+                    item.callAttr("get", "group")?.toBoolean() ?: false, str("by"))
+
             "FileTransferChanged" ->
                 OtrEvent.FileTransferChanged(
                     str("peer"), str("transfer_id"), str("filename"),
