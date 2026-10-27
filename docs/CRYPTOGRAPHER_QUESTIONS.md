@@ -149,46 +149,75 @@ ML-KEM secret enters?
   on every new chain until it is answered (the candidate fix in
   PQC_DECISIONS (d)), with a regression test for the interleaving.
 
-## Q5. F4: what release of the group signing key gives
+## Q5. F4 containment: what keeps a published group key dead
 
-**Correcting the premise first.** In the code, the whole composite leaf
-key is epoch-scoped, not only its ML-DSA half:
-- the Ed448 half and the ML-DSA-87 half are generated together, rotated
-  together on every self-update, and published together, 57 + 4896 bytes
-  (`retired_key_tests::a_publication_carries_both_halves_of_the_composite_key`);
-- no Ed448 half of a leaf key is long-lived.
+**The facts the question rests on** (Rust/mls/src/client.rs,
+`f4_containment_tests`):
+- the published key is one member's retired composite Ed448 + ML-DSA-87
+  leaf key in one group, both halves, made fresh at each self-update
+  (`a_publication_carries_both_halves_of_the_composite_key`,
+  `epoch_N_plus_1_key_cannot_be_derived_from_epoch_N_key`);
+- a member refuses an old-epoch message because OpenMLS keeps no past epoch.
+  Both group configurations set `max_past_epochs(0)` explicitly
+  (`max_past_epochs_is_zero_in_every_group_config`). With one past epoch
+  kept, a member in the later epoch accepts a message signed with the
+  published key
+  (`a_message_signed_with_a_released_epoch_key_is_rejected_by_a_client_in_a_later_epoch`
+  fails under that mutant);
+- a member that has not yet processed the rotation accepts such a message as
+  the publisher's
+  (`residual_a_member_that_has_not_processed_the_rotation_accepts_the_retired_key_until_it_does`).
+  So since 2026-10-27, publication waits until every other member has
+  acknowledged the rotation by a message that verified in its epoch or later
+  (SPEC §10, requirement 11;
+  `publication_waits_until_every_member_has_acknowledged_the_rotation`).
 
-**What is long-lived and attributable** is around the group, not in it:
-- the 1:1 OTRv4+ sessions that carry the invitation, the KeyPackage and
-  the Welcome, and the inviter's fingerprint check. Their v2 handshakes
-  are participation-attributable (Q3);
-- the MLS credential is the bare JID, unsigned.
+**Question.** F4 containment depends on the receiver's past-epoch policy
+(OpenMLS `MaxEpochs(0)`) and on every member having deleted past-epoch
+secrets at commit. If a later client or ciphersuite sets a non-zero
+past-epoch policy, a released key becomes a live forgery tool for that
+epoch. Which of these is right?
+- (a) the zero policy is acceptable as a documented invariant of the
+  implementation;
+- (b) the protocol should mandate zero past epochs at the wire level;
+- (c) publication should always wait for acknowledgement, so that the
+  policy is never load-bearing.
 
-**Question.** Given all of the following, does the release give a
-meaningful deniability statement for group messages, beyond "the group's
-messages, shown after the release, could have been signed by any member
-who received the publication"?
-1. The publication is an MLS message encrypted to the members, so only
-   they can forge
-   (`residual_only_the_groups_members_receive_the_published_key`).
-2. A signature checked before release stays attributable for ever
-   (`residual_a_signature_checked_before_release_still_checks_after_it`).
-3. The handshakes that bound the leaf key to a person are attributable
-   (Q3).
+Today the code does (a) and part of (c). The acknowledgement shows only that
+a member processed the rotation, not that it deleted the old epoch: a member
+whose client kept past epochs would acknowledge and still accept old-epoch
+messages. So the zero policy is still load-bearing for every honest member's
+own acceptance. A secondary question: does releasing one composite secret
+expose anything about other composite keys? No key material is shared
+between leaves.
 
-Specifically: is J's knowledge of the 1:1 handshake (A talked to the
-inviter at time t, then a leaf key with A's JID label joined) enough to
-attribute the leaf key, and so the pre-release signatures, to A?
-Secondary: does releasing a composite secret expose anything about other
-composite keys (no key material is shared between leaves)?
+**What a "yes" changes in the code.**
+- **(a):** nothing. SPEC §10 requirement 11 is the citation, and F4 stays
+  RESOLVED-CODE with containment conditional on acknowledgement.
+- **(b):** the group context gains an extension that states the policy
+  (e.g. "past epochs kept: 0"), which every member checks at join and at
+  each commit. A group whose context says otherwise is refused. This is a
+  new group extension type, so a new MLS+ group version; existing groups are
+  re-created.
+- **(c):** the acknowledgement has to carry a statement of deletion that the
+  publisher can rely on. That is only a promise, not a proof. The code then
+  changes the acknowledgement's content, not when it is sent.
 
-**What the answer changes.**
-- **"Only the members-can-forge statement":** the group dialog already
-  says no more. F4 stays RESOLVED-CODE; the mechanism is kept for what it
-  gives.
-- **"Not meaningful while the 1:1 handshake attributes":** F4 waits for
-  Q6. The group dialog's "so any of them can make signatures under those
-  keys too" stays; the hardening doc says the binding is the weak point.
+**What a "no" changes in the code.** If none of (a)-(c) suffices, F4
+publication is turned off: `reveal_retired` is never called, the button is
+removed from the apps, and F4 returns to OPEN until a different
+construction is reviewed.
+
+**What neither answer resolves.**
+- A signature captured and verified before the release stays attributable
+  (`residual_a_signature_checked_before_release_still_checks_after_it`).
+- The forgers are only the members who received the publication
+  (`residual_only_the_groups_members_receive_the_published_key`).
+- The 1:1 v2 handshakes that carry the invitation, the KeyPackage and the
+  Welcome are participation-attributable (Q3). Whether J can attribute a
+  leaf key to a person through them is Q6's business.
+- A modified client that keeps past epochs is not detectable by honest
+  members under any of (a)-(c).
 
 ## Q6. A KEM-based v3 handshake
 

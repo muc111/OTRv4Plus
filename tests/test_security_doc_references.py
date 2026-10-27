@@ -41,6 +41,9 @@ REMOVED = {
         "P1: the residual it asserted is fixed",
     "test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use":
         "X1 residual 5: the residual it asserted is fixed",
+    "the_epoch_authenticator_is_checked_before_any_group_message_is_accepted":
+        "F4: renamed max_past_epochs_is_zero_in_every_group_config; the old name "
+        "claimed a check MLS does not make",
 }
 
 
