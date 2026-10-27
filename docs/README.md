@@ -45,6 +45,7 @@ records: they describe the code as it was when they were written.
 - [AUDIT_CLAIM_MATRIX.md](AUDIT_CLAIM_MATRIX.md): every protection claimed, its code, its test, its residual
 - [AUDIT_TEST_INTEGRITY.md](AUDIT_TEST_INTEGRITY.md): what each claim test shows, with mutation results
 - [AUDIT_THREAT_MODEL.md](AUDIT_THREAT_MODEL.md): the threat model walked against the code
+- [CRYPTOGRAPHER_BRIEF.md](CRYPTOGRAPHER_BRIEF.md): the cover note for a cryptographer: the ask, what is claimed, known issues, how to check
 - [CRYPTOGRAPHER_QUESTIONS.md](CRYPTOGRAPHER_QUESTIONS.md): the questions only a cryptographer can answer
 
 ## Test plans

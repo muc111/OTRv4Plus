@@ -21,6 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOCS = ["docs/SECURITY_ISSUES.md", "docs/DENIABILITY_LAYERS.md", "docs/PQC_DECISIONS.md",
         "docs/AUDIT_CLAIM_MATRIX.md", "docs/AUDIT_TEST_INTEGRITY.md",
         "docs/AUDIT_THREAT_MODEL.md", "docs/CRYPTOGRAPHER_QUESTIONS.md",
+        "docs/CRYPTOGRAPHER_BRIEF.md",
         "docs/AUDIT_SUMMARY.md", "docs/MLS_SECURITY_HARDENING.md", "SECURITY.md", "README.md"]
 PATH = re.compile(r"(?<![\w/.-])((?:docs|tests|Rust|android_bridge|client|desktop_bridge|"
                   r"research|android/app/src|desktop/src)/[\w./-]+\.(?:md|py|rs|kt|toml|json|sh|yml))")

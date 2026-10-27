@@ -210,8 +210,8 @@ composite keys (no key material is shared between leaves)?
 
 **What the answer changes.**
 - **(a) and (b) yes:** implement it as protocol v3 behind the negotiation
-  byte. It inherits A2's pinning and so its limit P1, which must be fixed
-  first.
+  byte. It inherits A2's pinning, kept across restarts since the P1 fix
+  (2026-10-27).
 - **(c) yes:** it comes before any further F4 work.
 
 ## Q7. SMP's ML-DSA binding (SPEC §6.7)
