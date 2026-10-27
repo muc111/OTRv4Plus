@@ -92,14 +92,28 @@ audited line by line. Older entries are dated records, not current claims.
 | # | Claim (verbatim) | Where | Code | Test(s) | Residual(s) | Status | Fix |
 |---|---|---|---|---|---|---|---|
 | 3.1 | "the v2 handshake authenticates both sides with ML-DSA-87" | SECURITY_ISSUES.md A2 | `dake.rs` | `dake::pq_auth_tests`, `tests/test_pq_auth_v2.py` | TOFU | **DEMONSTRATED** | -- |
-| 3.2 | "and refuses downgrade or key change for a pinned contact" / "a known contact's ML-DSA key is pinned, so dropping or changing it ... is refused" | SECURITY_ISSUES.md A2; SPEC §4.3 (5); SECURITY.md Protocol security ("pinned per contact") | `TrustDatabase.check_or_pin_pq` | `test_dropping_post_quantum_authentication_is_refused`, `test_a_different_ml_dsa_key_is_refused` (one process) | **Android and the desktop keep the trust database in memory** (`OTRConfig().persist_trust` is False; `ChaquopyOtrCore.kt:109`, `desktop_bridge/host.py:375`), so every pin is gone at the next start. Only the terminal persists it (`persist_trust=True`) | **PARTIAL**: true within one run of the app; across restarts on the terminal only | F: new issue **P1** (OPEN); E; T: an asserted-residual test |
-| 3.3 | "Peer identity silently swapped between XMPP sessions — Fingerprint pinned on first contact; a change is reported, never auto-accepted" | SECURITY.md defends table | `TrustDatabase.check_or_pin` | the pinning tests (one process) | as 3.2: after a restart of the app the new key is a first contact | **PARTIAL** | E; F: P1 |
+| 3.2 | "and refuses downgrade or key change for a pinned contact" / "a known contact's ML-DSA key is pinned, so dropping or changing it ... is refused" | SECURITY_ISSUES.md A2; SPEC §4.3 (5); SECURITY.md Protocol security ("pinned per contact") | `TrustDatabase.check_or_pin_pq` | `test_dropping_post_quantum_authentication_is_refused`, `test_a_different_ml_dsa_key_is_refused` (one process) | **Android and the desktop keep the trust database in memory** (`OTRConfig().persist_trust` is False; `ChaquopyOtrCore.kt:109`, `desktop_bridge/host.py:375`), so every pin is gone at the next start. Only the terminal persists it (`persist_trust=True`) | **PARTIAL**: true within one run of the app; across restarts on the terminal only. **Re-checked 2026-10-27: UNSUPPORTED in the apps** -- no app code called the check at all (see the note below) | F: new issue **P1** (OPEN); E; T: an asserted-residual test. **Then fixed (P1, 2026-10-27): DEMONSTRATED** across restarts on Android (with a working Keystore), the desktop and the terminal, by `tests/test_p1_trust_pins_per_run.py` through real apps |
+| 3.3 | "Peer identity silently swapped between XMPP sessions — Fingerprint pinned on first contact; a change is reported, never auto-accepted" | SECURITY.md defends table | `TrustDatabase.check_or_pin` | the pinning tests (one process) | as 3.2: after a restart of the app the new key is a first contact | **PARTIAL**; on re-check **UNSUPPORTED** in the apps: nothing was reported, within a run or after one | E; F: P1. **Then fixed (P1): DEMONSTRATED**: the apps check the pin when a session comes up, show FINGERPRINT_MISMATCH and emit `FingerprintChanged`, and send nothing queued until the user resets trust |
 | 3.4 | "Post-quantum deniability is NOT provided ... A transcript therefore shows that both parties took part" | SPEC §10.1 | -- | -- | -- | **DEMONSTRATED** (a limitation, stated) | -- |
 | 3.5 | "The Ed448 ring signature itself remains deniable." / "Ed448 ring signatures ... are OTR's deniable authentication" | SPEC §10.1; TECHNICAL.md | `ring_sig.rs` | `ring_sig` tests (soundness only) | -- | **EXTERNAL** (Q3) | -- |
 | 3.6 | "either party could have produced any message in the transcript" | SPEC §10.1 | symmetric chain keys | -- | -- | **EXTERNAL** (Q2) | -- |
 | 3.7 | "ML-DSA-87 under keys made fresh for each run, so its signatures attribute to nobody" | PQC_DECISIONS.md (e) | `smp.rs` `mldsa_keygen` per run | **no test** that two runs use two keys | -- | **PARTIAL** (code only) | T: `smp` test |
 | 3.8 | "This is equivalent to the ML-DSA-87 context API without requiring pqcrypto_mldsa to expose a context-parameter interface." | `Rust/src/smp.rs` comment | `mldsa_sign_with_context` prepends the context | -- | FIPS 204's context is `0 ‖ len(ctx) ‖ ctx ‖ M`, not `ctx ‖ M`; and `pqcrypto-mldsa` 0.1.2 does expose `detached_sign_ctx` | **UNSUPPORTED** (comment wrong on both counts; the construction is a domain-separated message, not the FIPS 204 context) | E: comment corrected; Q (CRYPTOGRAPHER_QUESTIONS 7) |
-| 3.9 | "A2's pinning carries over" (to a v3 KEM key) | PQC_DECISIONS.md (e) | -- | -- | inherits 3.2 | **PARTIAL** | E |
+| 3.9 | "A2's pinning carries over" (to a v3 KEM key) | PQC_DECISIONS.md (e) | -- | -- | inherits 3.2 | **PARTIAL** | E. After P1: inherits 3.2 (DEMONSTRATED for the ML-DSA key; no v3 KEM key exists yet to pin) |
+| 3.10 | "Residual: a peer on an older build can still take the double step" | SECURITY_ISSUES.md P2 | the Rust receive path, unchanged (owner, 2026-10-27: the core is left alone) | Rust `pq_ratchet::p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed` | the "older build" is any **v2** build before `884b054`, the released rc.184 included: it lists 0x50 and 0x51, so `pq_v2_required` does not refuse it. Not v1 peers, which that policy refuses already | **DEMONSTRATED** (as a residual; added by the re-run) | E: the P2 entry names the builds; transient: it ends when the peer updates |
+
+**Correction to rows 3.2 and 3.3 (2026-10-27).** This pass first rated
+them PARTIAL: "true within one run of the app". That was wrong. The test
+behind it, `test_within_one_run_a_changed_key_is_refused`, called
+`TrustDatabase` directly. No code in `android_bridge/` or `desktop_bridge/`
+ever called `check_or_pin`; only the terminal client did
+(`otrv4plus_xmpp_trust.py`). So in the apps a changed Ed448 fingerprint was
+not refused or reported even within one run. The ML-DSA half (A2) was
+checked, inside the handshake (`client/otrv4+.py`, `check_or_pin_pq`), but
+only under the same Ed448 identity: a substitute brings a new Ed448 key
+too, and under it the ML-DSA key is a first contact. The miss is recorded in
+docs/AUDIT_TEST_INTEGRITY.md. The P1 tests now drive real `OtrApp`s over a
+wire, so a bridge that skips the check fails them.
 
 ## 4. First contact (TOFU) and server identity (X1)
 
@@ -159,12 +173,71 @@ Every PARTIAL and UNSUPPORTED row was dealt with in this pass:
 - **Strengthened by a test (T).** Rows 1.13, 1.21, 1.22, 1.23 and 3.7.
   Each now has a test that asserts the sentence or its residual; see
   docs/AUDIT_TEST_INTEGRITY.md.
-- **Narrowed and tied to a new OPEN issue (F).** Rows 3.2, 3.3 and 3.9:
-  A2's claim now holds within one run of the app on Android and the
-  desktop, across runs on the terminal. The restart case is
-  docs/SECURITY_ISSUES.md **P1**, asserted by
-  `tests/test_p1_trust_pins_per_run.py`.
+- **Narrowed and tied to a new OPEN issue (F), then fixed.** Rows 3.2,
+  3.3 and 3.9 were first narrowed to "within one run of the app" and filed
+  as docs/SECURITY_ISSUES.md **P1**. P1 was then fixed (2026-10-27): the
+  apps keep each account's pins sealed in a store of their own and check
+  them when a session comes up. A2's claim holds across restarts again,
+  proved by `tests/test_p1_trust_pins_per_run.py`. The residual is an
+  Android device whose Keystore does not work (pins last one run there).
 - **Residuals added to the entry (F).** Rows 2.11 and 2.12: F4's
   forger set, the online requirement and the 16-key bound.
 
 None of the EXTERNAL rows moved; they are docs/CRYPTOGRAPHER_QUESTIONS.md.
+
+## Re-run after P1 (2026-10-27)
+
+P1 changed an A2 claim, so every row was re-run, and every claim beside
+the fix was checked for a quiet weakening.
+
+**Method.**
+1. Each row's verbatim claim was searched for in the current text of the
+   repository's documents and sources (the audit documents excluded).
+   A reworded row (E) must have lost its old sentence; a DEMONSTRATED row
+   must still carry its own, or an equally true rewording.
+2. Each cited test must exist (`tests/test_security_doc_references.py`)
+   and pass (the full Python suite, the Rust suites, the Kotlin tests).
+3. Composition: for each claim P1 touches or sits beside, does the fix
+   leave it as strong as it was?
+
+**Found by 1.** Row 1.14 was not finished. "Without a network they are
+dropped" was still in the engine's teardown docstring
+(`clear_all_sessions` in `client/otrv4+.py`), after the docs and the bridge
+were corrected. Corrected; gate
+`test_no_source_says_offline_closing_messages_are_dropped`. Every other
+reworded sentence is gone from where it was. Row 1.10's old name survives
+only in code identifiers and comments, kept by the owner's decision. Row
+2.10 stands marked superseded, as its fix said.
+
+**Found by 3, before commit.** Two weakenings in the P1 fix itself:
+- **Calls and files drifted apart.** The call gate refuses a mismatched
+  contact; the file gate read only the SMP result. After a shared-secret
+  check during a mismatch, files would have gone where calls did not.
+  The P1 entry claimed both were refused. The file gate now checks the
+  mismatch too (`test_calls_and_files_are_refused_while_the_key_does_not_match`).
+- **The Reset trust dialog went stale.** It said "the next conversation
+  trusts whatever key it meets", while the fix pins the checked key at the
+  reset. Reworded; `ProfileIdentityTest` pins the words.
+
+**Composition.**
+
+| Neighbour claim | How P1 touches it | Holds? | Evidence |
+|---|---|---|---|
+| L1: closing messages are never written to disk, since one would record whom a chat was made deniable with | the device now keeps a sealed record of whom each account talks to | **yes, as worded.** The trust record holds a fingerprint, an ML-DSA key hash and "They match" per contact, and nothing about a close or a publication. It records contacts, as the chat history does | `TestCrashDuringClose`; `test_the_record_is_sealed_names_no_jid_and_is_bound_to_its_account` |
+| Wipe & Exit destroys the app's state | a new store | **yes** | `test_wipe_and_exit_destroys_the_trust_store`, `test_android_destroys_the_trust_section_with_the_key` |
+| U1: no fingerprint is readable while signed out | the pins load when the account is bound, before the login | **yes.** No bridge call reads a pin without a live session (`is_peer_trusted` needs the session's fingerprint); the mismatch map is cleared at attach. New: an unopenable trust record refuses the bind (`trust_unavailable`), as F3 does for an identity | `tests/test_u1_signed_out_surfaces.py` |
+| F2: two accounts cannot be linked by their key | one install keeps every account's records under one key file | **yes.** F2 is about the keys on the wire, which P1 does not touch. On the device, two accounts' records sit side by side, as F3's identities do. The record names are unkeyed hashes (a residual, stated in P1) | `tests/test_f2_per_account_identity.py`, `test_pins_are_per_account` |
+| X1: server pins persist | a second pin store | **yes**, apart | `test_the_trust_store_is_apart_from_identities_server_pins_and_history` |
+| 7.1: a message waits until an encrypted session is up | the outbox is also held during a mismatch | **stronger** | `tests/test_outbox_no_plaintext.py`, `test_after_a_restart_a_changed_fingerprint_is_refused` |
+| A2: Reset trust is the way past a `pq_downgrade` / `pq_key_changed` refusal | Reset trust changed | **yes.** With no mismatched session open, it forgets as before | `tests/test_pq_auth_v2.py` |
+| Calls and files need the shared-secret check | a mismatch now closes both | **stronger** once the file gate was fixed (above) | `test_calls_and_files_are_refused_while_the_key_does_not_match` |
+| DENIABILITY_LAYERS: participation is not deniable | the device record shows whom the account talked to, under which key | **yes**, and now said there: it is participation, which the A2 row concedes | docs/DENIABILITY_LAYERS.md |
+
+**Status changes in the re-run.**
+- 3.2 and 3.3: first PARTIAL, corrected to UNSUPPORTED in the apps (the
+  note above), now **DEMONSTRATED** by the P1 fix.
+- 3.9: inherits 3.2.
+- 1.14: the last stale sentence corrected.
+- 3.10: new, the P2 residual for older v2 builds.
+
+No row went down. No EXTERNAL row moved.

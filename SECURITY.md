@@ -64,8 +64,7 @@ post-quantum design. Protocol v2 (Android rc.159, required of both peers;
 an older peer is refused) addresses the two design findings that needed a
 protocol change: A1 (fresh ML-KEM secrets are now folded into the ratchet's
 root key) and A2 (both sides now authenticate with a long-term ML-DSA-87 key,
-pinned per contact; on Android and the desktop the pins last one run of the
-app, docs/SECURITY_ISSUES.md P1). Its cost: the ML-DSA-87 signatures are attributable, so
+pinned per contact across restarts, docs/SECURITY_ISSUES.md P1). Its cost: the ML-DSA-87 signatures are attributable, so
 taking part in a conversation can be proven (SPEC §10.1). See
 [docs/SECURITY_ISSUES.md](docs/SECURITY_ISSUES.md) and [docs/SPEC.md](docs/SPEC.md).
 
@@ -83,7 +82,7 @@ AI-assisted analysis, but not independently audited.**
 | Python heap inspection (post-exploitation) | Long-term private bytes live inside Rust `SecretBytes<N>` (ZeroizeOnDrop); session keys move Rust-to-Rust via the `DakeOutput` opaque handle. Voice too since v10.13.2: the epoch root, media keys and X448 scalar are Rust-owned with no accessor. Still Python-side: the voice ML-KEM decapsulation key (caveat 11) and the at-rest key-encryption key, which the storage provider hands down to Rust (docs/SECURITY_ISSUES.md B1-seed). |
 | AES-GCM nonce reuse | Counter-based nonce per ratchet step, KDF-derived; nonce never reused across messages. For voice the nonce is `epoch ‖ counter`, derived from authenticated header fields and never transmitted |
 | Recording a voice call for later quantum decryption | Voice media root requires **both** X448 and ML-KEM-1024; neither alone suffices |
-| Peer identity silently swapped between XMPP sessions | Fingerprint pinned on first contact; a change is reported, never auto-accepted, and refuses voice until cleared deliberately (XMPP only — IRC identities change by design). The terminal client keeps the pins across restarts; the Android and desktop apps keep them for one run, so after a restart a changed key is a first contact (docs/SECURITY_ISSUES.md P1, OPEN) |
+| Peer identity silently swapped between XMPP sessions | Fingerprint pinned on first contact; a change is reported, never auto-accepted, and refuses voice until cleared deliberately (XMPP only — IRC identities change by design). Kept across restarts on every client: the apps seal them per account and check them when a session comes up (docs/SECURITY_ISSUES.md P1); an Android device without a working Keystore keeps them for one run |
 | A remote peer making your next typed line a secret | An inbound SMP request can only ask; it moves the flow to AWAITING_LOCAL_CONSENT and no further. Only a local `y` opens the hidden passphrase read, and an ordinary message typed at the request is sent as an ordinary message (`otrv4plus_smpflow.py`) |
 | Forged, replayed or rolled-back voice endpoint address | `MEDIAPATH` announcements carry a tag derived from the committed epoch root over call_id, epoch, sequence, destination and role; sequence must strictly increase, and no state moves before the tag verifies |
 | Reflection of a voice frame back at its sender | The direction byte is in the AAD but not on the wire, so a reflected frame fails authentication |

@@ -26,12 +26,31 @@ The record:
   - Fixed in the engine every client shares; the Rust core is unchanged.
   - Gates: `tests/test_p2_forced_steps.py` (each test fails on the old
     engine) and a Rust constraint test.
-- **P1 (Medium, OPEN).** On Android and the desktop, contact pins
-  (fingerprint and ML-DSA) last one run of the app. After a restart, a
-  changed key is accepted as a first contact without a warning; the
-  terminal client keeps its pins. Asserted by
-  `tests/test_p1_trust_pins_per_run.py`. Not fixed: it needs a sealed,
-  per-account trust store (proposal in the P1 entry).
+- **P1 (High, RESOLVED 2026-10-27; filed as Medium).** On Android and the
+  desktop, contact pins (fingerprint and ML-DSA) lasted one run of the
+  app, so after a restart a changed key was a first contact.
+  - Widened while fixing it: the apps never checked the Ed448 fingerprint
+    pin at all. Only the terminal client called `check_or_pin`. So a
+    changed key went unreported within a run too. This pass's first test
+    called the database directly and missed it
+    (docs/AUDIT_TEST_INTEGRITY.md).
+  - Fixed: each account's pins are kept sealed in a store of their own
+    (the F3 sealing path; not the identity vault, not the X1 server pins).
+    The apps check the pin when a session comes up, show
+    FINGERPRINT_MISMATCH and send nothing queued until the user resets
+    trust. A record that will not open is refused, never replaced. Wipe &
+    Exit destroys the store.
+  - Gates: `tests/test_p1_trust_pins_per_run.py`, through real apps over a
+    wire. `test_after_a_restart_a_changed_fingerprint_is_refused` fails on
+    the old code; `test_wipe_and_exit_destroys_the_trust_store` proves the
+    wipe. 14 of 14 mutants killed.
+  - Residuals: an Android device whose Keystore does not work keeps pins
+    for one run; the terminal's `trust.json` is plaintext; TOFU.
+  - The claim matrix was then re-run end to end
+    (docs/AUDIT_CLAIM_MATRIX.md, "Re-run after P1"). It found one stale
+    sentence left from row 1.14, and two places where the P1 fix itself
+    weakened a neighbour (the file gate, the Reset trust dialog). All three
+    are fixed and gated. No row went down.
 
 ## (a) Claims downgraded
 
@@ -48,8 +67,8 @@ The record:
 | F4 window (MLS_SECURITY_HARDENING §1) | "... or none after Make Group Deniable" | Make Group Deniable shortens how long keys stay secret from the press on; it does nothing for a capture already made |
 | MLS_SECURITY_HARDENING §6 | "OTRv4+ is deniable (DAKE, ring signatures, published MAC keys)" | no deniability property is claimed for either; why |
 | MLS_SECURITY_HARDENING §6 | "The server never sees a JID–key link." | the design gives it none; no test checks it end to end |
-| A2 (SECURITY_ISSUES, SPEC §4.3, SECURITY.md) | refuses a downgrade or a key change "for a pinned contact" | within one run of the app on Android and the desktop, across runs on the terminal (P1) |
-| SECURITY.md, defended adversaries | a changed fingerprint "is reported, never auto-accepted" | the same, plus: on Android and the desktop only within a run (P1) |
+| A2 (SECURITY_ISSUES, SPEC §4.3, SECURITY.md) | refuses a downgrade or a key change "for a pinned contact" | within one run of the app on Android and the desktop, across runs on the terminal (P1). **Restored by the P1 fix**: across restarts on Android (with a working Keystore), the desktop and the terminal |
+| SECURITY.md, defended adversaries | a changed fingerprint "is reported, never auto-accepted" | the same, plus: on Android and the desktop only within a run (P1). That was itself too generous: the apps did not check at all. **Restored by the P1 fix** |
 | SECURITY.md, validation | "layers of automated validation, each of which runs on every change" | the suites, `cargo audit` and Clippy run in CI; fuzzing, reviews and physical tests by hand |
 | SECURITY.md, memory | the ML-KEM key is "the one secret still Python-side" | that and the at-rest key-encryption key (B1-seed) |
 | SECURITY.md, skipped keys | "cached for up to 1000 messages" | 1000 per gap, 2000 held |
@@ -96,7 +115,7 @@ The record:
 | F4 | a signature checked before release still checks after it | `retired_key_tests::residual_a_signature_checked_before_release_still_checks_after_it` |
 | F4 | only the members receive the published key | `retired_key_tests::residual_only_the_groups_members_receive_the_published_key` |
 | F4 | needs the app running; the 16-key bound | (entry; `retired_keys_are_bounded_and_published_in_batches`) |
-| A2 | pins last one run (P1) | `tests/test_p1_trust_pins_per_run.py` |
+| A2 | pins last one run without a working Keystore (P1, after the fix) | `test_residual_without_a_working_keystore_the_pins_last_one_run` |
 | P2 | an older peer's double step | Rust `p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed` |
 
 ## (d) What is now demonstrably true
@@ -187,12 +206,16 @@ CI on the pushed head of `dev`:
    the mechanism, as the dialogs do; `DeniableChatTest` and
    `tests/test_deniable_wording.py` pin them. The terminal's `/deniable`
    command keeps its name: its `/help` describes the mechanism.
-2. **P1.** Persist the trust pins sealed per account (proposal in the
-   P1 entry), so A2's claim can say "across restarts" on Android and the
-   desktop too.
-3. **P2 and older peers.** A peer on a build before this fix can still
-   take the double step. Accepting it would need the Rust receive path
-   to try the previous local key: a crypto-core change.
+2. **P1. Decided 2026-10-27: built.** The pins are persisted sealed per
+   account, in a store separate from the identity vault and the X1 pins,
+   sharing F3's sealing path but not its directory. Wipe & Exit destroys
+   both stores; an unopenable record is refused, retried, never replaced.
+   A2's claim says "across restarts" on Android and the desktop again.
+3. **P2 and older peers. Decided 2026-10-27: the Rust core is left alone.**
+   The residual is recorded in the matrix instead. It comes from *older v2
+   builds* (before `884b054`), not from v1 peers, so `pq_v2_required` does
+   not refuse them. It is real, not theoretical: an older build reaches it
+   by ordinary use. It is transient: it ends when that peer updates.
 
 <details>
 <summary>Per-file results of the full Python suite (317 files)</summary>

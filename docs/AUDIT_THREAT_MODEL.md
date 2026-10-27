@@ -16,8 +16,9 @@ Only the attacks the residuals already name were walked, plus the two the
 walk itself turned up. Nothing was added to look thorough.
 
 **Two new findings, both filed in SECURITY_ISSUES.md:**
-- **P1 (Medium, OPEN).** On Android and the desktop, contact pins last one
-  run of the app.
+- **P1 (filed Medium, OPEN; RESOLVED 2026-10-27, widened to High).** On
+  Android and the desktop, contact pins lasted one run of the app; fixing
+  it found the apps never checked the fingerprint pin at all.
 - **P2 (High, RESOLVED in this pass).** A forced DH step the peer could not
   follow silently broke a session after two days, or after 100 messages
   from one side.
@@ -92,14 +93,16 @@ run it.
 | Attack | Tries | The code | The test | Matches? |
 |---|---|---|---|---|
 | **TOFU at first contact** | substitutes at the very first DAKE | the substitute is pinned | `test_both_ends_pin_the_others_long_term_ml_dsa_key` (pinning); no primitive closes it (PQC_DECISIONS (e)) | yes; shared residual |
-| Substitute later, in the same run | another key mid-run | refused | `test_dropping_post_quantum_authentication_is_refused`, `test_a_different_ml_dsa_key_is_refused`, `test_within_one_run_a_changed_key_is_refused` | yes |
-| **Substitute after the app restarts (P1)** | waits for the Android or desktop app to restart (a reboot, an update, the OS ending the process), then substitutes | `OTRConfig()` has `persist_trust=False`, so the app's trust database is in memory and empty. **The substitute is pinned as a first contact, with no warning** | `test_residual_after_a_restart_of_the_app_a_changed_key_is_a_first_contact` (new, asserts it) | **no**. SECURITY.md says a change "is reported, never auto-accepted"; A2 says a pinned contact's key change is refused. True within a run; on the terminal, across runs too. **Filed as P1, OPEN** |
+| Substitute later, in the same run | another key mid-run | the terminal: refused. **The apps (corrected 2026-10-27): not refused.** No app code called `check_or_pin`; only an ML-DSA change under the *same* Ed448 identity was refused, and a substitute brings its own Ed448 key | `test_dropping_post_quantum_authentication_is_refused`, `test_a_different_ml_dsa_key_is_refused`; the walk's `test_within_one_run_a_changed_key_is_refused` called the database, not the app | first marked yes: **wrong**. Now, after the fix: `test_within_one_run_a_new_identity_is_caught_too` |
+| **Substitute after the app restarts (P1)** | waits for the Android or desktop app to restart (a reboot, an update, the OS ending the process), then substitutes | `OTRConfig()` has `persist_trust=False`, so the app's trust database is in memory and empty. **The substitute is pinned as a first contact, with no warning** | `test_residual_after_a_restart_of_the_app_a_changed_key_is_a_first_contact` (new, asserted it; removed by the P1 fix) | **no**. SECURITY.md says a change "is reported, never auto-accepted"; A2 says a pinned contact's key change is refused. On the terminal, across runs too. **Filed as P1, OPEN; then fixed** |
+| **After the P1 fix (2026-10-27)** | the same, against the fixed apps | the account's sealed pins are loaded when the account is bound (before the login); the pin is checked when the session comes up; a changed key is FINGERPRINT_MISMATCH, `FingerprintChanged`, nothing queued sent, until Reset trust pins the checked key | `test_after_a_restart_a_changed_fingerprint_is_refused`, `test_after_a_restart_a_changed_ml_dsa_key_is_refused` | yes. Residual: an Android device without a working Keystore keeps pins for one run |
+| Make the store fail open | corrupts or swaps the sealed record (a copy of the files, or another account's record) | the record is bound to its account's name; one that will not open is refused (`trust_unavailable`), never replaced by an empty one | `test_an_unopenable_record_is_refused_never_replaced`, `test_the_record_is_sealed_names_no_jid_and_is_bound_to_its_account` | yes. The terminal's `trust.json` still fails open (stated) |
 
-**P1 is not fixed here.** Fixing it needs a persisted, sealed, per-account
-trust store, the way F3 keeps identities. That is a storage feature, not a
-correction. Until then, A2's claim and SECURITY.md are worded to match:
-pins hold for one app run on Android and the desktop, and across runs in
-the terminal client. The proposal is in the P1 entry.
+**P1 was then fixed (2026-10-27).** The owner chose the design: a
+persisted, sealed, per-account trust store on F3's sealing path, apart from
+the identity vault and the X1 pins, destroyed by Wipe & Exit. Writing it
+showed the walk's "same run" row was wrong (above): the walk had tested the
+database, not the app. The P1 tests now drive real apps over a wire.
 
 ## 5. Transport (N1, X1)
 
@@ -165,4 +168,8 @@ reached. The residual is reworded. The combiner itself remains Q4.
 **Interop.** A peer on an older build can still take the double step, and
 our side cannot follow it either. This fix stops this build producing it;
 accepting it from an old peer would need a change in the Rust receive
-path. That is not made here and is recorded on P2.
+path. The owner decided (2026-10-27) to leave the Rust core alone; the
+residual is matrix row 3.10. The older builds are v2 builds, the released
+rc.184 included, so `pq_v2_required` does not refuse them; a v1 peer is
+refused already. It is reached by ordinary use and ends when the peer
+updates.

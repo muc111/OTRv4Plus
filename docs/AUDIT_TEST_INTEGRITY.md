@@ -71,7 +71,7 @@ every test set on the unmutated code was green first. 34 mutants were run
 | MM1 receiver skips the pair check | **killed** | `a_key_in_use_or_a_mismatched_pair_is_not_accepted` (a new case: right Ed448 half, another key's ML-DSA half) |
 | PP1 the P2 guard removed | **killed** | `tests/test_p2_forced_steps.py` (3), `test_every_line_is_covered_across_dh_steps` |
 | PP2 the receive step not counted (P2) | **killed** | as PP1 |
-| PT1 app pins persisted (the P1 assertion inverted) | **killed** | `test_the_app_engines_are_built_with_a_trust_database_in_memory` |
+| PT1 app pins persisted (the P1 assertion inverted) | **killed** | `test_the_app_engines_are_built_with_a_trust_database_in_memory` (since removed: it asserted the residual P1 fixed; see Round 3) |
 | PW1 the terminal claims a property | **killed** | `test_deniable_wording.py::test_the_terminal_words_state_no_property_and_name_the_residuals` |
 
 ### Kotlin wording mutants (`DeniableChatTest`)
@@ -81,12 +81,56 @@ every test set on the unmutated code was green first. 34 mutants were run
 | KM1: the dialog no longer says "It does not hide that you two talked" | killed |
 | KM2: "Deniability pending external audit." re-added | killed |
 
+### Round 3: the P1 fix (2026-10-27)
+
+Each mutant was applied to the fix and `tests/test_p1_trust_pins_per_run.py`
+run against it.
+
+| Mutant | Result |
+|---|---|
+| PF1 no pin check when a session comes up | killed |
+| PF2 the account's record not attached at bind | killed |
+| PF3 the Android marker not consulted (an unopenable record read as absent) | killed |
+| PF4 the outbox flushed despite a mismatch | killed |
+| PF5 a store failure swallowed | killed |
+| PF6 an unsaved pin not retried before the next check | killed |
+| PF7 the mismatch not shown (no SessionStateChanged) | killed |
+| PF8 the desktop host without a trust store | killed |
+| PF9 the in-memory Keystore fallback given a store | killed |
+| PF10 Reset trust does not pin the checked key | killed |
+| PF11 Reset trust does not send what waited | killed |
+| PF12 Reset trust drops the ML-DSA pin of the checked session | killed |
+| PF13 Reset trust removes the entry, then pins the fingerprint only | killed |
+| PF14 the file gate ignores the mismatch (calls refuse it, files did not) | killed |
+
+**Existing tests the fix touched.** One changed its setup, not its
+assertion. `test_the_pinned_fingerprint_survives` (contact removal) pinned
+a made-up fingerprint "rather than hoping the handshake did it". The fixed
+app's handshake now pins the real one, and a different pin over it is
+refused by design. The test now asserts the handshake pinned the session's
+key, confirms that key, and checks, as before, that removing the contact
+keeps it. One source check, `test_the_save_path_is_guarded_not_the_call_sites`
+(IRC never writes a trust file), failed on the first version of the fix.
+The code was reordered to satisfy it, not the test: the in-memory guard
+comes first in `TrustDatabase._save`, and the sealed store is the one place
+an in-memory database writes.
+
+**A test-integrity miss, found by the fix.** Round 2's P1 tests called
+`TrustDatabase` directly. `test_within_one_run_a_changed_key_is_refused`
+passed, and the matrix rated the claim "true within one run of the app".
+No app code called `check_or_pin`, so the apps did not refuse a changed
+fingerprint even within a run. The database was tested, not the app. The
+tests now drive two real `OtrApp`s over a wire
+(the link in `tests/test_deniability_wire_audit.py`), so PF1 and PF4 fail them; a
+database-level test would have passed both.
+
 **Summary.**
 - Round 1: 29 mutants. 22 were killed by an assertion and 1 by a timeout
   (PM3). RM6 was detected only by a hang. 5 survived: RM1b, PM5, PM6, PM8,
   MM1.
 - Round 2: every survivor is killed by a new or strengthened test, except
   PM6, which is equivalent.
+- Round 3 (P1): 14 mutants, 14 killed.
 
 ## The tests, one by one
 
@@ -105,11 +149,11 @@ every test set on the unmutated code was green first. 34 mutants were run
 | `TestMultiPartClose` | A close over 2000 keys is two parts; losing part 2 leaves exactly its range provable until re-sent. | yes | -- |
 | `TestCrashDuringClose` | After SIGKILL between retire_all and confirmation: no key on disk, nothing re-sent, and exactly the lost close's lines stay provable. | yes, but the on-disk check missed a frame written as wire text (PM8 survived) | The check now decodes any `?OTRv4` frame on disk |
 | `tests/test_deniable_confirmation.py` | The transport's confirmation is a real ping answered after the closing message; unconfirmed messages are kept, re-sent and given up after their tries. | **No**: `..._starts_only_after_the_server_confirmed` covered only a server that answers | Renamed `test_the_new_session_starts_after_the_server_is_asked`; `test_residual_unconfirmed_the_new_session_starts_anyway_and_the_app_says_so` added |
-| `tests/test_p1_trust_pins_per_run.py` (new) | The app engines keep pins in memory, so after a restart a changed key is a first contact; the terminal keeps them. | yes | new |
+| `tests/test_p1_trust_pins_per_run.py` (new; rewritten by the P1 fix) | First: the app engines keep pins in memory. Now: through real apps over a wire, a changed key after a restart is FINGERPRINT_MISMATCH and nothing queued goes to it; the store is sealed, per account and apart; an unopenable record is refused; Wipe & Exit destroys it. | the first version **no**: "within one run a changed key is refused" tested the database, not the app | rewritten through `OtrApp` |
 | `tests/test_p2_forced_steps.py` (new) | Bursts, one-way runs past two boundaries and a two-day chat all decrypt; every test fails on the old engine. | yes | new |
 | `retired_key_tests` (Rust, F4) | Rotation retires the key; the publication reaches members, forges, cannot sign into the group, is refused for a current or mismatched key, is bounded and batched. | yes, but the ML-DSA-half check was untested (MM1) | Spliced-key case added; two residual tests added |
 | `tests/test_f4_group_key_publication.py` | The bridge publishes after the delay, at once on Publish Group Keys, never shows it as text, and only fingerprints leave Rust. | yes | -- |
-| `tests/test_pq_auth_v2.py` (A2) | Both ends pin the ML-DSA key; a downgrade or a changed key is refused, within one process. | yes (the limit across restarts is P1) | -- |
+| `tests/test_pq_auth_v2.py` (A2) | Both ends pin the ML-DSA key; a downgrade or a changed key is refused, within one process. | yes (across restarts: `tests/test_p1_trust_pins_per_run.py`) | -- |
 | X1 classes | A changed destination receives no byte; SCRAM only where certificates are off; pins persist (server pins, unlike P1). | yes | -- |
 | `DeniableChatTest` (Kotlin) | The dialog's words, history deletion and group words. | **No**: "the words claim what the tests show and no more" pinned the presence of a property claim | Renamed `the words describe the mechanism and its residuals and state no property`; pins the absence of property words |
 
@@ -127,7 +171,8 @@ every test set on the unmutated code was green first. 34 mutants were run
 | L1 | delivery to the contact | -- | beyond our server; not observable by the client |
 | L1 | the queue bound (4000) | `l1_retirement::the_retired_queue_keeps_up_to_its_bound_and_never_drops_early` | -- |
 | L1, A2, X1 | TOFU at first contact | `test_both_ends_pin_the_others_long_term_ml_dsa_key` shows what is pinned | no test can show that a pinned key is the person's |
-| A2 | pins last one run (P1) | `test_residual_after_a_restart_of_the_app_a_changed_key_is_a_first_contact` | -- |
+| A2 | pins last one run without a working Keystore (P1, after the fix; before it, on every Android and desktop install) | `test_residual_without_a_working_keystore_the_pins_last_one_run` | -- |
+| P1 | the terminal's `trust.json` is plaintext and fails open on a corrupt file | -- | unchanged by the fix; stated in the P1 entry, not asserted |
 | F4 | a capture before release stays attributable | `residual_a_signature_checked_before_release_still_checks_after_it` | that a third party *trusts* a capture time is not testable |
 | F4 | the forgers are the members only | `residual_only_the_groups_members_receive_the_published_key` | -- |
 | F4 | the 16-key bound | `retired_keys_are_bounded_and_published_in_batches` | -- |

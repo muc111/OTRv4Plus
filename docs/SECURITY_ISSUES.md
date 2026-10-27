@@ -51,12 +51,12 @@ instead of restating it.
 | G2 | Two divergent copies of `otrv4_testlib.py`; which loads depends on collection order | Low | **RESOLVED** (2026-10-24) -- one copy, `tests/otrv4_testlib.py`; `tests/test_dake_timeout.py::test_there_is_one_test_library` |
 | B1-seed | Persisting an identity requires the seed to exist in Python | Design | **RESOLVED** |
 | A1 | Ratchet brace key is never folded into root/chain keys (SPEC §5.2 not implemented): no post-quantum post-compromise recovery | Design / High (spec divergence) | **MITIGATED** (2026-10-24) -- mitigated by the new v2 ratchet, which rotates ML-KEM secrets about every round trip once the first DH ratchet step has happened (after 100 messages in one direction or 24 hours; before it the handshake's ML-KEM secret protects the keys) and folds each into the root (SPEC §5.1-5.2; `ratchet::pq_ratchet`, `tests/test_pq_ratchet_v2.py`). A peer without v2 is refused by default (`require_pq_v2`, code `pq_v2_required`), so the v1 derivation is no longer reached; its code remains for that switch and stays pinned by `ratchet::audit_brace_folding`. Kept listed as a known limitation: the combiner and its interleaving with loss want expert review (CRYPTO_AUDIT §7 item 3), and SPEC §5.1 states a residual |
-| A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **RESOLVED-CLAIM** (2026-10-24, claim narrowed by the audit of 2026-10-26; claim: the v2 handshake authenticates both sides with ML-DSA-87 and refuses downgrade or key change for a contact pinned in the same run of the app on Android and the desktop, or in any run of the terminal client; Android rc.159; requires both peers to list `PQ_RATCHET_VERSION` 0x50 and `PQ_AUTH_VERSION` 0x51) -- each identity has one long-term ML-DSA-87 key, sealed beside it; the responder signs the transcript in DAKE2 (`KDF_1(0x06, DAKE1 \|\| DAKE2-to-signature)`: both ephemeral X448 keys, the initiator's ML-KEM key and the responder's ciphertext, both profiles, both ML-DSA keys) and the initiator verifies it before DAKE3 or any data; the initiator signs DAKE3; both mandatory. An older peer is refused outright (`pq_v2_required`), and a known contact's ML-DSA key is pinned, so dropping or changing it under the same Ed448 identity is refused (`pq_downgrade`, `pq_key_changed`) even with the policy relaxed. SPEC §4.3. `dake::pq_auth_tests`, `mldsa::tests`, `tests/test_pq_auth_v2.py`, `tests/test_p1_trust_pins_per_run.py`. Residuals: TOFU (shared residual); **P1**: on Android and the desktop the pins last one run of the app. Deniability cost: SPEC §10.1 |
+| A2 | DAKE post-quantum authentication is initiator-only and strippable by an active quantum adversary | Design / Medium | **RESOLVED-CLAIM** (2026-10-24, claim narrowed by the audit of 2026-10-26 and restored by the P1 fix of 2026-10-27; claim: the v2 handshake authenticates both sides with ML-DSA-87 and refuses downgrade or key change for a pinned contact, across restarts, on Android (with a working Keystore), the desktop and the terminal; Android rc.159; requires both peers to list `PQ_RATCHET_VERSION` 0x50 and `PQ_AUTH_VERSION` 0x51) -- each identity has one long-term ML-DSA-87 key, sealed beside it; the responder signs the transcript in DAKE2 (`KDF_1(0x06, DAKE1 \|\| DAKE2-to-signature)`: both ephemeral X448 keys, the initiator's ML-KEM key and the responder's ciphertext, both profiles, both ML-DSA keys) and the initiator verifies it before DAKE3 or any data; the initiator signs DAKE3; both mandatory. An older peer is refused outright (`pq_v2_required`), and a known contact's ML-DSA key is pinned, so dropping or changing it under the same Ed448 identity is refused (`pq_downgrade`, `pq_key_changed`) even with the policy relaxed. SPEC §4.3. `dake::pq_auth_tests`, `mldsa::tests`, `tests/test_pq_auth_v2.py`, `tests/test_p1_trust_pins_per_run.py`. Residuals: TOFU (shared residual); on Android without a working Keystore the pins last one run (P1). Deniability cost: SPEC §10.1 |
 | A3 | Crafted `.otrv` header overflowed `8 * p` before bounding p: process abort (overflow-checks + panic=abort) | Medium (DoS) | **RESOLVED** -- `container::tests::a_huge_lane_count_is_refused_not_an_overflow`; found by `fuzz/container_header` |
 | A4 | Ring verifier accepted the identity point as a ring member (signable by anyone) | Low | **RESOLVED** -- `ring_sig::audit_identity_point` |
 | A5 | Profile expiry and degenerate identity key enforced only in Python | Low | **RESOLVED** -- `dake::profile_tests` |
 | A6 | Ring signature scalars reduced mod Q, so every signature had malleable re-encodings | Low / Info | **RESOLVED** -- `ring_sig::audit_identity_point::a_non_canonical_scalar_is_refused` |
-| P1 | Android and the desktop keep contact pins (fingerprint and ML-DSA) in memory: after the app restarts, a substituted key is pinned as a first contact, without a warning | Medium (authentication) | **OPEN** (found 2026-10-26) -- `OTRConfig().persist_trust` is False and neither app sets it; the terminal client does. Asserted by `tests/test_p1_trust_pins_per_run.py`. Fix proposed in the P1 section; until then the A2 claim and SECURITY.md are worded to one run |
+| P1 | On Android and the desktop the contact pins were never checked, and lived in memory: a contact under a new identity was accepted in any run, and after a restart any changed key was a first contact, without a warning | High (authentication) | **RESOLVED** (found 2026-10-26, fixed 2026-10-27) -- the bridge checks the pin when a session comes up (`_check_contact_pin`): a changed key is FINGERPRINT_MISMATCH, `FingerprintChanged`, the pin kept, nothing queued sent. Each account's pins are kept sealed (`android_bridge.account_trust`): Android in the Keystore vault's own trust section, the desktop in 0600 files; apart from identities, server pins and history; destroyed by Wipe & Exit; a record that will not open is refused (`trust_unavailable`), retried, never replaced. `tests/test_p1_trust_pins_per_run.py` (24 tests; 14 mutants killed). Residuals: no working Keystore on Android, pins for one run; the terminal's plaintext `trust.json` (P1 section) |
 | P2 | A forced DH step toward a remote key already stepped toward could not be followed by the peer: every later message failed to decrypt, silently. Reached by 100 messages from one side after a round trip, or by a chat open across two 24-hour boundaries | High (availability; silent message loss) | **RESOLVED** (2026-10-26) -- one send step per remote key (`RustBackedDoubleRatchet._forced_toward`). `tests/test_p2_forced_steps.py` (every test fails on the old engine), Rust `pq_ratchet::p2_a_second_send_step_toward_the_same_remote_key_cannot_be_followed`. Residual: a peer on an older build can still take the double step |
 | X1 | With TLS certificate checks off (I2P, .onion), a server reached by a human-readable `.i2p` NAME is bound only by the router's address book; a substituted server can offer only SASL PLAIN and capture the XMPP account password | Medium | **RESOLVED-CLAIM** (Android and the terminal client; claim: a changed destination receives no byte, and no password is sent where certificate checks are off) -- both options, combined: the resolved destination is pinned per server name and a changed one is refused before STREAM CONNECT (nothing reaches it; explicit, confirmed re-approval of exactly that destination), and SASL is SCRAM-only wherever certificate checks are off. `tests/test_x1_destination_pinning.py`, `tests/test_x1_terminal_client.py`. Residuals: TOFU (shared residual); SCRAM guessing and first registration (X1 section). NOT yet confirmed by a handset login |
 
@@ -797,11 +797,12 @@ marked development/test only.
 
 ---
 
-## P1 — On Android and the desktop, contact pins last one run of the app
+## P1 — Contact pins: never checked by the apps, and kept only for one run
 
-**Status: OPEN** (found by the audit of 2026-10-26, docs/AUDIT_THREAT_MODEL.md §4).
+**Status: RESOLVED, 2026-10-27** (found by the audit of 2026-10-26,
+docs/AUDIT_THREAT_MODEL.md §4; widened while fixing it).
 
-### What happens
+### What was wrong
 
 `TrustDatabase` keeps two pins per contact:
 - the Ed448 fingerprint (`check_or_pin`: a change raises
@@ -809,42 +810,124 @@ marked development/test only.
 - the ML-DSA key under that identity (`check_or_pin_pq`: `pq_downgrade`,
   `pq_key_changed`; A2).
 
-It writes them to disk only when the engine's `OTRConfig` has
-`persist_trust=True`. The terminal client sets it. The Android app
-(`ChaquopyOtrCore.kt`) and the desktop host (`desktop_bridge/host.py`)
-build the engine with a bare `OTRConfig()`, where it is False. So on those
-two the pins live in memory. After a restart of the app (a reboot, an
-update, the system ending the process), every contact is a first contact
-again. A key substituted then is pinned without a warning. F3 made the
-user's **own** identity stable across restarts; the contacts' pins did not
-follow.
+Two things were wrong on Android and the desktop:
+1. **The fingerprint pin was never checked.** Found writing the fix: only
+   the terminal client calls `check_or_pin`. The bridge never did, its
+   `note_fingerprint_mismatch` had no caller, and the engine has no
+   mismatch security level. So the app's FINGERPRINT_MISMATCH state, its
+   "Their key has changed" text and `FingerprintAlertDialog` could not be
+   reached. A contact under a whole new identity was accepted, in any run:
+   A2's ML-DSA pin is keyed by the Ed448 identity, so a new identity was
+   "the ordinary fingerprint change".
+2. **The pins lived in memory.** The engines were built with `OTRConfig()`,
+   whose `persist_trust` is False, so after a restart every contact was a
+   first contact again.
 
-### What it changes
+The audit's first P1 test checked `TrustDatabase` directly and missed (1):
+it showed the database refusing a change, not the app consulting it.
 
-- A2's claim holds within one run of the app on Android and the desktop,
-  and across runs only in the terminal client. Its row is narrowed to say
-  so.
-- SECURITY.md's "a change is reported, never auto-accepted" holds within a
-  run. It is reworded.
-- The SMP verified mark already said it lasts until the app closes (F3).
+### The fix
 
-### Gate (asserts the residual; fails when it is fixed)
+**The check.** `OtrApp._check_contact_pin` runs when a session first comes
+up (`_session_settled`), as the terminal's does:
+- first contact: pinned;
+- the same key: nothing;
+- another key: the pin is **not** replaced; the contact shows as
+  FINGERPRINT_MISMATCH; `FingerprintChanged` is emitted (the existing
+  blocking warning); nothing queued is sent. Calls and files are refused
+  (`fingerprint_changed`), even after a shared-secret check in that
+  session, until Reset trust. The call gate already had that case,
+  unreachable until now; the file gate read only the SMP result and now
+  checks the mismatch too, so the two cannot drift.
 
-`tests/test_p1_trust_pins_per_run.py`:
-- the app engines are built with a trust database in memory;
-- within one run a changed key is refused;
-- after a restart a changed key is a first contact;
-- the terminal keeps its pins across restarts.
+The session stays up, so the new key can be checked with SMP. The user
+accepts a new key only through Reset trust, after checking with the
+contact. If the open session is the one whose key changed, Reset trust
+pins that session's keys, the ones the user checked: the fingerprint, and
+the ML-DSA key its handshake pinned under the new identity
+(`TrustDatabase.accept_new_key`). Then it sends what was queued. Neither
+half is left empty for the next handshake to fill. With no such session,
+Reset trust forgets the pins as before (the way past an A2 refusal). A pin that cannot be kept ends the session (`trust_unavailable`):
+the next start would otherwise be a first contact again.
 
-### Proposed fix
+**The store** (`android_bridge.account_trust`; owner's design, 2026-10-27):
+- **Apart.** A trust store of its own: not the identity vault (F3), not
+  the X1 server pins, not chat history. On Android it is the Keystore
+  vault's `trust-vault` section, its own directory under the same Keystore
+  key. On the desktop it is 0600 files under `~/.otrv4plus/trust`.
+- **The F3 sealing path, not the F3 directory.** Records are AES-256-GCM
+  in Rust under a 0600 key file Rust creates (`TermuxFileDekProvider`,
+  `AesGcmSealedStore`), with their own key file `trust/trust.dek`. Each
+  record is bound to its name, a domain-separated hash of the account, so
+  one account's pins cannot be replayed into another's slot. The pins are
+  public values but show whom the user talks to, so they are sealed.
+- **Per account.** `bind_identity_account` opens the account's record
+  first, before anything about the identity changes. Switching account
+  detaches the old record and attaches the new one.
+- **Wipe & Exit destroys it.** On Android, `KeystoreVault.destroy` deletes
+  the key, then every section, `trust-vault` included. On both platforms
+  `~/.otrv4plus` (the key file, the markers, the desktop records) is under
+  `wipe.python_state_roots`.
+- **A record that will not open is refused, retried, never replaced**
+  (`trust_unavailable`), as F3's identity is. On Android the vault answers
+  None both for "never written" and for "will not open", so an empty
+  marker per record (`trust/<name>.present`) says one was written. Only a
+  real KeystoreVault gets a trust store. On the in-memory fallback a device
+  whose Keystore does not work keeps pins for one run instead of being
+  refused at every start.
+- **Kept, then answered.** A pin that could not be written fails the check
+  (`TrustDatabase.StoreFailed`) and is written again before the next
+  check.
+- **What is kept:** the fingerprint, the ML-DSA key hash, and the user's
+  "They match" confirmation. The SMP verified mark still belongs to the
+  session (`Verification.VERIFIED_UNTIL`).
 
-Persist the trust database per account, sealed in Rust the way F3 keeps
-identities: the Keystore vault on Android, a 0600 file on the desktop. Name
-it by the same account hash, and destroy it with Wipe & Exit. Then, at the
-first handshake after a restart, a changed key is the ordinary mismatch,
-refused. The pins are public values (fingerprints and key hashes) but
-reveal whom the user talks to, so they must be sealed, not plaintext.
-Not done in the audit pass: it is a storage feature.
+### Gate
+
+`tests/test_p1_trust_pins_per_run.py`, 24 tests:
+- after a restart (Android, desktop) a changed fingerprint is
+  FINGERPRINT_MISMATCH, with `FingerprintChanged`, and nothing queued goes
+  to it (`test_after_a_restart_a_changed_fingerprint_is_refused`);
+- after a restart a changed or dropped ML-DSA key is refused;
+- the same contact is still accepted;
+- a new identity is caught within one run;
+- Reset trust pins the key that was checked, both halves, and only that
+  one, and sends what waited; the dialog says so (`ProfileIdentityTest`);
+- calls and files are refused during a mismatch, even after SMP
+  (`test_calls_and_files_are_refused_while_the_key_does_not_match`);
+- "They match" is kept;
+- pins are per account;
+- the store is apart from identities, server pins and history, with its
+  own key file;
+- the record is sealed, names no JID, and is bound to its account;
+- an unopenable record (tampered, or a vault that cannot open it) is
+  refused, twice, and nothing is replaced;
+- a pin that cannot be kept fails and is retried;
+- **Wipe & Exit destroys the trust store**
+  (`test_wipe_and_exit_destroys_the_trust_store`,
+  `test_android_destroys_the_trust_section_with_the_key`);
+- the wiring on both platforms;
+- the Keystore-fallback residual, asserted;
+- the terminal unchanged.
+
+Mutation: 14 mutants of the fix, each killed (docs/AUDIT_TEST_INTEGRITY.md).
+
+### Residuals
+
+- **No working Keystore (Android).** The vault falls back to memory, so
+  there is no trust store and the pins last one run, as before
+  (`test_residual_without_a_working_keystore_the_pins_last_one_run`).
+- **The terminal client** keeps its pins in `~/.otrv4plus/xmpp/trust.json`.
+  It is plaintext (0600), and a file that will not parse loads as empty: it
+  fails open. Unchanged here, and listed for the terminal.
+- **The record's name is a hash of the account.** No file or vault entry
+  names the JID, but the name is an unkeyed hash, so whoever holds the
+  files can confirm a guessed account. F3's identity records are named the
+  same way (`account_tag`).
+- **A record on the device of whom the user talks to.** Sealed, but code
+  running as the app on an unlocked phone can read it, as it can the chat
+  history. Wipe & Exit removes it.
+- TOFU at the very first contact: the shared residual.
 
 ---
 
@@ -902,8 +985,13 @@ core is unchanged.
 ### Residuals
 
 - A peer on an older build still takes the double step, and our side cannot
-  follow it either. Accepting it would need the Rust receive path to try
-  the previous local key. Not done: it changes the crypto core.
+  follow it either. "Older" means any v2 build before this fix, the
+  released rc.184 included: it lists 0x50 and 0x51, so `pq_v2_required`
+  does not refuse it (v1 peers are refused already). The residual is real,
+  reached by ordinary use, and transient: it ends when the peer updates.
+  Accepting the step would need the Rust receive path to try the previous
+  local key. Not done: the owner decided (2026-10-27) to leave the crypto
+  core alone. Matrix row 3.10.
 - SPEC §5.1's "lost encapsulation-key chain, then a forced step" residual
   described this double step. With the fix it is no longer reachable, and
   the residual is reworded there.

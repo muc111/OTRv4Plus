@@ -257,9 +257,8 @@ PQC choice removes it.
 
 **Migration path (option 2).**
 1. A long-term ML-KEM-1024 key per identity, pinned like the ML-DSA key is
-   today (A2's pinning carries over, and so does its limit: on Android and
-   the desktop the pins last one run of the app until SECURITY_ISSUES.md P1
-   is fixed).
+   today (A2's pinning carries over, kept across restarts since the P1 fix;
+   SECURITY_ISSUES.md P1).
 2. The DAKE authenticates each side by decapsulation of a KEM ciphertext to
    that key, folded into the session key. There are no signatures, so the
    transcript is simulatable.

@@ -13,9 +13,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
   every later message failed to decrypt with no error shown. Now at most
   one step goes toward each key; the next comes with the reply.
   `tests/test_p2_forced_steps.py`.
-- **Found (P1, open): on Android and the desktop, contact pins last one run
-  of the app.** After a restart a changed key is accepted as a first
-  contact. The terminal client keeps its pins. `tests/test_p1_trust_pins_per_run.py`.
+- **Fixed (P1): the apps now warn when a contact's key changes, and
+  remember contacts across restarts.** On Android and the desktop the
+  contact's fingerprint was never checked, and the pins were forgotten at
+  every start, so a changed key was accepted without a warning. Now the
+  key is checked when a chat's encryption comes up; a changed key shows
+  "Their key has changed"; nothing waiting is sent, and calls and files are
+  refused, until you check with the contact and reset trust. Reset trust
+  then keeps the key you checked. Each account's pins are kept sealed, in a
+  store of their own, and Wipe & Exit destroys it. A store that will not
+  open is refused, not replaced. On an Android device whose Keystore does
+  not work the pins still last one run. `tests/test_p1_trust_pins_per_run.py`.
 - **"Make Chat Deniable…" is now "Publish Chat Keys…", and "Make Group
   Deniable…" is "Publish Group Keys…"** (confirm: "Publish keys"). The
   labels name what the action does, as the dialogs do; deniability itself

@@ -389,10 +389,15 @@ list `PQ_AUTH_VERSION` (`0x51`):
    (`pq_downgrade`) or uses another ML-DSA key (`pq_key_changed`) is refused:
    in exactly that attack the Ed448 fingerprint a user would compare matches. A
    new Ed448 identity is the ordinary fingerprint change and is re-pinned by
-   its next v2 handshake. Resetting trust for the peer clears the pin. Pins
-   are meant to outlive a run of the client. The terminal client keeps them
-   on disk; the Android and desktop apps keep them in memory, so there they
-   hold for one run (docs/SECURITY_ISSUES.md P1, OPEN).
+   its next v2 handshake. Resetting trust for the peer clears the pin; in the
+   apps, if the open session is the one whose key changed, its keys (both
+   halves) are pinned in place of the old ones instead. Pins
+   outlive a run of the client. The terminal client keeps them in a file;
+   the Android and desktop apps keep them per account, sealed in a store of
+   their own, and check the fingerprint pin when a session comes up: a
+   changed key is reported (FINGERPRINT_MISMATCH) and never auto-accepted
+   (docs/SECURITY_ISSUES.md P1). An Android device without a working
+   Keystore keeps them for one run.
 
 **Policy.** By default an implementation refuses a peer whose profile lacks
 `0x50` or `0x51` (`pq_v2_required`): the responder before answering DAKE1, the

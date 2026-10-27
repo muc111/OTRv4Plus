@@ -21,6 +21,12 @@ docs/CRYPTOGRAPHER_QUESTIONS.md.
 - After a release, forgery is open to anyone holding the keys, including
   someone fabricating "evidence". The transcript then proves neither
   authorship nor fabrication.
+- **The device keeps a record of participation too (P1).** Each account's
+  contact pins (fingerprints and ML-DSA key hashes) are kept sealed on the
+  device, so a handset or desktop account that is opened shows whom the
+  account has talked to under which key. That is participation, which the
+  A2 row already concedes, not content. Wipe & Exit destroys it
+  (docs/SECURITY_ISSUES.md P1).
 - TOFU sits under all three. See "Shared residual" in SECURITY_ISSUES.md;
   no primitive closes it (PQC_DECISIONS.md (e)).
 
