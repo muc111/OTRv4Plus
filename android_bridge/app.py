@@ -228,6 +228,9 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         self._keyless_groups: set = set()
         #: peer -> rooms to invite them to once OTRv4+ with them is up.
         self._invite_after_otr: Dict[str, List[str]] = {}
+        #: peer -> rooms we deleted, to tell them once a session is up
+        #: (`notify_group_deleted`).
+        self._deleted_after_otr: Dict[str, List[str]] = {}
         #: Non-contacts a message has sent a contact request to (once each).
         self._message_requested: set = set()
         #: U1: a login to a concrete account has succeeded on this facade and
@@ -685,6 +688,10 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         box = self._outbox.get(peer)
         invites = self._invite_after_otr.get(peer)
         secure = self.security_state(peer) is not SecurityState.PLAINTEXT
+        deleted = getattr(self, "_deleted_after_otr", {}).get(peer)
+        if secure and deleted:
+            self._deleted_after_otr.pop(peer, None)
+            self.notify_group_deleted(deleted[0], [peer], _more=deleted[1:])
         if secure and invites:
             self._invite_after_otr.pop(peer, None)
             groups = self._groups
@@ -825,6 +832,28 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
             except BridgeError:
                 pass
         return started
+
+    def notify_group_deleted(self, room: str, members, _more=()) -> None:
+        """We deleted [room]: tell each of [members] over OTRv4+
+        (`groups.GROUP_DELETED_SIGNAL`), so a member who was not in the room
+        for the removal and the destroy ends its copy too (device report,
+        2026-10-27). Now where a session is up; otherwise kept, a session
+        started, and sent once it is (`_flush_outbox`). Never raises."""
+        from .groups import GROUP_DELETED_SIGNAL
+        for peer in members:
+            peer = self.canonical_peer(peer)
+            for r in [room, *_more]:
+                try:
+                    self._send_group_signal(peer, GROUP_DELETED_SIGNAL + r)
+                    _TRACE.record("groups", "deleted_notice_sent", "info")
+                except Exception:
+                    waiting = self._deleted_after_otr.setdefault(peer, [])
+                    if r not in waiting:
+                        waiting.append(r)
+                    try:
+                        self.ensure_otr(peer)
+                    except Exception:
+                        pass
 
     def invite_when_ready(self, room: str, peer: str) -> str:
         """Invite `peer` to a secure group, starting OTRv4+ with them first if

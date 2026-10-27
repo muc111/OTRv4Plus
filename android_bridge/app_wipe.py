@@ -220,6 +220,7 @@ class WipeMixin:
         except Exception as exc:
             report["errors"].append("trust_store:%s" % type(exc).__name__)
         getattr(self, "_invite_after_otr", {}).clear()
+        getattr(self, "_deleted_after_otr", {}).clear()
         getattr(self, "_message_requested", set()).clear()
         getattr(self, "_entry_seen", {}).clear()
 

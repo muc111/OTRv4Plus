@@ -9,6 +9,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 Dev builds from 2026-10-27 are **rc.187** (versionCode 188) and **desktop
 0.14.10**, so a phone or laptop running them can be told from rc.186.
 
+- **Fixed: deleting a group could remove nobody.** The app took the
+  group's creator to be whichever member's name sorted first, not the one
+  who made it. A creator called "dontlook" with a member called "charlie"
+  was not the creator in its own app, so Delete skipped removing everyone
+  and only took the room down; members who were not in the room just then
+  kept the group. The creator is now read from the group itself (the first
+  member of its tree). Delete also tells each member over their OTRv4+
+  chat, at once or when a session is up, and their app ends its copy and
+  takes the group off the list. Only the creator can do this. The same
+  mistake had picked the wrong person to run group verification.
 - **Fixed: Termux users were not shown as online in the apps.** The apps
   list who is online from the server's Welcome room, which the terminal
   never joined. It now joins it, found the same way the apps find it

@@ -83,6 +83,10 @@ SIGNAL_PREFIX = "?OTRv4-MLS:"
 #: before it hands it to the verification handler, which drops anything that
 #: is not its JSON, rather than showing it as a line.
 GROUP_KEYS_MARK = "\x00OTRv4GV1:keys-published"
+#: Sent by the creator over each member's OTRv4+ session when it deletes the
+#: group: `GROUP_DELETED_SIGNAL + room`. A client that does not know it
+#: counts it as malformed and drops it.
+GROUP_DELETED_SIGNAL = SIGNAL_PREFIX + "DELETED:"
 
 #: Bounds on what a peer or a room can make us hold.
 MAX_ROOM_LEN = 256
@@ -544,6 +548,9 @@ class SecureGroups:
         #: Rooms whose retired keys go as soon as every member is past the
         #: rotation (F4); kept until none wait.
         self._reveal_now: set = set()
+        #: room -> who removed us from it (the committer of the commit that
+        #: did): a "group deleted" notice from them ends it here too.
+        self._removed_by: Dict[str, str] = {}
         #: room -> when we pressed Publish Group Keys (ms): once those keys
         #: are out, GROUP_KEYS_MARK tells the members, and each removes what
         #: came before it.
@@ -1084,13 +1091,33 @@ class SecureGroups:
             if self._entry_denied.get(room, {}).pop(jid, None) is not None:
                 self.save()
 
+    #: How far `coordinator` looks for the lowest occupied leaf.
+    MAX_LEAF_SEARCH = 4096
+
     def coordinator(self, room: str) -> str:
         """The group's creator: the member at the first MLS leaf (the
-        longest-standing member once the creator has left). "" if unknown."""
+        longest-standing member once the creator has left). "" if unknown.
+
+        Read from the tree by leaf, lowest first. It was the first name of
+        `members()`, which Rust returns sorted: so the "creator" was whoever
+        sorted first, and a creator called "dontlook" with a member called
+        "charlie" was not the creator (device report, 2026-10-27: Delete on
+        the creator's phone removed nobody)."""
         try:
             with self._lock:
-                ids = self._need().members(room.encode())
-                return bytes(ids[0]).decode(errors="replace") if ids else ""
+                client = self._need()
+                if not client.members(room.encode()):
+                    return ""
+                # Leaves are filled lowest first and freed in place; after
+                # removals the survivors can sit high, so the search goes up
+                # to the tree's bound, and stops at the first one.
+                for leaf in range(self.MAX_LEAF_SEARCH):
+                    try:
+                        who = client.member_at(room.encode(), leaf)
+                    except Exception:
+                        continue
+                    return bytes(who).decode(errors="replace")
+                return ""
         except Exception:
             return ""
 
@@ -1349,6 +1376,8 @@ class SecureGroups:
                 self._on_fingerprint(peer, arg, verified)
             elif kind == "ROOMPW":
                 self._on_room_password(peer, arg)
+            elif kind == "DELETED":
+                self._on_deleted(peer, arg)
             else:
                 self.stats.malformed += 1
         except GroupError as exc:
@@ -1485,6 +1514,33 @@ class SecureGroups:
         if rejoin:
             self._emit(GroupChanged(peer=room, change="reinvited", detail=peer))
         self._emit(GroupInvite(peer=peer, room=room, verified=verified))
+
+    def _on_deleted(self, peer: str, room: str) -> None:
+        """The group's creator deleted it and says so over our OTRv4+
+        session (GROUP_DELETED_SIGNAL): for a member who was not in the room
+        when the removal and the room's destroy went by (offline, or
+        reconnecting), so nothing else would ever tell them. Only from the
+        creator -- the member at the tree's first leaf -- or from whoever
+        removed us by commit; anyone else is refused."""
+        room = str(room or "").strip().lower()[:MAX_ROOM_LEN]
+        if not room:
+            raise GroupError("malformed")
+        peer = str(peer or "").split("/", 1)[0].lower()
+        with self._lock:
+            client = self._client
+            held = client is not None and client.has_group(room.encode())
+        if held:
+            if peer != self.coordinator(room):
+                raise GroupError("not_the_creator")
+            self.on_room_destroyed(room)            # emits "deleted"
+            return
+        if self._removed_by.get(room) == peer:
+            # Removed already (the commit came through); the room goes
+            # from the list too.
+            self._removed_by.pop(room, None)
+            self._emit(GroupChanged(peer=room, change="deleted"))
+            return
+        raise GroupError("not_a_group")
 
     def _on_key_package(self, peer: str, arg: str, verified: bool) -> None:
         room, _, b64 = arg.partition("|")
@@ -2440,6 +2496,7 @@ class SecureGroups:
             # Our leaf key is fresh as of this epoch.
             self._since_rekey[room] = [0, self._clock()]
         if ev.get("removed_us"):
+            self._removed_by[room] = committer.split("/", 1)[0].lower()
             inv = self._invites.get(room)
             if inv is not None and inv.rejoin and inv.accepted:
                 # Invited back and accepted: the inviter's add replaces our

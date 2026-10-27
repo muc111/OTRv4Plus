@@ -108,3 +108,93 @@ def test_a_group_of_one_is_deleted_at_once():
     rooms = _Rooms(w, [])
     assert _controller(a, rooms).delete_secure_group(ROOM)["ok"]
     assert len(rooms.calls) == 1
+
+
+# ── device report, 2026-10-27: Delete on the creator's phone did nothing ────
+
+import test_secure_groups as T                                 # noqa: E402
+from android_bridge.groups import GROUP_DELETED_SIGNAL         # noqa: E402
+
+
+def _group_created_by(creator, others):
+    """[creator] makes the group and invites [others]: names chosen so the
+    creator does NOT sort first, as on the device ("dontlook", "charlie")."""
+    w = T.World()
+    for name in [creator] + others:
+        w.add(name)
+    a = w.members[creator]
+    a.join_room()
+    a.groups.create(ROOM)
+    for other in others:
+        w.pair(creator, other)
+        T._invite(w, creator, other)
+    return w, [w.members[n] for n in [creator] + others]
+
+
+def test_the_creator_is_the_first_leaf_not_the_first_name():
+    w, (d, c) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p"])
+    assert d.groups.coordinator(ROOM) == "dontlook@x.i2p"
+    assert c.groups.coordinator(ROOM) == "dontlook@x.i2p", "the member agrees"
+    assert d.groups.is_creator(ROOM) and not c.groups.is_creator(ROOM)
+
+
+def test_a_creator_who_sorts_last_removes_everyone_on_delete():
+    w, (d, c) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p"])
+    rooms = _Rooms(w, [c])
+    out = _controller(d, rooms).delete_secure_group(ROOM)
+    assert out["ok"], out
+    [(_op, _room, seen, _log)] = rooms.calls
+    assert seen["charlie@x.i2p"][0], "charlie was removed before the room went"
+    assert not c.groups.is_secure(ROOM)
+
+
+def test_delete_also_tells_each_member_over_otr():
+    w, (d, c) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p"])
+    told = []
+    ctl = _controller(d, _Rooms(w, [c]))
+    ctl._app.notify_group_deleted = lambda room, members: told.append((room, list(members)))
+    assert ctl.delete_secure_group(ROOM)["ok"]
+    assert told == [(ROOM, ["charlie@x.i2p"])]
+
+
+def test_a_member_who_was_away_ends_its_copy_on_the_creators_notice():
+    w, (d, c) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p"])
+    del w.room.occupants[c.jid]                 # away: no removal, no destroy
+    _controller(d, _Rooms(w, [])).delete_secure_group(ROOM)
+    assert c.groups.is_secure(ROOM), "nothing reached charlie through the room"
+    c.groups.on_signal(d.jid, GROUP_DELETED_SIGNAL + ROOM)
+    assert not c.groups.is_secure(ROOM)
+    assert "deleted" in c.changes()
+
+
+def test_a_notice_after_the_removal_takes_the_room_off_the_list_too():
+    w, (d, c) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p"])
+    _controller(d, _Rooms(w, [c])).delete_secure_group(ROOM)
+    assert "removed_us" in c.changes() and "deleted" not in c.changes()
+    c.groups.on_signal(d.jid, GROUP_DELETED_SIGNAL + ROOM)
+    assert "deleted" in c.changes()
+
+
+def test_only_the_creator_can_delete_it_for_someone_else():
+    w, (d, c, e) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p", "erin@x.i2p"])
+    w.pair(c.jid, e.jid)
+    e.groups.on_signal(c.jid, GROUP_DELETED_SIGNAL + ROOM)    # charlie is no creator
+    assert e.groups.is_secure(ROOM)
+    assert any(getattr(ev, "detail", "") == "not_the_creator" for ev in e.events)
+
+
+def test_the_app_sends_the_notice_inside_the_session_or_keeps_it_for_one():
+    import test_deniability_wire_audit as W
+    wire, alice, bob = W._pair()
+    seen = []
+    bob.groups.on_signal = lambda peer, body: seen.append((peer, body))
+    alice.notify_group_deleted(ROOM, [W.BOB])
+    assert seen == [(W.ALICE, GROUP_DELETED_SIGNAL + ROOM)]
+    assert not any(GROUP_DELETED_SIGNAL in body for _f, _t, body in wire.frames), \
+        "never on the wire in the clear"
+    # No session with them: kept, and a session asked for.
+    started = []
+    alice._engine.end_session(W.BOB)
+    alice.ensure_otr = lambda peer: started.append(peer) or "checking"
+    alice.notify_group_deleted(ROOM, [W.BOB])
+    assert alice._deleted_after_otr == {W.BOB: [ROOM]} and started == [W.BOB]

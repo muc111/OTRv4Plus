@@ -176,6 +176,9 @@ class GroupVerify:
         own authenticated membership, not the room's say-so. Once the creator
         has left, the longest-standing member, so a group never loses the
         ability to be verified. "" when the group cannot be read."""
+        by_leaf = getattr(self._groups, "coordinator", None)
+        if by_leaf is not None:
+            return by_leaf(room)           # the tree, by leaf (SecureGroups)
         ids = self._member_ids(room)
         return ids[0] if ids else ""
 

@@ -278,7 +278,18 @@ class GroupsControlMixin:
         first = self._remove_everyone_first(room)
         if first is not None and not first.get("ok"):
             return first
+        removed = list((first or {}).get("value") or [])
         result = self.destroy_room(room, "secure group deleted")
+        if result.get("ok") or result.get("code") == "item_not_found":
+            # Also over each member's OTRv4+ session: one who was not in the
+            # room for the removal and the destroy hears it nowhere else.
+            notify = (getattr(getattr(self, "_app", None), "notify_group_deleted", None)
+                      if removed else None)
+            if notify is not None:
+                try:
+                    notify(room, removed)
+                except Exception:
+                    _TRACE.record("groups", "deleted_notice_failed", "warning")
         if result.get("ok"):
             self._on_room_destroyed(room)
         elif (result.get("code") in ("forbidden", "not_allowed")
