@@ -186,15 +186,23 @@ def _back(w, m, since):
         m.groups.on_room_body(ROOM, frm.split("@")[0], body, 0.0, own=(frm == m.jid))
 
 
+def _published_traced():
+    from android_bridge.trace import TRACE
+    return [ev for ev in TRACE.events() if ev["event"] == "keys_published_ours"]
+
+
 def test_publish_group_keys_waits_for_a_member_who_is_offline():
     w, (a, b, c) = _group(3)
     since = _offline(w, c)
+    traced = len(_published_traced())
     assert a.groups.make_deniable(ROOM) == "rotating"
     assert _retired(a) == 1, "kept: Carol has not seen the new key"
     assert not _published_to(b)
     assert a.groups.keys_waiting(ROOM) == [c.jid]
+    assert len(_published_traced()) == traced, "nothing traced as published yet"
     _back(w, c, since)                     # she processes it and acknowledges
     assert _retired(a) == 0
+    assert len(_published_traced()) == traced + 1, "the device test reads this"
     assert _published_to(b) == [a.jid] and _published_to(c) == [a.jid]
     assert a.groups.keys_waiting(ROOM) == []
 
@@ -232,13 +240,27 @@ def test_the_apps_show_who_the_keys_wait_for():
     ctl = ConnectionController.__new__(ConnectionController)
     ctl._app = types.SimpleNamespace(groups=types.SimpleNamespace(
         keys_waiting=lambda room: ["carol@x.i2p"]))
-    assert ctl.group_keys_waiting(ROOM)["value"] == ["carol@x.i2p"]
-    assert CONTROLLER_OPS["group_keys_waiting"] == ("room",)
+    assert ctl.group_publication_waiting(ROOM)["value"] == ["carol@x.i2p"]
+    assert CONTROLLER_OPS["group_publication_waiting"] == ("room",)
     for core_path in ("android/app/src/main/java/org/otrv4plus/android/bridge/ChaquopyOtrCore.kt",
                       "desktop/src/main/kotlin/org/otrv4plus/desktop/engine/DesktopCore.kt"):
-        assert '"group_keys_waiting"' in _src(*core_path.split("/"))
+        assert '"group_publication_waiting"' in _src(*core_path.split("/"))
     for ui in ("android/app/src/main/java/org/otrv4plus/android/ui/ConversationGroupUi.kt",
                "desktop/src/main/kotlin/org/otrv4plus/desktop/ui/GroupPane.kt"):
         src = _src(*ui.split("/"))
         assert "enabled = groupKeys.canPublish(waitingFor)" in src
         assert "groupKeys.waitingLine(waitingFor)" in src
+
+
+def test_an_acknowledgement_that_could_not_go_is_sent_by_maintain():
+    """An acknowledgement refused when it was due (a commit of ours pending
+    at that moment, as after re-adding a queued member) stays owed, and
+    `maintain` sends it; otherwise the publisher's keys would wait for
+    Bob's next message. The owed state is set directly: the moment it is
+    refused has passed by the time anything can observe it."""
+    w, (a, b, c) = _group(3)
+    b.groups._ack_owed.add(ROOM)
+    before = len(w.room.log)
+    b.groups.maintain()
+    assert [frm for frm, _ in w.room.log[before:]].count(b.jid) >= 1, "it went"
+    assert ROOM not in b.groups._ack_owed

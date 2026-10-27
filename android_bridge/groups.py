@@ -67,6 +67,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import otrv4plus_actions as _actions
 import otrv4plus_fragment as _fragment
 
+from .trace import TRACE as _TRACE
 from .events import (ErrorOccurred, GroupChanged, GroupInvite, MessageChanged,
                      QueuedSent, RoomMessageReceived, SecurityState)
 
@@ -2110,6 +2111,8 @@ class SecureGroups:
             self._post(room, bytes(wire))
             sent += 1
         if sent:
+            # What a device test reads (PHYSICAL_TEST_PLAN §8): a count only.
+            _TRACE.record("groups", "keys_published_ours", "info", messages=sent)
             self._emit(GroupChanged(peer=room, change="keys_published_ours"))
         return sent
 
