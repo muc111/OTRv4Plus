@@ -175,8 +175,9 @@ object Verification {
 
     /**
      * Appended to a successful verification: it is not permanent. The
-     * identity now outlives the app (F3), but the verified mark does not --
-     * nothing about a contact's key is stored on this side.
+     * identity now outlives the app (F3), and so do the contact's pinned
+     * keys and a "They match" confirmation (P1), but the verified mark of a
+     * shared-secret check does not: it belongs to the session.
      */
     const val VERIFIED_UNTIL: String =
         "This lasts until the app closes: verifications are not saved yet."

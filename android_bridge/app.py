@@ -473,10 +473,12 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         """
         peer = self.canonical_peer(peer)
         try:
-            return security_state_from_level(
-                self._engine.get_security_level(peer))
+            state = security_state_from_level(self._engine.get_security_level(peer))
         except Exception:
             return SecurityState.PLAINTEXT
+        if state is not SecurityState.PLAINTEXT and peer in getattr(self, "_fingerprint_changed", {}):
+            return SecurityState.FINGERPRINT_MISMATCH    # P1: the pin did not match
+        return state
 
     def smp_state(self, peer: str) -> SmpState:
         """This peer's verification state.
@@ -902,6 +904,7 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         """A session came up (or went): record the handshake time and send
         whatever waited for it."""
         if after is not SecurityState.PLAINTEXT and before is SecurityState.PLAINTEXT:
+            self._check_contact_pin(peer)
             started = self._hs_started.pop(peer, None) or self._handshake_seen.get(peer)
             if started:
                 took = max(1.0, time.monotonic() - started)
@@ -910,6 +913,8 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
                 del hist[:-5]
                 self._hs_all.append(took)
                 del self._hs_all[:-20]
+            if peer in getattr(self, "_fingerprint_changed", {}):
+                return          # P1: nothing queued goes to a key that failed its pin
             self._flush_outbox(peer)
 
     def handshake_eta(self, peer: str, elapsed: int) -> int:

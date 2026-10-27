@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .app_base import BridgeError, _log
 from .events import (ErrorOccurred, FingerprintChanged, SecurityState,
-                     SmpResult, SmpState)
+                     SessionStateChanged, SmpResult, SmpState)
 from .trace import TRACE as _TRACE
 
 
@@ -241,10 +241,70 @@ class SmpMixin:
         """Forget the contact's pinned fingerprint and post-quantum key, so
         the next handshake pins what it sees: the deliberate way past a
         `pq_downgrade` / `pq_key_changed` refusal (A2). The user is asked
-        first, on the screen, to check with the contact in person."""
+        first, on the screen, to check with the contact in person.
+
+        P1: if the open session is the one whose key changed, its keys are
+        the ones the user checked: they are pinned at once, both halves, and
+        what waited behind the warning is sent."""
         peer = self.canonical_peer(peer)
+        if (peer in self._key_changed()
+                and self.security_state(peer) is not SecurityState.PLAINTEXT):
+            fingerprint = self._safe(lambda: self._engine.get_peer_fingerprint(peer))
+            if fingerprint:
+                try:
+                    self._engine.trust_db.accept_new_key(peer, fingerprint)
+                except Exception as exc:
+                    _log.warning("reset trust: pin not kept: %s", exc.__class__.__name__)
+                    self._safe(lambda: self._engine.end_session(peer, "trust pin not kept"))
+                    self._emit(ErrorOccurred(peer=peer, code="trust_unavailable"))
+                    return False
+                self._key_changed().pop(peer, None)
+                self._safe(lambda: self._flush_outbox(peer))
+                return True
+        self._key_changed().pop(peer, None)
         return bool(self._safe(lambda: self._engine.trust_db.remove_trust(peer),
                                default=False))
+
+    # -- the contact's pinned key (P1) ------------------------------------------
+
+    def _key_changed(self) -> dict:
+        """peer -> the fingerprint pinned before, for contacts whose key no
+        longer matches their pin."""
+        changed = getattr(self, "_fingerprint_changed", None)
+        if changed is None:
+            changed = self._fingerprint_changed = {}
+        return changed
+
+    def _check_contact_pin(self, peer: str) -> None:
+        """P1: a session came up -- check the contact's key against its pin.
+
+        First contact: pinned. The same key: nothing to say. Another key: the
+        pin is NOT replaced, the contact shows as FINGERPRINT_MISMATCH and
+        `FingerprintChanged` is emitted -- the blocking warning; calls and
+        files stay refused until the user resets trust after checking with
+        the contact (`reset_trust`). The session itself stays up, so the new
+        key can be checked with SMP. The terminal client does the same
+        (otrv4plus_xmpp_trust.py). A pin that cannot be kept ends the session:
+        a handshake whose key is not remembered would make the next start a
+        first contact again."""
+        fingerprint = self._safe(lambda: self._engine.get_peer_fingerprint(peer))
+        if not fingerprint:
+            return
+        try:
+            self._engine.trust_db.check_or_pin(peer, fingerprint)
+        except Exception as exc:
+            if type(exc).__name__ == "FingerprintMismatchError":
+                stored = getattr(exc, "stored", "")
+                self._key_changed()[peer] = stored
+                self.note_fingerprint_mismatch(peer, stored, fingerprint)
+                self._emit(SessionStateChanged(peer=peer,
+                                               security=SecurityState.FINGERPRINT_MISMATCH))
+                return
+            _log.warning("trust pin not kept: %s", exc.__class__.__name__)
+            self._safe(lambda: self._engine.end_session(peer, "trust pin not kept"))
+            self._emit(ErrorOccurred(peer=peer, code="trust_unavailable"))
+            return
+        self._key_changed().pop(peer, None)
 
     # -- identity --------------------------------------------------------------
 
@@ -261,6 +321,14 @@ class SmpMixin:
         the Keystore vault, the desktop in 0600 files. Without one, every
         account gets a new identity per process (F2)."""
         self._identity_store = store
+
+    def use_trust_store(self, store) -> None:
+        """P1: keep each account's trust pins in [store] (an
+        `android_bridge.account_trust.AccountTrust`): Android in the Keystore
+        vault's trust section, the desktop in 0600 files, apart from the
+        identities. Without one the pins last one run (`None` from
+        `account_trust.for_android` when the Keystore does not work)."""
+        self._trust_store = store
 
     def bind_identity_account(self, account: str) -> bool:
         """F2/F3: the identity is the ACCOUNT's, not the process's.
@@ -282,6 +350,20 @@ class SmpMixin:
         current = getattr(self, "_identity_account", None)
         if current == bare:
             return False
+        # P1: the account's trust record is opened first, so a record that
+        # will not open refuses the sign-in before anything changes.
+        trust = getattr(self, "_trust_store", None)
+        record = None
+        if trust is not None:
+            record = trust.for_account(bare)
+            try:
+                record.load()
+            except Exception as exc:
+                _log.warning("trust pins of the account unavailable: %s", exc.__class__.__name__)
+                raise BridgeError(
+                    "trust_unavailable",
+                    "this account's saved contact keys could not be opened; "
+                    "they have not been replaced") from None
         store = getattr(self, "_identity_store", None)
         if store is not None:
             try:
@@ -295,6 +377,7 @@ class SmpMixin:
             self._signed_in = False
             self._engine.adopt_identity(*handles, reason="account changed")
             self._identity_account = bare
+            self._attach_trust(record)
             return True
         rotated = False
         if current is not None:
@@ -302,7 +385,22 @@ class SmpMixin:
             self._engine.rotate_identity("account changed")
             rotated = True
         self._identity_account = bare
+        self._attach_trust(record)
         return rotated
+
+    def _attach_trust(self, record) -> None:
+        """P1: the engine checks handshakes against [record]'s pins from now
+        on, and keeps every new pin in it."""
+        self._key_changed().clear()          # the previous account's contacts
+        if record is None:
+            return
+        try:
+            self._engine.trust_db.use_store(record)
+        except Exception as exc:
+            raise BridgeError(
+                "trust_unavailable",
+                "this account's saved contact keys could not be opened; they "
+                "have not been replaced") from exc
 
     def note_signed_out(self) -> None:
         """U1: no authenticated session any more (disconnect, sign-out)."""

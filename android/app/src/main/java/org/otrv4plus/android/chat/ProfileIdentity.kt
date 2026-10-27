@@ -64,9 +64,11 @@ object ProfileIdentity {
 
     const val RESET_TITLE = "Reset trust for this contact?"
     const val RESET_BODY =
-        "This forgets their pinned fingerprint and post-quantum key, and the " +
-            "next conversation trusts whatever key it meets. Do it only after " +
-            "they told you, in person or on a call where you know their voice, " +
+        "This replaces their pinned fingerprint and post-quantum key. If the " +
+            "open chat shows their key has changed, the new key, the one shown " +
+            "here, is pinned in their place; otherwise the pins are forgotten " +
+            "and the next conversation trusts whatever key it meets. Do it " +
+            "only after they told you, in person or on a call where you know their voice, " +
             "that they reinstalled or changed versions. Then compare " +
             "fingerprints again."
     const val RESET_BUTTON = "Reset trust"

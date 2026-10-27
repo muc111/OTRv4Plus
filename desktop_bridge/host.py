@@ -372,8 +372,10 @@ def _real_app():
     otr = bootstrap.load_orchestration()
     from android_bridge.app import OtrApp
     from android_bridge.account_identity import for_desktop
+    from android_bridge import account_trust
     app = OtrApp(otr.EnhancedSessionManager(otr.OTRConfig()))
     app.use_identity_store(for_desktop())        # F3: one identity per account
+    app.use_trust_store(account_trust.for_desktop())   # P1: its contact pins, kept
     return app
 
 

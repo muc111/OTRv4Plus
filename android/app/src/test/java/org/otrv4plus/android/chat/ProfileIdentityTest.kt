@@ -67,4 +67,13 @@ class ProfileIdentityTest {
         val v = ProfileIdentity.of(details(SecurityState.ENCRYPTED))
         assertTrue(v.offerVerify && v.offerConfirm)
     }
+
+    /** P1: with the changed key's chat open, Reset trust pins that key
+     *  (`reset_trust`, tests/test_p1_trust_pins_per_run.py); the dialog must
+     *  say so, and not that the next conversation fills the slot. */
+    @Test fun resetSaysTheChangedKeyShownIsPinnedInPlace() {
+        val body = ProfileIdentity.RESET_BODY
+        assertTrue(body.contains("the new key, the one shown here, is pinned in their place"))
+        assertTrue(body.contains("otherwise the pins are forgotten"))
+    }
 }

@@ -5494,8 +5494,59 @@ class TrustDatabase:
         self.persistent = bool(persistent)
         self.db_path = db_path or os.path.expanduser("~/.otrv4plus/trust.json")
         self._db: Dict[str, dict] = {}
+        self._store = None
+        self._unsaved = False
         if self.persistent:
             self._load()
+
+    class StoreFailed(RuntimeError):
+        """The sealed trust store (P1) could not be written. Raised, not
+        swallowed: a pin that is not kept would make the next start a first
+        contact again, so the handshake that made it fails instead."""
+
+    def use_store(self, store) -> None:
+        """P1: keep this database in [store], one account's sealed record
+        (`android_bridge.account_trust.AccountTrustRecord`): `load()` gives
+        its pins, or raises when the record will not open -- then nothing
+        here changes -- and every change is `save(db)`d. Replaces whatever
+        was held, which belonged to the account before. Only an in-memory
+        database takes a store: a persistent one keeps its own file."""
+        if self.persistent:
+            raise ValueError("a persistent trust database keeps its own file")
+        data = store.load()
+        with self._lock:
+            self._db = self._migrated(data or {})
+            self._store = store
+            self._unsaved = False
+
+    def detach_store(self) -> None:
+        """Stop writing to the store (another account, or a wipe). The pins
+        held go with it."""
+        with self._lock:
+            self._store = None
+            self._unsaved = False
+            self._db.clear()
+
+    def _save_to_store(self) -> None:
+        with self._lock:
+            snapshot = json.loads(json.dumps(self._db))
+            try:
+                self._store.save(snapshot)
+            except Exception as e:
+                self._unsaved = True
+                raise TrustDatabase.StoreFailed(
+                    "trust store not written: %s" % e.__class__.__name__) from None
+            self._unsaved = False
+
+    @staticmethod
+    def _migrated(raw) -> Dict[str, dict]:
+        out = {}
+        for k, v in dict(raw).items():
+            if isinstance(v, str):
+                out[k] = {"fingerprint": v, "trusted": True}
+            elif isinstance(v, dict):
+                out[k] = v
+        return out
 
     def _load(self):
         """Load database from disk with error handling"""
@@ -5509,15 +5560,7 @@ class TrustDatabase:
             try:
                 with open(self.db_path, "r") as f:
                     raw = json.load(f)
-                migrated = {}
-                for k, v in raw.items():
-                    if isinstance(v, str):
-                        migrated[k] = {"fingerprint": v, "trusted": True}
-                    elif isinstance(v, dict):
-                        migrated[k] = v
-                    else:
-                        continue
-                self._db = migrated
+                self._db = self._migrated(raw)
             except (json.JSONDecodeError, IOError, OSError) as e:
                 if DEBUG_MODE:
                     print(f"[TrustDatabase] Error loading: {e }")
@@ -5530,9 +5573,13 @@ class TrustDatabase:
     def _save(self):
         """Save database to disk atomically with error handling"""
         if not self.persistent:
-            # In-memory mode: the trust map lives and dies with the
-            # process. Writing here would recreate exactly the file
-            # this mode exists to not create.
+            # In-memory mode: never this file -- writing here would recreate
+            # exactly the file this mode exists to not create. The one place
+            # an in-memory database writes is a sealed store given to it
+            # (P1, `use_store`); without one the map lives and dies with the
+            # process.
+            if self._store is not None:
+                self._save_to_store()
             return
         with self._lock:
             try:
@@ -5585,6 +5632,8 @@ class TrustDatabase:
             raise TypeError("Peer and fingerprint must be strings")
 
         with self._lock:
+            if self._unsaved:
+                self._save()                 # P1: a pin made but not kept yet
             try:
                 entry = self._db.get(peer)
                 if entry is None:
@@ -5676,6 +5725,8 @@ class TrustDatabase:
         ident = hashlib.sha3_256(bytes(identity_pub)).hexdigest()
         key = hashlib.sha3_256(bytes(mldsa_pub)).hexdigest() if (pq_auth and mldsa_pub) else None
         with self._lock:
+            if self._unsaved:
+                self._save()                 # P1: a pin made but not kept yet
             entry = self._db.get(peer) or {}
             pin = entry.get("pq") or {}
             same_identity = hmac.compare_digest(pin.get("identity", "").encode(), ident.encode())
@@ -5690,6 +5741,17 @@ class TrustDatabase:
                 raise TrustDatabase.PqIdentityRefused(peer, "pq_downgrade")
             if not hmac.compare_digest(pin.get("mldsa", "").encode(), key.encode()):
                 raise TrustDatabase.PqIdentityRefused(peer, "pq_key_changed")
+
+    def accept_new_key(self, peer: str, fingerprint: str) -> None:
+        """Reset trust after a changed key was checked (P1): pin [fingerprint]
+        in place of the old pin, unconfirmed, keeping the ML-DSA pin the
+        same handshake made under the new identity, so neither half is left
+        for the next handshake to fill."""
+        if not peer or not fingerprint:
+            raise ValueError("Peer and fingerprint cannot be empty")
+        with self._lock:
+            self._set_entry(peer, fingerprint, False)
+            self._save()
 
     def add_trust(self, peer: str, fingerprint: str) -> bool:
         """Mark a (peer, fingerprint) pair as trusted.
@@ -10098,8 +10160,10 @@ class EnhancedSessionManager:
                         pass
             if not self.config.persist_trust:
                 try:
-                    with self.trust_db._lock:
-                        self.trust_db._db.clear()
+                    # P1: the pins (and the store they were kept in) were
+                    # the previous account's; the caller attaches the new
+                    # account's store.
+                    self.trust_db.detach_store()
                 except Exception:
                     pass
             self.tracer.trace("SYSTEM", "IDENTITY", "OLD", "ROTATED", reason)
@@ -10181,8 +10245,7 @@ class EnhancedSessionManager:
                         pass
 
             try:
-                with self.trust_db._lock:
-                    self.trust_db._db.clear()
+                self.trust_db.detach_store()     # nothing is written after a wipe
             except Exception:
                 pass
             try:

@@ -50,6 +50,10 @@ object FailureText {
         "no_transport" to "Not connected to the server.",
         "protocol_send_failed" to "A message to this contact could not be sent. Try again.",
         "decrypt_failed" to "A message from this contact could not be decrypted.",
+        // P1: a contact's key could not be kept in, or read from, this
+        // account's sealed trust store; the session was ended, not continued
+        // with a key that would be a first contact again at the next start.
+        "trust_unavailable" to "This account's saved contact keys could not be read or saved, so the encrypted chat was ended rather than continue unchecked. Nothing was replaced. Try again.",
         // Owner, 2026-10-24: a 1:1 message is never sent unencrypted.
         "waiting_for_contact" to "Not sent yet: they are not a contact, so a contact request was sent. Your message waits, and goes encrypted (OTRv4+) as soon as they accept.",
         "plaintext_refused" to "Not sent yet: this contact's app is not offering OTRv4+ encryption right now. Your message waits and goes only once an encrypted session is up; it is never sent unencrypted.",

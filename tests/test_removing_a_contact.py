@@ -202,11 +202,15 @@ class TestWhatRemovalMustNotTake:
         """Dropping it would turn the next conversation into a fresh
         trust-on-first-use decision."""
         engine = encrypted.app._engine
-        # Pinned deliberately rather than hoping the handshake did it: the
-        # point of this test is that a pin SURVIVES a removal, and a test that
-        # passes because there was nothing to lose proves nothing.
-        engine.trust_db.add_trust(PEER, "aa:bb:cc:dd")
-        assert engine.trust_db.is_trusted(PEER, "aa:bb:cc:dd")
+        # The handshake pins the contact's key (P1), so there is a pin to
+        # lose; confirming it ("They match") makes sure: the point of this
+        # test is that a pin SURVIVES a removal, and a test that passes
+        # because there was nothing to lose proves nothing.
+        fingerprint = engine.get_peer_fingerprint(PEER)
+        assert (engine.trust_db._db.get(PEER) or {}).get("fingerprint") == fingerprint, \
+            "the handshake did not pin the contact's key"
+        engine.trust_db.add_trust(PEER, fingerprint)
+        assert engine.trust_db.is_trusted(PEER, fingerprint)
 
         before = dict(engine.trust_db.list_trusted())
         encrypted.controller.remove_contact(PEER)
@@ -214,7 +218,7 @@ class TestWhatRemovalMustNotTake:
         assert dict(engine.trust_db.list_trusted()) == before, (
             "removing a contact discarded a pinned fingerprint, so the next "
             "conversation becomes a fresh trust-on-first-use decision")
-        assert engine.trust_db.get_trusted_fingerprint(PEER) == "aa:bb:cc:dd"
+        assert engine.trust_db.get_trusted_fingerprint(PEER) == fingerprint
 
     def test_the_conversation_can_still_be_used(self, encrypted):
         """The strongest form of "the session survived": send through it."""

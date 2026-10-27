@@ -46,7 +46,8 @@ import tempfile
 import threading
 from typing import Any, Optional
 
-from .events import ErrorOccurred, Event, FileTransferChanged, VoiceNoteReceived
+from .events import (ErrorOccurred, Event, FileTransferChanged, SecurityState,
+                     VoiceNoteReceived)
 
 __all__ = ["FileBridge", "FileOutcome", "is_file_signal"]
 
@@ -229,8 +230,14 @@ class FileBridge:
         could be callable but not sendable, or worse the other way round.
 
         FAILS CLOSED. Anything that cannot be answered is not verified.
+
+        P1: a contact whose key no longer matches its pin is refused here
+        as calls refuse it (`fingerprint_changed`), even after an SMP run
+        in that session, until the user resets trust.
         """
         try:
+            if self._app.security_state(peer) is SecurityState.FINGERPRINT_MISMATCH:
+                return False
             manager = self._app.calls._ensure_manager()
             if manager is None:
                 return False

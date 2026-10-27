@@ -129,6 +129,17 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                     py.getModule("android_bridge.account_identity").callAttr(
                         "for_android", KeystoreVault.open(appContext, KeystoreVault.IDENTITY)))
             }
+            // P1: each account's contact pins (fingerprints, ML-DSA keys,
+            // "They match"), kept between runs in the vault's own trust
+            // section -- apart from identities and from chat history. Only a
+            // real KeystoreVault keeps them: on the in-memory fallback Python
+            // gets no trust store, and the pins last one run, as before.
+            runCatching {
+                val trust = KeystoreVault.open(appContext, KeystoreVault.TRUST)
+                app?.callAttr("use_trust_store",
+                    py.getModule("android_bridge.account_trust").callAttr(
+                        "for_android", trust, trust is KeystoreVault))
+            }
 
             InitResult(
                 ok = report.callAttr("get", "ok").toBoolean(),

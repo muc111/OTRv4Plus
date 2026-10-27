@@ -152,7 +152,14 @@ class KeystoreVault private constructor(
          */
         const val IDENTITY = "identity-vault"
 
-        private val SECTIONS = setOf(DEFAULT, IDENTITY)
+        /**
+         * Each account's contact pins (P1): its own directory again, so
+         * neither clearing chat history nor anything done to the identities
+         * reaches them. [destroy] deletes it with the others.
+         */
+        const val TRUST = "trust-vault"
+
+        private val SECTIONS = setOf(DEFAULT, IDENTITY, TRUST)
 
         /**
          * Wipe & Exit: delete the sealing key, then the records.
