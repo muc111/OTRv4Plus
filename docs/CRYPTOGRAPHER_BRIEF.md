@@ -93,18 +93,23 @@ cd Rust && cargo test --release
 cd Rust/mls && cargo test --release
 #   client::retired_key_tests
 
-# The Python engine and the apps' bridge, over the Rust extension
-python -m venv .venv && .venv/bin/pip install 'maturin>=1.0,<2.0' pytest cryptography
-OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 .venv/bin/maturin develop --release \
+# The Python engine and the apps' bridge, over the Rust extension.
+# Python 3.12 or later (Rust/pyproject.toml); 3.11 cannot parse the engine.
+python3.12 -m venv .venv && . .venv/bin/activate
+pip install 'maturin>=1.0,<2.0' pytest cryptography
+OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 maturin develop --release \
   --manifest-path Rust/Cargo.toml \
   --features pyo3/extension-module,android-opus,mls,raw-key-test-api
-.venv/bin/python -m pytest -q tests/test_deniability_wire_audit.py \
+python -m pytest -q tests/test_deniability_wire_audit.py \
   tests/test_l1_revelation_gate.py tests/test_l1_crash_during_close.py \
   tests/test_pq_auth_v2.py tests/test_p1_trust_pins_per_run.py \
   tests/test_p2_forced_steps.py
+#   88 tests, in about half a minute after the build
 ```
 
-The full Python suite needs more packages; `.github/workflows/python.yml`
+These steps were run as written in a fresh environment on 2026-10-27.
+The Rust suites gave 199 and 70 passing tests. The full Python suite
+(8141 passing) needs more packages; `.github/workflows/python.yml`
 installs them. `raw-key-test-api` builds a test-only accessor, and
 `tests/test_release_guard.py` checks that the shipped build has no such
 entry point.
