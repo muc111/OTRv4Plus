@@ -201,8 +201,16 @@ private fun LinkBanner(model: AppModel) {
         else -> "Connecting over I2P… the first time can take a few minutes; it carries on by itself."
     }
     Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
-        Text(text, Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-             style = MaterialTheme.typography.bodySmall)
+        Row(Modifier.padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(text, Modifier.weight(1f).padding(vertical = 8.dp),
+                 style = MaterialTheme.typography.bodySmall)
+            // Failed or stopped, it does not come back by itself: a way back
+            // to the login form, without restarting the app (device report,
+            // 2026-10-27: "disconnected ... without an option to re login").
+            if (phase == LinkPhase.FAILED || phase == LinkPhase.STOPPED) {
+                TextButton(onClick = { model.disconnect() }) { Text("Log in again") }
+            }
+        }
     }
 }
 

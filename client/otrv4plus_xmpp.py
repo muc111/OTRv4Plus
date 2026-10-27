@@ -783,6 +783,53 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                     _TuiMixin, ClientXMPP):
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
+    async def _welcome_join(self):
+        """Join the server's OTRv4Plus Welcome room, found the way the apps
+        find it (android_bridge.welcome.find_room): the server's MUC
+        services, their public rooms, the one whose name is exactly the
+        Welcome room's. Never created here, never guessed. Prints one line."""
+        from android_bridge import welcome as _welcome
+        disco = self.plugin["xep_0030"]
+        try:
+            items = await disco.get_items(jid=self.boundjid.domain, timeout=60)
+            services, rooms = [], {}
+            for jid, _node, name in items["disco_items"].get_items():
+                entry = {"jid": str(jid), "name": str(name or ""), "category": ""}
+                try:
+                    info = await disco.get_info(jid=jid, timeout=60)
+                    for category, _type, _lang, _name in info["disco_info"]["identities"]:
+                        entry["category"] = str(category)
+                        break
+                except Exception:
+                    pass
+                services.append(entry)
+                if entry["category"] == "conference":
+                    try:
+                        listed = await disco.get_items(jid=jid, timeout=60)
+                        rooms[str(jid)] = [{"jid": str(r), "name": str(n or "")}
+                                           for r, _n2, n in listed["disco_items"].get_items()]
+                    except Exception:
+                        rooms[str(jid)] = []
+            room, reason = _welcome.find_room(services, rooms)
+            if room is None:
+                print("[welcome] no OTRv4Plus Welcome room on this server (%s); the "
+                      "apps show you as online only to your contacts" % reason)
+                return
+            nick = self.boundjid.user
+            muc = self.plugin["xep_0045"]
+            try:
+                await muc.join_muc_wait(room, nick, timeout=90)
+            except Exception:
+                import secrets as _secrets
+                nick = "%s-%s" % (nick, _secrets.token_hex(2))
+                await muc.join_muc_wait(room, nick, timeout=90)
+            print("[welcome] in the OTRv4Plus Welcome room: the apps show you as "
+                  "online, and everyone in it sees your address (--no-welcome "
+                  "to stay out)")
+        except Exception as exc:
+            print("[welcome] could not join the Welcome room (%s); the apps show "
+                  "you as online only to your contacts" % type(exc).__name__)
+
     def __init__(self, jid, password, peer=None, debug=False):
         """The client's state, the OTR engine, then the XMPP side: in that
         order, since handlers and plugins may refer to both."""
@@ -1118,6 +1165,11 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             print("[xmpp] could not advertise OTRv4Plus capability; peers "
                   "will not start OTRv4+ automatically")
         self.send_presence()
+        # The apps list who is online from the server's Welcome room, so a
+        # terminal that never joined it was never shown (device report,
+        # 2026-10-27). In the background: an I2P round trip per step.
+        if getattr(self, "_join_welcome", False):
+            asyncio.ensure_future(self._welcome_join())
         # Initialize voice call manager now that we have an event loop
         if self._voice_manager is None:
             self._voice_manager = VoiceCallManager(
@@ -3639,6 +3691,13 @@ def _parser():
     )
     ap.add_argument("--jid", required=True, help="your full JID")
     ap.add_argument(
+        "--no-welcome",
+        action="store_true",
+        help="do not join the server's OTRv4Plus Welcome room. The apps join "
+             "it to show who is online, and list everyone in it -- your "
+             "address included -- to everyone else in it",
+    )
+    ap.add_argument(
         "--register",
         action="store_true",
         help="create the account on the server first (XEP-0077), then sign "
@@ -4253,6 +4312,7 @@ def main():
     client._voice_sam_host = args.sam_host
     client._voice_sam_port = args.sam_port
     client._voice_debug = bool(args.voice_debug)
+    client._join_welcome = not getattr(args, "no_welcome", False)
 
     if hasattr(client, "enable_direct_tls"):
         client.enable_direct_tls = False

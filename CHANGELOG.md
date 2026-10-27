@@ -6,6 +6,16 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ## Unreleased (dev) — audit and hardening pass, 2026-10-26
 
+Dev builds from 2026-10-27 are **rc.187** (versionCode 188) and **desktop
+0.14.10**, so a phone or laptop running them can be told from rc.186.
+
+- **Fixed: Termux users were not shown as online in the apps.** The apps
+  list who is online from the server's Welcome room, which the terminal
+  never joined. It now joins it, found the same way the apps find it
+  (`--no-welcome` keeps it out: everyone in the room sees your address).
+- **Added: Log in again on the desktop.** When the connection has failed or
+  stopped, the banner offers a way back to the login form instead of only
+  saying so.
 - **Changed: both copies of a chat or group go when its keys are published.**
   "Publish Chat Keys" is now **End chat & publish keys…**. When either
   person presses it, the other person's app also removes the chat's earlier
