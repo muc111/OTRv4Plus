@@ -161,6 +161,24 @@ class DeniableChatTest {
         assertTrue("history is deleted from this device" in GroupDeniable.BODY)
     }
 
+    @Test fun `while earlier keys wait for members the button is not offered and says why`() {
+        // F4 containment (option A): keys go only once every member's app has
+        // confirmed the new key (SecureGroups.keys_waiting).
+        assertTrue(GroupDeniable.canPublish(emptyList()))
+        assertFalse(GroupDeniable.canPublish(listOf("carol@x.i2p")))
+        assertEquals("Publishing keys: waiting for 1 member", GroupDeniable.waiting(1))
+        assertEquals("Publishing keys: waiting for 3 members", GroupDeniable.waiting(3))
+        assertEquals("", GroupDeniable.waitingLine(emptyList()))
+        val seven = (1..7).map { "m$it@x.i2p" }
+        val line = GroupDeniable.waitingLine(seven)
+        assertTrue("m5@x.i2p" in line && "m6@x.i2p" !in line && "and 2 more" in line, line)
+        assertTrue("every member's app has confirmed it has your new key" in GroupDeniable.BODY)
+        assertTrue("once every member's app has confirmed it" in GroupDeniable.outcome(true, "ok"))
+        for (text in listOf(GroupDeniable.waiting(2), line)) {
+            assertFalse("deniab" in text.lowercase(), text)
+        }
+    }
+
     @Test fun `made deniable the group's history goes and refused nothing goes`() {
         val room = "team@conference.otrv4plus.i2p"
         val disk = Disk()

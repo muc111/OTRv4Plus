@@ -605,8 +605,14 @@ internal fun GroupEndButtons(model: ChatViewModel, jid: String) {
     // Group calls are among verified members only: this sends our key to each
     // member over OTRv4+; SMP with a member (in their chat) completes it.
     TextButton(onClick = { model.verifyGroupMembers(jid) }) { Text("Verify members (for calls)") }
-    TextButton(onClick = { asking = "deniable" }) {
-        Text(org.otrv4plus.android.crypto.GroupDeniable.ACTION)
+    val waitingFor = model.groupKeysWaiting(jid)
+    val groupKeys = org.otrv4plus.android.crypto.GroupDeniable
+    TextButton(onClick = { asking = "deniable" }, enabled = groupKeys.canPublish(waitingFor)) {
+        Text(if (groupKeys.canPublish(waitingFor)) org.otrv4plus.android.crypto.GroupDeniable.ACTION
+             else groupKeys.waiting(waitingFor.size))
+    }
+    if (!groupKeys.canPublish(waitingFor)) {
+        Text(groupKeys.waitingLine(waitingFor), style = MaterialTheme.typography.bodySmall)
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         TextButton(onClick = { asking = "leave" }) { Text("Leave group") }

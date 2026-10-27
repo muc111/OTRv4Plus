@@ -255,8 +255,15 @@ fun GroupMembersPanel(model: AppModel, room: String, modifier: Modifier = Modifi
                 }
                 HorizontalDivider()
                 TextButton(onClick = { model.verifyGroupMembers(room) }) { Text("Verify members (for calls)") }
-                TextButton(onClick = { ending = "deniable" }) {
-                    Text(org.otrv4plus.android.crypto.GroupDeniable.ACTION)
+                val waitingFor = model.groupKeysWaiting[room].orEmpty()
+                val groupKeys = org.otrv4plus.android.crypto.GroupDeniable
+                TextButton(onClick = { ending = "deniable" }, enabled = groupKeys.canPublish(waitingFor)) {
+                    Text(if (groupKeys.canPublish(waitingFor)) org.otrv4plus.android.crypto.GroupDeniable.ACTION
+                         else groupKeys.waiting(waitingFor.size))
+                }
+                if (!groupKeys.canPublish(waitingFor)) {
+                    Text(groupKeys.waitingLine(waitingFor), style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 TextButton(onClick = { ending = "leave" }) { Text("Leave group") }
                 // Only the group's creator (its room's owner) or a server admin can

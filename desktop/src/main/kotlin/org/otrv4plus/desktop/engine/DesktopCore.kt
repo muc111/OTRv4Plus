@@ -401,6 +401,9 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun leaveSecureGroup(room: String) = controller("leave_secure_group", "room" to room)
     /** "Make Group Deniable" (F4): see SecureGroups.make_deniable. */
     fun makeGroupDeniable(room: String) = controller("make_group_deniable", "room" to room)
+    /** Who our earlier group keys wait for (F4): see SecureGroups.keys_waiting. */
+    fun groupKeysWaiting(room: String): List<String> =
+        controller("group_keys_waiting", "room" to room).let { if (it.ok) names(it.value) else emptyList() }
     fun deleteSecureGroup(room: String) = controller("delete_secure_group", "room" to room)
     fun removeGroupMember(room: String, member: String) =
         controller("remove_group_member", "room" to room, "member" to member)

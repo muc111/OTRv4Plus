@@ -334,6 +334,10 @@ class GroupsControlMixin:
         and our retired ones published once it lands (SecureGroups.make_deniable)."""
         return self._group_call(self._app.groups.make_deniable, room)
 
+    def group_keys_waiting(self, room: str) -> Dict[str, Any]:
+        """F4: who our retired keys for [room] wait for (SecureGroups.keys_waiting)."""
+        return self._group_call(self._app.groups.keys_waiting, room)
+
     def leave_secure_group(self, room: str) -> Dict[str, Any]:
         """Forget the group's keys here, then leave the room."""
         result = self._group_call(self._app.groups.leave, room)

@@ -706,6 +706,13 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
+    /** Who our earlier group keys wait for (F4): see SecureGroups.keys_waiting. */
+    fun groupKeysWaiting(room: String): List<String> {
+        val result = call("group_keys_waiting", room) ?: return emptyList()
+        if (!outcomeOf(result).ok) return emptyList()
+        return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
+    }
+
     fun leaveSecureGroup(room: String): RoomOutcome {
         val result = call("leave_secure_group", room) ?: return notPrepared()
         return outcomeOf(result)

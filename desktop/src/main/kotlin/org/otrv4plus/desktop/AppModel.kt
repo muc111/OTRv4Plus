@@ -1079,6 +1079,8 @@ class AppModel(
     // -- secure groups: verification and calls (the gates are the engine's) ---
 
     var groupMembers by mutableStateOf<Map<String, List<GroupMember>>>(emptyMap())
+    /** room -> who our earlier keys there wait for (F4). */
+    var groupKeysWaiting by mutableStateOf<Map<String, List<String>>>(emptyMap())
         private set
 
     fun groupVerify(room: String): GroupVerifyState = chat.groupVerifyState(room)
@@ -1088,8 +1090,10 @@ class AppModel(
         val (verify, call, members) = withContext(Dispatchers.IO) {
             Triple(core.groupVerifyState(room), core.groupCallState(room), core.groupMembers(room).second)
         }
+        val waiting = withContext(Dispatchers.IO) { core.groupKeysWaiting(room) }
         chat.noteGroupState(room, verify, call)
         groupMembers = groupMembers + (room to members)
+        groupKeysWaiting = groupKeysWaiting + (room to waiting)
     }
 
     fun refreshGroupNow(room: String) { ui.launch { refreshGroup(room); changed() } }

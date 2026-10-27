@@ -201,6 +201,14 @@ class ChatViewModel : ViewModel() {
         return groupMembers[jid].orEmpty()
     }
 
+    /** room -> who our earlier keys there wait for (F4). */
+    private val groupKeysWaiting = mutableMapOf<String, List<String>>()
+
+    fun groupKeysWaiting(jid: String): List<String> {
+        observe()
+        return groupKeysWaiting[jid].orEmpty()
+    }
+
     private fun groupCall(label: String,
                           onOk: (org.otrv4plus.android.bridge.RoomOutcome) -> Unit = {},
                           onFail: (org.otrv4plus.android.bridge.RoomOutcome) -> Unit = {},
@@ -541,6 +549,7 @@ class ChatViewModel : ViewModel() {
             }
             state.note(org.otrv4plus.android.crypto.GroupDeniable.apply(
                 outcome.ok, outcome.code, state, room))
+            refreshGroupMembers(room)
             revision++
         }
     }
@@ -579,6 +588,9 @@ class ChatViewModel : ViewModel() {
                     ?: (org.otrv4plus.android.bridge.RoomOutcome(false, "group_failed", "") to emptyList())
             }
             if (outcome.ok) groupMembers[room] = members
+            groupKeysWaiting[room] = withContext(Dispatchers.IO) {
+                runCatching { c.groupKeysWaiting(room) }.getOrDefault(emptyList())
+            }
             revision++
         }
     }

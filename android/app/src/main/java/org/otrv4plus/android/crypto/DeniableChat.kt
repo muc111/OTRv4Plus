@@ -88,7 +88,9 @@ object GroupDeniable {
     const val BODY =
         "Gives you a new signing key in this group, then publishes your earlier " +
             "ones to its members, so any of them can make signatures under those " +
-            "keys too. New messages are signed with the new key, which stays " +
+            "keys too. They are published only once every member's app has " +
+            "confirmed it has your new key, so each member must come online first. " +
+            "New messages are signed with the new key, which stays " +
             "secret. Messages stay encrypted. Earlier keys are also published " +
             "by themselves some minutes after each automatic key change, while " +
             "the app is running. Anything copied before they are published stays " +
@@ -97,10 +99,27 @@ object GroupDeniable {
 
     fun outcome(ok: Boolean, code: String): String =
         if (ok) "A new signing key is being set up; your earlier ones are published " +
-            "as soon as it is in place, and this group's history was deleted from " +
-            "this device."
+            "once every member's app has confirmed it, and this group's history was " +
+            "deleted from this device."
         else org.otrv4plus.android.chat.GroupText.outcome(code)
             ?: "The group could not be made deniable ($code)."
+
+    /**
+     * F4: earlier keys wait until every other member's app has confirmed the
+     * new one (SecureGroups.keys_waiting), because a member still on the old
+     * one would accept a message signed with a published key. While they
+     * wait the button is not offered and says for how many.
+     */
+    fun canPublish(waitingFor: List<String>): Boolean = waitingFor.isEmpty()
+
+    fun waiting(count: Int): String =
+        "Publishing keys: waiting for $count member" + (if (count == 1) "" else "s")
+
+    fun waitingLine(who: List<String>): String =
+        if (who.isEmpty()) ""
+        else "Your earlier keys are published when these members' apps confirm your " +
+            "new key: " + who.take(5).joinToString(", ") +
+            (if (who.size > 5) " and ${who.size - 5} more" else "") + "."
 
     /** What both apps do with the answer: on success the group's history goes. */
     fun apply(ok: Boolean, code: String, chat: org.otrv4plus.android.chat.ChatState,

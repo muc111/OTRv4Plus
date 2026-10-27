@@ -162,3 +162,83 @@ def test_both_apps_ask_first_and_clear_the_history_after():
     for model in ("android/app/src/main/java/org/otrv4plus/android/chat/ChatViewModel.kt",
                   "desktop/src/main/kotlin/org/otrv4plus/desktop/AppModel.kt"):
         assert "GroupDeniable.apply(" in _src(*model.split("/"))
+
+
+# ── publication waits for every member (F4 containment, option A) ──────────
+#
+# A member that has not processed the rotation is still in the old epoch and
+# would accept a message signed with the old key (Rust:
+# `residual_a_member_that_has_not_processed_the_rotation_accepts_the_retired
+# _key_until_it_does`). So the keys go only once every other member has
+# acknowledged the rotation (`publication_waits_until_every_member_has_
+# acknowledged_the_rotation`). These drive that through the app's group
+# manager, with a member offline.
+
+def _offline(w, m):
+    del w.room.occupants[m.jid]
+    return len(w.room.log)
+
+
+def _back(w, m, since):
+    """[m] comes back and gets what the room relayed while it was away."""
+    m.join_room()
+    for frm, body in list(w.room.log[since:]):
+        m.groups.on_room_body(ROOM, frm.split("@")[0], body, 0.0, own=(frm == m.jid))
+
+
+def test_publish_group_keys_waits_for_a_member_who_is_offline():
+    w, (a, b, c) = _group(3)
+    since = _offline(w, c)
+    assert a.groups.make_deniable(ROOM) == "rotating"
+    assert _retired(a) == 1, "kept: Carol has not seen the new key"
+    assert not _published_to(b)
+    assert a.groups.keys_waiting(ROOM) == [c.jid]
+    _back(w, c, since)                     # she processes it and acknowledges
+    assert _retired(a) == 0
+    assert _published_to(b) == [a.jid] and _published_to(c) == [a.jid]
+    assert a.groups.keys_waiting(ROOM) == []
+
+
+def test_the_delay_does_not_publish_past_a_member_who_is_offline():
+    w, (a, b, c) = _group(3)
+    now = _clocked([a, b, c])
+    since = _offline(w, c)
+    a.groups.rekey(ROOM)
+    now[0] += a.groups.REVEAL_DELAY_SECONDS + 1
+    assert "published:" + ROOM not in a.groups.maintain()
+    assert _retired(a) == 1 and not _published_to(b)
+    _back(w, c, since)
+    assert _retired(a) == 0, "her acknowledgement lets the due keys go"
+    assert _published_to(b) == [a.jid]
+
+
+def test_each_member_acknowledges_another_members_rotation_and_shows_nothing():
+    w, (a, b, c) = _group(3)
+    before = len(w.room.log)
+    a.groups.rekey(ROOM)
+    # One message each. It goes as two room pieces: every MLS message
+    # carries a composite Ed448 + ML-DSA-87 signature (about 4.7 KB).
+    messages = {(frm, body.split("|")[1]) for frm, body in w.room.log[before:]}
+    senders = [frm for frm, _ in messages]
+    assert senders.count(b.jid) == 1 and senders.count(c.jid) == 1, senders
+    assert b.texts() == [] and c.texts() == [] and a.texts() == []
+    assert a.groups.keys_waiting(ROOM) == []
+
+
+def test_the_apps_show_who_the_keys_wait_for():
+    import types
+    from android_bridge.connection import ConnectionController
+    from desktop_bridge.host import CONTROLLER_OPS
+    ctl = ConnectionController.__new__(ConnectionController)
+    ctl._app = types.SimpleNamespace(groups=types.SimpleNamespace(
+        keys_waiting=lambda room: ["carol@x.i2p"]))
+    assert ctl.group_keys_waiting(ROOM)["value"] == ["carol@x.i2p"]
+    assert CONTROLLER_OPS["group_keys_waiting"] == ("room",)
+    for core_path in ("android/app/src/main/java/org/otrv4plus/android/bridge/ChaquopyOtrCore.kt",
+                      "desktop/src/main/kotlin/org/otrv4plus/desktop/engine/DesktopCore.kt"):
+        assert '"group_keys_waiting"' in _src(*core_path.split("/"))
+    for ui in ("android/app/src/main/java/org/otrv4plus/android/ui/ConversationGroupUi.kt",
+               "desktop/src/main/kotlin/org/otrv4plus/desktop/ui/GroupPane.kt"):
+        src = _src(*ui.split("/"))
+        assert "enabled = groupKeys.canPublish(waitingFor)" in src
+        assert "groupKeys.waitingLine(waitingFor)" in src

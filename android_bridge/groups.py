@@ -533,8 +533,12 @@ class SecureGroups:
         self._since_rekey: Dict[str, List[float]] = {}
         #: room -> when a rekey of ours last retired a key not yet published (F4).
         self._retired_at: Dict[str, float] = {}
-        #: Rooms whose retired keys go as soon as our rekey lands (F4).
+        #: Rooms whose retired keys go as soon as every member is past the
+        #: rotation (F4); kept until none wait.
         self._reveal_now: set = set()
+        #: Rooms owing an acknowledgement of another member's rotation (F4)
+        #: that could not go yet (a commit of ours was pending).
+        self._ack_owed: set = set()
         #: room -> {member identity: when a commit of theirs last refreshed
         #: their leaf (or they joined)} -- what idle removal judges.
         self._activity: Dict[str, Dict[str, float]] = {}
@@ -1949,6 +1953,7 @@ class SecureGroups:
             if room in self._syncing:
                 continue                    # no commit from an old epoch
             self._flush_held(room)
+            self._send_ack(room)
             if self._publish_due(room):
                 done.append("published:" + room)
             # A removal commit refreshes our path too, so it goes first.
@@ -2057,11 +2062,13 @@ class SecureGroups:
         self._post_commit(room, commit)
 
     def make_deniable(self, room: str) -> str:
-        """"Make Group Deniable" (F4, epochal signatures): rotate our signing
+        """"Publish Group Keys" (F4, epochal signatures): rotate our signing
         key now, and publish the retired keys -- this one and any earlier --
-        as soon as the rotation comes back from the room. After that, any
-        member could have produced what those keys signed. Returns
-        "rotating". Refused while a change of ours is still on its way."""
+        as soon as every other member has acknowledged the rotation
+        (`keys_waiting`); a member still in the old epoch would otherwise
+        accept a message signed with a published key. After that, any member
+        could have produced what those keys signed. Returns "rotating".
+        Refused while a change of ours is still on its way."""
         with self._lock:
             client = self._need()
             if not client.has_group(room.encode()):
@@ -2092,7 +2099,11 @@ class SecureGroups:
                 except ValueError:
                     return sent                       # a commit of ours is pending
                 if wire is None:
-                    self._retired_at.pop(room, None)
+                    # Nothing more that every member is past. Keys still
+                    # waiting keep their time and their request.
+                    if not int(client.retired_count(room.encode())):
+                        self._retired_at.pop(room, None)
+                        self._reveal_now.discard(room)
                     if sent:
                         self.save()
                     break
@@ -2101,6 +2112,40 @@ class SecureGroups:
         if sent:
             self._emit(GroupChanged(peer=room, change="keys_published_ours"))
         return sent
+
+    def keys_waiting(self, room: str) -> List[str]:
+        """Who our retired keys for [room] wait for (F4): members not yet
+        known to be past the rotation. Empty when nothing waits."""
+        with self._lock:
+            client = self._client
+            if client is None or self._wiped or not client.has_group(room.encode()):
+                return []
+            return [bytes(w).decode(errors="replace") for w in client.awaiting(room.encode())]
+
+    def _send_ack(self, room: str) -> None:
+        """Post an owed acknowledgement of another member's rotation (F4).
+        Kept owed while a commit of ours is pending; any later epoch is
+        past the rotation too."""
+        with self._lock:
+            client = self._client
+            if room not in self._ack_owed or client is None or self._wiped:
+                return
+            if not client.has_group(room.encode()):
+                self._ack_owed.discard(room)
+                return
+            try:
+                wire = bytes(client.acknowledge(room.encode()))
+            except ValueError:
+                return                            # a commit of ours is pending
+            self._ack_owed.discard(room)
+        self._post(room, wire)
+
+    def _after_ack(self, room: str) -> None:
+        """A member acknowledged: keys may now be publishable."""
+        if room in self._reveal_now:
+            self.publish_retired(room)
+        else:
+            self._publish_due(room)
 
     def _publish_due(self, room: str) -> bool:
         """`maintain`'s part of F4: publish once REVEAL_DELAY_SECONDS have
@@ -2224,9 +2269,13 @@ class SecureGroups:
             elif kind == "commit":
                 event = self._on_commit(room, ev)
                 settled = bool(ev.get("ours") or ev.get("dropped_ours"))
-                if ev.get("ours") and any(bytes(who).decode(errors="replace") == self._account
-                                          for who, _old, _new in ev.get("rekeyed") or []):
+                rekeyed = [bytes(who).decode(errors="replace")
+                           for who, _old, _new in ev.get("rekeyed") or []]
+                if ev.get("ours") and self._account in rekeyed:
                     self._retired_at.setdefault(room, self._clock())
+                if not ev.get("removed_us") and any(w != self._account for w in rekeyed):
+                    # Another member rotated: tell them we are past it (F4).
+                    self._ack_owed.add(room)
             elif kind == "keys_revealed":
                 # A member published retired signing keys (F4). Checked in
                 # Rust; only fingerprints come out. Not shown: it happens
@@ -2235,6 +2284,8 @@ class SecureGroups:
                 event = (GroupChanged(peer=room, change="keys_published",
                                       detail=bytes(ev["sender"]).decode(errors="replace"))
                          if published else None)
+            elif kind == "acknowledged":
+                event = None                      # recorded in Rust; never shown
             else:
                 event = None
         if event is not None:
@@ -2243,9 +2294,12 @@ class SecureGroups:
             self._add_queued(room)
         if kind == "commit":
             self._flush_held(room)
+        if kind == "commit":
+            self._send_ack(room)
         if kind == "commit" and ev.get("ours") and room in self._reveal_now:
-            self._reveal_now.discard(room)
             self.publish_retired(room)
+        if kind == "acknowledged" or (kind == "application" and not own):
+            self._after_ack(room)
         if vcontrol is not None and self._verify_handler is not None:
             try:
                 self._verify_handler(room, *vcontrol)
