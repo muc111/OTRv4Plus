@@ -68,11 +68,13 @@ OTRv4+, so a rotation between invite and Welcome does not fail the join.
 **Done in F4 (2026-10-26): retired signing keys are published (epochal
 signatures).** A key a self-update retires is no longer dropped when the
 commit lands. Rust keeps it, sealed with the MLS state, and publishes it to
-the group:
-- automatically, `REVEAL_DELAY_SECONDS` (10 minutes) after the rekey landed,
-  from `maintain`;
-- at once after "Publish Group Keys…" (called "Make Group Deniable…" until
-  2026-10-27: the label now names the mechanism), which rekeys first.
+the group, never before every other member has acknowledged the rotation
+(below):
+- automatically, no sooner than `REVEAL_DELAY_SECONDS` (10 minutes) after
+  the rekey landed, from `maintain`;
+- as soon as the acknowledgements are in after "Publish Group Keys…"
+  (called "Make Group Deniable…" until 2026-10-27: the label now names the
+  mechanism), which rekeys first.
 
 The publication is one MLS application message built and encrypted in Rust.
 It carries the public and private halves of up to four retired keys. A
@@ -82,15 +84,29 @@ with fingerprints only:
 - none may be the sender's current key.
 
 The private halves never reach Python or Kotlin. A published key cannot sign
-into the group any more. The rotation commit is earlier in room order, so
-every member replaced the key in the tree before the publication reached
-them, and a message signed with it does not verify. The current key is
-never published. The message sits behind the group-verification control
+into the group any more, for two reasons that are both needed (SPEC §10,
+requirement 11):
+- no past epoch is kept (`max_past_epochs(0)`, stated in both group
+  configurations), so a member past the rotation refuses any message of
+  the old epoch;
+- the key is published only after every other current member has shown it
+  is past the rotation, by a message that verified in the rotation's epoch
+  or later. Each member sends an acknowledgement after another member's
+  rotation; any message counts. Until 2026-10-27 the reason given here was
+  room order alone ("every member replaced the key before the publication
+  reached them"). That did not cover a member that had not processed the
+  rotation: it accepts a message signed with the old key and encrypted
+  under the old epoch, which every member can build
+  (`f4_containment_tests::residual_a_member_that_has_not_processed_the_rotation_accepts_the_retired_key_until_it_does`).
+
+The current key is never published. The message sits behind the group-verification control
 prefix, so a client from before F4 drops it without showing it. Gate:
 - `retired_key_tests` in `Rust/mls/src/client.rs` (publication reaches the
   members; the published key forges a signature its public key accepts but
   cannot sign into the group; a current or mismatched key is refused;
   survives a restart, bounded, published in batches);
+- `f4_containment_tests` (the invariant, the gap, publication waiting for
+  every member, and the configuration);
 - `tests/test_f4_group_key_publication.py`.
 
 **What release does, and what it cannot do (the F4 residual, stated
@@ -104,13 +120,17 @@ a verification already made. This residual is cryptographic and permanent;
 no later mechanism removes it. How long a key stays secret, and so how long
 a capture of its signatures can be made and checked against a secret key,
 is the rekey period (at most 50 messages or 30 minutes) plus the delay (10
-minutes); Publish Group Keys cuts the delay to nothing from the press on.
+minutes), or longer until every member has acknowledged the rotation;
+Publish Group Keys cuts the delay to nothing from the press on, not the
+wait for acknowledgements.
 It does nothing for a capture already made. The forgers after release are
 the group's members who received the publication, not anyone: it is an
 MLS message encrypted to them
 (`retired_key_tests::residual_only_the_groups_members_receive_the_published_key`,
 `::residual_a_signature_checked_before_release_still_checks_after_it`).
-Publication needs the app running; past 16 retired keys per group the
+Publication needs the app running and every member to come online after
+the rotation; a member on a client from before acknowledgements holds it up
+until that member updates or is removed. Past 16 retired keys per group the
 oldest are wiped unpublished.
 
 **UI copy constraint.** No text in any client may say "past messages are

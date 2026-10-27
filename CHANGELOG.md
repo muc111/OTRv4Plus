@@ -6,6 +6,13 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ## Unreleased (dev) — audit and hardening pass, 2026-10-26
 
+- **Fixed (F4): a published group key stayed live for a member behind.**
+  A member that had not yet processed the rotation would accept a message
+  signed with the published key as the publisher's. Keys are now
+  published only once every other member's app has acknowledged the
+  rotation, and no past epoch is kept (stated in the code, not left to
+  the library default). Publish Group Keys shows "waiting for N members"
+  until then. F4 was never in a release (docs/SECURITY_ISSUES.md F4).
 - **Checked (F4): what a published group key cannot do.** Five tests
   (`client::f4_containment_tests`) show a published leaf key signs nothing
   a member accepts after its retirement, derives no later key, is refused

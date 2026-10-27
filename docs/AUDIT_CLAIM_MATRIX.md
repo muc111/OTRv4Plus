@@ -76,16 +76,18 @@ audited line by line. Older entries are dated records, not current claims.
 |---|---|---|---|---|---|---|---|
 | 2.1 | "then publishes your earlier ones to its members, so a copy of the group shown after that no longer proves who signed what" | `GroupDeniable.BODY` | `MlsClient::reveal_retired` (an MLS application message, encrypted to the members) | `retired_key_tests` (a published key forges a signature its public key accepts) | the forgers are the members who received the publication; a capture verified before release stays attributable; the member must be online; more than 16 retired keys and the oldest go unpublished | **PARTIAL**: proves "members can forge"; the sentence is a property | E |
 | 2.2 | "New messages are signed with the new key, which stays secret." | `GroupDeniable.BODY` | `reveal_retired` publishes only `retired` | `retired_key_tests` (current key refused; never published) | -- | **DEMONSTRATED** | -- |
-| 2.3 | "Earlier keys are also published by themselves some minutes after each automatic key change." | `GroupDeniable.BODY` | `maintain`, `REVEAL_DELAY_SECONDS` = 600 | `test_a_rekey_retires_the_old_key_and_maintain_publishes_it_after_the_delay` | needs the app running and online | **DEMONSTRATED** | -- |
+| 2.3 | "Earlier keys are also published by themselves some minutes after each automatic key change." | `GroupDeniable.BODY` | `maintain`, `REVEAL_DELAY_SECONDS` = 600 | `test_a_rekey_retires_the_old_key_and_maintain_publishes_it_after_the_delay` | needs the app running and online | **DEMONSTRATED** | -- . 2026-10-27 (containment): narrowed and stated. The keys wait for every member's acknowledgement; BODY now says so before this sentence (`test_the_delay_does_not_publish_past_a_member_who_is_offline`) |
 | 2.4 | "Pending external audit." | `GroupDeniable.BODY` | -- | -- | -- | **UNSUPPORTED** (F4 is RESOLVED-CODE) | E: "Not independently reviewed." |
-| 2.5 | "A published key cannot sign into the group any more." | MLS_SECURITY_HARDENING.md §1 | rotation commit first in room order | `retired_key_tests` | -- | **DEMONSTRATED** | -- |
-| 2.6 | "The window in which a capture is still attributable is the rekey period (at most 50 messages or 30 minutes) plus the delay (10 minutes), or none after Make Group Deniable." | MLS_SECURITY_HARDENING.md §1 | -- | -- | a signature captured before Make Group Deniable was capturable while its key was secret | **PARTIAL**: "none" is wrong. The press shortens how long a key stays secret from then on; it does nothing for what was already captured | E |
+| 2.5 | "A published key cannot sign into the group any more." | MLS_SECURITY_HARDENING.md §1 | rotation commit first in room order | `retired_key_tests` | -- | **DEMONSTRATED** | -- . **Re-rated 2026-10-27: PARTIAL** at `5231cbc`: room order does not cover a member that has not processed the rotation; it accepted a message signed with the published key (shown on the `5231cbc` code itself, and by `residual_a_member_that_has_not_processed_the_rotation_accepts_the_retired_key_until_it_does`). **Then fixed: DEMONSTRATED** (E, T): acknowledgement before publication and an explicit `max_past_epochs(0)` (SPEC §10 requirement 11; `publication_waits_until_every_member_has_acknowledged_the_rotation`, `a_message_signed_with_a_released_epoch_key_is_rejected_by_a_client_in_a_later_epoch`) |
+| 2.6 | "The window in which a capture is still attributable is the rekey period (at most 50 messages or 30 minutes) plus the delay (10 minutes), or none after Make Group Deniable." | MLS_SECURITY_HARDENING.md §1 | -- | -- | a signature captured before Make Group Deniable was capturable while its key was secret | **PARTIAL**: "none" is wrong. The press shortens how long a key stays secret from then on; it does nothing for what was already captured | E  2026-10-27 (containment): the window now reads "or longer until every member has acknowledged the rotation". |
 | 2.7 | "Deniability: OTRv4+ is deniable (DAKE, ring signatures, published MAC keys)." | MLS_SECURITY_HARDENING.md §6 | -- | -- | SPEC §10.1: participation is attributable; L1 claims nothing | **UNSUPPORTED** | E |
 | 2.8 | "a break of either half alone does not break confidentiality or authentication" | MLS_SECURITY_HARDENING.md §6 | `provider::composite_verify`, `hpke` | `provider::both_halves_must_verify`, `hpke::hybrid_binds_both_halves` | the constructions are unreviewed | **EXTERNAL** (Q4, Q5); the mechanism is DEMONSTRATED | -- |
 | 2.9 | "The server never sees a JID–key link." | MLS_SECURITY_HARDENING.md §6 | `PURE_CIPHERTEXT_WIRE_FORMAT_POLICY`; KeyPackages and Welcomes inside OTRv4+ | **no test** | -- | **UNSUPPORTED** (no gate) | E: describe the mechanism |
 | 2.10 | "Optional key publication (owner decision) ... **Recommendation:** do 1 and 2 now, and decide on 3." / "D1 → rotate only ...; publishing old keys is deferred." / "M2b optional" | MLS_SECURITY_HARDENING.md §1, §7, §8 | F4 shipped | -- | -- | **UNSUPPORTED** (stale: superseded by F4) | E: marked superseded |
 | 2.11 | F4 row: residual "a signature captured and verified before the release stays attributable for ever" | SECURITY_ISSUES.md | -- | `a_publication_carries_both_halves_of_the_composite_key` | residuals missing from the entry: members only; online; the 16-key bound | **PARTIAL** (incomplete residual list) | F: residuals added |
 | 2.12 | "Any member could have made the signature." | DENIABILITY_LAYERS.md (F4 row) | as 2.1 | as 2.1 | the forger set is the members who received the publication | **DEMONSTRATED** | E: the forger set named |
+| 2.13 | "publish a retired signing key only after every other current member has shown, by a message from it that verified in the epoch the key was retired in or a later one, that it has processed the rotation" | SPEC §10 requirement 11; SECURITY_ISSUES.md F4 | `MlsClient::publishable_count`, `awaiting`, `acknowledge`; `SecureGroups._send_ack`, `_after_ack` | `publication_waits_until_every_member_has_acknowledged_the_rotation`, `what_a_retired_key_waits_for_survives_a_restart`, `test_publish_group_keys_waits_for_a_member_who_is_offline`, `test_an_acknowledgement_that_could_not_go_is_sent_by_maintain` | a modified client can keep past epochs and still acknowledge; a member on an older client never acknowledges | **DEMONSTRATED** (added 2026-10-27) | -- |
+| 2.14 | "keep no past epoch (OpenMLS: `max_past_epochs(0)`, set explicitly in every group configuration)" | SPEC §10 requirement 11; MLS_SECURITY_HARDENING.md §1 | `create_config`, `join_config` | `max_past_epochs_is_zero_in_every_group_config` (source), `a_message_signed_with_a_released_epoch_key_is_rejected_by_a_client_in_a_later_epoch` (behaviour: fails with one past epoch kept) | honest members cannot check another member's setting (Q5) | **DEMONSTRATED** (added 2026-10-27) | -- |
 
 ## 3. Participation and the handshake (A2, SPEC §10.1)
 
@@ -380,3 +382,131 @@ the production interval, it is the 101st message after a DH round trip (up
 to the 200th with no DH step yet), pinned by
 `test_the_boundary_is_the_101st_message_after_a_dh_round_trip`. Row 3.10's
 status is unaffected.
+
+## Re-run after F4 containment (2026-10-27)
+
+F4 now publishes a retired key only after every other member has
+acknowledged the rotation, and both group configurations set
+`max_past_epochs(0)` (SPEC §10, requirement 11; docs/SECURITY_ISSUES.md
+F4). Every row was re-run against `5231cbc` (the containment tests, before
+this change) and against this pass's tree.
+
+**Method.** As the X1 re-run:
+1. The verbatim claim of every row searched for in both trees. One
+   sentence changed: 2.5's "A published key cannot sign into the group any
+   more." now goes on to give both reasons (MLS_SECURITY_HARDENING.md §1).
+   Every other row's result is identical in both trees.
+2. Every cited test checked to exist in both trees. All functions do. The
+   scan still reports module names (`client::retired_key_tests`) as
+   missing.
+3. The effective status of each row in both trees. 2.3, 2.5, 2.6 and the
+   two new rows are set by hand, from the reading below.
+
+**The row-level diff.** Three rows changed and two were added.
+
+| # | Status at 5231cbc | Status now | Changed | Cited tests: exist at 5231cbc / now |
+|---|---|---|---|---|
+| 1.1 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.2 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.3 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 1/1 / 1/1 |
+| 1.4 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 2/2 / 2/2 |
+| 1.5 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 1.6 | DEMONSTRATED | DEMONSTRATED | no | 0/1 / 0/1 |
+| 1.7 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 1.8 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.9 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 2/2 / 2/2 |
+| 1.10 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.11 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 1/1 / 1/1 |
+| 1.12 | DEMONSTRATED (after E/F) | DEMONSTRATED (after E/F) | no | 0/0 / 0/0 |
+| 1.13 | DEMONSTRATED (after E; T) | DEMONSTRATED (after E; T) | no | 1/1 / 1/1 |
+| 1.14 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 2/2 / 2/2 |
+| 1.15 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.16 | DEMONSTRATED | DEMONSTRATED | no | 3/3 / 3/3 |
+| 1.17 | EXTERNAL (mechanism DEMONSTRATED) | EXTERNAL (mechanism DEMONSTRATED) | no | 0/0 / 0/0 |
+| 1.18 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 1.19 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 1.20 | DEMONSTRATED + EXTERNAL (Q2) | DEMONSTRATED + EXTERNAL (Q2) | no | 0/0 / 0/0 |
+| 1.21 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 1/1 / 1/1 |
+| 1.22 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 1/1 / 1/1 |
+| 1.23 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 1/1 / 1/1 |
+| 1.24 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 1.25 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.1 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/1 / 0/1 |
+| 2.2 | DEMONSTRATED | DEMONSTRATED | no | 0/1 / 0/1 |
+| 2.3 | DEMONSTRATED | DEMONSTRATED (narrowed, stated: waits for every member) | **yes** | 1/2 / 2/2 |
+| 2.4 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.5 | PARTIAL (re-rated: a lagging member accepted the published key) | DEMONSTRATED (after E; T) | **yes** | 1/3 / 2/3 |
+| 2.6 | DEMONSTRATED (after E) | DEMONSTRATED (after E; the window can be longer, stated) | **yes** | 0/0 / 0/0 |
+| 2.7 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.8 | EXTERNAL (mechanism DEMONSTRATED) | EXTERNAL (mechanism DEMONSTRATED) | no | 0/0 / 0/0 |
+| 2.9 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.10 | SUPERSEDED (marked) | SUPERSEDED (marked) | no | 0/0 / 0/0 |
+| 2.11 | DEMONSTRATED (after F) | DEMONSTRATED (after F) | no | 1/1 / 1/1 |
+| 2.12 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 2.13 | (no row) | DEMONSTRATED (new) | **yes** | 0/3 / 3/3 |
+| 2.14 | (no row) | DEMONSTRATED (new) | **yes** | 1/1 / 1/1 |
+| 3.1 | DEMONSTRATED | DEMONSTRATED | no | 0/1 / 0/1 |
+| 3.2 | DEMONSTRATED | DEMONSTRATED | no | 2/2 / 2/2 |
+| 3.3 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 3.4 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 3.5 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 3.6 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 3.7 | DEMONSTRATED (after T) | DEMONSTRATED (after T) | no | 0/0 / 0/0 |
+| 3.8 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 3.9 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 3.10 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 1/2 / 1/2 |
+| 4.1 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 4.2 | DEMONSTRATED (X1 residual 5 fixed in the previous pass) | DEMONSTRATED (X1 residual 5 fixed in the previous pass) | no | 3/3 / 3/3 |
+| 4.3 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 4.4 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 5.1 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 5.2 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 5.3 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+| 5.4 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 6.1 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 6.2 | DEMONSTRATED (after E) | DEMONSTRATED (after E) | no | 0/0 / 0/0 |
+| 6.3 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.1 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.2 | DEMONSTRATED | DEMONSTRATED | no | 2/2 / 2/2 |
+| 7.3 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.4 | EXTERNAL | EXTERNAL | no | 0/0 / 0/0 |
+| 7.5 | DEMONSTRATED | DEMONSTRATED | no | 0/0 / 0/0 |
+| 7.6 | DEMONSTRATED | DEMONSTRATED | no | 1/1 / 1/1 |
+
+**Why each changed.**
+- **2.5** ("A published key cannot sign into the group any more"). Re-rated
+  PARTIAL at `5231cbc`. The stated reason, room order, covers every member
+  that processed the rotation, not one that had not. Run on the
+  `5231cbc` code: Alice rotates, Bob processes it, the key is published,
+  and Carol, still in epoch N, accepts a message signed with it, encrypted
+  under epoch N by a holder of that epoch's secrets, as Alice's. That is
+  impersonation of the publisher to a lagging member. Now DEMONSTRATED: the
+  key waits for every member, and no past epoch is kept.
+- **2.3** (keys "published by themselves some minutes after each automatic
+  key change"). Narrowed: "some minutes" is now a lower bound. The dialog
+  states the wait in the sentence before it.
+- **2.6** (how long a capture can be checked against a secret key).
+  **This is the one neighbouring claim that weakened.** The window is now
+  the rekey period plus the delay, *or longer until every member has
+  acknowledged*. It is kept, not reverted: the extra time is the cost of
+  closing 2.5. Reverting would put the impersonation path back. The cost
+  is stated in the sentence, in the F4 entry and in the dialog.
+- **2.13, 2.14** are SPEC §10 requirement 11's two rules, each with its
+  test.
+
+**Neighbours checked by hand.**
+- 2.1, 2.2, 2.12 (members can forge; the new key stays secret; the forger
+  set): unchanged. The publication is the same message, and only its
+  timing moved (`retired_key_tests`, unchanged assertions).
+- 2.11 (the F4 residuals): the entry gains the availability and cost
+  residuals: a member offline, or on an older client, holds publication
+  up; one acknowledgement per member per rotation, about 6.5 KB.
+- 4.2 ("a changed destination receives no byte"): unchanged in this pass.
+  It moved PARTIAL to DEMONSTRATED in the X1 re-run above. The X1 tests
+  were run again: 55 pass, and 15 fail with the refusal disabled.
+- 3.x and 5.x: untouched. No 1:1 code changed; the binding gained two calls
+  that hand out no key.
+
+No EXTERNAL row moved. Q5 in docs/CRYPTOGRAPHER_QUESTIONS.md is rewritten
+around the containment condition; Q1-Q4, Q6 and Q7 are unchanged.
+

@@ -242,15 +242,16 @@ bridge event paths.
 6. A public/discoverable room is NOT E2EE unless it is a secure group: check
    the room screen says which.
 
-## 8. Contact pins, server pins, long sessions, closing messages (P1, X1, P2, L1)
+## 8. Contact pins, server pins, group keys, long sessions, closing messages (P1, X1, F4, P2, L1)
 
 Automated coverage: `tests/test_p1_trust_pins_per_run.py`,
 `tests/test_terminal_trust_sealed.py`, `TestAnUnreadablePinsFileIsRefused`
 (`tests/test_x1_destination_pinning.py`), `tests/test_x1_terminal_client.py`,
 `tests/test_p2_forced_steps.py`, `TestCrashDuringClose`,
-`ProfileIdentityTest`, `ConnectProblemTest`, `ReconnectPolicyTest`. Added
-2026-10-27: before P1 the apps never checked a contact's key, so none of
-this could be seen on a device.
+`ProfileIdentityTest`, `ConnectProblemTest`, `ReconnectPolicyTest`,
+`f4_containment_tests` (Rust/mls), `tests/test_f4_group_key_publication.py`,
+`DeniableChatTest`. Added 2026-10-27: before P1 the apps never checked a
+contact's key, so none of this could be seen on a device.
 
 **Every device on the same dev build.** A phone on rc.184 can still take
 P2's double step, and a dev phone cannot follow it (matrix row 3.10).
@@ -300,7 +301,11 @@ P2's double step, and a dev phone cannot follow it (matrix row 3.10).
 
 **Server pins that will not open (X1, residual 5 closed).**
 
-12. **Refused before any byte leaves the device.** On A, connected to a
+12. **A corrupt `server_pins.json` is refused before any byte leaves the
+    device, and the server-address screen is shown.** It is the screen a
+    changed address brings up, in its "could not be read" form. It has no
+    approve button: approving writes the file, which would replace the one
+    that will not open (refused, never replaced). On A, connected to a
     human-readable `.i2p` server name (not the default server, which needs
     no pin): Log out. On the debug APK, with
     `adb shell run-as org.otrv4plus.android` (on T, directly), replace
@@ -314,6 +319,31 @@ P2's double step, and a dev phone cannot follow it (matrix row 3.10).
     The file is unchanged (`sha256sum`). Restore the copy, log in:
     `basis=pinned`. On T: the same file broken, T stops at start with the
     file named and the router is not asked (no SAM session in its log).
+
+**Group keys wait for every member (F4 containment).** A key is published
+only once every other member's app has confirmed it has the new one (SPEC
+§10, requirement 11). Before this, a member still on the old key would have
+accepted a message signed with a published key. Three devices on the dev
+build in one secure group: A (creator), B and the laptop D. What shows a
+publication on a device: A's Debug trace gains a `keys_published_ours` line,
+and the button is offered again.
+
+12a. **Published at once when everyone is there.** On A: Publish Group
+    Keys…, confirm. **Pass:** within a few seconds A's trace shows
+    `keys_published_ours`, and the button reads "Publish Group Keys…"; B
+    and D show nothing as a message.
+12b. **Held while a member is offline.** B to airplane mode. On A: Publish
+    Group Keys…, confirm. **Pass:** the button is greyed out and reads
+    "Publishing keys: waiting for 1 member", and the line under it names B.
+    Wait 15 minutes (past the 10-minute delay): still waiting, and no new
+    `keys_published_ours` line in A's trace.
+12c. **Released when the member is back.** B back online, app open.
+    **Pass:** within a minute A's trace shows `keys_published_ours` and the
+    button reads "Publish Group Keys…" again. The group carries on: each of
+    A, B and D sends a line and every line arrives on the others.
+12d. **The wait survives a restart.** Repeat 12b, then force-stop A and
+    reopen it before B comes back. **Pass:** still "waiting for 1 member"
+    naming B; then 12c's pass when B returns.
 
 **Long sessions (P2).** Measured triggers on the engine before the fix
 (`test_the_boundary_is_the_101st_message_after_a_dh_round_trip`): after a
@@ -332,8 +362,11 @@ ratchet's own limit), so the boundary is skipped, not moved.
     more with no reply: this crosses a rekey after a key change, where the
     old engine failed 101 messages after the change. **Pass:** all 442
     arrive, and B's reply after the last run arrives on A. Record the number
-    of the first message that did not arrive, if any, and in which run; a
-    failure near 100, 101 or 200 of a run is P2 still present. A device
+    of the first message that did not arrive, if any, and in which run.
+    Note in each run whether messages 99, 100 and 101 arrived, and in the
+    first run also 199, 200 and 201. A failure at 101 after the key change,
+    or at 200 in the first run, is P2 still present. Earlier messages in a
+    run lost alone are something else, and are recorded as such. A device
     cannot show where the rekey fell (the counter is internal); the exact
     boundary is pinned by the test named above.
 14. **Two days (optional).** Leave A and B's chat open across two 24-hour

@@ -154,6 +154,33 @@ database-level test would have passed both.
   the unreadable state. No public path reaches them (`check` raises before
   anything is pending or recorded, and the next read after the wipe finds
   no file); they stay as second locks on the writer.
+- Round 6 (F4 containment, 2026-10-27): 12 mutants, 11 killed, 1
+  equivalent.
+  - Rust (`Rust/mls/src/client.rs`), 8. Killed: the self-update keeping the
+    old key (tests 1 and 2); `max_past_epochs(1)` in both configurations
+    (test 3, the renamed test 4, the gap test); a group reusing another
+    group's key (test 5); publication not waiting (the two waiting tests
+    and the gap test); a commit counting as everyone's acknowledgement
+    (the same three); a message counting for the epoch after its own
+    (`publication_waits_...`, after a case was added where the lagging
+    member spoke before the rotation: it survived the first version); the
+    waiting state sealed wrong (`what_a_retired_key_waits_for_survives_a_restart`).
+    Equivalent: a departed leaf's record kept (only current leaves are
+    read, and a refilled leaf is overwritten at the join).
+  - Python (`android_bridge/groups.py`), 4. Killed: members never
+    acknowledging (6 tests); a waiting Publish Group Keys request dropped
+    when nothing is publishable yet (4); an acknowledgement not retrying
+    publication (4); `maintain` not sending an owed acknowledgement
+    (`test_an_acknowledgement_that_could_not_go_is_sent_by_maintain`,
+    added: it survived first).
+  - Test 4, `the_epoch_authenticator_is_checked_before_any_group_message_is_accepted`,
+    killed only the past-epoch mutant, and only through its source check;
+    its name claimed a check MLS does not make. Renamed
+    `max_past_epochs_is_zero_in_every_group_config`, a source check only
+    (listed as renamed in `tests/test_security_doc_references.py`).
+  - The older `retired_key_tests` publish right after a rotation. Their
+    helper gained the acknowledgement the protocol now requires; no
+    assertion changed.
 - The test that asserted the residual,
   `test_residual_an_unreadable_pins_file_makes_the_next_connection_first_use`,
   failed on the fix by design and was removed with it (listed as removed in
@@ -184,7 +211,8 @@ database-level test would have passed both.
 | `tests/test_p1_trust_pins_per_run.py` (new; rewritten by the P1 fix) | First: the app engines keep pins in memory. Now: through real apps over a wire, a changed key after a restart is FINGERPRINT_MISMATCH and nothing queued goes to it; the store is sealed, per account and apart; an unopenable record is refused; Wipe & Exit destroys it. | the first version **no**: "within one run a changed key is refused" tested the database, not the app | rewritten through `OtrApp` |
 | `tests/test_p2_forced_steps.py` (new) | Bursts, one-way runs past two boundaries and a two-day chat all decrypt; every test fails on the old engine. | yes | new |
 | `retired_key_tests` (Rust, F4) | Rotation retires the key; the publication reaches members, forges, cannot sign into the group, is refused for a current or mismatched key, is bounded and batched. | yes, but the ML-DSA-half check was untested (MM1) | Spliced-key case added; two residual tests added |
-| `tests/test_f4_group_key_publication.py` | The bridge publishes after the delay, at once on Publish Group Keys, never shows it as text, and only fingerprints leave Rust. | yes | -- |
+| `tests/test_f4_group_key_publication.py` | The bridge publishes after the delay, at once on Publish Group Keys, never shows it as text, and only fingerprints leave Rust; since 2026-10-27, never before every member has acknowledged the rotation. | yes | -- |
+| `f4_containment_tests` (Rust, F4) | The published key forges only its own transcripts; signs nothing accepted later; derives nothing; refused in a later epoch; per group; the gap for a lagging member; publication waits for every member, across a restart. | yes, after round 6; test 4 renamed (its old name overstated it) | case added for M6 |
 | `tests/test_pq_auth_v2.py` (A2) | Both ends pin the ML-DSA key; a downgrade or a changed key is refused, within one process. | yes (across restarts: `tests/test_p1_trust_pins_per_run.py`) | -- |
 | X1 classes | A changed destination receives no byte; SCRAM only where certificates are off; pins persist (server pins, unlike P1). | yes | -- |
 | `DeniableChatTest` (Kotlin) | The dialog's words, history deletion and group words. | **No**: "the words claim what the tests show and no more" pinned the presence of a property claim | Renamed `the words describe the mechanism and its residuals and state no property`; pins the absence of property words |
