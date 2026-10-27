@@ -198,3 +198,16 @@ def test_the_app_sends_the_notice_inside_the_session_or_keeps_it_for_one():
     alice.ensure_otr = lambda peer: started.append(peer) or "checking"
     alice.notify_group_deleted(ROOM, [W.BOB])
     assert alice._deleted_after_otr == {W.BOB: [ROOM]} and started == [W.BOB]
+
+
+def test_members_are_told_even_when_the_server_refuses_the_destroy():
+    w, (d, c) = _group_created_by("dontlook@x.i2p", ["charlie@x.i2p"])
+    told = []
+    rooms = _Rooms(w, [c])
+    rooms.destroy_room = lambda room, reason: ("forbidden", "not the owner", None)
+    ctl = _controller(d, rooms)
+    ctl._app.notify_group_deleted = lambda room, members: told.append((room, list(members)))
+    out = ctl.delete_secure_group(ROOM)
+    assert not out["ok"], "the destroy was refused, and Delete says so"
+    assert told == [(ROOM, ["charlie@x.i2p"])], "removed, so told regardless"
+    assert "removed_us" in c.changes()

@@ -280,9 +280,12 @@ class GroupsControlMixin:
             return first
         removed = list((first or {}).get("value") or [])
         result = self.destroy_room(room, "secure group deleted")
-        if result.get("ok") or result.get("code") == "item_not_found":
+        if removed:
             # Also over each member's OTRv4+ session: one who was not in the
             # room for the removal and the destroy hears it nowhere else.
+            # Whatever the destroy said: they are removed from the group
+            # already, and a room the server would not destroy (we do not
+            # own it) is exactly when this is the only word they get.
             notify = (getattr(getattr(self, "_app", None), "notify_group_deleted", None)
                       if removed else None)
             if notify is not None:
