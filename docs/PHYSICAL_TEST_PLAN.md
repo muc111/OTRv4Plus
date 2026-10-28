@@ -242,6 +242,48 @@ bridge event paths.
 6. A public/discoverable room is NOT E2EE unless it is a secure group: check
    the room screen says which.
 
+### 7c. Group call with five members
+
+Covered automatically: call control inside MLS, the SMP-verified gate, the
+five-member limit (`MAX_PARTICIPANTS`), per-epoch media keys in Rust. Not
+covered: five real devices over I2P at once (a full mesh, so each device
+sends four streams and receives four).
+
+Five devices (phones and laptops, any mix), all in one secure group and all
+verified in it (Verify group, or 1:1 SMP with each).
+1. **Start.** One member starts a call; the other four join (or are joined
+   by themselves when "join verified members' group calls" is on). **Pass:**
+   every device shows five in the call and hears each of the other four.
+   Write down how long until the last one is heard.
+2. **Hold.** Keep it up 10 min. **Pass:** no one drops; audio survives the
+   2-minute rekeys. Note any device that lost audio, and when.
+3. **Leave and rejoin.** One member hangs up, then joins again. **Pass:** the
+   others hear them go and come back; nobody else drops.
+4. **Limit.** Add a sixth member to the group. **Pass:** no device offers
+   the call button for this group any more (larger groups are text only).
+5. **Unverified.** In a five-member group with one member not verified: that
+   member cannot join; the other four's call works without them.
+
+### 7d. Server admin: every room, delete any
+
+Covered automatically: an admin's listing includes hidden rooms, anyone
+else's does not; Delete only for a room's owner or an admin; an encrypted
+group is offered as Ask to join, never joined (`test_desktop_server_rooms`).
+
+An admin account on the desktop (0.14.11 on), a phone, and one other device.
+1. **Scan.** Desktop (admin): Rooms → Server rooms. **Pass:** the title says
+   you are the admin; a hidden room you know of is listed, marked hidden.
+   A non-admin account sees no hidden rooms and no Delete buttons.
+2. **Ask to join.** Admin: Ask to join on a group made by the phone.
+   **Pass:** the phone shows "asks to join"; nothing is readable on the
+   desktop until the phone invites it; after Accept on both, it reads new
+   messages.
+3. **Delete someone else's group.** Admin: Delete on a group of two other
+   accounts. **Pass:** it leaves the server listing; both members' apps drop
+   the group within seconds (or at their next sign-in).
+4. **Plain room.** Admin: Join a listed plain room, then Delete it. **Pass:**
+   anyone in it sees the room end.
+
 ## 8. Contact pins, server pins, group keys, long sessions, closing messages (P1, X1, F4, P2, L1)
 
 Automated coverage: `tests/test_p1_trust_pins_per_run.py`,
