@@ -40,4 +40,13 @@ object ConnectTiming {
         }
         if (r.attempts > 1) append(", ").append(r.attempts).append(" attempts")
     }
+
+    /**
+     * The same result for the diagnostic report, as `key=value` pairs that
+     * `android_bridge/report.py` reads back (`connect_timing`). Owner,
+     * 2026-10-28: the report showed only the clock time of CONNECTED, not
+     * the 2:25 the sign-in took.
+     */
+    fun note(r: Result): String =
+        "total_ms=${r.totalMs} router_ms=${r.routerMs ?: 0} attempts=${r.attempts}"
 }

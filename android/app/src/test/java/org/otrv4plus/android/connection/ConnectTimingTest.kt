@@ -24,4 +24,12 @@ class ConnectTimingTest {
         assertEquals("4:10 (I2P router 2:30, sign-in 1:40), 2 attempts",
             ConnectTiming.line(ConnectTiming.Result(250_000, 150_000, 2)))
     }
+
+    @Test
+    fun `the report's note carries every part, the router as 0 when it was not waited for`() {
+        assertEquals("total_ms=145000 router_ms=110000 attempts=1",
+            ConnectTiming.note(ConnectTiming.Result(145_000, 110_000, 1)))
+        assertEquals("total_ms=38000 router_ms=0 attempts=2",
+            ConnectTiming.note(ConnectTiming.Result(38_000, null, 2)))
+    }
 }

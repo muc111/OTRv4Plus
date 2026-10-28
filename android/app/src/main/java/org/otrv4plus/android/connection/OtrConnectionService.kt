@@ -884,6 +884,12 @@ class OtrConnectionService : Service() {
                         totalMs = System.currentTimeMillis() - runStartedAt,
                         routerMs = routerWaitMs.takeIf { it > 0 },
                         attempts = reconnect.attempts + 1)
+                    lastConnectTiming?.let { timing ->
+                        runCatching {
+                            core.note("service", "connect_timing", "info",
+                                      ConnectTiming.note(timing))
+                        }
+                    }
                 }
                 reconnect.onConnected()
                 status = result.getOrNull() ?: ConnectionStatus()

@@ -47,7 +47,7 @@ from otrv4plus_alias import ALIASES as _ALIASES
 from .diagnostics import SENSITIVE_KEY_HINTS
 from .trace import REDACTED, TRACE
 
-__all__ = ["build", "summary", "HEADER"]
+__all__ = ["build", "summary", "connect_time", "HEADER"]
 
 HEADER = "OTRv4+ diagnostic report"
 
@@ -160,6 +160,15 @@ def build(status: Optional[Dict[str, Any]] = None,
         except Exception as exc:                            # pragma: no cover
             parts.append("  (could not read: %s)" % type(exc).__name__)
 
+    took = None
+    try:
+        took = connect_time(trace)
+    except Exception:                                       # pragma: no cover
+        pass
+    if took:
+        parts.append(_section("Last sign-in"))
+        parts.append("  " + took)
+
     parts.append(_section("Failures seen (most frequent first)"))
     try:
         from . import codes
@@ -265,6 +274,12 @@ def summary(status: Optional[Dict[str, Any]] = None,
                      % (device.get("model", "?"), device.get("release", "?")))
     lines.append("stage   %s (connected=%s)"
                  % (status.get("stage", "-"), status.get("connected", False)))
+    try:
+        took = connect_time(trace)
+    except Exception:                                       # pragma: no cover
+        took = None
+    if took:
+        lines.append("took    %s" % took)
     last = status.get("last") or {}
     if last.get("code") and last.get("code") != "ok":
         lines.append("last    %s: %s" % (last.get("code"),
@@ -283,3 +298,86 @@ def summary(status: Optional[Dict[str, Any]] = None,
     except Exception:                                       # pragma: no cover
         lines.append("(the trace could not be rendered)")
     return _scrub("\n".join(lines)) + "\n"
+
+
+def _clock(seconds: float) -> str:
+    """"0:07", "2:25", "1:02:05": the Connect screen's format (ConnectTiming)."""
+    s = int(max(0.0, seconds))
+    if s >= 3600:
+        return "%d:%02d:%02d" % (s // 3600, s // 60 % 60, s % 60)
+    return "%d:%02d" % (s // 60, s % 60)
+
+
+def connect_time(trace=None) -> Optional[str]:
+    """How long the last sign-in took, whole and in parts, or None.
+
+    Owner, 2026-10-28: the report showed CONNECTED at 00:25 -- the clock time
+    -- when the sign-in had taken over two minutes with the built-in router.
+    The total and the router's share come from the service's
+    `connect_timing` note (ConnectTiming.note), measured from Connect, the
+    app resuming or a drop. The rest is split at the transport's own steps
+    of the successful attempt: `sam_opening` to `tunnel_open` is the I2P
+    tunnels, `tunnel_open` to the note is the server login (TLS and
+    sign-in). What is left -- the engine starting, failed attempts and the
+    waits between them -- is shown as such, so the parts add up.
+    """
+    trace = TRACE if trace is None else trace
+    events = trace.events()
+    note = None
+    for entry in reversed(events):
+        if (entry.get("component") == "service"
+                and entry.get("event") == "connect_timing"):
+            note = entry
+            break
+    if note is None:
+        return None
+    values = {}
+    for pair in str((note.get("fields") or {}).get("detail", "")).split():
+        key, _, value = pair.partition("=")
+        try:
+            values[key] = int(value)
+        except ValueError:
+            continue
+    if "total_ms" not in values:
+        return None
+    end = float(note.get("at", 0))
+    total = values["total_ms"] / 1000.0
+    start = end - total
+    router = values.get("router_ms", 0) / 1000.0
+    attempts = values.get("attempts", 1)
+
+    def last_step(name: str, after: float) -> Optional[float]:
+        found = None
+        for entry in events:
+            at = float(entry.get("at", 0))
+            if (entry.get("component") == "connection"
+                    and entry.get("event") == name and after <= at <= end):
+                found = at
+        return found
+
+    parts = []
+    if router >= 1:
+        parts.append("I2P router %s" % _clock(router))
+    accounted = router
+    opening = last_step("sam_opening", start)
+    opened = last_step("tunnel_open", opening) if opening is not None else None
+    if opening is not None and opened is not None:
+        parts.append("tunnels %s" % _clock(opened - opening))
+        parts.append("server login %s" % _clock(end - opened))
+        accounted += end - opening
+    rest = total - accounted
+    if parts and rest >= 1:
+        if opened is None:
+            # No steps of the attempt in the ring (dropped, or not I2P):
+            # the rest is the sign-in, unsplit, as the Connect screen says.
+            label = "sign-in %s"
+        elif attempts > 1:
+            label = "retries and waiting %s"
+        else:
+            label = "starting %s"
+        parts.append(label % _clock(rest))
+    line = _clock(total)
+    if parts:
+        line += " (%s)" % ", ".join(parts)
+    line += ", %d attempt%s" % (attempts, "" if attempts == 1 else "s")
+    return line

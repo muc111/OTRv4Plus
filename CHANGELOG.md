@@ -8,6 +8,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 Dev builds from 2026-10-27 are **rc.187** (versionCode 188) and **desktop
 0.14.10**, so a phone or laptop running them can be told from rc.186.
+From 2026-10-28 the phone build is **rc.188** (versionCode 189).
+
+- **Added: the diagnostic report says how long sign-in took.** The summary
+  showed only the clock time the link came up, which read like a duration.
+  It now has a `took` line: the whole wait from Connect (or the app
+  resuming, or a drop) to signed in, split into the built-in I2P router
+  starting, the I2P tunnels to the server, and the server login, with
+  anything left (engine start, failed attempts, waits) shown so the parts
+  add up.
 
 - **Fixed: deleting a group could remove nobody.** The app took the
   group's creator to be whichever member's name sorted first, not the one

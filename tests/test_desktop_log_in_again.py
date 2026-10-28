@@ -9,6 +9,7 @@ nothing but a restart. It now has "Log in again", which signs out (so the
 old connection is torn down first) and shows the login form.
 """
 import os
+import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -33,5 +34,7 @@ def test_failed_or_stopped_the_banner_offers_log_in_again():
 
 def test_the_dev_builds_are_told_apart_from_rc_186():
     gradle = _src("android", "app", "build.gradle.kts")
-    assert "versionCode = 188" in gradle and "rc.187+core" in gradle
+    code = int(re.search(r"versionCode = (\d+)", gradle).group(1))
+    rc = int(re.search(r"rc\.(\d+)\+core", gradle).group(1))
+    assert code >= 188 and rc >= 187
     assert 'version = "0.14.10"' in _src("desktop", "build.gradle.kts")
