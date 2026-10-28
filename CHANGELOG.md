@@ -14,9 +14,9 @@ desktop build is **0.14.11**; later that day the phone build is **rc.189**
 
 - **Changed: opening the app never connects by itself.** After a force
   close it signed in with the saved account straight away, starting the
-  built-in I2P router before anything was pressed. Now the saved account
-  fills the login form and nothing starts until Log in: leave the password
-  empty to use the saved one, or type another account.
+  built-in I2P router before anything was pressed. Now nothing starts until
+  the username and password are typed and Log in is pressed; the saved
+  username is filled in.
 
 - **Added: server rooms on the desktop.** The Rooms tab has Server rooms:
   a scan of what the server lists, as on the phone. A server admin also

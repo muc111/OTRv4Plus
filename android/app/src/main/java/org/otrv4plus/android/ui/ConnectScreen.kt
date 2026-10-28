@@ -23,7 +23,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import org.otrv4plus.android.ConnectionViewModel
 import org.otrv4plus.android.BuildConfig
 import org.otrv4plus.android.connection.SignIn
-import org.otrv4plus.android.connection.Startup
 
 /**
  * The first screen that does something real.
@@ -105,9 +104,10 @@ fun ConnectScreen(
     // `model.connecting` included so a login in progress disables both
     // buttons: during the 30-120 s an I2P tunnel takes, a second press would
     // start a second attempt.
-    // The saved account fills the form once it is known (opening the app
-    // no longer connects by itself); a blank password then means "the saved
-    // one" (Startup.usesSavedPassword).
+    // The saved account's username fills the form once it is known. Opening
+    // the app never connects, and Log in needs the password typed (owner,
+    // 2026-10-28: "it should sign in only after username and password has
+    // been entered").
     LaunchedEffect(model.savedAccount) {
         val saved = model.savedAccount ?: return@LaunchedEffect
         if (account.isNotBlank()) return@LaunchedEffect
@@ -117,9 +117,8 @@ fun ConnectScreen(
         }
         account = SignIn.usernameOf(saved)
     }
-    val savedPassword = Startup.usesSavedPassword(target?.jid, password, model.savedAccount)
     val canSubmit = busy == null && !model.connecting && !status.connected &&
-        target != null && (password.isNotBlank() || savedPassword)
+        target != null && password.isNotBlank()
     val editable = !status.connected && busy == null && !model.connecting
 
     // One function, used by the button and by the keyboard's Done key.
@@ -128,8 +127,7 @@ fun ConnectScreen(
     // further use for it here. The ViewModel never keeps a copy.
     fun logIn() {
         if (!canSubmit) return
-        if (savedPassword) model.logInSaved()
-        else model.connect(target!!.jid, password, target.server)
+        model.connect(target!!.jid, password, target.server)
         password = ""
     }
 
@@ -181,7 +179,7 @@ fun ConnectScreen(
 
         AccountFields(account, onAccount = { account = it }, password,
                       onPassword = { password = it }, target, problem, editable,
-                      onDone = { logIn() }, savedPassword = savedPassword)
+                      onDone = { logIn() })
 
         // ── Actions ───────────────────────────────────────────────────────
         //
@@ -263,7 +261,6 @@ private fun AccountFields(
     problem: String?,
     editable: Boolean,
     onDone: () -> Unit,
-    savedPassword: Boolean = false,
 ) {
     var showPassword by remember { mutableStateOf(false) }
     // ── Account ───────────────────────────────────────────────────────
@@ -288,9 +285,6 @@ private fun AccountFields(
         value = password,
         onValueChange = onPassword,
         label = { Text("Password") },
-        supportingText = if (savedPassword) {
-            { Text("Saved for this account: leave it empty to use it.") }
-        } else null,
         singleLine = true,
         enabled = editable,
         // Hidden unless the user asks to see it, and hidden again on

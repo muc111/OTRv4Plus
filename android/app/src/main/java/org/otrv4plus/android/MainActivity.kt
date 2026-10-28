@@ -312,9 +312,9 @@ class MainActivity : ComponentActivity() {
                 // a window before the binding lands. Re-keyed on it, so
                 // the chat attaches the moment it arrives and re-attaches
                 // if the service is ever rebound.
-                // Opening the app never connects (owner, 2026-10-28): the
-                // saved account fills the login form, and Log in starts it
-                // (Startup.usesSavedPassword).
+                // Opening the app never connects (owner, 2026-10-28): it
+                // signs in only once the username and password are typed
+                // and Log in is pressed.
 
                 // A message notification was tapped. Never straight into a
                 // conversation: back to the chat list, then ask about the

@@ -569,24 +569,11 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
 
     /**
      * The saved account's address, read once the service is bound, or null.
-     * Only the address: the password stays in the vault, and the service
-     * reads it there when Log in is pressed with the field left empty.
+     * Only the address, to fill the username field; Log in always needs the
+     * password typed.
      */
     var savedAccount by mutableStateOf<String?>(null)
         private set
-
-    /**
-     * Log in as the saved account with its saved password. Opening the app
-     * does not call this (owner, 2026-10-28); only the Log in button does.
-     */
-    fun logInSaved() {
-        lastAccount = savedAccount.orEmpty()
-        error = null
-        connectionFailure = null
-        login.requested()
-        revision++
-        OtrConnectionService.resume(getApplication())
-    }
 
     /**
      * The Activity is finishing, or rotating. EITHER WAY THE CONNECTION STAYS.

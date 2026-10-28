@@ -357,19 +357,13 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
         gradle = _read(ROOT, "android", "app", "build.gradle.kts")
         assert "versionCode = 190" in gradle and "rc.189+core" in gradle
 
-    def test_the_saved_account_is_used_only_by_log_in(self, service):
-        """The resume chain still exists, behind the button: Log in with the
-        field empty -> `logInSaved` -> `resume()` -> ACTION_START with no
-        extras -> stored credentials -> connect."""
+    def test_log_in_needs_the_password_typed(self, service):
+        """Owner, 2026-10-28: "it should sign in only after username and
+        password has been entered". Nothing in the UI signs in with the saved
+        password; the saved address only fills the username field."""
         vm = _code_only(_read(JAVA, "ConnectionViewModel.kt"))
-        saved = vm[vm.index("fun logInSaved()"):]
-        saved = saved[:saved.index("\n    }")]
-        assert "OtrConnectionService.resume(" in saved
-        assert vm.count("OtrConnectionService.resume(") == 1
-        assert "fun resume(context: Context)" in service
-        assert "credentials.load()" in _code_only(service)
+        assert "OtrConnectionService.resume(" not in vm
+        assert "credentials?.load()?.jid" in vm
         screen = _code_only(_read(JAVA, "ui", "ConnectScreen.kt"))
-        log_in = screen[screen.index("fun logIn()"):]
-        log_in = log_in[:log_in.index("\n    }")]
-        assert "if (savedPassword) model.logInSaved()" in log_in
-        assert "Startup.usesSavedPassword(target?.jid, password, model.savedAccount)" in screen
+        assert "target != null && password.isNotBlank()" in screen
+        assert "account = SignIn.usernameOf(saved)" in screen
