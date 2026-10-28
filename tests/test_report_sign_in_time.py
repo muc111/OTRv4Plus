@@ -108,18 +108,19 @@ class TestTheServiceNotesIt:
         reg = src[src.index("private fun startRegistration()"):]
         reg = reg[:reg.index("private suspend fun registerWhenReachable")]
         assert reg.index("startTiming()") < reg.index("scope.launch")
-        assert "startConnection(afterRegistration = true)" in reg
-        start = src[src.index("fun startConnection(afterRegistration: Boolean = false)"):]
+        assert reg.index("afterRegistration = true") < reg.index("startConnection()")
+        start = src[src.index("fun startConnection()"):]
         start = start[:start.index("worker = scope.launch { connectLoop() }")]
         assert "if (!afterRegistration) startTiming()" in start
+        assert "afterRegistration = false" in start
         when = src[src.index("private suspend fun registerWhenReachable"):]
         when = when[:when.index("delay(RegisterRetry")]
-        assert "timedRouter()" in when and "chooseRouter()" not in when
+        assert when.index("chooseRouter()") < when.index("routerWaited(routerFrom)")
 
     def test_a_router_still_joining_is_counted(self):
         src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
                                 "android/connection/OtrConnectionService.kt")).read()
-        timed = src[src.index("private suspend fun timedRouter()"):]
+        timed = src[src.index("private fun routerWaited(from: Long)"):]
         timed = timed[:timed.index("\n    }\n")]
         assert "RouterChoice.State.JOINING" in timed
 

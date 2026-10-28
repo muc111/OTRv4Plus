@@ -586,13 +586,8 @@ class OtrConnectionService : Service() {
 
     // ── connection ──────────────────────────────────────────────────────────
 
-    /**
-     * Begin, or do nothing if an attempt is already running.
-     *
-     * [afterRegistration]: the sign-in that follows Create account, timed
-     * from the Create account tap, so the router it started is counted.
-     */
-    fun startConnection(afterRegistration: Boolean = false) {
+    /** Begin, or do nothing if an attempt is already running. */
+    fun startConnection() {
         // THE ACCOUNT BOUNDARY, and it is here rather than in the UI because
         // this is the one place every route to an authenticated session goes
         // through: a fresh sign-in, a resume from stored credentials, and a
@@ -606,7 +601,10 @@ class OtrConnectionService : Service() {
         reconnect.onUserConnect()
         startDraining()
         if (worker?.isActive == true) return
+        // The sign-in that follows Create account keeps the run its tap
+        // started, so the router booted for the account is counted.
         if (!afterRegistration) startTiming()
+        afterRegistration = false
         worker = scope.launch { connectLoop() }
     }
 
@@ -671,7 +669,8 @@ class OtrConnectionService : Service() {
                         }
                     }
                 }
-                startConnection(afterRegistration = true)
+                afterRegistration = true
+                startConnection()
             } else {
                 registration = out
                 // The router keeps running, as after a failed Log in.
@@ -695,7 +694,9 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
-                    val samPort = timedRouter()
+                    val routerFrom = System.currentTimeMillis()
+                    val samPort = chooseRouter()
+                    routerWaited(routerFrom)
                     core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
                     core.register(password)
                 }
@@ -727,6 +728,10 @@ class OtrConnectionService : Service() {
     /** Creating the account, its router wait apart; null when this run did not. */
     private var registerMs: Long? = null
 
+    /** The next [startConnection] follows Create account: keep its run's clock. */
+    @Volatile
+    private var afterRegistration = false
+
     private fun startTiming() {
         runStartedAt = System.currentTimeMillis()
         routerWaitMs = 0L
@@ -734,18 +739,15 @@ class OtrConnectionService : Service() {
     }
 
     /**
-     * [chooseRouter], with the wait for the built-in router added to this
-     * run's. Counted while it is still joining as well as once it is ready:
-     * a start that outlasts the budget is still time spent waiting for it.
-     * The I2P app's router, or none, returns at once.
+     * Add the [chooseRouter] that began at [from] to this run's router wait.
+     * Only the built-in router is waited for; the I2P app's, or none,
+     * returns at once. Counted while it is still joining as well as once it
+     * is ready: a start that outlasts the budget is still time spent on it.
      */
-    private suspend fun timedRouter(): Int {
-        val from = System.currentTimeMillis()
-        val port = chooseRouter()
+    private fun routerWaited(from: Long) {
         if (routerState == RouterChoice.State.RUNNING ||
             routerState == RouterChoice.State.JOINING)
             routerWaitMs += System.currentTimeMillis() - from
-        return port
     }
 
     /**
@@ -892,7 +894,9 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
-                    val samPort = timedRouter()
+                    val routerFrom = System.currentTimeMillis()
+                    val samPort = chooseRouter()
+                    routerWaited(routerFrom)
                     core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
                     core.connect(password)
                 }
