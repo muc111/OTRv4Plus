@@ -343,21 +343,33 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
         idle = idle[:idle.index("private fun createChannel")]
         assert "stopForeground" in idle
 
-    def test_the_fix_is_not_a_guard_on_the_screen(self):
-        """A UI condition would leave the service's own resume path -- and any
-        restart that does not come from the Activity -- still able to connect
-        as nobody, and the rule would be stated in two places that can
-        disagree."""
+    def test_opening_the_app_does_not_connect(self):
+        """Owner, 2026-10-28, superseding the earlier resume on launch: after
+        a force close the app "just started the i2p connection without a
+        trigger such login or create account". The saved account fills the
+        form; Log in is the trigger."""
         activity = _code_only(_read(JAVA, "MainActivity.kt"))
-        assert "resumeIfRemembered()" in activity, (
-            "the resume was removed rather than made conditional; a "
-            "remembered session must still come back on launch")
+        assert "resumeIfRemembered" not in activity
+        assert "OtrConnectionService.resume(" not in activity
+        assert "OtrConnectionService.start(" not in activity
 
-    def test_the_resume_path_still_exists_end_to_end(self, service):
-        """Case three of the brief: a persisted session reconnects. The chain
-        is `resumeIfRemembered` -> `resume()` -> ACTION_START with no extras
-        -> stored credentials -> connect."""
+    def test_the_build_that_waits_for_log_in_is_told_apart(self):
+        gradle = _read(ROOT, "android", "app", "build.gradle.kts")
+        assert "versionCode = 190" in gradle and "rc.189+core" in gradle
+
+    def test_the_saved_account_is_used_only_by_log_in(self, service):
+        """The resume chain still exists, behind the button: Log in with the
+        field empty -> `logInSaved` -> `resume()` -> ACTION_START with no
+        extras -> stored credentials -> connect."""
         vm = _code_only(_read(JAVA, "ConnectionViewModel.kt"))
-        assert "OtrConnectionService.resume(" in vm
+        saved = vm[vm.index("fun logInSaved()"):]
+        saved = saved[:saved.index("\n    }")]
+        assert "OtrConnectionService.resume(" in saved
+        assert vm.count("OtrConnectionService.resume(") == 1
         assert "fun resume(context: Context)" in service
         assert "credentials.load()" in _code_only(service)
+        screen = _code_only(_read(JAVA, "ui", "ConnectScreen.kt"))
+        log_in = screen[screen.index("fun logIn()"):]
+        log_in = log_in[:log_in.index("\n    }")]
+        assert "if (savedPassword) model.logInSaved()" in log_in
+        assert "Startup.usesSavedPassword(target?.jid, password, model.savedAccount)" in screen

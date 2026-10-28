@@ -312,10 +312,9 @@ class MainActivity : ComponentActivity() {
                 // a window before the binding lands. Re-keyed on it, so
                 // the chat attaches the moment it arrives and re-attaches
                 // if the service is ever rebound.
-                // A user who has signed in before should not be shown a
-                // login screen again just because the process restarted.
-                // Does nothing when nothing is remembered.
-                LaunchedEffect(Unit) { connection.resumeIfRemembered() }
+                // Opening the app never connects (owner, 2026-10-28): the
+                // saved account fills the login form, and Log in starts it
+                // (Startup.usesSavedPassword).
 
                 // A message notification was tapped. Never straight into a
                 // conversation: back to the chat list, then ask about the

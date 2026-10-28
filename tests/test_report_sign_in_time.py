@@ -127,4 +127,5 @@ class TestTheServiceNotesIt:
 
 def test_the_build_with_the_timing_is_told_apart_from_rc_187():
     gradle = open(os.path.join(ROOT, "android/app/build.gradle.kts")).read()
-    assert "versionCode = 189" in gradle and "rc.188+core" in gradle
+    code = int(__import__("re").search(r"versionCode = (\d+)", gradle).group(1))
+    assert code >= 189

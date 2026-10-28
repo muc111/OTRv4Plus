@@ -206,4 +206,13 @@ class StartupTest {
                                  intentPassword = "hunter2")
         assertEquals(false, account.toString().contains("hunter2"))
     }
+
+    @Test
+    fun `an empty password logs in as the saved account only`() {
+        assertEquals(true, Startup.usesSavedPassword("alice@otrv4plus.i2p", "", "Alice@otrv4plus.i2p"))
+        assertEquals(false, Startup.usesSavedPassword("bob@otrv4plus.i2p", "", "alice@otrv4plus.i2p"))
+        assertEquals(false, Startup.usesSavedPassword("alice@otrv4plus.i2p", "typed", "alice@otrv4plus.i2p"))
+        assertEquals(false, Startup.usesSavedPassword("alice@otrv4plus.i2p", "", null))
+        assertEquals(false, Startup.usesSavedPassword(null, "", "alice@otrv4plus.i2p"))
+    }
 }

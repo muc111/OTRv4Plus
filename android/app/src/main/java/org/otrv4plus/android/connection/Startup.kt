@@ -114,4 +114,18 @@ object Startup {
         if (secret.isEmpty()) return null
         return Account(account, secret)
     }
+
+    /**
+     * Opening the app never connects (owner, 2026-10-28: after a force
+     * close it "just started the i2p connection without a trigger such
+     * login or create account ... before i typed username and pass"). The
+     * saved account fills the form instead, and Log in is the trigger.
+     *
+     * Whether Log in should use the SAVED password: the field was left
+     * empty and the account is the saved one. Any other account, or a
+     * typed password, signs in with what was typed.
+     */
+    fun usesSavedPassword(typedJid: String?, typedPassword: String, savedJid: String?): Boolean =
+        typedPassword.isEmpty() && !savedJid.isNullOrBlank() && typedJid != null &&
+            typedJid.trim().equals(savedJid.trim(), ignoreCase = true)
 }

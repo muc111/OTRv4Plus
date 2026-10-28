@@ -213,6 +213,11 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
             bound?.setUiVisible(uiVisible)
             startPolling()
             viewModelScope.launch {
+                savedAccount = withContext(Dispatchers.IO) {
+                    runCatching { bound?.credentials?.load()?.jid }.getOrNull()
+                }?.takeIf { it.isNotBlank() }
+            }
+            viewModelScope.launch {
                 // The engine starts once, in the service. Asking here is what
                 // gives the connect screen something to show while it does.
                 init = withContext(Dispatchers.IO) {
@@ -563,12 +568,23 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Resume with stored credentials, if there are any.
-     *
-     * Called once on launch. A user who has signed in before should not be
-     * shown a login screen again just because the process restarted.
+     * The saved account's address, read once the service is bound, or null.
+     * Only the address: the password stays in the vault, and the service
+     * reads it there when Log in is pressed with the field left empty.
      */
-    fun resumeIfRemembered() {
+    var savedAccount by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Log in as the saved account with its saved password. Opening the app
+     * does not call this (owner, 2026-10-28); only the Log in button does.
+     */
+    fun logInSaved() {
+        lastAccount = savedAccount.orEmpty()
+        error = null
+        connectionFailure = null
+        login.requested()
+        revision++
         OtrConnectionService.resume(getApplication())
     }
 
