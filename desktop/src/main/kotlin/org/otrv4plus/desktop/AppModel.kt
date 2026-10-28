@@ -272,6 +272,9 @@ class AppModel(
                 }
                 screen = Screen.MAIN
                 roomService = null
+                // The last account's scan is not this one's.
+                serverRooms = emptyList()
+                serverRoomsScanned = false
                 // Ready before Join room is pressed; asked again there if not.
                 launch { runCatching { findRoomService() } }
             } else {
@@ -965,6 +968,106 @@ class AppModel(
             changed()
         }
     }
+    // -- the server's rooms (owner, 2026-10-28) ----------------------------------
+    //
+    // "Server Admin should be able to scan for groups and join if they wish
+    // and delete groups." The phone's Rooms screen did; the desktop listed
+    // only the rooms it was already in. Anyone sees the public listing; a
+    // server admin also sees hidden rooms (mod_otrv4plus_moderation). An
+    // encrypted group is never joined from here, admin or not: without an
+    // invitation over OTRv4+ there are no keys, so "join" is Ask to join.
+
+    /** What the last scan found, ours excluded (RoomSections.split). */
+    var serverRooms by mutableStateOf<List<org.otrv4plus.android.bridge.RoomSummary>>(emptyList())
+        private set
+    /** True once a scan has answered, whatever it found. */
+    var serverRoomsScanned by mutableStateOf(false)
+        private set
+    var scanningRooms by mutableStateOf(false)
+        private set
+
+    /** Ask the server what rooms it has. */
+    fun scanServerRooms() {
+        if (scanningRooms) return
+        scanningRooms = true
+        ui.launch {
+            try {
+                val service = findRoomService()
+                if (service == null) {
+                    chat.note("This server has no rooms service, or it did not answer. Try again.")
+                    return@launch
+                }
+                val (r, rooms) = withContext(Dispatchers.IO) { core.discoverRooms(service) }
+                if (r.ok) {
+                    serverRooms = rooms
+                    serverRoomsScanned = true
+                } else {
+                    chat.note(r.detail.ifBlank { "The server did not list its rooms (${r.code})." })
+                }
+            } finally {
+                scanningRooms = false
+                changed()
+            }
+        }
+    }
+
+    /** The scan, sorted: encrypted groups we hold no keys for, and plain rooms. */
+    fun serverRoomSplit(): org.otrv4plus.android.chat.RoomSections.Split =
+        org.otrv4plus.android.chat.RoomSections.split(serverRooms, groups)
+
+    /** Delete is offered only to a room's owner or a server admin (RoomDeletion). */
+    fun canDeleteRoom(jid: String): Boolean = chat.canDeleteRoom(jid)
+
+    /**
+     * Delete [jid] for everyone. A group whose keys are here goes through
+     * Delete for everyone (members removed first); any other room is
+     * destroyed on the server, as its owner or as the server's admin. A
+     * group's members' apps end their copy when its room is destroyed.
+     */
+    fun deleteServerRoom(jid: String) {
+        if (groups.any { it.equals(jid, ignoreCase = true) }) {
+            deleteSecureGroup(jid)
+            return
+        }
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.destroyRoom(jid, "") }
+            if (r.ok) serverRooms = serverRooms.filterNot { it.jid.equals(jid, ignoreCase = true) }
+            else chat.note(r.detail.ifBlank { "That did not work (${r.code})." })
+            changed()
+        }
+    }
+
+    /** Join a listed plain room; a password is asked for if it needs one. */
+    fun joinListed(room: org.otrv4plus.android.bridge.RoomSummary) {
+        if (room.claimsSecure && !room.secure) { askToJoinFor = room.jid; return }
+        joinRoom(room.jid, jid.substringBefore('@'))
+    }
+
+    /** The encrypted group an "Ask to join?" question is open for, or null. */
+    var askToJoinFor by mutableStateOf<String?>(null)
+
+    private val askedAt = HashMap<String, Long>()
+
+    /** Post one request in the group's room; a member may invite us over OTRv4+. */
+    fun askToJoin(room: String) {
+        askToJoinFor = null
+        val key = room.lowercase()
+        val now = System.currentTimeMillis()
+        val before = askedAt[key]
+        if (!org.otrv4plus.android.chat.RoomSections.mayAsk(before, now)) {
+            chat.note(org.otrv4plus.android.chat.RoomSections.askAgainIn(before!!, now))
+            changed()
+            return
+        }
+        ui.launch {
+            val r = withContext(Dispatchers.IO) { core.requestGroupEntry(room) }
+            if (r.ok) askedAt[key] = now
+            chat.note(if (r.ok) org.otrv4plus.android.chat.RoomSections.ASKED
+                      else r.detail.ifBlank { "That did not work (${r.code})." })
+            changed()
+        }
+    }
+
     /** A password-protected group's room the user must type the password
      *  for (the inviter's did not come, or was refused). */
     var groupPasswordFor by mutableStateOf<String?>(null)

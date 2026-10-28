@@ -8,7 +8,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 Dev builds from 2026-10-27 are **rc.187** (versionCode 188) and **desktop
 0.14.10**, so a phone or laptop running them can be told from rc.186.
-From 2026-10-28 the phone build is **rc.188** (versionCode 189).
+From 2026-10-28 the phone build is **rc.188** (versionCode 189). and the desktop
+build is **0.14.11**.
+
+- **Added: server rooms on the desktop.** The Rooms tab has Server rooms:
+  a scan of what the server lists, as on the phone. A server admin also
+  sees hidden rooms and can delete any room or group; members of a deleted
+  group have their copy ended by their app. An encrypted group is offered
+  as Ask to join, for an admin too: without an invitation over OTRv4+
+  there are no keys, so the server's admin cannot read it.
 
 - **Added: the diagnostic report says how long sign-in took.** The summary
   showed only the clock time the link came up, which read like a duration.

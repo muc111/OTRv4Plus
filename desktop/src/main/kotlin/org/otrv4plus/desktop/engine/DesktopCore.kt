@@ -344,6 +344,22 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun joinRoom(room: String, nick: String, password: String = "") =
         controller("join_room", "room" to room, "nick" to nick, "password" to password)
     fun leaveRoom(room: String, nick: String) = controller("leave_room", "room" to room, "nick" to nick)
+    /** The rooms [service] lists; a server admin's list has its hidden ones too. */
+    fun discoverRooms(service: String): Pair<Outcome, List<org.otrv4plus.android.bridge.RoomSummary>> {
+        val o = controller("discover_rooms", "service" to service)
+        val rooms = (o.value as? kotlinx.serialization.json.JsonArray)?.mapNotNull { e ->
+            (e as? JsonObject)?.let {
+                org.otrv4plus.android.bridge.RoomSummary(
+                    it.str("jid"), it.str("name"), it.str("occupants").toIntOrNull(),
+                    secure = it["secure"].asBool(), claimsSecure = it["claims_secure"].asBool(),
+                    password = it["password"].asBool(), hidden = it["hidden"].asBool())
+            }
+        } ?: emptyList()
+        return o to rooms.filter { it.jid.isNotBlank() }
+    }
+    /** Delete a room for everyone: its owner, or a server admin (the server decides). */
+    fun destroyRoom(room: String, reason: String = "") =
+        controller("destroy_room", "room" to room, "reason" to reason)
     /** Who is in an ordinary room: (asked ok, people). */
     fun roomOccupants(room: String): Pair<Boolean, List<org.otrv4plus.android.bridge.RoomOccupant>> {
         val o = controller("room_occupants", "room" to room)

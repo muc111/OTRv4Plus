@@ -13,7 +13,7 @@ group = "org.otrv4plus"
 // The desktop app's own version (docs/VERSIONING.md). Not the Rust core's: it
 // started at the core's 0.13.1 only so packages already installed upgrade.
 // The README badge is tested against this line.
-version = "0.14.10"
+version = "0.14.11"
 
 dependencies {
     implementation(compose.desktop.currentOs)
@@ -71,6 +71,7 @@ val sharedFromAndroid = listOf(
     "org/otrv4plus/android/chat/RoomDeletion.kt",
     "org/otrv4plus/android/chat/RoomPassword.kt",
     "org/otrv4plus/android/chat/RoomPeople.kt",
+    "org/otrv4plus/android/chat/RoomSections.kt",
     "org/otrv4plus/android/chat/RowSecurity.kt",
     "org/otrv4plus/android/chat/SavedContacts.kt",
     "org/otrv4plus/android/chat/SoundPolicy.kt",

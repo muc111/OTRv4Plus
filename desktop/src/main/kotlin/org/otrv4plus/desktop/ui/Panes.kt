@@ -46,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import org.otrv4plus.android.chat.Presence
 import org.otrv4plus.android.theme.ThemeTokens
 import org.otrv4plus.desktop.AppModel
+import org.otrv4plus.desktop.ServerRooms
 
 @Composable
 private fun PaneTitle(text: String, action: @Composable () -> Unit = {}) {
@@ -111,8 +112,15 @@ fun RoomsPane(model: AppModel) {
     @Suppress("UNUSED_VARIABLE") val r = model.revision
     var joining by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
+    var deletingRoom by remember { mutableStateOf<String?>(null) }
+    var showServer by remember { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         PaneTitle("Rooms and groups") {
+            OutlinedButton(onClick = {
+                showServer = !showServer
+                if (showServer && !model.serverRoomsScanned) model.scanServerRooms()
+            }) { Text(if (showServer) "Hide server rooms" else "Server rooms") }
+            Spacer(Modifier.width(8.dp))
             OutlinedButton(onClick = { joining = true }) { Text("Join room") }
             Spacer(Modifier.width(8.dp))
             Button(onClick = { creating = true }) { Text("New encrypted group") }
@@ -154,6 +162,7 @@ fun RoomsPane(model: AppModel) {
                 }
             }
         }
+        if (showServer) ServerRoomsCard(model, onDelete = { deletingRoom = it })
         model.groupPasswordFor?.let { room -> GroupRoomPasswordDialog(model, room) }
         model.roomPasswordPrompt?.let { prompt -> RoomPasswordDialog(model, prompt) }
         val rooms = (model.groups + model.conversations().map { it.jid }.filter { model.chat.isRoom(it) }).distinct()
@@ -185,12 +194,91 @@ fun RoomsPane(model: AppModel) {
             }
         }
     }
+    model.askToJoinFor?.let { room ->
+        AlertDialog(
+            onDismissRequest = { model.askToJoinFor = null },
+            title = { Text("Ask to join this group?") },
+            text = { Text(ServerRooms.ASK_TEXT) },
+            confirmButton = { Button(onClick = { model.askToJoin(room) }) { Text("Ask to join") } },
+            dismissButton = { TextButton(onClick = { model.askToJoinFor = null }) { Text("Cancel") } },
+        )
+    }
+    deletingRoom?.let { room ->
+        AlertDialog(
+            onDismissRequest = { deletingRoom = null },
+            title = { Text("Delete this room for everyone?") },
+            text = { Text(ServerRooms.deleteText(room, room in model.groups)) },
+            confirmButton = {
+                Button(onClick = { model.deleteServerRoom(room); deletingRoom = null },
+                       colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)) {
+                    Text("Delete")
+                }
+            },
+            dismissButton = { TextButton(onClick = { deletingRoom = null }) { Text("Cancel") } },
+        )
+    }
     // A name is enough; the app adds this server's rooms service (RoomAddress).
     if (joining) TextPrompt("Join room", "Room name", "Join",
                             onDone = { v -> joining = false
                                 if (v != null) model.joinRoom(v, model.jid.substringBefore('@')) })
     if (creating) TextPrompt("New encrypted group", "Group name", "Create",
                              onDone = { v -> creating = false; if (v != null) model.createSecureGroup(v) })
+}
+
+/** Every room the server lists (hidden ones too for its admin), and what we may do with each. */
+@Composable
+private fun ServerRoomsCard(model: AppModel, onDelete: (String) -> Unit) {
+    val split = model.serverRoomSplit()
+    Card(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(ServerRooms.title(model.isServerAdmin), Modifier.weight(1f),
+                     style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                TextButton(enabled = !model.scanningRooms, onClick = { model.scanServerRooms() }) {
+                    Text(if (model.scanningRooms) "Scanning…" else "Scan again")
+                }
+            }
+            Text(ServerRooms.note(model.isServerAdmin), style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (model.serverRoomsScanned && split.encrypted.isEmpty() && split.plain.isEmpty()) {
+                Text(ServerRooms.EMPTY, style = MaterialTheme.typography.bodySmall)
+            }
+            if (split.encrypted.isNotEmpty()) {
+                Text(org.otrv4plus.android.chat.RoomSections.ON_SERVER_TITLE, style = MaterialTheme.typography.labelLarge)
+                Text(org.otrv4plus.android.chat.RoomSections.ON_SERVER_NOTE, style = MaterialTheme.typography.bodySmall)
+                for (room in split.encrypted) ServerRoomRow(model, room, "Ask to join", onDelete)
+            }
+            if (split.plain.isNotEmpty()) {
+                Text(org.otrv4plus.android.chat.RoomSections.PLAIN_TITLE, style = MaterialTheme.typography.labelLarge)
+                Text(org.otrv4plus.android.chat.RoomSections.PLAIN_NOTE, style = MaterialTheme.typography.bodySmall,
+                     color = MaterialTheme.colorScheme.error)
+                for (room in split.plain) ServerRoomRow(model, room, "Join", onDelete)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ServerRoomRow(model: AppModel, room: org.otrv4plus.android.bridge.RoomSummary,
+                          action: String, onDelete: (String) -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(room.kindIcon + " " + room.label + if (room.password) " \uD83D\uDD12" else "",
+                 fontWeight = FontWeight.Medium)
+            Text(room.kindText + " · " + room.jid, style = MaterialTheme.typography.bodySmall,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant)
+            room.occupants?.let { n ->
+                Text(if (n == 1) "1 user in the room" else "$n users in the room",
+                     style = MaterialTheme.typography.bodySmall)
+            }
+        }
+        TextButton(onClick = { model.joinListed(room) }) { Text(action) }
+        if (model.canDeleteRoom(room.jid)) {
+            TextButton(onClick = { onDelete(room.jid) }) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
 }
 
 // -- Settings ----------------------------------------------------------------------

@@ -37,4 +37,5 @@ def test_the_dev_builds_are_told_apart_from_rc_186():
     code = int(re.search(r"versionCode = (\d+)", gradle).group(1))
     rc = int(re.search(r"rc\.(\d+)\+core", gradle).group(1))
     assert code >= 188 and rc >= 187
-    assert 'version = "0.14.10"' in _src("desktop", "build.gradle.kts")
+    desktop = re.search(r'version = "0\.14\.(\d+)"', _src("desktop", "build.gradle.kts"))
+    assert desktop and int(desktop.group(1)) >= 10
