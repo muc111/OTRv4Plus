@@ -17,6 +17,10 @@ From 2026-10-28 the phone build is **rc.188** (versionCode 189).
   starting, the I2P tunnels to the server, and the server login, with
   anything left (engine start, failed attempts, waits) shown so the parts
   add up.
+  After Create account, the clock runs from the Create account tap, so the
+  router that started for it is counted, and creating the account is its
+  own part (on the Connect screen too). A router still joining when the
+  attempt went ahead is counted as router time as well.
 
 - **Fixed: deleting a group could remove nobody.** The app took the
   group's creator to be whichever member's name sorted first, not the one

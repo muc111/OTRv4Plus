@@ -27,9 +27,15 @@ class ConnectTimingTest {
 
     @Test
     fun `the report's note carries every part, the router as 0 when it was not waited for`() {
-        assertEquals("total_ms=145000 router_ms=110000 attempts=1",
+        assertEquals("total_ms=145000 router_ms=110000 attempts=1 register_ms=0",
             ConnectTiming.note(ConnectTiming.Result(145_000, 110_000, 1)))
-        assertEquals("total_ms=38000 router_ms=0 attempts=2",
-            ConnectTiming.note(ConnectTiming.Result(38_000, null, 2)))
+        assertEquals("total_ms=38000 router_ms=0 attempts=2 register_ms=20000",
+            ConnectTiming.note(ConnectTiming.Result(38_000, null, 2, 20_000)))
+    }
+
+    @Test
+    fun `Create account first is its own part, and the parts add up`() {
+        assertEquals("5:00 (I2P router 2:30, creating the account 0:50, sign-in 1:40)",
+            ConnectTiming.line(ConnectTiming.Result(300_000, 150_000, 1, 50_000)))
     }
 }

@@ -22,7 +22,8 @@ ROOT = os.path.join(os.path.dirname(__file__), "..")
 T0 = 1_800_000_000.0
 
 
-def _run(router_ms=110_000, attempts=1, total_ms=145_000, steps=True):
+def _run(router_ms=110_000, attempts=1, total_ms=145_000, steps=True,
+         register_ms=0):
     """A sign-in as the phone records it: router, tunnels, login, note."""
     log = TraceLog()
     end = T0 + total_ms / 1000.0
@@ -34,8 +35,8 @@ def _run(router_ms=110_000, attempts=1, total_ms=145_000, steps=True):
         log.record_at(end - 10, "connection", "tls")
         log.record_at(end - 5, "connection", "signed_in")
     log.record_at(end, "service", "connect_timing",
-                  detail="total_ms=%d router_ms=%d attempts=%d"
-                  % (total_ms, router_ms, attempts))
+                  detail="total_ms=%d router_ms=%d attempts=%d register_ms=%d"
+                  % (total_ms, router_ms, attempts, register_ms))
     return log
 
 
@@ -49,6 +50,14 @@ class TestSignInTime:
         line = report.connect_time(_run(router_ms=60_000, attempts=3))
         assert line == ("2:25 (I2P router 1:00, tunnels 0:20, server login 0:15, "
                         "retries and waiting 0:50), 3 attempts")
+
+    def test_create_account_first_is_counted_from_its_tap(self):
+        """Owner, 2026-10-28: after Create account the duration was not
+        accurate -- the sign-in's clock started after the router had booted
+        for the account. The whole run is now one wait."""
+        line = report.connect_time(_run(total_ms=225_000, register_ms=80_000))
+        assert line == ("3:45 (I2P router 1:50, creating the account 1:20, "
+                        "tunnels 0:20, server login 0:15), 1 attempt")
 
     def test_without_the_router_or_steps_only_the_total(self):
         assert report.connect_time(_run(router_ms=0, steps=False)) == "2:25, 1 attempt"
@@ -91,6 +100,28 @@ class TestTheServiceNotesIt:
         ok = ok[:ok.index('enter(LinkPhase.CONNECTED')]
         assert 'core.note("service", "connect_timing", "info"' in ok
         assert "ConnectTiming.note(timing)" in ok
+        assert "registerMs = registerMs" in src
+
+    def test_create_account_does_not_restart_the_clock(self):
+        src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read()
+        reg = src[src.index("private fun startRegistration()"):]
+        reg = reg[:reg.index("private suspend fun registerWhenReachable")]
+        assert reg.index("startTiming()") < reg.index("scope.launch")
+        assert "startConnection(afterRegistration = true)" in reg
+        start = src[src.index("fun startConnection(afterRegistration: Boolean = false)"):]
+        start = start[:start.index("worker = scope.launch { connectLoop() }")]
+        assert "if (!afterRegistration) startTiming()" in start
+        when = src[src.index("private suspend fun registerWhenReachable"):]
+        when = when[:when.index("delay(RegisterRetry")]
+        assert "timedRouter()" in when and "chooseRouter()" not in when
+
+    def test_a_router_still_joining_is_counted(self):
+        src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read()
+        timed = src[src.index("private suspend fun timedRouter()"):]
+        timed = timed[:timed.index("\n    }\n")]
+        assert "RouterChoice.State.JOINING" in timed
 
 
 def test_the_build_with_the_timing_is_told_apart_from_rc_187():

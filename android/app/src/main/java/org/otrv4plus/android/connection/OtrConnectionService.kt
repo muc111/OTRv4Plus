@@ -586,8 +586,13 @@ class OtrConnectionService : Service() {
 
     // ── connection ──────────────────────────────────────────────────────────
 
-    /** Begin, or do nothing if an attempt is already running. */
-    fun startConnection() {
+    /**
+     * Begin, or do nothing if an attempt is already running.
+     *
+     * [afterRegistration]: the sign-in that follows Create account, timed
+     * from the Create account tap, so the router it started is counted.
+     */
+    fun startConnection(afterRegistration: Boolean = false) {
         // THE ACCOUNT BOUNDARY, and it is here rather than in the UI because
         // this is the one place every route to an authenticated session goes
         // through: a fresh sign-in, a resume from stored credentials, and a
@@ -601,7 +606,7 @@ class OtrConnectionService : Service() {
         reconnect.onUserConnect()
         startDraining()
         if (worker?.isActive == true) return
-        startTiming()
+        if (!afterRegistration) startTiming()
         worker = scope.launch { connectLoop() }
     }
 
@@ -643,10 +648,13 @@ class OtrConnectionService : Service() {
         registering = true
         registerAttempt = 0
         enter(LinkPhase.CONNECTING, "creating the account")
+        startTiming()
         worker = scope.launch {
             val out = registerWhenReachable()
             registering = false
             worker = null
+            registerMs = (System.currentTimeMillis() - runStartedAt - routerWaitMs)
+                .takeIf { out.ok }
             runCatching {
                 core.note("service", "register", if (out.ok) "info" else "warning", out.code)
             }
@@ -663,7 +671,7 @@ class OtrConnectionService : Service() {
                         }
                     }
                 }
-                startConnection()
+                startConnection(afterRegistration = true)
             } else {
                 registration = out
                 // The router keeps running, as after a failed Log in.
@@ -687,7 +695,7 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
-                    val samPort = chooseRouter()
+                    val samPort = timedRouter()
                     core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
                     core.register(password)
                 }
@@ -716,9 +724,28 @@ class OtrConnectionService : Service() {
     private var runStartedAt = 0L
     private var routerWaitMs = 0L
 
+    /** Creating the account, its router wait apart; null when this run did not. */
+    private var registerMs: Long? = null
+
     private fun startTiming() {
         runStartedAt = System.currentTimeMillis()
         routerWaitMs = 0L
+        registerMs = null
+    }
+
+    /**
+     * [chooseRouter], with the wait for the built-in router added to this
+     * run's. Counted while it is still joining as well as once it is ready:
+     * a start that outlasts the budget is still time spent waiting for it.
+     * The I2P app's router, or none, returns at once.
+     */
+    private suspend fun timedRouter(): Int {
+        val from = System.currentTimeMillis()
+        val port = chooseRouter()
+        if (routerState == RouterChoice.State.RUNNING ||
+            routerState == RouterChoice.State.JOINING)
+            routerWaitMs += System.currentTimeMillis() - from
+        return port
     }
 
     /**
@@ -865,12 +892,7 @@ class OtrConnectionService : Service() {
                         if (!init.ok) throw IllegalStateException("init_failed")
                         initialised = true
                     }
-                    val routerFrom = System.currentTimeMillis()
-                    val samPort = chooseRouter()
-                    // Only the built-in router is waited for here; the I2P
-                    // app's, or none, returns at once.
-                    if (routerState == RouterChoice.State.RUNNING)
-                        routerWaitMs += System.currentTimeMillis() - routerFrom
+                    val samPort = timedRouter()
                     core.prepareConnection(jid.trim(), server.trim(), samPort = samPort)
                     core.connect(password)
                 }
@@ -883,7 +905,8 @@ class OtrConnectionService : Service() {
                     lastConnectTiming = ConnectTiming.Result(
                         totalMs = System.currentTimeMillis() - runStartedAt,
                         routerMs = routerWaitMs.takeIf { it > 0 },
-                        attempts = reconnect.attempts + 1)
+                        attempts = reconnect.attempts + 1,
+                        registerMs = registerMs)
                     lastConnectTiming?.let { timing ->
                         runCatching {
                             core.note("service", "connect_timing", "info",

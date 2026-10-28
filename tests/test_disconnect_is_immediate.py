@@ -75,7 +75,7 @@ def test_a_lost_router_is_restarted_from_the_failure_path():
 
 def test_the_connection_is_timed_from_start_or_drop_to_signed_in():
     src = open(SERVICE).read()
-    start = src[src.index("fun startConnection()"):]
+    start = src[src.index("fun startConnection("):]
     start = start[:start.index("worker = scope.launch { connectLoop() }")]
     assert "startTiming()" in start
     watch = src[src.index("private suspend fun watchUntilDropped"):]

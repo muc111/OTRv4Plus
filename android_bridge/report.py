@@ -318,7 +318,8 @@ def connect_time(trace=None) -> Optional[str]:
     app resuming or a drop. The rest is split at the transport's own steps
     of the successful attempt: `sam_opening` to `tunnel_open` is the I2P
     tunnels, `tunnel_open` to the note is the server login (TLS and
-    sign-in). What is left -- the engine starting, failed attempts and the
+    sign-in). After Create account the run starts at its tap, and the
+    account's creation is its own part. What is left -- the engine starting, failed attempts and the
     waits between them -- is shown as such, so the parts add up.
     """
     trace = TRACE if trace is None else trace
@@ -344,6 +345,7 @@ def connect_time(trace=None) -> Optional[str]:
     total = values["total_ms"] / 1000.0
     start = end - total
     router = values.get("router_ms", 0) / 1000.0
+    account = values.get("register_ms", 0) / 1000.0
     attempts = values.get("attempts", 1)
 
     def last_step(name: str, after: float) -> Optional[float]:
@@ -359,6 +361,11 @@ def connect_time(trace=None) -> Optional[str]:
     if router >= 1:
         parts.append("I2P router %s" % _clock(router))
     accounted = router
+    if account >= 1:
+        # Create account came first (rc.188 on): the run is timed from its
+        # tap, and its own router wait is already in `router`.
+        parts.append("creating the account %s" % _clock(account))
+        accounted += account
     opening = last_step("sam_opening", start)
     opened = last_step("tunnel_open", opening) if opening is not None else None
     if opening is not None and opened is not None:

@@ -22,6 +22,8 @@ object ConnectTiming {
         val routerMs: Long?,
         /** Attempts in this run, the successful one included. */
         val attempts: Int,
+        /** Creating the account first, its router wait apart; null when not. */
+        val registerMs: Long? = null,
     )
 
     /** "0:07", "3:42", "1:02:05". */
@@ -34,9 +36,13 @@ object ConnectTiming {
     fun line(r: Result): String = buildString {
         append(clock(r.totalMs))
         val router = r.routerMs?.takeIf { it >= 1_000 }
-        if (router != null) {
-            append(" (I2P router ").append(clock(router))
-            append(", sign-in ").append(clock(r.totalMs - router)).append(")")
+        val account = r.registerMs?.takeIf { it >= 1_000 }
+        if (router != null || account != null) {
+            append(" (")
+            if (router != null) append("I2P router ").append(clock(router)).append(", ")
+            if (account != null) append("creating the account ").append(clock(account)).append(", ")
+            append("sign-in ").append(clock(r.totalMs - (router ?: 0) - (account ?: 0)))
+            append(")")
         }
         if (r.attempts > 1) append(", ").append(r.attempts).append(" attempts")
     }
@@ -48,5 +54,6 @@ object ConnectTiming {
      * the 2:25 the sign-in took.
      */
     fun note(r: Result): String =
-        "total_ms=${r.totalMs} router_ms=${r.routerMs ?: 0} attempts=${r.attempts}"
+        "total_ms=${r.totalMs} router_ms=${r.routerMs ?: 0} attempts=${r.attempts}" +
+            " register_ms=${r.registerMs ?: 0}"
 }
