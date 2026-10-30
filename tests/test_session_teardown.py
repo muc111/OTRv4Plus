@@ -113,26 +113,66 @@ class TestEndSessionExists:
 class TestItIsATeardownNotAGoodbye:
     """All three callers want local state gone, not a wire message."""
 
+    # Phase 5 (2026-10-30): these run end_session against recording
+    # sessions instead of reading its source for names.
+
+    class _Recording(_Session):
+        """Records every way a session could put something on the wire."""
+
+        def __init__(self):
+            super().__init__()
+            self.sent = []
+            self.final_revelation = []
+
+        def send_disconnect(self):
+            self.sent.append("disconnect")
+            return "?OTRv4 disconnect"
+
+        def close_with_revelation(self, announce=False):
+            self.sent.append(("close", announce))
+
+    class _NoTrust:
+        """A trust database that fails the test if anything reads it."""
+
+        def __getattr__(self, name):
+            raise AssertionError("end_session touched the trust database (%s)" % name)
+
     def test_no_disconnected_tlv_is_sent(self):
         """A stuck handshake has no encrypted session to send through, and on
         glare we are about to answer the peer's DAKE1 as responder -- saying
         we disconnected first is the opposite of what is happening."""
-        src = inspect.getsource(otr.EnhancedSessionManager.end_session)
-        assert "send_disconnect" not in src
-        assert "_disconnect_callbacks" not in src
+        mgr = _manager()
+        said = []
+        mgr._disconnect_callbacks = said
+        session = self._Recording()
+        mgr.sessions["bob"] = session
+        assert mgr.end_session("bob") is True
+        assert "disconnect" not in session.sent
+        assert ("close", True) not in session.sent, "the reset announced itself"
+        assert said == []
 
     def test_the_trust_database_is_not_touched(self):
         """A pinned fingerprint is long-term identity. Forgetting it on reset
         would turn every reset into a fresh trust-on-first-use decision --
         the failure mode TOFU exists to make visible."""
-        src = inspect.getsource(otr.EnhancedSessionManager.end_session)
-        assert "trust_db" not in src
+        mgr = _manager()
+        mgr.trust_db = self._NoTrust()
+        mgr.sessions["bob"] = self._Recording()
+        mgr.dake_engines["bob"] = object()
+        assert mgr.end_session("bob") is True
 
     def test_the_graceful_path_still_announces(self):
         """SessionManager.end_session is the goodbye path and keeps its TLV;
         this is a different method for a different job."""
-        src = inspect.getsource(otr.SessionManager.end_session)
-        assert "send_disconnect" in src
+        import threading
+        mgr = otr.SessionManager.__new__(otr.SessionManager)
+        mgr.lock = threading.RLock()
+        mgr.sessions = {"bob": self._Recording()}
+        mgr._disconnect_callbacks = []
+        mgr.logger = type("L", (), {"debug": lambda *a, **k: None})()
+        mgr.end_session("bob")
+        assert mgr._disconnect_callbacks == [("bob", "?OTRv4 disconnect")]
+        assert "bob" not in mgr.sessions
 
 
 class TestTheResetCleansUpEvenIfTheEngineFails:
