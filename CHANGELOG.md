@@ -30,7 +30,10 @@ starts at **rc.190-untested** (versionCode 191).
     security bug); the RUSTSEC-2026-0387 fix is in every 0.7.6+.
   - `libc` 0.2.191; the `audit` and `fuzz` lockfiles now match the core
     (they still had `crypto-bigint` 0.5).
-  - Newer major versions are listed in the notes, not taken.
+  - `thiserror` 2 and `dashmap` 6 (major versions, no cryptography): the
+    core's 199 and MLS's 78 tests pass, clippy clean.
+  - The cryptographic major versions (RustCrypto, pyo3, hpke-rs) are
+    listed in the notes, not taken yet.
 - **Hardened: the APK's Python packages are checked by SHA-256.** Every
   third-party file the APK's Python is built from is named by hash in
   `android/app/python-lock.txt` and downloaded with `pip --require-hashes`.

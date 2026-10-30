@@ -21,7 +21,7 @@ never enabled is not in the shipped artifact and is not attributed here.
 
 
 ----------------------------------------------------------------------------
-1. Rust crates compiled into otrv4_core (126)
+1. Rust crates compiled into otrv4_core (124)
 ----------------------------------------------------------------------------
 
 aead 0.5.2
@@ -244,7 +244,7 @@ ctutils 0.4.5
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2025-2026 The RustCrypto Project Developers
 
-dashmap 5.5.3
+dashmap 6.2.1
     Licence: MIT
     Source:  https://github.com/xacrimon/dashmap
     Copyright (c) 2019 Acrimon
@@ -877,21 +877,7 @@ tap 1.0.1
     Source:  https://github.com/myrrlyn/tap
     Copyright (c) 2017 Elliot Linder <darfink@gmail.com>
 
-thiserror 1.0.69
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/dtolnay/thiserror
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-
 thiserror 2.0.21
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/dtolnay/thiserror
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-
-thiserror-impl 1.0.69
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/dtolnay/thiserror

@@ -50,7 +50,7 @@ x448 = "0.6"
 ed448-goldilocks-plus = { version = "0.18.1", default-features = false, features = ["alloc", "signing", "pkcs8"] }
 getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
-thiserror = "1.0"
+thiserror = "2.0"
 
 [dev-dependencies]
 # TEST ONLY, never shipped: the reference provider, so our provider is
