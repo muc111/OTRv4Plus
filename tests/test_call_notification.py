@@ -463,14 +463,24 @@ class TestControlCommandGating(unittest.TestCase):
         # The gate lives upstream: _on_invite refuses to allocate a session,
         # and therefore to ring, unless SMP verified the peer. A button can
         # only ever act on a session that already exists.
-        import inspect
-        src = inspect.getsource(V.VoiceCallManager._on_invite)
-        self.assertIn("_smp_verified(peer)", src)
-        self.assertLess(src.index("_smp_verified"), src.index("_start_ringing"),
-                        "ringing must be downstream of the SMP check")
-        handler = inspect.getsource(V.VoiceCallManager._on_control_command)
-        self.assertIn("self._calls.get(peer)", handler)
-        self.assertIn("CallState.RINGING", handler)
+        from unittest import mock
+        del self.mgr._calls[PEER]
+        rang, signals = [], []
+        self.mgr._start_ringing = lambda *a, **k: rang.append(a)
+        self.mgr._signal = lambda peer, kind, fields: signals.append((kind, fields))
+        self.mgr._otr_material = lambda peer: (b"b", "AA" * 64, "BB" * 64)
+        self.mgr._smp_verified = lambda peer: False
+        fields = (CALL_ID.hex(), "A" * 516,
+                  "11" * V.VoiceKeyExchange.PUB_LEN, "22" * V.MLKEM_EK_LEN)
+        with mock.patch.dict(V._HOST, {"voice_available": lambda: (True, "")}):
+            self.loop.run_until_complete(self.mgr._on_invite(PEER, fields))
+        self.assertEqual(signals, [("REJECT", (CALL_ID.hex(), "unverified"))])
+        self.assertNotIn(PEER, self.mgr._calls)
+        self.assertEqual(rang, [])
+        # And a press on the refused call reaches nothing.
+        self.mgr._on_control_command("answer", PEER, CALL_ID)
+        self.run_pending()
+        self.assertEqual(self.calls, [])
 
     def test_the_button_only_ever_calls_the_public_entry_points(self):
         import inspect
