@@ -112,18 +112,50 @@ class TestArming:
         c._clear_peer_gone("our transport dropped")
         assert c._peer_gone_at == {}
 
-    def test_our_disconnect_handler_calls_it(self):
-        # Ten disconnects in one live call; not one may clear a session.
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._on_disconnected)
-        assert "_clear_peer_gone" in src
+    # Run, not read (Phase 5): the real handlers on the fake client.
 
-    def test_presence_handlers_are_wired_both_ways(self):
-        import inspect
-        gone = inspect.getsource(xmpp.OTRv4PlusXMPP._on_presence_unavailable)
-        back = inspect.getsource(xmpp.OTRv4PlusXMPP._on_presence_available)
-        assert "_arm_peer_gone" in gone
-        assert "_peer_is_alive" in back
+    class _From:
+        def __init__(self, jid, resource="phone"):
+            self.bare, self.resource = jid, resource
+
+    def _presence(self, jid, resource="phone"):
+        return {"from": self._From(jid, resource), "show": "", "status": "",
+                "caps": {"node": ""}}
+
+    def _wire(self, c):
+        c._own_bare = "me@example.i2p"
+        c._peer_resources = {}
+        c._groups = None
+        for name in ("_on_presence_unavailable", "_on_presence_available",
+                     "_on_disconnected"):
+            setattr(c, name, getattr(xmpp.OTRv4PlusXMPP, name).__get__(c))
+        return c
+
+    def test_our_disconnect_handler_calls_it(self, capsys):
+        # Ten disconnects in one live call; not one may clear a session.
+        c = self._wire(_FakeClient())
+        c._peer_gone_at = {PEER: 1.0}
+        c._keepalive_task = None
+        c._clear_trades = lambda why: None
+        c._schedule_reconnect = lambda why: None
+        c._on_disconnected(None)
+        assert c._peer_gone_at == {}, "our own drop counted against the peer"
+        assert PEER in c._encrypted
+
+    def test_presence_handlers_are_wired_both_ways(self, capsys):
+        c = self._wire(_FakeClient())
+        c._on_presence_available(self._presence(PEER))
+        c._on_presence_unavailable(self._presence(PEER))
+        assert PEER in c._peer_gone_at, "the peer's last resource leaving armed nothing"
+        c._on_presence_available(self._presence(PEER))
+        assert PEER not in c._peer_gone_at, "the peer coming back did not disarm it"
+
+    def test_one_resource_leaving_does_not_arm_it(self, capsys):
+        c = self._wire(_FakeClient())
+        c._on_presence_available(self._presence(PEER, "phone"))
+        c._on_presence_available(self._presence(PEER, "laptop"))
+        c._on_presence_unavailable(self._presence(PEER, "phone"))
+        assert PEER not in c._peer_gone_at
 
     def test_an_inbound_message_counts_as_proof_of_life(self):
         import inspect
