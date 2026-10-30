@@ -52,6 +52,30 @@ def _code_of(obj):
     return ast.unparse(fn)
 
 
+class _Client:
+    """Just enough host for the policy checks; the engine answer is set per test."""
+
+    def __init__(self, answer=(False, "NONE")):
+        self.otr = object()
+        self.answer = answer
+        self._smp_reported = {PEER: True}      # display state says "verified"
+
+    def _smp_query_fn(self, otr, peer):
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+PEER = "bob@example.org"
+
+
+def _manager(answer):
+    import asyncio
+    loop = asyncio.new_event_loop()
+    mgr = V.VoiceCallManager(_Client(answer), loop)
+    return mgr, loop
+
+
 class TestTheGateReadsTheEngineOnly:
 
     def test_smp_verified_consults_the_engine_query(self):
@@ -66,47 +90,84 @@ class TestTheGateReadsTheEngineOnly:
                 "%s is read by the voice authorisation gate" % banned)
 
     def test_an_exception_denies_rather_than_allows(self):
-        src = _src(V.VoiceCallManager._smp_verified)
-        tail = src[src.rindex("except"):]
-        assert "return False" in tail, (
-            "a failure to determine SMP state must not authorise a call")
+        mgr, loop = _manager(RuntimeError("engine went away"))
+        try:
+            assert mgr._smp_verified(PEER) is False, (
+                "a failure to determine SMP state must not authorise a call")
+        finally:
+            mgr._call_control.shutdown()
+            loop.close()
 
     def test_it_returns_a_real_bool(self):
         """A truthy object would let a non-empty status dict authorise."""
-        src = _src(V.VoiceCallManager._smp_verified)
-        assert "bool(" in src
+        for answer, want in (((True, "SUCCEEDED"), True),
+                             ((1, "SUCCEEDED"), True),
+                             ((0, "NONE"), False)):
+            mgr, loop = _manager(answer)
+            try:
+                got = mgr._smp_verified(PEER)
+                assert got is want, (answer, got)
+            finally:
+                mgr._call_control.shutdown()
+                loop.close()
+
+    def test_display_state_cannot_stand_in_for_the_engine(self):
+        # The double's _smp_reported says verified; the engine says no.
+        mgr, loop = _manager((False, "FAILED"))
+        try:
+            assert mgr._smp_verified(PEER) is False
+        finally:
+            mgr._call_control.shutdown()
+            loop.close()
 
 
 class TestBothCallDirectionsAreGated:
+    """Run each direction with an encrypted but unverified peer."""
 
-    def test_outbound_calls_check_it(self):
-        assert "_smp_verified" in _src(V.VoiceCallManager.start_call)
+    @pytest.fixture
+    def unverified(self, monkeypatch):
+        mgr, loop = _manager((False, "NONE"))
+        monkeypatch.setitem(V._HOST, "voice_available", lambda: (True, ""))
+        monkeypatch.setattr(V, "kem_provider", lambda: None)
+        mgr._otr_material = lambda peer: (b"b", "AA" * 64, "BB" * 64)
+        mgr.signals = []
+        mgr._signal = lambda peer, verb, fields=(): mgr.signals.append(
+            (verb, tuple(fields))) or True
+        yield mgr, loop
+        mgr._call_control.shutdown()
+        loop.close()
 
-    def test_outbound_checks_before_deriving_anything(self):
-        src = _src(V.VoiceCallManager.start_call)
-        assert src.index("_smp_verified") < src.index("call_id"), (
+    def test_outbound_calls_check_it(self, unverified):
+        mgr, loop = unverified
+        assert loop.run_until_complete(mgr.start_call(PEER)) is False
+        assert mgr.last_refusal == "unverified"
+
+    def test_outbound_checks_before_deriving_anything(self, unverified):
+        mgr, loop = unverified
+        loop.run_until_complete(mgr.start_call(PEER))
+        assert mgr.signals == [], "an INVITE left for an unverified peer"
+        assert PEER not in mgr._calls, (
             "key material is derived before the authorisation check")
+        assert PEER not in mgr._last_invite
 
-    def test_inbound_invites_check_it(self):
-        handler = None
-        for name in dir(V.VoiceCallManager):
-            if "invite" in name.lower():
-                fn = getattr(V.VoiceCallManager, name, None)
-                if fn is not None and callable(fn):
-                    try:
-                        if "_smp_verified" in _src(fn):
-                            handler = name
-                            break
-                    except (OSError, TypeError):
-                        continue
-        assert handler, "no inbound call handler consults _smp_verified"
+    @staticmethod
+    def _invite(mgr, loop):
+        call_id = bytes(range(16))
+        fields = (call_id.hex(), "A" * 516,
+                  "11" * V.VoiceKeyExchange.PUB_LEN, "22" * V.MLKEM_EK_LEN)
+        loop.run_until_complete(mgr._on_invite(PEER, fields))
+        return call_id
 
-    def test_an_unverified_inbound_call_is_rejected_not_ignored(self):
-        src = _src(V)
-        i = src.index('if not self._smp_verified(peer):\n            self._signal')
-        window = src[i:i + 400]
-        assert '"REJECT"' in window
-        assert "unverified" in window
+    def test_inbound_invites_check_it(self, unverified):
+        mgr, loop = unverified
+        self._invite(mgr, loop)
+        assert PEER not in mgr._calls
+
+    def test_an_unverified_inbound_call_is_rejected_not_ignored(self,
+                                                               unverified):
+        mgr, loop = unverified
+        call_id = self._invite(mgr, loop)
+        assert mgr.signals == [("REJECT", (call_id.hex(), "unverified"))]
 
 
 class TestTofuDoesNotAuthorise:
