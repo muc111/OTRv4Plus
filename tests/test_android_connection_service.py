@@ -355,7 +355,8 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
 
     def test_the_build_that_waits_for_log_in_is_told_apart(self):
         gradle = _read(ROOT, "android", "app", "build.gradle.kts")
-        assert "versionCode = 190" in gradle and "rc.189+core" in gradle
+        code = int(re.search(r"versionCode = (\d+)", gradle).group(1))
+        assert code >= 190
 
     def test_log_in_needs_the_password_typed(self, service):
         """Owner, 2026-10-28: "it should sign in only after username and

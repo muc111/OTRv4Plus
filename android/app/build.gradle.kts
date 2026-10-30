@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 190
+        versionCode = 191
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -91,7 +91,9 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        versionName = "0.7.0-experimental.rc.189+core.$rustCoreVersion"
+        // "untested" (owner, 2026-10-30): main holds rc.189, tested on phones
+        // and a laptop; every build after it says so until it is tested too.
+        versionName = "0.7.0-experimental.rc.190-untested+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -314,6 +316,14 @@ chaquopy {
             // correct outcome -- an APK without the crypto core is not this
             // app -- but it is an unhelpful sentence, so: build the wheels.
             options("--find-links", project.file("wheels").absolutePath)
+            // -- HASH-CHECKED. Only the files in wheels/ are installed: the Rust
+            // core built by CI, and every third-party file -- the four that
+            // ship and slixmpp's build tools -- downloaded by
+            // tools/fetch-apk-python.sh with pip --require-hashes against
+            // python-lock.txt. A file a compromised index served instead fails
+            // that download; with --no-index nothing is fetched here.
+            // Locally: run tools/fetch-apk-python.sh once before ./gradlew.
+            options("--no-index")
 
             // -- PINNED. Every third-party package below names an exact version:
             // the ones CI resolved and tested at 0.6.0-experimental. Unpinned,

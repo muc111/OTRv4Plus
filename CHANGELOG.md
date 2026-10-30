@@ -4,6 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Unreleased (dev) — after the tested release, 2026-10-30
+
+`main` holds the build tested on phones and a laptop: **rc.189**
+(versionCode 190), **desktop 0.14.11**, commit `359dadb`. Every build after
+it is marked **untested** in its version name until it is tested too. This
+starts at **rc.190-untested** (versionCode 191).
+
+- **Hardened: the APK's Python packages are checked by SHA-256.** Every
+  third-party file the APK's Python is built from is named by hash in
+  `android/app/python-lock.txt` and downloaded with `pip --require-hashes`.
+  The build installs from nothing else (docs/SECURITY_ISSUES.md S1).
+
 ## Unreleased (dev) — audit and hardening pass, 2026-10-26
 
 Dev builds from 2026-10-27 are **rc.187** (versionCode 188) and **desktop

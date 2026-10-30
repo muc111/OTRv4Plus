@@ -797,6 +797,46 @@ marked development/test only.
 
 ---
 
+## S1 — The APK's Python packages were pinned by version, not by content
+
+**Status: RESOLVED, 2026-10-30** (owner's question on Python's exposure to
+poisoned packages).
+
+### What was wrong
+
+The APK's four third-party packages (PySocks, slixmpp, pyasn1,
+pyasn1-modules) were pinned by version only, and Chaquopy's pip fetched them,
+and slixmpp's build tools, from the index on each build. An index serving a
+different file under the same version would have reached the APK unnoticed.
+The Qubes build already checked its wheels by SHA-256.
+
+### The fix
+
+`android/app/python-lock.txt` names every third-party file by SHA-256: the
+four that ship and the tools slixmpp's sdist is built with.
+`tools/fetch-apk-python.sh` downloads them with `pip --require-hashes` into
+`android/app/wheels`, and every CI job that builds runs it first. The Gradle
+pip block sets `--no-index`, so Chaquopy installs only from that directory.
+Versions are at least two weeks old when pinned.
+
+### Regression gate
+
+`tests/test_apk_python_hashes.py`: `TestTheLock` (each shipped package locked
+at the installed version, every entry a full SHA-256, the build tools locked),
+`TestNothingElseCanBeInstalled` (`--no-index`, `--require-hashes`, the fetch
+before Gradle in every building job, the Rust core checked by name), and
+`test_a_file_that_does_not_match_the_lock_is_refused` (with
+`OTR_NETWORK_TESTS=1`: pip refuses a mismatching file).
+
+### Residuals
+
+- A hash only proves the file is the one pinned; a release that was already
+  malicious when pinned is not caught. The two-week age rule narrows this.
+- otrv4_core is built in CI from this repository and is not in the lock; the
+  Rust crates it uses are pinned by Cargo.lock checksums.
+- The desktop's and Termux's Python packages are separate (the Qubes build is
+  locked; a Termux install uses pip as the user runs it).
+
 ## P1 — Contact pins: never checked by the apps, and kept only for one run
 
 **Status: RESOLVED, 2026-10-27** (found by the audit of 2026-10-26,
