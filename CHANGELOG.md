@@ -41,6 +41,10 @@ starts at **rc.190-untested** (versionCode 191).
     byte-for-byte HPKE cross-check); phone build **rc.192-untested**
     (versionCode 193).
   - **pyo3 0.30.1.**
+  - **Hardened:** the new versions' `zeroize` feature is on for `aes-gcm`,
+    `hmac`, `sha2`, `sha3` and `shake`, in the core and MLS: cipher and
+    hash states are wiped when dropped. The versions they replace offered
+    no such option.
   - Not taken: `rand` 0.10, `rand_core` 0.10, `getrandom` 0.4 and
     `num-bigint` 0.5. They are the entropy source for every key, and the
     curve crates (`x448` 0.6 and others) take `rand_core` 0.6 generators,
