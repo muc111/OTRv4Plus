@@ -256,21 +256,38 @@ class TestItNeverPromisesWhatItCannotDo:
 
 
 class TestTheInlineFormIsDiscouraged:
+    """Run, not read (Phase 5): /smp-secret is dispatched on a client whose
+    store and prompt are recorded; the warning itself runs for real."""
 
-    def test_a_bare_command_prompts_instead_of_storing(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_smp)
-        i = src.index('"/smp-secret", "/smpsecret"')
-        assert "_request_smp_secret" in src[i:i + 400], (
+    def _client(self):
+        c = bare_client(xmpp.OTRv4PlusXMPP)
+        c._groups = None
+        c.asked, c.stored = [], []
+        c._request_smp_secret = lambda peer: c.asked.append(peer)
+        c.store_smp_secret = lambda peer, secret: c.stored.append((peer, secret))
+        return c
+
+    def test_a_bare_command_prompts_instead_of_storing(self, capsys):
+        c = self._client()
+        assert c._dispatch_smp("bob@x", "/smp-secret") is True
+        assert c.asked == ["bob@x"] and c.stored == [], (
             "/smp-secret with no argument does not offer the hidden prompt")
 
-    def test_the_inline_form_warns_that_it_was_echoed(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_smp)
-        assert src.count("_warn_inline_secret") >= 2, (
-            "not every inline passphrase path warns")
+    @pytest.mark.parametrize("line,stored", [
+        ("/smp-secret a long passphrase", ("bob@x", "a long passphrase")),
+        ("/smp-secret carol@x a long passphrase", ("carol@x", "a long passphrase")),
+    ])
+    def test_the_inline_form_warns_that_it_was_echoed(self, capsys, line, stored):
+        c = self._client()
+        c._dispatch_smp("bob@x", line)
+        assert c.stored == [stored]
+        out = capsys.readouterr().out.lower()
+        assert "typed in the clear" in out, "an inline passphrase path does not warn"
 
-    def test_the_warning_says_where_it_ended_up(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._warn_inline_secret)
-        low = src.lower()
+    def test_the_warning_says_where_it_ended_up(self, capsys):
+        c = self._client()
+        c._warn_inline_secret()
+        low = capsys.readouterr().out.lower()
         assert "scrollback" in low and "capture" in low, (
             "the warning must name the log file, which is where this actually "
             "bit")
