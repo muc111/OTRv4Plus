@@ -265,3 +265,37 @@ class TestNothingUnverifiedReadsAsVerified:
     def test_the_v2_requirement_is_stated(self, notes):
         assert "Both phones need rc.159 or newer." in notes
         assert "still chats with this one, using the previous ratchet" not in notes
+
+
+class TestTheTestedReleaseStays:
+    """Owner, 2026-10-30: the tested release from main stays downloadable
+    while dev builds come and go."""
+
+    SCRIPT = ".github/scripts/publish-experimental-apk.sh"
+
+    def _src(self):
+        import os
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return open(os.path.join(root, self.SCRIPT)).read()
+
+    def test_a_build_of_main_gets_its_own_tag_and_is_latest(self):
+        s = self._src()
+        main = s[s.index('if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then'):]
+        main = main[:main.index("fi\n")]
+        assert 'TAG="android-tested-v${VERSION}"' in main
+        assert "RELEASE_KIND=(--latest)" in s
+
+    def test_dev_builds_never_remove_it(self):
+        import re
+        s = self._src()
+        dev = re.search(r"FAMILY='(\^android-\(v\|experimental\$\))'", s).group(1)
+        assert not re.search(dev, "android-tested-v0.7.0-experimental.rc.189")
+        assert re.search(dev, "android-v0.7.0-experimental.rc.191-untested")
+
+    def test_a_tested_build_removes_only_older_tested_ones(self):
+        import re
+        s = self._src()
+        tested = re.search(r"FAMILY='(\^android-tested-v)'", s).group(1)
+        assert re.search(tested, "android-tested-v0.7.0-experimental.rc.189")
+        assert not re.search(tested, "android-v0.7.0-experimental.rc.191-untested")
+        assert 'grep -E "$FAMILY"' in s

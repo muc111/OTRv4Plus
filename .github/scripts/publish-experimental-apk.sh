@@ -82,6 +82,17 @@ case "$VERSION" in
     *.rc.*) TAG="android-v${VERSION}"; KIND="release candidate" ;;
     *)      TAG="android-experimental"; KIND="development build" ;;
 esac
+# A build of `main` is the one tested on phones and a laptop (owner,
+# 2026-10-30: keep it "accessible for people who clone from the main branch
+# while we test the dev"). It gets its own tag, is the repository's Latest
+# release, and only ever replaces an earlier tested release; dev builds never
+# remove it.
+TESTED=false
+if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
+    TESTED=true
+    TAG="android-tested-v${VERSION}"
+    KIND="tested build, from main"
+fi
 
 # The screens job's images (made-up data), when it produced them. Attached to
 # the release and shown in its notes; a release without them is still a
@@ -411,10 +422,15 @@ if gh release view "$TAG" >/dev/null 2>&1; then
     gh release delete "$TAG" --yes --cleanup-tag
 fi
 
+if [ "$TESTED" = true ]; then
+    RELEASE_KIND=(--latest)
+else
+    RELEASE_KIND=(--prerelease)
+fi
 gh release create "$TAG" "$ROUT" "$OUT" "$MANIFEST" "${SHOTS[@]}" \
     --title "Android ${VERSION} — ${KIND} (experimental)" \
     --notes-file notes.md \
-    --prerelease \
+    "${RELEASE_KIND[@]}" \
     --target "$GITHUB_SHA"
 
 echo "published $TAG: $ROUT ($RSHA256), $OUT ($SHA256)"
@@ -425,8 +441,15 @@ echo "published $TAG: $ROUT ($RSHA256), $OUT ($SHA256)"
 # upload failed -- every OTHER Android release (android-v*, and the rolling
 # android-experimental) is deleted together with its tag. Only Android APK
 # releases are touched; nothing else on the page is.
+# The tested release from main is a family of its own: a dev build never
+# removes it, and a new tested build removes only the older tested one.
+if [ "$TESTED" = true ]; then
+    FAMILY='^android-tested-v'
+else
+    FAMILY='^android-(v|experimental$)'
+fi
 gh release list --limit 200 --json tagName --jq '.[].tagName' |
-    grep -E '^android-(v|experimental$)' |
+    grep -E "$FAMILY" |
     while read -r old; do
         if [ "$old" != "$TAG" ]; then
             echo "removing superseded release $old"
