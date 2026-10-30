@@ -553,7 +553,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
     // Never package the TUI, the IRC client or the WeeChat plugin. (The
     // test-only SMP shim, which re-implements the SMP KDF in pure Python,
     // lives in tests/, which is never copied.)
-    exclude("otrv4plus_tui.py", "otrv4plus_irc.py", "weechat_otrv4plus.py")
+    exclude("otrv4plus_tui.py", "otrv4plus_irc.py", "otrv4plus_irc_*.py", "weechat_otrv4plus.py")
 }
 
 tasks.named("preBuild") { dependsOn(syncPythonSources) }

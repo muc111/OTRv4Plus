@@ -39,7 +39,7 @@ REQUIRED_APP_MODULES = ("otrv4_.py", "otrv4plus_xmpp.py", "otrv4plus_voice.py",
 #: Never in the APK: terminal-only programs, test scaffolding, the retired
 #: pre-Rust engine, and anything that would be a second implementation.
 FORBIDDEN_APP = re.compile(
-    r"(^|/)(otrv4plus_tui|otrv4plus_irc|weechat_otrv4plus|smp_engine_compat|otrv4_testlib|"
+    r"(^|/)(otrv4plus_tui|otrv4plus_irc(_[a-z]+)?|weechat_otrv4plus|smp_engine_compat|otrv4_testlib|"
     r"conftest|test_[^/]*|otrv4plus-1)\.pyc?$|(^|/)tests/|(^|/)\.attic/")
 
 #: Python distributions the APK must carry, and ones it must not.

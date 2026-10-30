@@ -34,12 +34,16 @@ def client_source() -> str:
 
 def irc_and_engine_source() -> str:
     """What otrv4+.py held before the IRC client moved out: the engine
-    (otrv4+.py) and the IRC client (otrv4plus_irc.py). For the IRC tests
-    that scan the whole program rather than one method."""
+    (otrv4+.py) and the IRC client (otrv4plus_irc.py and the
+    otrv4plus_irc_*.py modules it is mixed from). For the IRC tests that
+    scan the whole program rather than one method."""
+    import glob
     import os
     client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
+    names = ["otrv4+.py", "otrv4plus_irc.py"] + sorted(
+        os.path.basename(p) for p in glob.glob(os.path.join(client, "otrv4plus_irc_*.py")))
     return "\n".join(open(os.path.join(client, name), encoding="utf-8").read()
-                     for name in ("otrv4+.py", "otrv4plus_irc.py"))
+                     for name in names)
 
 
 def open_irc_and_engine(*_args, **_kwargs):
