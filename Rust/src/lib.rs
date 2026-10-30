@@ -112,6 +112,9 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(identity::create_sealed_identity,  m)?)?;
     m.add_function(wrap_pyfunction!(identity::identity_record_version, m)?)?;
     m.add_class::<at_rest::FileDek>()?;
+    m.add_function(wrap_pyfunction!(at_rest::set_key_wrapping_key,   m)?)?;
+    m.add_function(wrap_pyfunction!(at_rest::clear_key_wrapping_key, m)?)?;
+    m.add_function(wrap_pyfunction!(at_rest::key_wrapping_active,    m)?)?;
     m.add_class::<at_rest::SmpSecretStore>()?;
     m.add_function(wrap_pyfunction!(at_rest::create_sealed_identity_under, m)?)?;
     m.add_function(wrap_pyfunction!(at_rest::unseal_identity_under,        m)?)?;

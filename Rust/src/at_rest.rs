@@ -58,17 +58,112 @@ const TAG_LEN: usize = 16;
 
 // ── key files ────────────────────────────────────────────────────────────────
 
-/// Read a 32-byte key file. `Ok(None)` when it does not exist.
+// ── key wrapping (crypto-erase) ──────────────────────────────────────────────
+//
+// With a key-encryption key (KEK) installed, every key file is written
+// WRAPPED: `WRAP_MAGIC || nonce(12) || AES-256-GCM(KEK, key) || tag(16)`. The
+// KEK comes from the platform key store (TPM, Secure Enclave, Keychain, Secret
+// Service -- `android_bridge.key_custody`) and lives in this process only in
+// Rust memory. Deleting it from the key store makes every wrapped key file,
+// and so everything sealed under those keys, unopenable: the overwrite of the
+// files then only has to be best effort, which on flash it is.
+//
+// A plain (unwrapped) 32-byte key file is still read, and is rewrapped in
+// place on first read while a KEK is installed. A wrapped file is never read
+// without the KEK: that is an error, not a fallback.
+
+const WRAP_MAGIC: &[u8; 8] = b"OTRVKW1\0";
+const WRAPPED_LEN: usize = 8 + NONCE_LEN + KEY_LEN + TAG_LEN;
+
+static KEK: std::sync::Mutex<Option<SecretBytes<KEY_LEN>>> = std::sync::Mutex::new(None);
+
+fn kek_cipher() -> Result<Option<Aes256Gcm>, String> {
+    let guard = KEK.lock().map_err(|_| "key-wrapping key lock poisoned".to_string())?;
+    Ok(match guard.as_ref() {
+        Some(k) => Some(
+            Aes256Gcm::new_from_slice(k.expose_slice())
+                .map_err(|_| "invalid key-wrapping key".to_string())?,
+        ),
+        None => None,
+    })
+}
+
+fn wrap_key(cipher: &Aes256Gcm, key: &[u8]) -> Result<Vec<u8>, String> {
+    let mut nonce = [0u8; NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce);
+    let ct = cipher
+        .encrypt(&Nonce::from(nonce), Payload { msg: key, aad: WRAP_MAGIC })
+        .map_err(|_| "key wrap failed".to_string())?;
+    let mut out = Vec::with_capacity(WRAPPED_LEN);
+    out.extend_from_slice(WRAP_MAGIC);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ct);
+    Ok(out)
+}
+
+fn unwrap_key(raw: &[u8]) -> Result<SecretBytes<KEY_LEN>, String> {
+    let cipher = kek_cipher()?.ok_or_else(|| {
+        "key file is wrapped by the platform key store, and no key-wrapping key \
+         is installed (it was deleted, or the key store is unavailable)"
+            .to_string()
+    })?;
+    let nonce: [u8; NONCE_LEN] = raw[8..8 + NONCE_LEN].try_into().expect("length checked");
+    let key = Zeroizing::new(
+        cipher
+            .decrypt(&Nonce::from(nonce), Payload { msg: &raw[8 + NONCE_LEN..], aad: WRAP_MAGIC })
+            .map_err(|_| "wrapped key file does not open under this key-wrapping key".to_string())?,
+    );
+    SecretBytes::from_slice(&key).ok_or_else(|| "wrapped key has the wrong length".to_string())
+}
+
+/// Install the key-wrapping key. Copied into Rust; a `bytearray` source is
+/// zeroed. Exactly 32 bytes.
+#[pyfunction]
+pub fn set_key_wrapping_key(kek: &Bound<'_, PyAny>) -> PyResult<()> {
+    let key = if let Ok(ba) = kek.cast::<PyByteArray>() {
+        let copy = Zeroizing::new(ba.to_vec());
+        for i in 0..ba.len() {
+            ba.set_item(i, 0u8)?;
+        }
+        SecretBytes::<KEY_LEN>::from_slice(&copy)
+    } else {
+        let b: &[u8] = kek.extract()?;
+        SecretBytes::<KEY_LEN>::from_slice(b)
+    }
+    .ok_or_else(|| PyValueError::new_err("key-wrapping key must be 32 bytes"))?;
+    *KEK.lock().map_err(|_| PyRuntimeError::new_err("lock poisoned"))? = Some(key);
+    Ok(())
+}
+
+/// Forget the key-wrapping key (zeroized on drop). Wrapped key files cannot
+/// be opened afterwards in this process.
+#[pyfunction]
+pub fn clear_key_wrapping_key() -> PyResult<()> {
+    *KEK.lock().map_err(|_| PyRuntimeError::new_err("lock poisoned"))? = None;
+    Ok(())
+}
+
+/// True while a key-wrapping key is installed.
+#[pyfunction]
+pub fn key_wrapping_active() -> bool {
+    KEK.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
+/// Read a key file: a plain 32-byte key, or a wrapped one. `Ok(None)` when it
+/// does not exist.
 ///
-/// A file of any other length is an error, never padded or replaced: a key
-/// file that has been truncated may still be the only way to open what it
-/// protects, and regenerating it would destroy that silently.
+/// Any other length is an error, never padded or replaced: a key file that
+/// has been truncated may still be the only way to open what it protects, and
+/// regenerating it would destroy that silently.
 fn read_key_file(path: &Path) -> Result<Option<SecretBytes<KEY_LEN>>, String> {
     let raw = match fs::read(path) {
         Ok(v) => Zeroizing::new(v),
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("key file unreadable: {:?}", e.kind())),
     };
+    if raw.len() == WRAPPED_LEN && &raw[..8] == WRAP_MAGIC {
+        return unwrap_key(&raw).map(Some);
+    }
     if raw.len() != KEY_LEN {
         return Err(format!(
             "key file is {} bytes, expected {} -- refusing to replace it, \
@@ -77,7 +172,14 @@ fn read_key_file(path: &Path) -> Result<Option<SecretBytes<KEY_LEN>>, String> {
             KEY_LEN
         ));
     }
-    Ok(SecretBytes::from_slice(&raw))
+    let key = SecretBytes::from_slice(&raw).expect("length checked");
+    // A plain key file while a KEK is installed: wrap it in place, so the
+    // key stops depending on the file's own erasure.
+    if let Some(cipher) = kek_cipher()? {
+        let wrapped = wrap_key(&cipher, key.expose_slice())?;
+        write_atomically(path, &wrapped).map_err(|e| format!("cannot rewrap key file: {:?}", e.kind()))?;
+    }
+    Ok(Some(key))
 }
 
 /// Create a 32-byte key file, O_EXCL and 0600 from the first byte.
@@ -103,8 +205,12 @@ fn create_key_file(path: &Path) -> std::io::Result<SecretBytes<KEY_LEN>> {
     }
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     OsRng.fill_bytes(&mut key[..]);
+    let on_disk: Zeroizing<Vec<u8>> = match kek_cipher().map_err(std::io::Error::other)? {
+        Some(cipher) => Zeroizing::new(wrap_key(&cipher, &key[..]).map_err(std::io::Error::other)?),
+        None => Zeroizing::new(key.to_vec()),
+    };
     let mut f = opts.open(path)?;
-    f.write_all(&key[..])?;
+    f.write_all(&on_disk)?;
     f.sync_all()?;
     Ok(SecretBytes::new(*key))
 }
@@ -665,6 +771,86 @@ impl SmpSecretStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The KEK is process-wide; tests that install one take this lock.
+    static KEK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn install(k: [u8; KEY_LEN]) {
+        *KEK.lock().unwrap() = Some(SecretBytes::new(k));
+    }
+
+    fn uninstall() {
+        *KEK.lock().unwrap() = None;
+    }
+
+    fn tmp_key_path(tag: &str) -> PathBuf {
+        let mut r = [0u8; 8];
+        OsRng.fill_bytes(&mut r);
+        std::env::temp_dir().join(format!("kek-{}-{}", tag, r.iter().map(|b| format!("{:02x}", b)).collect::<String>())).join("k.dek")
+    }
+
+    #[test]
+    fn with_a_kek_the_key_file_holds_only_the_wrapped_key() {
+        let _g = KEK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        install([7u8; KEY_LEN]);
+        let path = tmp_key_path("wrap");
+        let key = create_key_file(&path).unwrap();
+        let on_disk = fs::read(&path).unwrap();
+        assert_eq!(on_disk.len(), WRAPPED_LEN);
+        assert_eq!(&on_disk[..8], WRAP_MAGIC);
+        assert!(!on_disk.windows(KEY_LEN).any(|w| w == key.expose_slice()), "the raw key is on disk");
+        let back = read_key_file(&path).unwrap().unwrap();
+        assert_eq!(back.expose_slice(), key.expose_slice());
+        uninstall();
+    }
+
+    #[test]
+    fn deleting_the_kek_makes_the_wrapped_key_unopenable() {
+        let _g = KEK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        install([9u8; KEY_LEN]);
+        let path = tmp_key_path("erase");
+        create_key_file(&path).unwrap();
+        uninstall();
+        let err = read_key_file(&path).err().expect("opened without the KEK");
+        assert!(err.contains("no key-wrapping key"), "{}", err);
+        // A different KEK does not open it either.
+        install([10u8; KEY_LEN]);
+        assert!(read_key_file(&path).is_err(), "opened under another KEK");
+        // And it was not replaced by a fresh key.
+        assert_eq!(fs::read(&path).unwrap().len(), WRAPPED_LEN);
+        uninstall();
+    }
+
+    #[test]
+    fn a_plain_key_file_is_rewrapped_in_place_once_a_kek_is_installed() {
+        let _g = KEK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        uninstall();
+        let path = tmp_key_path("migrate");
+        let key = create_key_file(&path).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), key.expose_slice(), "no KEK: the plain format is kept");
+        install([11u8; KEY_LEN]);
+        let back = read_key_file(&path).unwrap().unwrap();
+        assert_eq!(back.expose_slice(), key.expose_slice());
+        let on_disk = fs::read(&path).unwrap();
+        assert_eq!(&on_disk[..8], WRAP_MAGIC, "the plain key was left on disk");
+        uninstall();
+        assert!(read_key_file(&path).is_err());
+    }
+
+    #[test]
+    fn a_tampered_wrapped_key_is_refused_not_replaced() {
+        let _g = KEK_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        install([12u8; KEY_LEN]);
+        let path = tmp_key_path("tamper");
+        create_key_file(&path).unwrap();
+        let mut raw = fs::read(&path).unwrap();
+        raw[WRAPPED_LEN - 1] ^= 1;
+        fs::write(&path, &raw).unwrap();
+        assert!(read_key_file(&path).is_err());
+        assert!(load_or_create_key(&path).is_err(), "a tampered key was replaced with a new one");
+        assert_eq!(fs::read(&path).unwrap(), raw);
+        uninstall();
+    }
 
     #[test]
     fn legacy_json_round_trips_escapes_and_unicode() {
