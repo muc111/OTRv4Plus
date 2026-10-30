@@ -6,7 +6,9 @@
 # android/app/wheels, and build.gradle.kts gives Chaquopy's pip --no-index,
 # so a file that is not exactly one of these cannot reach the APK.
 # The first four ship; the rest only build slixmpp from its sdist.
-# Versions are at least two weeks old when pinned. Changing one is a diff.
+# Versions are at least two weeks old when pinned, unless the newer one fixes
+# a published advisory (CVE, GHSA, RUSTSEC) or replaces a yanked release.
+# Changing one is a diff.
 
 PySocks==1.7.1 \
     --hash=sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5 \

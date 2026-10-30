@@ -417,7 +417,7 @@ XEP-0045 room join (an instant room, nick = localpart), `/group` commands and
 with `--features mls` (Rust/build.sh does). Tested with two terminal clients
 and one `OtrApp` over real OTRv4+ DAKEs in `tests/test_termux_groups.py`;
 Rust: `a_standalone_proposal_is_queued_then_committed`,
-`a_tampered_copy_is_refused_and_spends_the_generation`.
+`a_tampered_copy_is_refused_and_the_genuine_one_still_arrives`.
 
 ### Still open
 

@@ -817,7 +817,10 @@ four that ship and the tools slixmpp's sdist is built with.
 `tools/fetch-apk-python.sh` downloads them with `pip --require-hashes` into
 `android/app/wheels`, and every CI job that builds runs it first. The Gradle
 pip block sets `--no-index`, so Chaquopy installs only from that directory.
-Versions are at least two weeks old when pinned.
+Versions are at least two weeks old when pinned, with one exception (owner,
+2026-10-30): a release that fixes a published advisory (CVE, GHSA, RUSTSEC)
+or replaces a yanked release is taken at once. The same rule applies to the
+Rust lockfiles.
 
 ### Regression gate
 
@@ -831,7 +834,8 @@ before Gradle in every building job, the Rust core checked by name), and
 ### Residuals
 
 - A hash only proves the file is the one pinned; a release that was already
-  malicious when pinned is not caught. The two-week age rule narrows this.
+  malicious when pinned is not caught. The two-week age rule narrows this,
+  except for security fixes, which are taken at once.
 - otrv4_core is built in CI from this repository and is not in the lock; the
   Rust crates it uses are pinned by Cargo.lock checksums.
 - The desktop's and Termux's Python packages are separate (the Qubes build is

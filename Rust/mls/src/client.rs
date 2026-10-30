@@ -1363,13 +1363,14 @@ mod storage_tests {
         }
     }
 
-    /// A tampered copy is refused -- and, as OpenMLS's secret tree deletes a
-    /// generation's key when it is first used, the GENUINE message arriving
-    /// after it is refused too. Fail closed, never a wrong acceptance; the
-    /// effect is that of the relay dropping the message, which a relay can
-    /// do anyway. Recorded here so a change to it is deliberate.
+    /// A tampered copy is refused, and the GENUINE message arriving after it
+    /// is still delivered. Up to openmls 0.9.1 the rejected copy spent the
+    /// generation's key, so the genuine message was refused too
+    /// (GHSA-p276-g3f3-wwgh: "Rejected private messages can advance the
+    /// sender ratchet and block later messages from that sender"), and this
+    /// test recorded that. 0.9.2 fixes it; the change is deliberate.
     #[test]
-    fn a_tampered_copy_is_refused_and_spends_the_generation() {
+    fn a_tampered_copy_is_refused_and_the_genuine_one_still_arrives() {
         let mut a = MlsClient::new(b"alice");
         let mut b = MlsClient::new(b"bob");
         a.create_group(b"g").unwrap();
@@ -1385,7 +1386,10 @@ mod storage_tests {
         let i = tampered.len() - 10;
         tampered[i] ^= 0x01;
         assert!(a.process(b"g", &tampered).is_err(), "a tampered message was accepted");
-        assert!(a.process(b"g", &genuine).is_err());
+        match a.process(b"g", &genuine).unwrap() {
+            Event::Application { plaintext, .. } => assert_eq!(&plaintext[..], b"first"),
+            _ => panic!("expected the genuine application message"),
+        }
 
         // The group is unharmed: the next message decrypts.
         let next = b.encrypt(b"g", b"second").unwrap();

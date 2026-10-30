@@ -18,10 +18,19 @@ starts at **rc.190-untested** (versionCode 191).
   BitTorrent client is compiled out (`-DWITH_TORRENTS=OFF`); the app uses
   SAM only. Every `i2pd.conf` key the app writes was checked against
   3.0.0.1.
-- **Updated: Rust crates, within each version range.** Only releases at
-  least two weeks old were taken, which leaves `libc` 0.2.191; the
-  `audit` and `fuzz` lockfiles now match the core's versions (they still
-  had `crypto-bigint` 0.5). Newer major versions are listed, not taken.
+- **Updated: Rust crates, within each version range.** Releases at least
+  two weeks old are taken, and security fixes at once whatever their age
+  (owner, 2026-10-30):
+  - **openmls 0.9.2**, for two advisories in group messaging:
+    GHSA-p276-g3f3-wwgh (a rejected private message advanced the sender's
+    ratchet and blocked that sender's next message) and GHSA-94v4-rg25-x625
+    (removed members could reappear after an external commit). A tampered
+    group message no longer costs the genuine one.
+  - **crypto-bigint 0.7.9**: 0.7.8 was yanked (a semver break, not a
+    security bug); the RUSTSEC-2026-0387 fix is in every 0.7.6+.
+  - `libc` 0.2.191; the `audit` and `fuzz` lockfiles now match the core
+    (they still had `crypto-bigint` 0.5).
+  - Newer major versions are listed in the notes, not taken.
 - **Hardened: the APK's Python packages are checked by SHA-256.** Every
   third-party file the APK's Python is built from is named by hash in
   `android/app/python-lock.txt` and downloaded with `pip --require-hashes`.
