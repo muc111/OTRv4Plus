@@ -96,13 +96,18 @@ class TestTheClientTurnsItOn:
         src = inspect.getsource(xmpp.OTRv4PlusXMPP._mask_next_input)
         assert "set_input_mask" in src
 
-    def test_the_plain_reader_uses_getpass_for_it(self):
-        src = inspect.getsource(xmpp._input_loop)
-        assert "getpass" in src, "the non-TUI reader still echoes the passphrase"
-        assert "_secret_request" in src, (
-            "the hidden read is driven by the display mask rather than by the "
-            "explicit request; a stray display state must not be able to "
-            "start a hidden read")
+    def test_the_plain_reader_uses_getpass_for_it(self, monkeypatch):
+        """Run, not read (Phase 5): with a passphrase requested the line is
+        read by getpass; the display mask alone does not start a hidden read."""
+        import input_loop_double as D
+        asked = D.LoopClient(secret_request="bob@example.i2p")
+        seen = D.run(xmpp, monkeypatch, asked,
+                     [("getpass", "a passphrase\n", lambda c: setattr(c, "_secret_request", None)),
+                      ("readline", "", None)])
+        assert seen[0][0] == "getpass" and "passphrase" in seen[0][1]
+        stray = D.LoopClient()
+        stray._mask_input = True          # a display state, not a request
+        D.run(xmpp, monkeypatch, stray, [("readline", "", None)])
 
 
 class TestTheTerminalItselfStopsEchoing:
