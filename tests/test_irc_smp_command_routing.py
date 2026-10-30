@@ -305,10 +305,15 @@ class TestOnlyOneDispatcherOwnsTheCommand:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
-        base = next(n for n in tree.body
-                    if isinstance(n, ast.ClassDef) and n.name == "OTRv4IRCClient")
-        fn = next(n for n in base.body
-                  if isinstance(n, ast.FunctionDef) and n.name == "handle_command")
+        # OTRv4IRCClient or one of the mixins it is built from (the Phase 3
+        # split moved handle_command into IrcUiMixin): the base, whichever
+        # class of it holds the method.
+        import otrv4plus_irc as irc
+        bases = {c.__name__ for c in irc.OTRv4IRCClient.__mro__}
+        fn = next(m for n in tree.body
+                  if isinstance(n, ast.ClassDef) and n.name in bases
+                  for m in n.body
+                  if isinstance(m, ast.FunctionDef) and m.name == "handle_command")
         src = ast.unparse(fn)
         for claim in ("cmd == 'smp'", "cmd in ('smp'", "'smp', 'verify'"):
             assert claim not in src, (

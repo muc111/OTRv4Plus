@@ -152,3 +152,14 @@ def conversation_screen_source() -> str:
                       "android", "ui")
     return "\n".join(open(os.path.join(ui, n), encoding="utf-8").read()
                      for n in CONVERSATION_SCREEN_PARTS)
+
+
+def irc_source() -> str:
+    """The IRC client's source: otrv4plus_irc.py and the otrv4plus_irc_*.py
+    modules it is mixed from, one file after another."""
+    import glob
+    import os
+    client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
+    paths = [os.path.join(client, "otrv4plus_irc.py")] + sorted(
+        glob.glob(os.path.join(client, "otrv4plus_irc_*.py")))
+    return "\n".join(open(p, encoding="utf-8").read() for p in paths)

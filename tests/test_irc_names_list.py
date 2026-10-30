@@ -16,7 +16,7 @@ authenticate, mark trusted, satisfy TOFU, stand in for SMP, or enable voice
 -- and TestIdentificationIsNotAuthentication is what fails if it starts to.
 """
 
-from source_of import voice_source  # noqa: E402
+from source_of import irc_and_engine_source, irc_source, voice_source  # noqa: E402
 import ast
 import inspect
 import os
@@ -282,7 +282,7 @@ class TestClientIdentification:
         assert "27 Club" in irc.TwentySevenClubNick.real_name(nick)
 
     def test_the_registration_line_sends_that_realname(self):
-        src = inspect.getsource(irc)
+        src = irc_and_engine_source()
         assert 'USER {self .nick } 0 * :{self .realname }' in src
 
     def test_ctcp_version_is_still_refused(self):
@@ -300,7 +300,10 @@ class _Harness:
     """Only the surface the NAMES/WHO handlers touch."""
 
     handle_numeric_reply = irc.OTRv4IRCClient.handle_numeric_reply
-    locals().update({n: f for n, f in vars(irc.OTRv4IRCClient).items()
+    # Across the MRO: the handlers live in the IrcProtocolMixin since the
+    # Phase 3 split (otrv4plus_irc_protocol.py).
+    locals().update({n: f for c in reversed(irc.OTRv4IRCClient.__mro__)
+                     for n, f in vars(c).items()
                      if n.startswith(("_rpl_", "_on_chat", "_on_membership",
                                       "_on_identity"))})
     handle_message = irc.OTRv4IRCClient.handle_message
@@ -749,9 +752,9 @@ class TestIdentificationIsNotAuthentication:
         """A message handler writing this map would mean a peer could set
         their own marker by typing, which is exactly what must not happen."""
         writers = set()
-        # The engine and the IRC client (otrv4plus_irc.py), where the
-        # handlers live.
-        for src in (inspect.getsource(otr), inspect.getsource(irc)):
+        # The engine and the IRC client (otrv4plus_irc.py and its mixins),
+        # where the handlers live.
+        for src in (inspect.getsource(otr), irc_source()):
             tree = ast.parse(src)
             for fn in ast.walk(tree):
                 if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -772,7 +775,7 @@ class TestIdentificationIsNotAuthentication:
     def test_the_numeric_families_are_reached_only_from_numeric_replies(self):
         """`_rpl_who` and `_rpl_whois` may write the map because they only
         ever see server numerics: nothing but handle_numeric_reply calls them."""
-        src = inspect.getsource(irc)
+        src = irc_source()
         tree = ast.parse(src)
         callers = set()
         for fn in ast.walk(tree):
