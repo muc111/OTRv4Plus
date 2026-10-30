@@ -724,11 +724,19 @@ class TestIdentificationIsNotAuthentication:
                 "verification is what authorises a call" % banned)
 
     def test_the_smp_gate_is_unchanged(self):
+        # Run, not read (Phase 5): IRC identification that says "OTRv4+
+        # user" on every channel cannot unlock a call; only SMP does.
+        import types
         voice = pytest.importorskip("otrv4plus_voice")
-        code = inspect.getsource(voice.VoiceCallManager._smp_verified)
-        assert "_smp_query" in code
-        for banned in ("_otrv4", "advertises", "realname", "gecos"):
-            assert banned not in code
+        client = types.SimpleNamespace(
+            otr=object(), _otrv4_users={"alice": True},
+            realname="OTRv4+ " + otr.VERSION,
+            _smp_query_fn=lambda o, p: (False, "state"))
+        mgr = voice.VoiceCallManager.__new__(voice.VoiceCallManager)
+        mgr.client = client
+        assert mgr._smp_verified("alice") is False
+        client._smp_query_fn = lambda o, p: (True, "state")
+        assert mgr._smp_verified("alice") is True
 
     def test_detection_never_reads_a_chat_message(self):
         """Requirement: OTRv4+ status comes from server-relayed registration
