@@ -176,33 +176,62 @@ class TestItIsATeardownNotAGoodbye:
 
 
 class TestTheResetCleansUpEvenIfTheEngineFails:
+    """Run, not read (Phase 5): start_otr against an engine whose first start
+    refuses (a stuck handshake) and whose end_session raises."""
 
-    def test_client_cleanup_is_not_inside_the_engine_try(self):
+    class _Engine:
+        def __init__(self):
+            self.starts = 0
+
+        def handle_outgoing_message(self, peer, text):
+            self.starts += 1
+            return ("", False) if self.starts == 1 else ("?OTRv4 DAKE1", True)
+
+        def end_session(self, peer):
+            raise RuntimeError("half-built session")
+
+    def _stuck_client(self):
+        import otrv4plus_smpflow as smpflow
+        from xmpp_double import bare_client
+        c = bare_client(xmpp.OTRv4PlusXMPP)
+        c.otr = self._Engine()
+        c._otr_mode = None
+        c._hs_started = {}
+        c._encrypted = {"bob"}
+        c._last_dake1 = {"bob": "?OTRv4 old"}
+        c._secret_request = "bob"
+        c._mask_next_input = lambda on: True
+        c._smp_reported = {("bob", "x"), ("carol", "y")}
+        c._smp_flows = smpflow.SmpFlowRegistry()
+        c._smp_flows.get("bob")
+        c.sent = []
+        c.send_otr_fragmented = lambda peer, msg: c.sent.append((peer, msg))
+        c._dbg = lambda *a: None
+        c._probe = False
+        return c
+
+    def test_client_cleanup_is_not_inside_the_engine_try(self, capsys):
         """They were one try block. When end_session raised, every line below
         it was skipped, so an engine failure also left the client holding
         stale state and the retry had no chance."""
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.start_otr)
-        reset = src[src.index("resetting stuck session"):]
-        engine_try = reset.index("self.otr.end_session(peer)")
-        discard = reset.index("self._encrypted.discard(peer)")
-        between = reset[engine_try:discard]
-        assert "except" in between, (
-            "the client-side cleanup is still inside the engine's try, so an "
-            "engine failure skips it")
+        c = self._stuck_client()
+        c.start_otr("bob")
+        assert c.sent == [("bob", "?OTRv4 DAKE1")], "the retry did not run"
 
-    def test_every_piece_of_stale_state_is_dropped(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.start_otr)
-        reset = src[src.index("resetting stuck session"):]
-        for cleanup in ("self._encrypted.discard(peer)",
-                        "self._last_dake1.pop(peer, None)",
-                        "self._smp_reported",
-                        "self._smp_flows.drop(peer)"):
-            assert cleanup in reset, "the reset leaves behind: %s" % cleanup
+    def test_every_piece_of_stale_state_is_dropped(self, capsys):
+        c = self._stuck_client()
+        c.start_otr("bob")
+        assert "bob" not in c._encrypted
+        assert c._last_dake1 == {"bob": "?OTRv4 DAKE1"}, "the old DAKE1 survived"
+        assert c._secret_request is None
+        assert c._smp_reported == {("carol", "y")}
+        assert "bob" not in c._smp_flows._flows, "the SMP flow survived the reset"
 
-    def test_the_engine_failure_is_reported_not_swallowed(self):
+    def test_the_engine_failure_is_reported_not_swallowed(self, capsys):
         """Silence would make a broken engine look like a working reset."""
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.start_otr)
-        assert "engine teardown failed" in src
+        c = self._stuck_client()
+        c.start_otr("bob")
+        assert "engine teardown failed" in capsys.readouterr().out
 
 
 class TestEverySiteThatCallsItStillCan:
