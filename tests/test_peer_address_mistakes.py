@@ -125,20 +125,34 @@ class TestTheNoSessionHintNamesTheRealPeer:
 
 
 class TestTheServerRejectionIsExplained:
+    """Run, not read (Phase 5): _on_message_error is given the stanzas a
+    server sends and what it prints is checked."""
 
-    def test_the_handler_recognises_a_refused_domain(self):
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._on_message_error)
-        assert "remote domains" in src and "remote-server" in src
+    def _say(self, capsys, condition, text, me="me@otr.i2p", to="bob@otr"):
+        import types
+        from xmpp_double import bare_client
+        c = bare_client(xmpp.OTRv4PlusXMPP)
+        c._groups = None
+        c.boundjid = types.SimpleNamespace(bare=me)
+        jid = types.SimpleNamespace(bare=to)
+        c._on_message_error({"from": jid,
+                             "error": {"condition": condition, "text": text}})
+        return capsys.readouterr().out
 
-    def test_it_says_nothing_will_arrive(self):
+    def test_the_handler_recognises_a_refused_domain(self, capsys):
+        out = self._say(capsys, "remote-server-not-found",
+                        "Communication with remote domains is not enabled")
+        assert "will not route to otr at all" in out
+        assert "you are on otr.i2p and --peer is on otr" in out
+        assert "--peer looks truncated. Did you mean bob@otr.i2p ?" in out
+
+    def test_it_says_nothing_will_arrive(self, capsys):
         """It was printed once, unexplained, and the run carried on for
         minutes while every message was dropped at the server."""
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._on_message_error)
-        assert "will arrive" in src
+        out = self._say(capsys, "remote-server-timeout", "")
+        assert "nothing sent to this address will arrive" in out
 
-    def test_the_subscription_case_is_untouched(self):
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._on_message_error)
-        assert "not mutually subscribed" in src
+    def test_the_subscription_case_is_untouched(self, capsys):
+        out = self._say(capsys, "forbidden", "")
+        assert "not mutually subscribed" in out
+        assert "will arrive" not in out
