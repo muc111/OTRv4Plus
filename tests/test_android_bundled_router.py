@@ -61,7 +61,15 @@ class TestBuild:
 
     def test_the_inspected_version_is_the_built_one(self):
         tag = re.search(r"^I2PD_TAG=(\S+)$", _read(self.SCRIPT), re.M).group(1)
-        assert 'I2PD_VERSION = b"%s"' % tag in _read(".github/scripts/inspect_apk.py")
+        # The binary reports MAJOR.MINOR.MICRO only (libi2pd/version.h), so a
+        # fourth part of the tag (3.0.0.1) is not in it.
+        reported = ".".join(tag.split(".")[:3])
+        assert 'I2PD_VERSION = b"%s"' % reported in _read(".github/scripts/inspect_apk.py")
+
+    def test_the_torrent_client_is_not_built(self):
+        """i2pd 3.0 builds a BitTorrent client by default; the router this
+        app carries needs SAM only, so it is compiled out."""
+        assert "-DWITH_TORRENTS=OFF" in _read(self.SCRIPT)
 
     def test_the_router_links_nothing_android_lacks(self):
         s = _read(self.SCRIPT)

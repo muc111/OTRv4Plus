@@ -25,8 +25,8 @@ OUT="$(mkdir -p "${2:?usage: build-i2pd-android.sh <abi> <out-dir>}" && cd "$2" 
 API=26
 
 # What ships. Changing a version means changing its hash in the same edit.
-I2PD_TAG=2.61.0
-I2PD_COMMIT=635b013a612ff47278ef02acf8580a28e10e26c5
+I2PD_TAG=3.0.0.1
+I2PD_COMMIT=56958857c9f00b1de2cbbe55dd3a853310e608be
 OPENSSL_TAG=openssl-3.5.9
 OPENSSL_COMMIT=45e844fa2a14ec92d146bd8f5778ac130b6625fb
 BOOST_TAG=boost-1.88.0
@@ -118,6 +118,7 @@ cmake -S "$SRC/i2pd/build" -B "$BUILD" -G "Unix Makefiles" \
     -DOPENSSL_ROOT_DIR="$PREFIX/openssl" -DOPENSSL_USE_STATIC_LIBS=ON \
     -DCMAKE_CXX_FLAGS="-DANDROID_BINARY" \
     -DWITH_UPNP=OFF -DWITH_STATIC=OFF -DWITH_HARDENING=ON \
+    -DWITH_TORRENTS=OFF \
     -DWITH_LIBRARY=ON -DWITH_BINARY=ON -DBUILD_TESTING=OFF
 cmake --build "$BUILD" -j"$JOBS" --target i2pd
 

@@ -450,7 +450,7 @@ keccak 0.2.2
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2026 The RustCrypto Project Developers
 
-libc 0.2.190
+libc 0.2.191
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-lang/libc
@@ -1289,7 +1289,7 @@ source by .github/scripts/build-i2pd-android.sh, with OpenSSL and
 Boost linked statically into it. zlib is Android's own and is not
 bundled.
 
-i2pd 2.61.0
+i2pd 3.0.0.1
     Licence: BSD-3-Clause
     Copyright (c) 2013-2026, The PurpleI2P Project
     Source:  https://github.com/PurpleI2P/i2pd

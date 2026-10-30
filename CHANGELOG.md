@@ -11,6 +11,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 it is marked **untested** in its version name until it is tested too. This
 starts at **rc.190-untested** (versionCode 191).
 
+- **Updated: the built-in router is i2pd 3.0.0.1** (was 2.61.0), phone build
+  **rc.191-untested** (versionCode 192). Among its fixes: a SAM session
+  closed a few seconds after a reconnect, invalid sessions for
+  out-of-sequence streaming packets, and stalled UDP tunnels. Its new
+  BitTorrent client is compiled out (`-DWITH_TORRENTS=OFF`); the app uses
+  SAM only. Every `i2pd.conf` key the app writes was checked against
+  3.0.0.1.
+- **Updated: Rust crates, within each version range.** Only releases at
+  least two weeks old were taken, which leaves `libc` 0.2.191; the
+  `audit` and `fuzz` lockfiles now match the core's versions (they still
+  had `crypto-bigint` 0.5). Newer major versions are listed, not taken.
 - **Hardened: the APK's Python packages are checked by SHA-256.** Every
   third-party file the APK's Python is built from is named by hash in
   `android/app/python-lock.txt` and downloaded with `pip --require-hashes`.
