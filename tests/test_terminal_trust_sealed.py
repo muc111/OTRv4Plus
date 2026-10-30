@@ -190,11 +190,18 @@ def test_irc_still_keeps_its_pins_in_memory_and_writes_nothing():
     assert db.where() == "IN MEMORY ONLY"
 
 
-def test_both_session_managers_open_trust_the_same_way():
-    import inspect
+def test_both_session_managers_open_trust_the_same_way(state):
+    # Each manager is built on the terminal config and must come up sealed,
+    # with a plaintext file that will not open refused, never read as empty.
     for cls in (otr.SessionManager, otr.EnhancedSessionManager):
-        src = inspect.getsource(cls.__init__)
-        assert "self.trust_db = _open_trust_db(self.config)" in src, cls.__name__
+        assert cls(config=_config(state)).trust_db.where().startswith("sealed, "), cls.__name__
+    d = tempfile.mkdtemp(prefix="otrv4plus-plain-trust-")
+    bad = otr.OTRConfig(trust_db_path=os.path.join(d, "trust.json"), persist_trust=True)
+    for cls in (otr.SessionManager, otr.EnhancedSessionManager):
+        with open(bad.trust_db_path, "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        with pytest.raises(Exception):
+            cls(config=bad)
 
 
 def test_the_trust_listing_says_where_the_pins_are(state):

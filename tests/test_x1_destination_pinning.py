@@ -27,7 +27,6 @@ a scripted SAM bridge on loopback, and the REAL slixmpp SASL plugin.
 """
 from __future__ import annotations
 
-from source_of import app_source  # noqa: E402
 import base64
 import os
 import socket
@@ -538,9 +537,26 @@ class TestPersistence:
         assert not os.path.exists(path)
         assert SP.ServerPins(path).pinned(NAME) is None
 
-    def test_wipe_forgets_the_pins(self):
-        src = app_source()
-        assert "_pins.default_store().forget()" in src
+    def test_wipe_forgets_the_pins(self, monkeypatch):
+        # The real Wipe & Exit, in a throwaway home, over a store holding a pin.
+        from android_bridge import server_pins as SP
+        from test_wipe_and_exit import _pair
+        home = tempfile.mkdtemp(prefix="x1-wipe-home-")
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.delenv("OTRV4PLUS_FILE_DIR", raising=False)
+        path = os.path.join(home, "pins.json")
+        store = SP.ServerPins(path)
+        store.check("example.org", B32_A)
+        store.confirm("example.org")
+        assert store.pinned("example.org") == B32_A and os.path.exists(path)
+        monkeypatch.setattr(SP, "_DEFAULT", store)
+        app = _pair().alice
+        try:
+            app.wipe()
+        finally:
+            app.shutdown()
+        assert store.pinned("example.org") is None
+        assert not os.path.exists(path), "the pins file outlived the wipe"
 
     def test_b32_of_destination_is_the_i2p_hash(self):
         import hashlib
