@@ -187,7 +187,7 @@ impl HpkeCrypto for CoreHpke {
             return Err(Error::AeadInvalidNonce);
         }
         cipher
-            .encrypt(nonce.into(), Payload { msg, aad })
+            .encrypt(nonce.try_into().map_err(|_| Error::AeadInvalidNonce)?, Payload { msg, aad })
             .map_err(|_| Error::CryptoLibraryError("aes-gcm seal".into()))
     }
 
@@ -206,7 +206,7 @@ impl HpkeCrypto for CoreHpke {
             return Err(Error::AeadInvalidNonce);
         }
         cipher
-            .decrypt(nonce.into(), Payload { msg, aad })
+            .decrypt(nonce.try_into().map_err(|_| Error::AeadInvalidNonce)?, Payload { msg, aad })
             .map_err(|_| Error::AeadOpenError)
     }
 }

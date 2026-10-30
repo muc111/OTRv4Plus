@@ -74,7 +74,9 @@ use pyo3::types::{PyBytes, PyByteArray};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use sha3::{Sha3_512, Digest};
 use sha3::digest::Update;
-use hmac::{Hmac, Mac};
+// SimpleHmac: hmac 0.13's Hmac needs a block-level core sha3 0.12 no longer
+// exposes; SimpleHmac is the same HMAC (RFC 2104) over any Digest.
+use hmac::{KeyInit, Mac, SimpleHmac as Hmac};
 use rand::rngs::OsRng;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -903,7 +905,7 @@ impl SmpState {
     // candidate against a captured transcript costs one hash.  That is what
     // 0x03 fixes.
     fn stretch_shake_legacy(raw_secret: &[u8]) -> [u8; 64] {
-        use sha3::Shake256;
+        use shake::Shake256;
         use sha3::digest::{ExtendableOutput, XofReader};
 
         let mut state = {

@@ -304,7 +304,7 @@ pub fn seal_file(src: &Path, dst: &Path, key: &KeySource, chunk: u32) -> Result<
             remaining -= want as u64;
             let last = i as u64 + 1 == n;
             let ct = cipher
-                .encrypt(<&Nonce<_>>::from(&nonce(&prefix, i)[..]),
+                .encrypt(&Nonce::try_from(&nonce(&prefix, i)[..]).map_err(|_| ContainerError::Refused)?,
                          Payload { msg: &buf[..want], aad: &aad(&hbytes, i, last) })
                 .map_err(|_| ContainerError::Refused)?;
             out.write_all(&ct).map_err(io)?;
@@ -346,7 +346,7 @@ fn open_with(src: &Path, key: &KeySource, mut sink: impl FnMut(&[u8]) -> Result<
         let last = i as u64 + 1 == n;
         let pt = Zeroizing::new(
             cipher
-                .decrypt(<&Nonce<_>>::from(&nonce(&header.prefix, i)[..]),
+                .decrypt(&Nonce::try_from(&nonce(&header.prefix, i)[..]).map_err(|_| ContainerError::Refused)?,
                          Payload { msg: &buf[..want + TAG_LEN], aad: &aad(&hbytes, i, last) })
                 .map_err(|_| ContainerError::Refused)?,
         );

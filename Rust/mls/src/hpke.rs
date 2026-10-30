@@ -341,7 +341,7 @@ pub fn seal_with(kem: Kem, pk_r: &[u8], info: &[u8], aad: &[u8], pt: &[u8])
     let (ss, enc) = encap(kem, pk_r)?;
     let ctx = key_schedule(kem, &ss, info, Aead::Aes256Gcm)?;
     let ct = ctx.cipher()?
-        .encrypt(<&Nonce<_>>::from(&ctx.base_nonce[..]), Payload { msg: pt, aad })
+        .encrypt(&Nonce::try_from(&ctx.base_nonce[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: pt, aad })
         .map_err(|_| HpkeError::Seal)?;
     Ok((enc, ct))
 }
@@ -359,7 +359,7 @@ pub fn open_with(kem: Kem, enc: &[u8], sk_r: &[u8], info: &[u8], aad: &[u8], ct:
     let ss = decap(kem, enc, sk_r)?;
     let ctx = key_schedule(kem, &ss, info, Aead::Aes256Gcm)?;
     ctx.cipher()?
-        .decrypt(<&Nonce<_>>::from(&ctx.base_nonce[..]), Payload { msg: ct, aad })
+        .decrypt(&Nonce::try_from(&ctx.base_nonce[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: ct, aad })
         .map(Zeroizing::new)
         .map_err(|_| HpkeError::Open)
 }
@@ -398,7 +398,7 @@ pub fn receiver_export_with(kem: Kem, enc: &[u8], sk_r: &[u8], info: &[u8], aead
 }
 
 fn shake(parts: &[&[u8]], out: &mut [u8]) {
-    let mut xof = sha3::Shake256::default();
+    let mut xof = shake::Shake256::default();
     for p in parts {
         xof.update(p);
     }

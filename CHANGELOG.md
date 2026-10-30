@@ -32,8 +32,21 @@ starts at **rc.190-untested** (versionCode 191).
     (they still had `crypto-bigint` 0.5).
   - `thiserror` 2 and `dashmap` 6 (major versions, no cryptography): the
     core's 199 and MLS's 78 tests pass, clippy clean.
-  - The cryptographic major versions (RustCrypto, pyo3, hpke-rs) are
-    listed in the notes, not taken yet.
+  - **The RustCrypto hashes and AES-GCM** (owner's go-ahead, 2026-10-30):
+    `aes-gcm` 0.11, `hmac`/`hkdf` 0.13, `sha2` 0.11, `sha3` 0.12 (its
+    SHAKE-256 is now the `shake` crate), in the core and in MLS. HMAC over
+    SHA3-512 uses `hmac::SimpleHmac`, the same RFC 2104 construction, as
+    `sha3` 0.12 no longer offers the block core `Hmac` needs. Every pinned
+    known-answer test passes unchanged (core 199, MLS 78 including the
+    byte-for-byte HPKE cross-check); phone build **rc.192-untested**
+    (versionCode 193).
+  - **pyo3 0.30.1.**
+  - Not taken: `rand` 0.10, `rand_core` 0.10, `getrandom` 0.4 and
+    `num-bigint` 0.5. They are the entropy source for every key, and the
+    curve crates (`x448` 0.6 and others) take `rand_core` 0.6 generators,
+    so moving them means a second RNG stack or replacing those crates.
+    `hpke-rs` 0.8 too: it is a test-only cross-check pinned to what MLS
+    is checked against.
 - **Hardened: the APK's Python packages are checked by SHA-256.** Every
   third-party file the APK's Python is built from is named by hash in
   `android/app/python-lock.txt` and downloaded with `pip --require-hashes`.

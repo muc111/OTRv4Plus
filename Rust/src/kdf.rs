@@ -11,7 +11,8 @@
 //!     (HMAC-SHA3-512 always accepts any key length) use `expect()` guarded
 //!     by the type system.
 
-use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
+use shake::Shake256;
+use sha3::digest::{Update, ExtendableOutput, XofReader};
 use crate::secure_mem::SecretBytes;
 use crate::error::{OtrError, Result};
 use zeroize::Zeroize;
@@ -211,10 +212,10 @@ pub fn derive_ssid(shared_secret: &[u8]) -> [u8; 8] {
 // ── MAC / fingerprint ────────────────────────────────────────────────────────
 
 pub fn hmac_sha3_512(key: &[u8], data: &[u8]) -> [u8; 64] {
-    use hmac::{Hmac, Mac};
+    use hmac::{KeyInit, Mac, SimpleHmac as Hmac};
     use sha3::Sha3_512;
     // HMAC accepts any key length; this expect cannot fire.
-    let mut mac = <Hmac<Sha3_512> as Mac>::new_from_slice(key)
+    let mut mac = <Hmac<Sha3_512> as KeyInit>::new_from_slice(key)
         .expect("HMAC-SHA3-512 NewFromSlice is infallible by construction");
     Mac::update(&mut mac, data);
     let result = mac.finalize().into_bytes();

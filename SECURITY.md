@@ -212,7 +212,7 @@ catch, it takes the client down mid-session with the peer left waiting.
 | Advisory | GHSA-36hh-v3qg-5jq4 (CVSS 8.7, CWE-125), PyO3/pyo3#6086 |
 | Affected | pyo3 < 0.29.0 |
 | Was installed | pyo3 0.24.2 — direct dependency, single version in the tree, nothing else constrained it |
-| Now installed | pyo3 0.29.2 |
+| Now installed | pyo3 0.29.2 (0.30.1 since 2026-10-30) |
 | Vulnerable path reachable from OTRv4+ | **No** |
 | Severity for this project | **Informational** — upgraded regardless |
 

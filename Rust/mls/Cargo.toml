@@ -38,12 +38,14 @@ tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
 pqcrypto-mlkem  = { version = "0.1.1", default-features = false, features = ["std"] }
 pqcrypto-mldsa  = { version = "0.1.2", default-features = false, features = ["std"] }
 pqcrypto-traits = "0.3"
-aes-gcm = { version = "0.10", features = ["aes"] }
-hkdf = "0.12"
-hmac = "0.12"
-sha2 = "0.10"
+aes-gcm = { version = "0.11", features = ["aes"] }
+hkdf = "0.13"
+hmac = "0.13"
+sha2 = "0.11"
 # SHAKE256 for HPKE DeriveKeyPair (src/hpke.rs): the core's sha3.
-sha3 = "0.10"
+sha3 = "0.12"
+# sha3 0.12 moved SHAKE-256 to its own crate (same RustCrypto Keccak).
+shake = "0.1"
 # The classical halves of the hybrid suite (docs/MLS_SECURITY_HARDENING.md §2):
 # the core's X448 (DAKE, voice) and Ed448 (identity keys) crates.
 x448 = "0.6"

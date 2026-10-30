@@ -1099,7 +1099,7 @@ impl MlsClient {
         let mut nonce = [0u8; 12];
         getrandom::getrandom(&mut nonce).map_err(|_| MlsError::Failed("randomness"))?;
         let aad = state_aad(context);
-        let ct = cipher.encrypt(<&Nonce<_>>::from(&nonce[..]), Payload { msg: &plain, aad: &aad })
+        let ct = cipher.encrypt(&Nonce::try_from(&nonce[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: &plain, aad: &aad })
             .map_err(|_| MlsError::Failed("seal"))?;
         let mut out = Vec::with_capacity(5 + 12 + ct.len());
         out.extend_from_slice(STATE_MAGIC);
@@ -1127,7 +1127,7 @@ impl MlsClient {
         let mut aad = state_aad(context);
         aad[4] = version;
         let plain = Zeroizing::new(
-            cipher.decrypt(<&Nonce<_>>::from(&blob[5..17]), Payload { msg: &blob[17..], aad: &aad })
+            cipher.decrypt(&Nonce::try_from(&blob[5..17]).expect("a 12-byte AES-GCM nonce"), Payload { msg: &blob[17..], aad: &aad })
                 .map_err(|_| MlsError::Refused("sealed MLS state did not open"))?,
         );
         let state: StateIn = if version == STATE_VERSION_1 {
@@ -1303,7 +1303,7 @@ mod storage_tests {
         let mut aad = state_aad(b"ctx");
         aad[4] = STATE_VERSION_1;
         let nonce = [1u8; 12];
-        let ct = cipher.encrypt(<&Nonce<_>>::from(&nonce[..]),
+        let ct = cipher.encrypt(&Nonce::try_from(&nonce[..]).expect("a 12-byte AES-GCM nonce"),
                                 Payload { msg: &plain, aad: &aad }).unwrap();
         let mut blob = STATE_MAGIC.to_vec();
         blob.push(STATE_VERSION_1);

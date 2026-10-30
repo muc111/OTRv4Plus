@@ -215,7 +215,7 @@ impl OpenMlsCrypto for CoreCrypto {
     ) -> Result<SecretVLBytes, CryptoError> {
         sha384_only(hash_type)?;
         let mut mac =
-            <Hmac<Sha384> as Mac>::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)?;
+            <Hmac<Sha384> as hmac::KeyInit>::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)?;
         mac.update(message);
         let mut tag = mac.finalize().into_bytes();
         let out = tag[..].into();
@@ -252,7 +252,7 @@ impl OpenMlsCrypto for CoreCrypto {
         aad: &[u8],
     ) -> Result<Vec<u8>, CryptoError> {
         aes256(alg, key, nonce)?
-            .encrypt(nonce.into(), Payload { msg: data, aad })
+            .encrypt(nonce.try_into().map_err(|_| CryptoError::InvalidLength)?, Payload { msg: data, aad })
             .map_err(|_| CryptoError::CryptoLibraryError)
     }
 
@@ -265,7 +265,7 @@ impl OpenMlsCrypto for CoreCrypto {
         aad: &[u8],
     ) -> Result<Vec<u8>, CryptoError> {
         aes256(alg, key, nonce)?
-            .decrypt(nonce.into(), Payload { msg: ct_tag, aad })
+            .decrypt(nonce.try_into().map_err(|_| CryptoError::InvalidLength)?, Payload { msg: ct_tag, aad })
             .map_err(|_| CryptoError::AeadDecryptionError)
     }
 
