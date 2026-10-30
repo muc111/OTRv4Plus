@@ -203,7 +203,7 @@ crossbeam-utils 0.8.23
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2019 The Crossbeam Project Developers
 
-crypto-bigint 0.7.8
+crypto-bigint 0.7.9
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/crypto-bigint
@@ -513,7 +513,7 @@ opaque-debug 0.3.1
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2024 The RustCrypto Project Developers
 
-openmls 0.9.1
+openmls 0.9.2
     Licence: MIT
     Source:  https://github.com/openmls/openmls/
     Copyright (c) OpenMLS Authors   [from Cargo.toml authors: the crate ships no licence file to read a holder from]

@@ -58,10 +58,13 @@ class TestTheAbortSaysWhy:
     # place of reading `_enh_handle_smp_tlv`'s source for the branch.
 
     @pytest.fixture
-    def no_secret_run(self):
+    def no_secret_run(self, monkeypatch):
         """Alice starts SMP with a secret; Bob has none. Returns what each
         side was told and traced, and both SMP states."""
         import test_smp_end_to_end as E
+        # A fresh DAKE1 limiter: the module-wide one is shared with every
+        # earlier test in the run, which can leave it refusing this DAKE.
+        monkeypatch.setattr(otr, "_dake1_rate_limiter", otr.DAKE1RateLimiter())
         alice_mgr, bob_mgr = E._manager(), E._manager()
         alice, bob = "alice@example.test", "bob@example.test"
         dake1, _send = alice_mgr.handle_outgoing_message(bob, "")
