@@ -131,11 +131,23 @@ def check_destination(host: str, seen: str, store: "ServerPins", *,
     return "pinned" if verdict == MATCH else "first use"
 
 
-class ServerPins:
-    """name -> pinned b32, persisted as JSON. Thread-safe."""
+#: A sealed pins file: magic || nonce(12) || AES-256-GCM(json) || tag.
+SEALED_MAGIC = b"OTRVSP1\x00"
+_AAD = b"otrv4plus/server_pins/v1"
 
-    def __init__(self, path: Optional[str]):
+
+class ServerPins:
+    """name -> pinned b32, persisted as JSON. Thread-safe.
+
+    With [dek_path] the JSON is sealed under a Rust `FileDek` in that key
+    file -- itself wrapped by the key-store KEK where there is one
+    (`key_custody`), so Wipe & Exit's crypto-erase covers the pins too. A
+    plaintext file from before is read once and rewritten sealed.
+    """
+
+    def __init__(self, path: Optional[str], dek_path: Optional[str] = None):
         self._path = path
+        self._dek_path = dek_path
         self._lock = threading.Lock()
         self._pins: Dict[str, Dict[str, object]] = {}
         #: name -> b32 seen on an attempt not yet known to have succeeded.
@@ -160,22 +172,42 @@ class ServerPins:
         self._pins, self._unreadable = {}, None
         if not self._path or not os.path.exists(self._path):
             return
+        legacy = False
         try:
-            with open(self._path, encoding="utf-8") as f:
-                data = json.load(f)
-            self._pins = _validated(data)
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            with open(self._path, "rb") as f:
+                raw = f.read()
+            if raw.startswith(SEALED_MAGIC):
+                if not self._dek_path:
+                    raise ValueError("sealed pins file and no key file")
+                raw = self._dek().open(raw[8:20], raw[20:], _AAD)
+            else:
+                legacy = bool(self._dek_path)
+            self._pins = _validated(json.loads(bytes(raw).decode("utf-8")))
+        except Exception as exc:        # a Rust open failure is not an OSError
             self._unreadable = ("not a pins file: %s" % exc if isinstance(exc, _NotPins)
                                 else exc.__class__.__name__)
+            return
+        if legacy:
+            self._save()                # rewritten sealed, once
+
+    def _dek(self):
+        import otrv4_core
+        return otrv4_core.FileDek.load_or_create(self._dek_path)
 
     def _save(self) -> None:
         if not self._path or self._unreadable is not None:
             return                      # never write over a file that would not open
         os.makedirs(os.path.dirname(self._path), exist_ok=True)
         tmp = self._path + ".tmp"
+        data = json.dumps(self._pins, sort_keys=True).encode("utf-8")
+        if self._dek_path:
+            nonce = os.urandom(12)
+            data = SEALED_MAGIC + nonce + bytes(self._dek().seal(nonce, data, _AAD))
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(self._pins, f, sort_keys=True)
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, self._path)
 
     def unreadable(self) -> Optional[str]:
@@ -280,8 +312,9 @@ class ServerPins:
             self._pending.clear()
             self._approved.clear()
             self._changes.clear()
-            if self._path and os.path.exists(self._path):
-                os.remove(self._path)
+            for p in (self._path, self._dek_path):
+                if p and os.path.exists(p):
+                    os.remove(p)
 
 
 class _NotPins(ValueError):
@@ -316,6 +349,7 @@ def default_store() -> ServerPins:
     global _DEFAULT
     with _DEFAULT_LOCK:
         if _DEFAULT is None:
-            _DEFAULT = ServerPins(os.path.join(
-                os.path.expanduser("~"), ".otrv4plus", "server_pins.json"))
+            home = os.path.join(os.path.expanduser("~"), ".otrv4plus")
+            _DEFAULT = ServerPins(os.path.join(home, "server_pins.json"),
+                                  dek_path=os.path.join(home, "server_pins.dek"))
         return _DEFAULT
