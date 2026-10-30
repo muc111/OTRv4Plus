@@ -1224,6 +1224,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             filesDestroyed = int("files_destroyed"),
             filesUnlinkedOnly = int("files_unlinked_only"),
             errors = errors,
+            verified = runCatching {
+                report.callAttr("get", "verified", false)?.toBoolean() ?: false
+            }.getOrDefault(false),
+            survivors = int("survivors"),
         )
     }
 

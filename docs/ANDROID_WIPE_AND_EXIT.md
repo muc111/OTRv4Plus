@@ -62,8 +62,10 @@ nothing. The process ending is the last step, always attempted.
    and the in-memory diagnostics trace; the Python-side files (`~/.otrv4plus`,
    i.e. `files/.otrv4plus` under Chaquopy, and the engine's default log
    directory `~/.otrv4`, which Android does not write today) overwritten once
-   with random bytes, fsync'd and unlinked. Bounded by network timeouts, which
-   is why every secret is already gone.
+   with random bytes, fsync'd and unlinked, then checked: the report's
+   `verified` is true only if nothing is left under any root and no file had
+   only an unlink, and the step fails otherwise. Bounded by network timeouts,
+   which is why every secret is already gone.
 7. **D. Wipe app storage** (`AppDataWipe`): **every entry** in the app's
    private data directory -- `files/` (the vault, the Python home, the
    extracted Python runtime), `cache/`, `code_cache/`, `databases/`,
@@ -190,7 +192,14 @@ controller has not yet erased. This is the strong guarantee and it does not
 depend on the flash.
 
 **Best-effort overwrite, for the Python-side files.** Received files (and
-any pre-0.7.0 key-storage leftovers) are overwritten once and unlinked. On
+any pre-0.7.0 key-storage leftovers) are overwritten and unlinked: one pass
+of CSPRNG bytes on flash (every phone, Termux, SSDs, and any device the
+kernel does not report as spinning), three passes -- zeros, ones, random,
+each fsync'd -- on a disk Linux reports as rotational, where the passes do
+reach the old sectors. More passes on flash would only land on more new
+blocks. Afterwards the wipe looks for anything left and reports
+`verified`; the desktop app closes only on a verified wipe and otherwise
+stays open and says what is left. On
 flash, wear levelling and the translation layer may leave the old block until
 the controller erases it; no app can prevent that, and this document does not
 claim otherwise. What bounds the exposure is Android's file-based encryption

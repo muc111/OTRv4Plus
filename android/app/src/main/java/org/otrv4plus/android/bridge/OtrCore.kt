@@ -165,8 +165,14 @@ data class WipeReport(
     val filesUnlinkedOnly: Int = 0,
     /** Steps that reported a problem, e.g. "engine_off_thread". */
     val errors: List<String> = emptyList(),
+    /** The wipe looked afterwards and found nothing left on disk, and every
+     *  file was overwritten (not only unlinked). Absent from the engine's
+     *  report means not verified. */
+    val verified: Boolean = false,
+    /** Paths still present under a state root after the wipe. */
+    val survivors: Int = 0,
 ) {
-    val ok: Boolean get() = errors.isEmpty()
+    val ok: Boolean get() = errors.isEmpty() && verified
 
     companion object {
         /** A wipe that could not reach Python at all. */

@@ -397,40 +397,74 @@ def _secure_wipe_bytes(b: bytes) -> None:
     pass
 
 
+# Pass patterns for a spinning disk: zeros, ones, then CSPRNG bytes, each
+# written over the whole file and fsync'd before the next. On a magnetic disk
+# the overwrite lands on the same sectors, so the passes reach the old data.
+_HDD_PASSES = (b"\x00", b"\xff", None)
+_SYSFS_BLOCK = "/sys/dev/block"
+
+
+def _on_rotational_disk(filepath: str) -> bool:
+    """True only when Linux says the file's block device spins.
+
+    Read from /sys/dev/block/MAJOR:MINOR (a partition's own queue/ is its
+    parent's). Anything unknown -- Android, Termux, macOS, Windows, a
+    network or overlay filesystem -- answers False: treated as flash, where
+    extra passes go to new blocks and buy nothing.
+    """
+    try:
+        dev = os.stat(filepath).st_dev
+        node = os.path.join(_SYSFS_BLOCK, "%d:%d" % (os.major(dev), os.minor(dev)))
+        for queue in (os.path.join(node, "queue"), os.path.join(node, "..", "queue")):
+            flag = os.path.join(queue, "rotational")
+            if os.path.exists(flag):
+                with open(flag) as fh:
+                    return fh.read().strip() == "1"
+    except (OSError, ValueError, AttributeError):
+        pass
+    return False
+
+
+def _overwrite_passes(filepath: str):
+    """The patterns to write: three on a spinning disk, one random on flash."""
+    return _HDD_PASSES if _on_rotational_disk(filepath) else (None,)
+
+
 def _secure_file_destroy(filepath: str) -> None:
-    """Overwrite a file once with random bytes, fsync it, and unlink it.
+    """Overwrite a file, fsync every pass, unlink it, and check it is gone.
+
+    On a spinning disk (desktop HDD): three passes -- zeros, ones, random.
+    On flash (phones, Termux, SSDs, anything not known to spin): one pass
+    of CSPRNG bytes. Raises OSError if the file still exists afterwards, so
+    a caller can never count a survivor as destroyed.
 
     WHAT THIS DOES NOT DO: guarantee the old contents are gone from flash.
-    On flash storage (every phone, most laptops) the controller's
-    wear-levelling writes the overwrite to NEW physical blocks and leaves the
-    old ones -- holding the old plaintext -- to be erased whenever it chooses.
-    Neither this function nor any other file-level call can reach them. An
-    earlier version of this docstring claimed NIST SP 800-88 compliance and
-    that surviving blocks would be "ciphertext whose key has been destroyed";
-    both were wrong, because the old blocks were never encrypted by the
-    overwrite. What this does achieve: the file's logical contents are
-    replaced before unlink, so the data is not recoverable through the file
-    system, by undelete tools, or from a copy-on-write-free journal.
-
-    The overwrite bytes come straight from the kernel CSPRNG. (It used to
-    AES-GCM-encrypt zeros under a throwaway Python-held key to get the same
-    thing: a key in a Python bytearray bought nothing os.urandom does not.)
+    On flash storage the controller's wear-levelling writes the overwrite to
+    NEW physical blocks and leaves the old ones -- holding the old
+    plaintext -- to be erased whenever it chooses. No number of passes, and
+    no file-level call, can reach them; that is why flash gets one pass and
+    not three. NIST SP 800-88's purge for flash is cryptographic erase
+    (destroy the key the data was sealed under), which is what the Android
+    vault does with its AndroidKeyStore key; this function is the file-level
+    clear for what Python wrote. What it achieves: the file's logical
+    contents are replaced before unlink, so the data is not recoverable
+    through the file system, by undelete tools, or from a journal.
     """
     size = os.path.getsize(filepath)
-    if size == 0:
-        os.remove(filepath)
-        return
-
-    with open(filepath, "r+b") as f:
-        written = 0
-        while written < size:
-            chunk = os.urandom(min(65536, size - written))
-            f.write(chunk)
-            written += len(chunk)
-        f.flush()
-        os.fsync(f.fileno())
-
+    if size:
+        with open(filepath, "r+b") as f:
+            for pattern in _overwrite_passes(filepath):
+                f.seek(0)
+                written = 0
+                while written < size:
+                    n = min(65536, size - written)
+                    f.write(os.urandom(n) if pattern is None else pattern * n)
+                    written += n
+                f.flush()
+                os.fsync(f.fileno())
     os.remove(filepath)
+    if os.path.lexists(filepath):
+        raise OSError("%s survived its unlink" % filepath)
 
 
 class MLKEM1024BraceKEM:

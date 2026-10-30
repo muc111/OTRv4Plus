@@ -26,8 +26,8 @@ storage, the runtime included -- see docs/ANDROID_WIPE_AND_EXIT.md.
 
 WHAT "DESTROYED" MEANS, AND WHAT IT DOES NOT
 --------------------------------------------
-Each file is overwritten once with random bytes from the kernel CSPRNG,
-fsync'd, and unlinked -- the terminal client's `_secure_file_destroy`, reused
+Each file is overwritten (one CSPRNG pass on flash, three on a spinning
+disk), fsync'd, and unlinked -- the terminal client's `_secure_file_destroy`, reused
 rather than restated. On flash storage that
 overwrite is BEST EFFORT: wear levelling and the flash translation layer may
 write the new bytes elsewhere and leave the old block to be erased later, and
@@ -44,7 +44,7 @@ import shutil
 import sys
 from typing import Callable, List, Tuple
 
-__all__ = ["python_state_roots", "destroy_tree", "wipe_disk"]
+__all__ = ["python_state_roots", "destroy_tree", "survivors", "verify", "wipe_disk"]
 
 
 def _file_dir() -> str:
@@ -126,6 +126,28 @@ def destroy_tree(root: str) -> Tuple[int, int]:
     return destroyed, failed
 
 
+def survivors(roots: List[str]) -> List[str]:
+    """Every path still present under [roots] after a wipe -- the check that
+    it worked, made by looking rather than by trusting the return codes."""
+    left = []
+    for root in roots:
+        if not os.path.lexists(root):
+            continue
+        left.append(root)
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            left += [os.path.join(dirpath, n) for n in dirnames + filenames]
+    return left
+
+
+def verify(report: dict) -> dict:
+    """Add the verification to a wipe [report]: `verified` is True only when
+    nothing is left under any state root and no file had only an unlink."""
+    left = survivors(python_state_roots())
+    report["survivors"] = len(left)
+    report["verified"] = not left and not report.get("files_unlinked_only")
+    return report
+
+
 def wipe_disk() -> dict:
     """Destroy every Python-side state root. For a process whose engine was
     never started -- `OtrApp.wipe` does this itself when it was."""
@@ -134,5 +156,5 @@ def wipe_disk() -> dict:
         d, f = destroy_tree(root)
         destroyed += d
         failed += f
-    return {"files_destroyed": destroyed, "files_unlinked_only": failed,
-            "errors": []}
+    return verify({"files_destroyed": destroyed, "files_unlinked_only": failed,
+                   "errors": []})

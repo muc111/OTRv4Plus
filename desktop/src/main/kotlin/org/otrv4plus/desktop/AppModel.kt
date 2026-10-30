@@ -1436,6 +1436,9 @@ class AppModel(
     /** Wipe & Exit's opt-in: also delete the account on the server. Off by default. */
     var wipeDeletesAccount by mutableStateOf(false)
 
+    /** The last wipe's report: the WIPED screen says whether it was verified. */
+    var lastWipe: org.otrv4plus.android.bridge.WipeReport? by mutableStateOf(null)
+
     fun wipeAndExit(onDone: () -> Unit) {
         val deleteAccount = wipeDeletesAccount
         viewedFile = null
@@ -1443,12 +1446,16 @@ class AppModel(
             withContext(Dispatchers.IO) {
                 // The viewer's transient plaintext goes first.
                 runCatching { org.otrv4plus.desktop.ui.viewDirectory().deleteRecursively() }
-                runCatching { core.wipe(deleteAccount) }
+                lastWipe = runCatching { core.wipe(deleteAccount) }
+                    .getOrDefault(org.otrv4plus.android.bridge.WipeReport.UNREACHABLE)
             }
             chat.bindAccount(AccountScope.NONE)
             screen = Screen.WIPED
             changed()
-            onDone()
+            // Close only on a wipe that checked itself. Otherwise stay on the
+            // WIPED screen, which says what is left, rather than exit as if
+            // it had worked.
+            if (lastWipe?.verified == true) onDone()
         }
     }
 

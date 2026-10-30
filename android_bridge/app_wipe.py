@@ -171,6 +171,7 @@ class WipeMixin:
             failed += f
         report["files_destroyed"] = destroyed
         report["files_unlinked_only"] = failed
+        _disk.verify(report)
         self._sink = None
         return report
 

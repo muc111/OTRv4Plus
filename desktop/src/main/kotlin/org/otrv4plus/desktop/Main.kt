@@ -78,12 +78,23 @@ fun App(model: AppModel, onWipe: () -> Unit) {
                          color = MaterialTheme.colorScheme.error)
                     Text("Run `otrv4plus` in a terminal to see why.", Modifier.padding(top = 8.dp))
                 }
-                AppModel.Screen.WIPED -> Centered { Text("Wiped.") }
+                AppModel.Screen.WIPED -> Centered { Text(wipedMessage(model.lastWipe)) }
                 AppModel.Screen.CONNECT -> ConnectScreen(model)
                 AppModel.Screen.MAIN -> MainScreen(model, onWipe)
             }
         }
     }
+}
+
+/** What the WIPED screen says: never "wiped" for a wipe that did not verify. */
+internal fun wipedMessage(report: org.otrv4plus.android.bridge.WipeReport?): String = when {
+    report == null -> "Wiping…"
+    report.verified -> "Wiped."
+    report.survivors > 0 -> "The wipe did not finish: ${report.survivors} item(s) are still on " +
+        "disk under ~/.otrv4plus. Close the app and delete that folder by hand."
+    report.filesUnlinkedOnly > 0 -> "The wipe did not finish: ${report.filesUnlinkedOnly} file(s) " +
+        "could only be deleted, not overwritten first."
+    else -> "The wipe could not be confirmed (${report.errors.joinToString().ifBlank { "no report" }})."
 }
 
 @Composable
