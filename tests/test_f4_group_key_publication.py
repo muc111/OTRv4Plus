@@ -111,9 +111,13 @@ def test_a_client_from_before_hides_it():
     """Behind the group verification control prefix, whose handler drops
     anything that is not its JSON: an older client shows nothing."""
     from android_bridge.group_verify import GroupVerify
-    import inspect
-    src = inspect.getsource(GroupVerify._on_control)
-    assert "json.loads(payload)" in src and "except ValueError" in src
+    w, (a, b) = _group(2)
+    shown = []
+    old = GroupVerify(b.groups, emit=shown.append)
+    # What reaches the handler after the shared prefix: key bytes, not JSON.
+    for payload in ("\x00\x93\xffkey-bytes", "{not json", "[1, 2]", ""):
+        old._on_control(ROOM, "alice@example.org", True, payload)
+    assert shown == [], "an older client shows a key publication"
     import os
     rust = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                              "Rust", "mls", "src", "client.rs"), encoding="utf-8").read()
