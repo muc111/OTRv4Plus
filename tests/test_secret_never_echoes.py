@@ -88,28 +88,9 @@ class TestTheEngineCanHideIt:
 
 class TestTheClientTurnsItOn:
 
-    def test_the_prompt_masks(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._arm_secret_prompt)
-        assert "_mask_next_input(True)" in src
-
-    def test_the_answer_unmasks(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._handle_smp_secret_answer)
-        assert "_mask_next_input(False)" in src, (
-            "the mask is never cleared, so every later command is hidden too")
-
-    def test_unmasking_happens_before_any_early_return(self):
-        """`skip` and a validation failure both return early."""
-        import ast, textwrap
-        fn = ast.parse(textwrap.dedent(
-            inspect.getsource(xmpp.OTRv4PlusXMPP._handle_smp_secret_answer))).body[0]
-        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
-                 and isinstance(n.func, ast.Attribute)
-                 and n.func.attr == "_mask_next_input"]
-        assert calls, "nothing clears the mask"
-        first_return = min((n.lineno for n in ast.walk(fn)
-                            if isinstance(n, ast.Return)), default=10 ** 9)
-        assert min(c.lineno for c in calls) < first_return, (
-            "an early return can leave the input line masked for good")
+    # The prompt masking, the answer unmasking, and the unmasking on every
+    # early return (cancel, a rejected passphrase) are run, not read, in
+    # tests/test_no_remote_input_capture.py::TestBehaviour (Phase 5).
 
     def test_it_reaches_the_engine(self):
         src = inspect.getsource(xmpp.OTRv4PlusXMPP._mask_next_input)
