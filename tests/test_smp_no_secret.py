@@ -54,68 +54,55 @@ class TestTheAbortSaysWhy:
         assert isinstance(otr.OTRv4TLV.SMP_ABORT_NO_SECRET, bytes)
         assert otr.OTRv4TLV.SMP_ABORT_NO_SECRET
 
-    def test_the_no_secret_path_sends_the_reason(self):
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        tree = ast.parse(textwrap.dedent(src))
-        # Find the branch guarded by `not ...check_secret_set()`.
-        branch = None
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If) and _calls_named(node.test, "check_secret_set"):
-                branch = node
-                break
-        assert branch is not None, "the no-secret branch is gone"
-        names = {n.attr for n in ast.walk(branch) if isinstance(n, ast.Attribute)}
-        assert "SMP_ABORT_NO_SECRET" in names, (
-            "the no-secret abort no longer names its reason, so the initiator "
-            "cannot tell it apart from a wrong passphrase")
+    # Phase 5 (2026-10-30): these ran an SMP between two real sessions in
+    # place of reading `_enh_handle_smp_tlv`'s source for the branch.
 
-    def test_the_no_secret_path_still_aborts(self):
+    @pytest.fixture
+    def no_secret_run(self):
+        """Alice starts SMP with a secret; Bob has none. Returns what each
+        side was told and traced, and both SMP states."""
+        import test_smp_end_to_end as E
+        alice_mgr, bob_mgr = E._manager(), E._manager()
+        alice, bob = "alice@example.test", "bob@example.test"
+        dake1, _send = alice_mgr.handle_outgoing_message(bob, "")
+        E._relay(dake1, alice_mgr, bob_mgr, alice, bob)
+        seen = {"alice": [], "bob": [], "alice_trace": [], "bob_trace": []}
+        for mgr, peer, who in ((alice_mgr, bob, "alice"), (bob_mgr, alice, "bob")):
+            session = mgr.get_session(peer)
+            notify = session._smp_progress_notify
+            session._smp_progress_notify = (
+                lambda *a, _n=notify, _w=who, **k: (seen[_w].append(a[2]), _n(*a, **k)))
+            trace = session.tracer.trace
+            session.tracer.trace = (
+                lambda *a, _t=trace, _w=who, **k: (seen[_w + "_trace"].append(a), _t(*a, **k)))
+        alice_mgr.set_smp_secret(bob, E.SECRET)
+        delivered = E._relay(alice_mgr.start_smp(bob, E.SECRET), alice_mgr, bob_mgr, alice, bob)
+        seen["delivered"] = delivered
+        seen["alice_state"] = alice_mgr.get_smp_status(bob)
+        seen["bob_state"] = bob_mgr.get_smp_status(alice)
+        return seen
+
+    def test_the_responder_aborts_and_nothing_is_verified(self, no_secret_run):
         # Explaining the failure must not replace failing.
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        tree = ast.parse(textwrap.dedent(src))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If) and _calls_named(node.test, "check_secret_set"):
-                names = {n.attr for n in ast.walk(node) if isinstance(n, ast.Attribute)}
-                assert "SMP_ABORT" in names
-                return
-        pytest.fail("the no-secret branch is gone")
+        r = no_secret_run
+        assert r["delivered"] == 2, "SMP1 out, the abort back, nothing more"
+        assert r["alice_state"]["state"] == "ABORTED"
+        assert not r["alice_state"]["verified"] and not r["bob_state"]["verified"]
 
-    def test_the_responder_is_told_what_command_to_run(self):
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        tree = ast.parse(textwrap.dedent(src))
-        for node in ast.walk(tree):
-            if isinstance(node, ast.If) and _calls_named(node.test, "check_secret_set"):
-                assert _calls_named(node, "_smp_progress_notify"), (
-                    "the responder is not told anything")
-                text = " ".join(
-                    n.value for n in ast.walk(node)
-                    if isinstance(n, ast.Constant) and isinstance(n.value, str))
-                # `/smp` is now the command that fixes it: it asks for the
-                # passphrase and then verifies, so the user needs one verb
-                # rather than two.  `/smp-secret` remains as the explicit
-                # store-only form and is documented that way.
-                assert "/smp" in text, (
-                    "the message does not name the command that fixes it")
-                return
-        pytest.fail("the no-secret branch is gone")
+    def test_the_responder_is_told_what_command_to_run(self, no_secret_run):
+        # `/smp` asks for the passphrase and then verifies, so the user needs
+        # one verb; `/smp-secret` remains the explicit store-only form.
+        told = " ".join(no_secret_run["bob"])
+        assert told, "the responder is not told anything"
+        assert "/smp" in told, "the message does not name the command that fixes it"
 
-    def test_the_initiator_distinguishes_no_secret_from_a_generic_abort(self):
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        tree = ast.parse(textwrap.dedent(src))
-        names = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
-        assert "SMP_ABORT_NO_SECRET" in names
-        assert "PEER_NO_SECRET" in {
-            n.value for n in ast.walk(tree)
-            if isinstance(n, ast.Constant) and isinstance(n.value, str)}, (
-            "the initiator no longer traces the no-secret case separately")
-
-    def test_the_reason_is_read_from_the_tlv_value_field(self):
-        # OTRv4TLV.__slots__ is ("type", "value"). Reading `.data` would make
-        # the comparison silently always-false and the feature a no-op.
-        assert otr.OTRv4TLV.__slots__ == ("type", "value")
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        assert 'getattr(tlv, "value"' in src, (
-            "the abort reason is read from a field the TLV does not have")
+    def test_the_initiator_distinguishes_no_secret_from_a_generic_abort(self, no_secret_run):
+        traced = [t for t in no_secret_run["alice_trace"] if t[1:3] == ("SMP", "ABORTED")]
+        assert traced and traced[-1][3] == "PEER_NO_SECRET", (
+            "the initiator no longer traces the no-secret case separately: %r" % traced)
+        told = " ".join(no_secret_run["alice"])
+        assert "has not stored the passphrase" in told
+        assert "not a wrong-passphrase failure" in told
 
     def test_the_reason_is_not_a_security_predicate(self):
         """It may choose wording. It must not choose an outcome.
