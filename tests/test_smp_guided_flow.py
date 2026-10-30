@@ -582,16 +582,34 @@ class TestFailureClassification:
         assert "smp verified" not in text
         assert "✓" not in text
 
-    def test_the_no_secret_abort_still_says_it_is_not_a_wrong_passphrase(self):
-        otr = pytest.importorskip("otrv4_")
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        assert "not a wrong-passphrase failure" in src
+    # The no-secret wording is run, not read, in
+    # test_smp_no_secret.py::TestTheAbortSaysWhy (Phase 5).
 
-    def test_a_declined_request_is_distinguishable_on_the_wire(self):
+    def test_a_declined_request_is_distinguishable_on_the_wire(self, monkeypatch):
+        """Run, not read (Phase 5): Bob holds Alice's SMP1 and declines;
+        Alice is told it was declined, not that the passphrase was wrong."""
         otr = pytest.importorskip("otrv4_")
+        import test_smp_end_to_end as E
         assert otr.OTRv4TLV.SMP_ABORT_DECLINED != otr.OTRv4TLV.SMP_ABORT_NO_SECRET
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        assert "declined the verification request" in src
+        monkeypatch.setattr(otr, "_dake1_rate_limiter", otr.DAKE1RateLimiter())
+        alice_mgr, bob_mgr = E._manager(), E._manager()
+        alice, bob = "alice@example.test", "bob@example.test"
+        bob_mgr.smp_guided_prompt = True
+        dake1, _send = alice_mgr.handle_outgoing_message(bob, "")
+        E._relay(dake1, alice_mgr, bob_mgr, alice, bob)
+        told = []
+        session = alice_mgr.get_session(bob)
+        notify = session._smp_progress_notify
+        session._smp_progress_notify = lambda *a, **k: (told.append(a[2]), notify(*a, **k))
+        alice_mgr.set_smp_secret(bob, E.SECRET)
+        E._relay(alice_mgr.start_smp(bob, E.SECRET), alice_mgr, bob_mgr, alice, bob)
+        abort = bob_mgr.decline_held_smp1(alice)
+        assert abort, "declining sent nothing"
+        alice_mgr.handle_incoming_message(bob, abort)
+        said = " ".join(told)
+        assert "declined the verification request" in said
+        assert "not a wrong-passphrase failure" in said
+        assert alice_mgr.get_smp_status(bob)["state"] == "ABORTED"
 
 
 class TestNothingLeaksThePassphrase:
