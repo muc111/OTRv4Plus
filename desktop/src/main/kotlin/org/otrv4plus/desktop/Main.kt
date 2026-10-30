@@ -89,7 +89,10 @@ fun App(model: AppModel, onWipe: () -> Unit) {
 /** What the WIPED screen says: never "wiped" for a wipe that did not verify. */
 internal fun wipedMessage(report: org.otrv4plus.android.bridge.WipeReport?): String = when {
     report == null -> "Wiping…"
-    report.verified -> "Wiped."
+    report.verified && report.cryptoErased -> "Wiped. The key-wrapping key was deleted from " +
+        "the key store (${report.keyStore}), so nothing left on the disk can be opened."
+    report.verified -> "Wiped. No key store was available, so this was an overwrite " +
+        "only: on an SSD, old copies may survive until the drive erases them."
     report.survivors > 0 -> "The wipe did not finish: ${report.survivors} item(s) are still on " +
         "disk under ~/.otrv4plus. Close the app and delete that folder by hand."
     report.filesUnlinkedOnly > 0 -> "The wipe did not finish: ${report.filesUnlinkedOnly} file(s) " +

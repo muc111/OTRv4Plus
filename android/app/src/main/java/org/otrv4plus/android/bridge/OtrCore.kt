@@ -171,6 +171,11 @@ data class WipeReport(
     val verified: Boolean = false,
     /** Paths still present under a state root after the wipe. */
     val survivors: Int = 0,
+    /** The desktop's key-wrapping key was deleted from the platform key
+     *  store, so no key file left on disk opens (crypto-erase). */
+    val cryptoErased: Boolean = false,
+    /** Which key store held it: "secret-service", "macos-keychain", "none". */
+    val keyStore: String = "none",
 ) {
     val ok: Boolean get() = errors.isEmpty() && verified
 

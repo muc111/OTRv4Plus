@@ -569,6 +569,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
             filesUnlinkedOnly = r["files_unlinked_only"].asInt(),
             errors = (r["errors"] as? JsonArray).orEmpty().map { it.asStr() },
             verified = r["verified"].asBool(), survivors = r["survivors"].asInt(),
+            cryptoErased = r["crypto_erased"].asBool(), keyStore = r.str("key_store").ifBlank { "none" },
         )
     }.getOrDefault(WipeReport.UNREACHABLE)
 

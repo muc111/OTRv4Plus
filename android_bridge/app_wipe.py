@@ -220,6 +220,14 @@ class WipeMixin:
             _trust.destroy_local()
         except Exception as exc:
             report["errors"].append("trust_store:%s" % type(exc).__name__)
+        # Crypto-erase (desktop): delete the key-wrapping key from the
+        # platform key store, so no key file under ~/.otrv4plus opens again,
+        # whatever the disk keeps. `crypto_erased` says whether it happened.
+        try:
+            from . import key_custody as _custody
+            report.update(_custody.destroy())
+        except Exception as exc:
+            report["errors"].append("key_store:%s" % type(exc).__name__)
         getattr(self, "_invite_after_otr", {}).clear()
         getattr(self, "_deleted_after_otr", {}).clear()
         getattr(self, "_message_requested", set()).clear()

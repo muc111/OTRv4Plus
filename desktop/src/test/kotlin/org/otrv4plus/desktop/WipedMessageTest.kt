@@ -4,7 +4,6 @@ package org.otrv4plus.desktop
 
 import org.otrv4plus.android.bridge.WipeReport
 import kotlin.test.Test
-import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -12,8 +11,11 @@ import kotlin.test.assertTrue
 class WipedMessageTest {
 
     @Test
-    fun aVerifiedWipeSaysWiped() {
-        assertEquals("Wiped.", wipedMessage(WipeReport(verified = true)))
+    fun aVerifiedWipeSaysWipedAndWhetherItWasCryptoErase() {
+        val erased = wipedMessage(WipeReport(verified = true, cryptoErased = true, keyStore = "secret-service"))
+        assertTrue(erased.startsWith("Wiped.") && "secret-service" in erased)
+        val plain = wipedMessage(WipeReport(verified = true))
+        assertTrue(plain.startsWith("Wiped.") && "overwrite only" in plain)
     }
 
     @Test
