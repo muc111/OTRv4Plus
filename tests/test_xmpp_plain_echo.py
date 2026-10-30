@@ -177,31 +177,22 @@ class TestItRefusesWhenItCannotBeSure:
         monkeypatch.setattr(xmpp, "_terminal_cols", boom)
         Client(pending=_armed("hello"))._erase_plain_echo("hello")
 
-    def test_the_cursor_move_is_not_logged_as_content(self):
+    def test_the_cursor_move_is_not_logged_as_content(self, monkeypatch, capsys):
         """Cursor movement must not reach the transcript or the counter.
 
         `_raw_write` rather than `print`: the escape is not content, it must
         not be written to the session log, and it must not advance
         `_PRINT_SEQ` -- the counter whose whole job is to say whether
-        content was printed since the user pressed Enter.
+        content was printed since the user pressed Enter. Run, not read
+        (Phase 5).
         """
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._erase_plain_echo)
-        assert "_raw_write(" in src
-        assert "print(" not in src
-        # Code only. An earlier version of this matched the docstring,
-        # which explains exactly the thing it must not do.
-        import ast
-        import textwrap
-        tree = ast.parse(textwrap.dedent(inspect.getsource(xmpp._raw_write)))
-        fn = tree.body[0]
-        if (fn.body and isinstance(fn.body[0], ast.Expr)
-                and isinstance(fn.body[0].value, ast.Constant)):
-            fn.body = fn.body[1:]
-        names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
-        names |= {n.attr for n in ast.walk(fn) if isinstance(n, ast.Attribute)}
-        assert "_log_to_file" not in names
-        assert "_PRINT_SEQ" not in names
+        logged = []
+        monkeypatch.setattr(xmpp._term, "_log_to_file", logged.append)
+        before = xmpp._term._PRINT_SEQ
+        xmpp._term._raw_write("\x1b[1A\r\x1b[J")
+        assert xmpp._term._PRINT_SEQ == before, "the escape counted as content"
+        assert logged == [], "the escape reached the session log"
+        assert "\x1b[J" in capsys.readouterr().out
 
 
 class TestTerminalCols:
@@ -260,20 +251,31 @@ class TestTheWiring:
         src = open("client/otrv4plus_xmpp.py").read()
         assert "client._plain_echo = (_term._PRINT_SEQ, line.rstrip(\"\\n\"))" in src
 
-    def test_the_echo_erases_before_it_prints(self):
+    def _echo(self, monkeypatch, text="hello there"):
+        """_echo_sent for real: the erase and the log both land in `seen`."""
+        import types
+        seen = []
+        monkeypatch.setattr(xmpp, "_terminal_cols", lambda: 40)
+        monkeypatch.setattr(xmpp, "_raw_write", lambda t: seen.append(("erase", t)))
+        monkeypatch.setattr(xmpp._term, "_log_to_file", lambda m: seen.append(("log", m)))
+        c = Client(pending=_armed(text))
+        c._smp_reported = set()
+        c.boundjid = types.SimpleNamespace(bare="me@example.i2p")
+        xmpp.OTRv4PlusXMPP._echo_sent(c, "bob@example.i2p", text)
+        return seen
+
+    def test_the_echo_erases_before_it_prints(self, monkeypatch, capsys):
         """Order matters: erase, then print.
 
         Printing first advances _PRINT_SEQ, so the guard that compares it
-        would never match and the erase would never fire.
-        """
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._echo_sent)
-        assert src.index("_erase_plain_echo") < src.index("print(")
+        would never match and the erase would never fire. Run, not read."""
+        kinds = [k for k, _ in self._echo(monkeypatch)]
+        assert kinds[:1] == ["erase"], "the echo printed before erasing: %r" % kinds
+        assert "log" in kinds
 
-    def test_the_message_still_reaches_the_log(self):
+    def test_the_message_still_reaches_the_log(self, monkeypatch, capsys):
         # The v10.27.0 bug underneath all of this: without the echo the
         # channel log recorded only one side of the conversation. Erasing the
         # terminal's copy must not turn into erasing the record.
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._echo_sent)
-        assert "print(" in src
+        logs = [m for k, m in self._echo(monkeypatch, "for the record") if k == "log"]
+        assert logs, "our own message never reached the log"
