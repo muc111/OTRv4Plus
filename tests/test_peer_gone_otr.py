@@ -169,12 +169,18 @@ class TestForget:
     def test_it_does_not_forget_the_pinned_fingerprint(self):
         # Long-term identity is not session state. Forgetting it would turn
         # every reconnect into a fresh trust-on-first-use decision, which is
-        # exactly where a MITM wants the user.
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._forget_otr)
-        for forbidden in ("untrust", "forget_fingerprint", "unpin",
-                          "remove_fingerprint", "trust_db"):
-            assert forbidden not in src
+        # exactly where a MITM wants the user. Run, not read (Phase 5): the
+        # engine's trust database fails the test if it is touched, and the
+        # client has no trust handle of its own to reach for.
+        class _Untouchable:
+            def __getattr__(self, name):
+                raise AssertionError("_forget_otr touched the trust database (%s)" % name)
+
+        c = _FakeClient()
+        c.otr.trust_db = _Untouchable()
+        c._trust = _Untouchable()
+        c._forget_otr(PEER, "offline")
+        assert PEER not in c._encrypted, "the session itself was not forgotten"
 
     def test_a_peer_with_nothing_to_clear_is_a_no_op(self):
         c = _FakeClient(encrypted=())
@@ -197,16 +203,23 @@ class TestForget:
 # ---------------------------------------------------------------------------
 
 def _sweep(client):
-    """One pass of the production sweeper's decision, without the sleep."""
-    now = time.monotonic()
-    for peer, since in list(client._peer_gone_at.items()):
-        if now - since < client.PEER_GONE_SECONDS:
-            continue
-        if client._peer_in_call(peer):
-            client._peer_gone_at[peer] = now
-            continue
-        client._peer_gone_at.pop(peer, None)
-        client._forget_otr(peer, "offline")
+    """One pass of the PRODUCTION sweeper (Phase 5: this used to be a copy of
+    its loop, so the tests checked the copy). Its sleep returns at once the
+    first time and cancels it the second, so exactly one pass runs."""
+    import asyncio
+    calls = []
+
+    async def _sleep(_seconds):
+        calls.append(1)
+        if len(calls) > 1:
+            raise asyncio.CancelledError
+
+    real = xmpp.asyncio.sleep
+    xmpp.asyncio.sleep = _sleep
+    try:
+        asyncio.run(xmpp.OTRv4PlusXMPP._peer_gone_sweeper(client))
+    finally:
+        xmpp.asyncio.sleep = real
 
 
 class TestSweeper:
@@ -246,11 +259,8 @@ class TestSweeper:
         _sweep(c)
         assert PEER not in c._encrypted
 
-    def test_the_production_sweeper_defers_on_a_call(self):
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._peer_gone_sweeper)
-        assert "_peer_in_call(peer)" in src
-        assert src.index("_peer_in_call") < src.index("_forget_otr")
+    # "The production sweeper defers on a call" is now every test in this
+    # class: _sweep runs the production sweeper itself (Phase 5).
 
     def test_no_voice_manager_is_not_a_call(self):
         c = _FakeClient()
