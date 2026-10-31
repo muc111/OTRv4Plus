@@ -563,20 +563,30 @@ impl RunSealedWriter {
         Ok(Self { cipher, file: Some(file), prefix, index: 0, length: 0 })
     }
 
-    /// Seal one chunk and append it: u32 length || ciphertext || tag.
+    /// Seal the next chunk and append it.
     fn write(&mut self, data: &[u8]) -> PyResult<()> {
+        let i = self.index;
+        self.write_at(i, data)?;
+        self.index = i.checked_add(1).ok_or_else(|| PyValueError::new_err("too many chunks"))?;
+        Ok(())
+    }
+
+    /// Seal chunk `index` and append it: u32 index || u32 length || ct || tag.
+    /// Chunks may arrive in any order (group files); the reseal puts them
+    /// back in order and refuses a gap or a duplicate.
+    fn write_at(&mut self, index: u32, data: &[u8]) -> PyResult<()> {
         let file = self.file.as_mut().ok_or_else(|| PyValueError::new_err("writer closed"))?;
         if data.len() > MAX_CHUNK as usize * 16 {
             return Err(PyValueError::new_err("chunk too large"));
         }
         let ct = self.cipher
-            .encrypt(&Nonce::from(nonce(&self.prefix, self.index)),
-                     Payload { msg: data, aad: &run_aad(self.index) })
+            .encrypt(&Nonce::from(nonce(&self.prefix, index)),
+                     Payload { msg: data, aad: &run_aad(index) })
             .map_err(|_| PyValueError::new_err("seal failed"))?;
-        file.write_all(&(ct.len() as u32).to_be_bytes())
+        file.write_all(&index.to_be_bytes())
+            .and_then(|_| file.write_all(&(ct.len() as u32).to_be_bytes()))
             .and_then(|_| file.write_all(&ct))
             .map_err(|e| PyOSError::new_err(e.to_string()))?;
-        self.index = self.index.checked_add(1).ok_or_else(|| PyValueError::new_err("too many chunks"))?;
         self.length += data.len() as u64;
         Ok(())
     }
@@ -595,55 +605,77 @@ impl RunSealedWriter {
     }
 }
 
-/// Reads the plaintext back out of a run-sealed file, hashing as it goes.
+/// Reads the plaintext back out of a run-sealed file, in chunk order,
+/// hashing as it goes.
 struct RunReader {
     input: File,
     cipher: Aes256Gcm,
     prefix: [u8; 8],
-    index: u32,
+    /// (offset of the ciphertext, its length), in chunk order.
+    records: Vec<(u64, usize)>,
+    next: usize,
     buf: Zeroizing<Vec<u8>>,
     pos: usize,
     hash: sha2::Sha256,
-    done: bool,
 }
 
 impl RunReader {
     fn open(path: &Path, cipher: Aes256Gcm) -> Result<Self> {
+        use std::io::{Seek, SeekFrom};
         let mut input = File::open(path).map_err(io)?;
         let mut head = [0u8; 16];
         if read_full(&mut input, &mut head)? != 16 || &head[..8] != RUN_MAGIC {
             return Err(ContainerError::Refused);
         }
         let prefix: [u8; 8] = head[8..].try_into().expect("8 bytes");
+        // Index every record first: chunks may have been written in any order.
+        let mut found: std::collections::BTreeMap<u32, (u64, usize)> = Default::default();
+        let mut at = 16u64;
+        loop {
+            let mut rh = [0u8; 8];
+            match read_full(&mut input, &mut rh)? {
+                0 => break,
+                8 => {}
+                _ => return Err(ContainerError::Refused),
+            }
+            let index = u32::from_be_bytes(rh[..4].try_into().expect("4"));
+            let n = u32::from_be_bytes(rh[4..].try_into().expect("4")) as usize;
+            if n < TAG_LEN || n > MAX_CHUNK as usize * 16 + TAG_LEN {
+                return Err(ContainerError::Refused);
+            }
+            if found.insert(index, (at + 8, n)).is_some() {
+                return Err(ContainerError::Refused);      // a duplicate
+            }
+            at += 8 + n as u64;
+            input.seek(SeekFrom::Start(at)).map_err(io)?;
+        }
+        // Exactly 0..n, no gap.
+        if found.keys().enumerate().any(|(i, k)| *k as usize != i) {
+            return Err(ContainerError::Refused);
+        }
         use sha2::Digest;
-        Ok(Self { input, cipher, prefix, index: 0, buf: Zeroizing::new(Vec::new()), pos: 0,
-                  hash: sha2::Sha256::new(), done: false })
+        Ok(Self { input, cipher, prefix, records: found.into_values().collect(), next: 0,
+                  buf: Zeroizing::new(Vec::new()), pos: 0, hash: sha2::Sha256::new() })
     }
 
     fn next_record(&mut self) -> Result<bool> {
-        let mut len = [0u8; 4];
-        match read_full(&mut self.input, &mut len)? {
-            0 => return Ok(false),
-            4 => {}
-            _ => return Err(ContainerError::Refused),
-        }
-        let n = u32::from_be_bytes(len) as usize;
-        if n < TAG_LEN || n > MAX_CHUNK as usize * 16 + TAG_LEN {
-            return Err(ContainerError::Refused);
-        }
+        use std::io::{Seek, SeekFrom};
+        let Some(&(off, n)) = self.records.get(self.next) else { return Ok(false) };
+        self.input.seek(SeekFrom::Start(off)).map_err(io)?;
         let mut ct = vec![0u8; n];
         if read_full(&mut self.input, &mut ct)? != n {
             return Err(ContainerError::Refused);
         }
+        let index = self.next as u32;
         let pt = self.cipher
-            .decrypt(&Nonce::from(nonce(&self.prefix, self.index)),
-                     Payload { msg: &ct, aad: &run_aad(self.index) })
+            .decrypt(&Nonce::from(nonce(&self.prefix, index)),
+                     Payload { msg: &ct, aad: &run_aad(index) })
             .map_err(|_| ContainerError::Refused)?;
         use sha2::Digest;
         self.hash.update(&pt);
         self.buf = Zeroizing::new(pt);
         self.pos = 0;
-        self.index += 1;
+        self.next += 1;
         Ok(true)
     }
 }
@@ -651,15 +683,9 @@ impl RunReader {
 impl Read for RunReader {
     fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
         while self.pos == self.buf.len() {
-            if self.done {
-                return Ok(0);
-            }
             match self.next_record() {
                 Ok(true) => {}
-                Ok(false) => {
-                    self.done = true;
-                    return Ok(0);
-                }
+                Ok(false) => return Ok(0),
                 Err(_) => return Err(std::io::Error::other("run-sealed file failed authentication")),
             }
         }

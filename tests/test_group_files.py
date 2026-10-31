@@ -98,6 +98,71 @@ def _received(m, tid):
     return row
 
 
+class TestAGroupFileIsNeverPlaintextOnDisk:
+    """seal_at_rest (the apps): each piece is sealed under the run key as it
+    lands, out of order or not, and resealed into the container at the end."""
+
+    def _sealed(self, members):
+        for m in members:
+            m.files._seal = True
+
+    def test_pieces_land_sealed_and_the_file_rests_as_a_container(self, tmp_path, monkeypatch):
+        w, (a, b), now, _vol = _sharing(2)
+        _verify_all([a, b])
+        self._sealed([b])
+        data = os.urandom(3 * G.CHUNK + 77)
+        path = tmp_path / "photo.bin"
+        path.write_bytes(data)
+        snapshots = []
+        real = G._run_sealed
+
+        def watched(p):
+            writer = real(p)
+
+            class Watch:
+                def write_at(self, i, piece):
+                    writer.write_at(i, piece)
+                    snapshots.append((bytes(piece), open(p, "rb").read()))
+
+                def finish(self):
+                    return writer.finish()
+            return Watch()
+        monkeypatch.setattr(G, "_run_sealed", watched)
+        a.files.send(ROOM, str(path))
+        tid = _offer(b).transfer_id
+        b.files.accept(tid)
+        _run([a, b], now)
+        assert len(snapshots) == 4
+        for piece, on_disk in snapshots:
+            assert piece[:24] not in on_disk, "a piece reached the disk in the clear"
+        row = _received(b, tid)
+        assert row["state"] == "received" and row["path"].endswith(".otrv")
+        import otrv4plus_filetransfer as ft
+        assert bytes(ft._core.otrv_open_bytes(ft.at_rest_dek(), row["path"], 1 << 24)) == data
+        assert not os.listdir(os.path.join(os.environ["OTRV4PLUS_FILE_DIR"], ".incoming"))
+
+    def test_a_tampered_offer_hash_keeps_nothing(self, tmp_path):
+        w, (a, b), now, _vol = _sharing(2)
+        _verify_all([a, b])
+        self._sealed([b])
+        real = a.files._control
+
+        def lie(room, msg):
+            if msg.get("t") == "offer":
+                msg = dict(msg, sha="00" * 32)
+            real(room, msg)
+        a.files._control = lie
+        a.files.send(ROOM, _file(tmp_path, 2 * G.CHUNK))
+        tid = _offer(b).transfer_id
+        b.files.accept(tid)
+        _run([a, b], now)
+        row = _received(b, tid)
+        assert row["state"] == "failed" and row["reason"] == "verify_failed"
+        d = os.environ["OTRV4PLUS_FILE_DIR"]
+        assert not os.listdir(os.path.join(d, ".incoming"))
+        assert not [n for n in os.listdir(d) if n.endswith(".otrv")]
+
+
 class TestAFileReachesTheGroup:
 
     def test_every_member_that_accepts_gets_it_intact(self, tmp_path):

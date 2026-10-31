@@ -119,13 +119,39 @@ class TestTheReseal:
             core.otrv_reseal_run_file(key, _dek(), path, dst, n + delta)
         assert not os.path.exists(dst)
 
-    def test_chunks_cannot_be_reordered(self):
+    def test_chunks_cannot_be_relabelled(self):
+        # Each record carries its index, bound into its tag: swapping two
+        # records' labels is refused.
         key = core.RunKey()
         path, n = _part([b"A" * 2000, b"B" * 2000], key)
-        raw = open(path, "rb").read()
-        head, rec = raw[:16], 4 + 2000 + 16
-        swapped = head + raw[16 + rec:16 + 2 * rec] + raw[16:16 + rec]
-        open(path, "wb").write(swapped)
+        raw = bytearray(open(path, "rb").read())
+        rec = 8 + 2000 + 16
+        raw[16:20], raw[16 + rec:20 + rec] = raw[16 + rec:20 + rec], raw[16:20]
+        open(path, "wb").write(bytes(raw))
+        with pytest.raises(Exception):
+            core.otrv_reseal_run_file(key, _dek(), path, os.path.join(tempfile.mkdtemp(), "f"), n)
+
+    def test_out_of_order_arrival_reseals_in_order(self):
+        key = core.RunKey()
+        path = os.path.join(tempfile.mkdtemp(), "g.part")
+        w = core.RunSealedWriter(key, path)
+        pieces = [PLAIN[i:i + 5000] for i in range(0, 20000, 5000)]
+        for i in (2, 0, 3, 1):
+            w.write_at(i, pieces[i])
+        n = w.finish()
+        dek, dst = _dek(), os.path.join(tempfile.mkdtemp(), "g.otrv")
+        assert bytes(core.otrv_reseal_run_file(key, dek, path, dst, n)) == \
+            hashlib.sha256(b"".join(pieces)).digest()
+        assert bytes(core.otrv_open_bytes(dek, dst, 1 << 24)) == b"".join(pieces)
+
+    @pytest.mark.parametrize("indices", [(0, 0), (0, 2)])
+    def test_a_duplicate_or_a_gap_is_refused(self, indices):
+        key = core.RunKey()
+        path = os.path.join(tempfile.mkdtemp(), "g.part")
+        w = core.RunSealedWriter(key, path)
+        for i in indices:
+            w.write_at(i, b"x" * 2000)
+        n = w.finish()
         with pytest.raises(Exception):
             core.otrv_reseal_run_file(key, _dek(), path, os.path.join(tempfile.mkdtemp(), "f"), n)
 

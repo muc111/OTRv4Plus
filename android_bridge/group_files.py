@@ -139,6 +139,9 @@ class _In:
     state: str = "offered"
     reason: str = ""
     tmp: str = ""
+    #: The run-sealed writer when the file will rest sealed: pieces are
+    #: sealed under the run key as they land, never plaintext on disk.
+    writer: Any = None
     have: Set[int] = field(default_factory=set)
     last_progress: float = 0.0
     needs: int = 0
@@ -253,7 +256,9 @@ class GroupFiles:
                 return False
             try:
                 inc.tmp = _incoming_file(tid)
-            except OSError:
+                if self._seal:
+                    inc.writer = _run_sealed(inc.tmp)
+            except Exception:
                 return False
             inc.state = "accepted"
             inc.last_progress = self._clock()
@@ -315,6 +320,7 @@ class GroupFiles:
         for out in outs:
             _zero(out.data)
         for inc in ins:
+            inc.writer = None
             if inc.tmp:
                 _discard(inc.tmp)
 
@@ -523,12 +529,15 @@ class GroupFiles:
             if index in inc.have or inc.state != "accepted":
                 return
             try:
-                fd = os.open(inc.tmp, os.O_WRONLY)
-                try:
-                    os.pwrite(fd, piece, index * CHUNK)
-                finally:
-                    os.close(fd)
-            except OSError:
+                if inc.writer is not None:
+                    inc.writer.write_at(index, piece)
+                else:
+                    fd = os.open(inc.tmp, os.O_WRONLY)
+                    try:
+                        os.pwrite(fd, piece, index * CHUNK)
+                    finally:
+                        os.close(fd)
+            except Exception:
                 failed = True
             else:
                 failed = False
@@ -547,15 +556,10 @@ class GroupFiles:
     def _finish(self, inc: _In) -> None:
         """Keep the file only if its size and hash match, read back."""
         try:
-            if os.path.getsize(inc.tmp) != inc.size:
-                raise ValueError("size")
-            digest = hashlib.sha256()
-            with open(inc.tmp, "rb") as fh:
-                for block in iter(lambda: fh.read(1 << 20), b""):
-                    digest.update(block)
-            if digest.hexdigest() != inc.sha:
-                raise ValueError("hash")
-            final = _commit(inc.tmp, inc.name, self._seal)
+            if inc.writer is not None:
+                final = _commit_run_sealed(inc)
+            else:
+                final = self._commit_plain(inc)
         except Exception:
             self._end_in(inc, "failed", "verify_failed")
             return
@@ -566,6 +570,18 @@ class GroupFiles:
             self._control(inc.room, {"t": "got", "id": inc.tid})
         except Exception:
             pass
+
+    def _commit_plain(self, inc: _In) -> str:
+        """Keep the plaintext part only if its size and hash match, read back."""
+        if os.path.getsize(inc.tmp) != inc.size:
+            raise ValueError("size")
+        digest = hashlib.sha256()
+        with open(inc.tmp, "rb") as fh:
+            for block in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != inc.sha:
+            raise ValueError("hash")
+        return _commit(inc.tmp, inc.name, self._seal)
 
     # -- inside -------------------------------------------------------------------
 
@@ -600,6 +616,7 @@ class GroupFiles:
                 return
             inc.state, inc.reason = state, reason
             self._keep(self._row_in(inc))
+        inc.writer = None
         if inc.tmp:
             _discard(inc.tmp)
             inc.tmp = ""
@@ -665,6 +682,36 @@ def _incoming_file(tid: str) -> str:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     os.close(fd)
     return path
+
+
+def _run_sealed(path: str):
+    """A writer sealing each piece under this process's run key (see
+    `otrv4plus_filetransfer._run_key`). The empty file `_incoming_file`
+    made is replaced by the writer's own."""
+    import otrv4plus_filetransfer as ft
+    os.unlink(path)
+    return ft._core.RunSealedWriter(ft._run_key(), path)
+
+
+def _commit_run_sealed(inc) -> str:
+    """Reseal the run-sealed pieces straight into the at-rest container; the
+    size and the hash Rust computed must match the offer, or nothing stays."""
+    import otrv4plus_filetransfer as ft
+    written = int(inc.writer.finish())
+    inc.writer = None
+    if written != inc.size:
+        raise ValueError("size")
+    final = ft.unique_path(ft.state_dir(), inc.name + ft.CONTAINER_SUFFIX)
+    digest = bytes(ft._core.otrv_reseal_run_file(
+        ft._run_key(), ft.at_rest_dek(), inc.tmp, final, written))
+    if digest.hex() != inc.sha:
+        try:
+            os.remove(final)
+        except OSError:
+            pass
+        raise ValueError("hash")
+    os.remove(inc.tmp)
+    return final
 
 
 def _commit(tmp: str, name: str, seal: bool) -> str:
