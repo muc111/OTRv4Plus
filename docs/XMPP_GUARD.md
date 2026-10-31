@@ -12,6 +12,11 @@ in it yet.
 
 ## Design
 
+- **Four services plus maintenance mode.** The dashboard, the event
+  collector (`mod_xmppguard` over local UDP), the sentinel, and the health
+  checker run together; maintenance mode suspends the sentinel's alerting
+  while you make changes, and switches itself back on after
+  `maintenance_minutes`.
 - **Fully offline.** Python standard library only. It makes no outside
   requests, and nothing it serves leaves the machine: the dashboard is on
   `127.0.0.1:7071`.
@@ -172,9 +177,21 @@ Not in 3.1.2:
 - Signed, reproducible releases.
 - Encrypted config backups with one-click restore from the dashboard.
 - A second login factor for the dashboard (hardware key or TOTP).
-- A tamper-evident, hash-chained alert log.
+- A tamper-evident, hash-chained alert log, so an intruder cannot quietly
+  edit or delete the record of what they did.
+- Signed evidence export: a snapshot of the triggering events, the file
+  hashes that changed and their timestamps, signed by the server, for an
+  operator to keep or hand to a lawyer or law enforcement. Evidence to
+  attribute an attack through lawful channels, never a payload that reaches
+  back to the attacker.
 - Private alert delivery: an end-to-end encrypted XMPP message to an admin
   account, with no outside push service.
+- Decoy accounts and rooms that look real and alert the moment they are
+  touched, and connection tarpits that cost an attacker time without
+  reaching their machine.
+- Behavioural fingerprinting that profiles an attack campaign (per-session
+  destination, timing, pattern) to help block and report it, entirely
+  within I2P.
 - A daily or weekly summary.
 - Invite-code sign-up for private groups.
 - An update and advisory checker that works from a signed version list and

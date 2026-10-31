@@ -88,6 +88,8 @@ path = [
     "docs/SPEC.md",
     "docs/SPEC_GROUP.md",
     "docs/STRESS_TEST.md",
+    "docs/RUN_A_SERVER.md",
+    "docs/XMPP_GUARD.md",
     "docs/SECURITY_SESSIONS.md",
     "docs/SERVER_HARDENING.md",
     "docs/TRADE.md",
