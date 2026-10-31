@@ -28,6 +28,8 @@ records: they describe the code as it was when they were written.
 ## Running a server
 
 - [SERVER_HARDENING.md](SERVER_HARDENING.md): hardening Prosody
+- [RUN_A_SERVER.md](RUN_A_SERVER.md): setting up your own Prosody + i2pd server
+- [XMPP_GUARD.md](XMPP_GUARD.md): XMPP Guard, the commercial server security dashboard (sold separately)
 - [SECURITY_SESSIONS.md](SECURITY_SESSIONS.md): one account, one device
 - [PROSODY_USER_DISCOVERY.md](PROSODY_USER_DISCOVERY.md): the People list
 - [STRESS_TEST.md](STRESS_TEST.md): load-testing your own server

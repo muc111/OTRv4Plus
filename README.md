@@ -4,18 +4,37 @@
 
 <h1 align="center">OTRv4+</h1>
 
-<p align="center"><strong>Private messaging and voice over I2P</strong></p>
+<p align="center"><strong>Private chat, groups, files and voice calls over I2P, on a server you can run yourself.<br>No phone number. Android, Linux desktop and terminal.</strong></p>
 
 <p align="center">
 <code>v10.31.0 · Rust core 0.13.2 · Android 0.7.0 (pre-release) · Desktop 0.14.11 (pre-release) · chat (X448 + ML-KEM-1024, AES-256-GCM) · group chat (MLS: X448 + ML-KEM-1024, Ed448 + ML-DSA-87, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
-OTRv4+ is an open-source client for end-to-end encrypted chat, encrypted
-group chat, file transfer and voice calls. It is built around the I2P network
-and needs no phone number. Tor and TLS also work for chat.
+OTRv4+ is an open-source, end-to-end encrypted messenger built on XMPP and the I2P network. Anyone can run the server: an ordinary Prosody XMPP server behind i2pd. The app ships pointing at a public test server (`otrv4plus.i2p`) so you can try it straight away. That is a default, not a lock-in: change one field and it talks to your own. Tor and TLS also work for chat.
 
 **Security status: extensively tested and hardened through developer-led and AI-assisted analysis, but not independently audited.**
-See [Security assessment and audit status](#security-assessment-and-audit-status) for what that covers and what it does not.
+Treat it as experimental. See [Security assessment and audit status](#security-assessment-and-audit-status) for what that covers and what it does not.
+
+### Why another messenger?
+
+- **Your server, your rules.** Plain XMPP (Prosody) behind I2P: no company in the middle, no phone number, no account tied to who you are. The free [Prosody modules](prosody/) add sign-up limits, bans and one session per account.
+- **I2P built in.** The Android app carries its own I2P router, so there is nothing else to install. The server's location stays hidden, and so do the users'.
+- **Post-quantum by default.** 1:1 chat, encrypted groups (MLS), identity verification and voice all pair classic X448/Ed448 with ML-KEM-1024 and ML-DSA-87.
+- **Verify the person, not just the key.** Built-in SMP: two people confirm each other with a secret they agreed in person. Groups are verified the same way, by their creator.
+- **Leaves as little behind as it can.** Messages can be made deniable afterwards (Publish Chat Keys), and Wipe & Exit destroys keys and checks the files are gone. On desktop, where a system key store is available, it deletes the master key there, so leftover files cannot be opened.
+- **Same protocol everywhere.** The Android app, the Linux desktop app and the terminal clients for Termux and Linux all talk to each other.
+
+### Try it
+
+1. **Android:** install the APK from the [Releases page](https://github.com/muc111/OTRv4Plus/releases) and create an account on the default server. The first start takes a few minutes while it joins I2P.
+2. **Linux desktop:** one line, see [Desktop app](#desktop-app-ubuntu-debian-qubes-os).
+3. Add a friend, press **Verify** together, and chat, call or send a file.
+
+### Run your own server
+
+Prosody, an i2pd server tunnel in front of it, and the free [modules and limits script](prosody/): four steps in [docs/RUN_A_SERVER.md](docs/RUN_A_SERVER.md). One 2015 ThinkPad carried 1,600 users online ([stress test](docs/STRESS_TEST.md)). Then change the server on the app's sign-in screen, or pass `--server <address>.b32.i2p` to the terminal client.
+
+**XMPP Guard (commercial, sold separately).** A real-time security dashboard and tripwire for the server, running entirely on the box at `127.0.0.1:7071`. It shows attacks, uptime and I2P health, hashes usernames, and alerts on file tampering, IP leaks and takeovers, with a hardening audit and sandboxing. It is not in this repository. Features: [docs/XMPP_GUARD.md](docs/XMPP_GUARD.md).
 
 ## Screenshots
 
@@ -57,10 +76,6 @@ start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+
 | Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
 | Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls tested on phones (rc.89). Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
 | Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [docs/CRYPTO_AUDIT_2026-09.md](docs/CRYPTO_AUDIT_2026-09.md) and [docs/SECURITY_AUDIT_2026-10-11.md](docs/SECURITY_AUDIT_2026-10-11.md) |
-
-## Server capacity (stress test)
-
-On one 2015 ThinkPad T450 running Prosody, measured with the built-in stress test (encrypted groups of 20, each user sending a message a minute, local connections; I2P not yet measured): 800 users online used 37% of one core and 303 MB, delivery 0.31 s typical / 0.56 s slowest 5%, ~100% delivered; **1,600 users** used about 40% (p95 0.5 s). The server is capped at 1,600 online, 10 sign-ins a second and 5,000 accounts. Method and raw results: [docs/STRESS_TEST.md](docs/STRESS_TEST.md); limits: [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md).
 
 ## Security assessment and audit status
 
@@ -155,13 +170,9 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
 . "$HOME/.cargo/env"     # puts Rust on this terminal's PATH (new terminals have it)
 ```
 
-Do not `pip install` anything: `build.sh` puts the Python modules in the project's own
-`.venv` (Ubuntu refuses a system-wide pip install: "externally-managed-environment").
-`libopus0 pulseaudio-utils` are for calls (Termux: `pkg install libopus termux-api`);
-`build.sh` installs the opuslib binding and says if voice is missing anything.
+Do not `pip install` anything: `build.sh` uses the project's own `.venv`. For calls on Termux: `pkg install libopus termux-api`.
 
-**2. Download and build the Rust core** (the first run on a phone also compiles
-the build tool once, so it takes longer; later builds are much faster):
+**2. Download and build the Rust core** (slower the first time on a phone):
 
 ```bash
 git clone -b dev https://github.com/muc111/OTRv4Plus.git    # or -b main (see Pick a branch)
@@ -170,23 +181,11 @@ bash build.sh
 cd ..
 ```
 
-`build.sh` sets up its own Python environment in `.venv`, runs the Rust tests and
-lints, installs the core (with secure groups) and ends with `BUILD OK`. Keep Termux
-open while it runs; details in [docs/TECHNICAL.md](docs/TECHNICAL.md#buildsh-in-detail).
+It ends with `BUILD OK`; keep Termux open while it runs ([details](docs/TECHNICAL.md#buildsh-in-detail)).
 
-**3. Update later.** Pull, then rebuild the core (both Python and Rust change):
+**3. Update later:** `git pull`, then `cd Rust && bash build.sh` again. Keys and settings live in `~/.otrv4plus` and survive updates.
 
-```bash
-cd ~/OTRv4Plus
-git pull                         # stays on dev or main, whichever you cloned
-cd Rust && bash build.sh && cd ..
-git log -1 --format='%h %ad'     # check you are on the latest commit
-```
-Keys and settings live in `~/.otrv4plus`, outside the repository; updates leave them.
-
-**4. Networks.** For I2P, run an I2P router with the SAM bridge on port 7656: on a
-phone the I2P app ("Use SAM bridge" on); on Ubuntu/Debian `sudo apt install i2pd`
-(SAM is on by default). For Tor, Orbot or `tor` with SOCKS on port 9050.
+**4. Networks.** I2P: a router with SAM on port 7656 (the I2P app with "Use SAM bridge" on, or `sudo apt install i2pd`). Tor: Orbot or `tor`, SOCKS on 9050.
 
 **5. Run it.**
 
@@ -222,7 +221,7 @@ Building on musl (Alpine), every option and all commands: [docs/TECHNICAL.md](do
 
 [docs/TECHNICAL.md](docs/TECHNICAL.md) (full reference) · [docs/SPEC.md](docs/SPEC.md) (wire protocol) · [SECURITY.md](SECURITY.md) (threat model, known issues) · [CHANGELOG.md](CHANGELOG.md) · [docs/MLS_SECURITY_HARDENING.md](docs/MLS_SECURITY_HARDENING.md) (group chat design) · [docs/OTRV4PLUS_CAPABILITY.md](docs/OTRV4PLUS_CAPABILITY.md) (who can receive OTRv4+) · [docs/PROSODY_USER_DISCOVERY.md](docs/PROSODY_USER_DISCOVERY.md) (People list, Welcome room) · [CONTRIBUTING.md](CONTRIBUTING.md) · [all documents](docs/README.md)
 
-Running a server: [docs/STRESS_TEST.md](docs/STRESS_TEST.md) · [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md) (limits, one-command install) · [docs/SECURITY_SESSIONS.md](docs/SECURITY_SESSIONS.md) (one session per account)
+Running a server: [docs/STRESS_TEST.md](docs/STRESS_TEST.md) · [docs/SERVER_HARDENING.md](docs/SERVER_HARDENING.md) (limits, one-command install) · [docs/XMPP_GUARD.md](docs/XMPP_GUARD.md) (commercial security dashboard) · [docs/SECURITY_SESSIONS.md](docs/SECURITY_SESSIONS.md) (one session per account)
 
 **Relationship to OTR.** OTRv4+ is an independent implementation and extension of
 OTRv4, not affiliated with, endorsed by, or connected to the original OTR
