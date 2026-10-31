@@ -143,6 +143,12 @@ modules_enabled = { --[[ ...the existing list... ]] "limits"; }
 limits = {
     c2s = { rate = "100kb/s"; burst = "5s"; };
 }
+-- NOT YET STRESS-TESTED with large groups. An invitation into a group of
+-- N carries the whole tree, about 9.4 KB per member: ~940 KB for 100
+-- members, about twice what a 5 s burst at 100 kb/s allows. mod_limits slows
+-- the sender down rather than dropping data, so the invite should still
+-- arrive, seconds later; check that with a stress step that invites into
+-- groups of 100 before relying on it, and raise `rate` if invites time out.
 
 -- Only accounts on this server create rooms.
 restrict_room_creation = "local"
@@ -171,12 +177,18 @@ i2pd is the only part that sees each client's I2P destination. In
 `port = 5222`):
 
 ```ini
-# Connections per minute from one I2P destination (0 = unlimited).
-maxconns = 10
+# New streams per minute from one client destination (0 = unlimited, the
+# default). Over the limit, i2pd drops the connection attempt.
+i2p.streaming.maxConnsPerMinute = 10
+# Streams open at once on this tunnel; the default, 2048, is above the
+# 1,600 online cap, so it only needs raising with the cap.
+# i2p.streaming.maxConcurrentStreams = 2048
 ```
 
-Check the option name against your i2pd version (`man i2pd` or the i2pd
-documentation, tunnels configuration) before relying on it. It is weaker
+An earlier version of this page said `maxconns = 10`. i2pd has no such
+option and ignored the line silently; the names above are the ones i2pd
+reads (`libi2pd/Destination.h`, applied per remote destination in
+`libi2pd/Streaming.cpp`). The limit is weaker
 than it looks: the app makes a new I2P destination for each session, so a
 determined client can rotate. It still stops a single runaway client.
 
