@@ -22,6 +22,7 @@ import org.otrv4plus.android.bridge.OtrCore
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.OtrEventSink
 import org.otrv4plus.android.bridge.PeerPresence
+import org.otrv4plus.android.bridge.RegistrationCaptcha
 import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.SecurityDetails
 import org.otrv4plus.android.bridge.SecurityState
