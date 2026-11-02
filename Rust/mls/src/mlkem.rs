@@ -12,7 +12,9 @@
 //! Byte encodings are the FIPS 203 forms (ek 1568, expanded dk 3168, ct 1568),
 //! identical to the former PQClean bindings and cross-checked in Rust/audit.
 
-use ml_kem::{MlKem1024, EncapsulationKey, DecapsulationKey, Ciphertext, Decapsulate, KeyExport};
+use ml_kem::{MlKem1024, EncapsulationKey, DecapsulationKey, Ciphertext, Decapsulate, KeyExport,
+             ExpandedDecapsulationKey, Seed, B32};
+use zeroize::Zeroizing;
 use ml_kem::array::Array;
 #[allow(deprecated)]
 use ml_kem::ExpandedKeyEncoding;
@@ -23,34 +25,40 @@ pub const CIPHERTEXT_BYTES: usize = 1568;
 pub const SEED_BYTES: usize = 64;
 
 /// (public, secret) from a 64-byte FIPS 203 seed `d || z`. The secret is the
-/// 3168-byte expanded decapsulation key.
-pub fn keypair_from_seed(seed: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+/// 3168-byte expanded decapsulation key, in a wiped buffer; the seed copy and
+/// the encoded key are wiped too.
+pub fn keypair_from_seed(seed: &[u8]) -> Option<(Vec<u8>, Zeroizing<Vec<u8>>)> {
     if seed.len() != SEED_BYTES {
         return None;
     }
-    let dk = DecapsulationKey::<MlKem1024>::from_seed(Array::try_from(seed).ok()?);
+    let seed: Zeroizing<Seed> = Zeroizing::new(Array::try_from(seed).ok()?);
+    let dk = DecapsulationKey::<MlKem1024>::from_seed((*seed).clone());
     let pk = dk.encapsulation_key().to_bytes().as_slice().to_vec();
     #[allow(deprecated)]
-    let sk = dk.to_expanded_bytes().as_slice().to_vec();
-    Some((pk, sk))
+    let expanded = Zeroizing::new(dk.to_expanded_bytes());
+    Some((pk, Zeroizing::new(expanded.as_slice().to_vec())))
 }
 
-/// (shared secret, ciphertext) to `pk`.
-pub fn encapsulate(pk: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+/// (shared secret, ciphertext) to `pk`. The shared secret, and the
+/// randomness `m` that alone determines it, are held in wiped buffers.
+pub fn encapsulate(pk: &[u8]) -> Option<(Zeroizing<Vec<u8>>, Vec<u8>)> {
     let key = EncapsulationKey::<MlKem1024>::new(&Array::try_from(pk).ok()?).ok()?;
-    let mut m = [0u8; 32];
-    getrandom::getrandom(&mut m).ok()?;
-    let (ct, ss) = key.encapsulate_deterministic(&Array::from(m));
-    m.iter_mut().for_each(|b| *b = 0);
-    Some((ss.as_slice().to_vec(), ct.as_slice().to_vec()))
+    let mut m = Zeroizing::new(B32::default());
+    getrandom::getrandom(m.as_mut_slice()).ok()?;
+    let (ct, ss) = key.encapsulate_deterministic(&m);
+    let ss = Zeroizing::new(ss);
+    Some((Zeroizing::new(ss.as_slice().to_vec()), ct.as_slice().to_vec()))
 }
 
 /// The shared secret in `ct`, for expanded secret key `sk` (3168).
-pub fn decapsulate(ct: &[u8], sk: &[u8]) -> Option<Vec<u8>> {
+pub fn decapsulate(ct: &[u8], sk: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    let sk: Zeroizing<ExpandedDecapsulationKey<MlKem1024>> =
+        Zeroizing::new(Array::try_from(sk).ok()?);
     #[allow(deprecated)]
-    let key = DecapsulationKey::<MlKem1024>::from_expanded_bytes(&Array::try_from(sk).ok()?).ok()?;
+    let key = DecapsulationKey::<MlKem1024>::from_expanded_bytes(&sk).ok()?;
     let ct = Ciphertext::<MlKem1024>::try_from(ct).ok()?;
-    Some(key.decapsulate(&ct).as_slice().to_vec())
+    let ss = Zeroizing::new(key.decapsulate(&ct));
+    Some(Zeroizing::new(ss.as_slice().to_vec()))
 }
 
 #[cfg(test)]

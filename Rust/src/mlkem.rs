@@ -46,7 +46,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes};
 use pyo3::exceptions::PyValueError;
 
-use ml_kem::{MlKem1024, EncapsulationKey, DecapsulationKey, Ciphertext, Decapsulate, KeyExport};
+use ml_kem::{MlKem1024, EncapsulationKey, DecapsulationKey, Ciphertext, Decapsulate, KeyExport,
+             ExpandedDecapsulationKey, B32};
+use zeroize::Zeroizing;
 use ml_kem::array::Array;
 #[allow(deprecated)]
 use ml_kem::ExpandedKeyEncoding;
@@ -63,37 +65,43 @@ const MLKEM_DK_SIZE: usize = 3168;
 
 /// A fresh keypair as `(ek 1568, expanded dk 3168)`, the former PQClean
 /// encoding.  Driven by a 64-byte FIPS 203 seed from the OS CSPRNG.
-pub(crate) fn raw_keypair() -> (Vec<u8>, Vec<u8>) {
-    let mut seed = [0u8; 64];
-    getrandom::getrandom(&mut seed).expect("OS CSPRNG for ML-KEM key generation");
-    let dk = DecapsulationKey::<MlKem1024>::from_seed(Array::from(seed));
-    seed.iter_mut().for_each(|b| *b = 0);
+/// The decapsulation key is returned in a wiped buffer, and every
+/// intermediate copy (seed, encoded key) is wiped too.
+pub(crate) fn raw_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
+    let mut seed = Zeroizing::new([0u8; 64]);
+    getrandom::getrandom(&mut seed[..]).expect("OS CSPRNG for ML-KEM key generation");
+    let dk = DecapsulationKey::<MlKem1024>::from_seed(Array::from(*seed));
     let ek = dk.encapsulation_key().to_bytes().as_slice().to_vec();
     #[allow(deprecated)]
-    let sk = dk.to_expanded_bytes().as_slice().to_vec();
-    (ek, sk)
+    let expanded = Zeroizing::new(dk.to_expanded_bytes());
+    (ek, Zeroizing::new(expanded.as_slice().to_vec()))
 }
 
 /// Encapsulate to `ek` (1568).  Returns `(ciphertext 1568, shared secret 32)`.
 /// `None` if `ek` is not a valid encapsulation key.
-pub(crate) fn raw_encapsulate(ek: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+/// The shared secret, and the randomness `m` that alone determines it, are
+/// held in wiped buffers.
+pub(crate) fn raw_encapsulate(ek: &[u8]) -> Option<(Vec<u8>, Zeroizing<Vec<u8>>)> {
     let key = EncapsulationKey::<MlKem1024>::new(&Array::try_from(ek).ok()?).ok()?;
-    let mut m = [0u8; 32];
-    getrandom::getrandom(&mut m).ok()?;
-    let (ct, ss) = key.encapsulate_deterministic(&Array::from(m));
-    m.iter_mut().for_each(|b| *b = 0);
-    Some((ct.as_slice().to_vec(), ss.as_slice().to_vec()))
+    let mut m = Zeroizing::new(B32::default());
+    getrandom::getrandom(m.as_mut_slice()).ok()?;
+    let (ct, ss) = key.encapsulate_deterministic(&m);
+    let ss = Zeroizing::new(ss);
+    Some((ct.as_slice().to_vec(), Zeroizing::new(ss.as_slice().to_vec())))
 }
 
 /// Decapsulate `ct` (1568) with the expanded decapsulation key `dk` (3168).
 /// Returns the 32-byte shared secret, or `None` on a malformed input.
 /// FIPS 203 implicit rejection: a tampered ciphertext yields an unrelated
 /// secret rather than an error.
-pub(crate) fn raw_decapsulate(dk: &[u8], ct: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn raw_decapsulate(dk: &[u8], ct: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    let dk: Zeroizing<ExpandedDecapsulationKey<MlKem1024>> =
+        Zeroizing::new(Array::try_from(dk).ok()?);
     #[allow(deprecated)]
-    let key = DecapsulationKey::<MlKem1024>::from_expanded_bytes(&Array::try_from(dk).ok()?).ok()?;
+    let key = DecapsulationKey::<MlKem1024>::from_expanded_bytes(&dk).ok()?;
     let ct = Ciphertext::<MlKem1024>::try_from(ct).ok()?;
-    Some(key.decapsulate(&ct).as_slice().to_vec())
+    let ss = Zeroizing::new(key.decapsulate(&ct));
+    Some(Zeroizing::new(ss.as_slice().to_vec()))
 }
 
 /// Generate a fresh ML-KEM-1024 keypair.

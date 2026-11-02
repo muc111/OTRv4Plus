@@ -431,7 +431,7 @@ impl PqBundle {
 
 // ─── ML-KEM-1024 helpers ──────────────────────────────────────────────────────
 
-fn mlkem_keygen() -> Result<(Vec<u8>, Vec<u8>)> {
+fn mlkem_keygen() -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>)> {
     // FIPS 203 ML-KEM-1024, the pure-Rust `ml-kem` crate (crate::mlkem).
     // Returns (ek 1568, expanded dk 3168).
     Ok(crate::mlkem::raw_keypair())
@@ -442,20 +442,16 @@ fn mlkem_encapsulate(ek: &[u8]) -> Result<(Vec<u8>, SecretVec)> {
         return Err(OtrError::TooShort { need: MLKEM_EK_SIZE, got: ek.len() });
     }
     // Returns (ciphertext, shared secret).
-    let (ct_bytes, mut ss_bytes) = crate::mlkem::raw_encapsulate(ek).ok_or(OtrError::MlKem)?;
-    let secret = SecretVec::from_slice(&ss_bytes);
-    ss_bytes.zeroize();
-    Ok((ct_bytes, secret))
+    let (ct_bytes, ss_bytes) = crate::mlkem::raw_encapsulate(ek).ok_or(OtrError::MlKem)?;
+    Ok((ct_bytes, SecretVec::from_slice(&ss_bytes)))  // ss_bytes is wiped on drop
 }
 
 fn mlkem_decapsulate(sk_bytes: &[u8], ct_bytes: &[u8]) -> Result<SecretVec> {
     if ct_bytes.len() != MLKEM_CT_SIZE {
         return Err(OtrError::TooShort { need: MLKEM_CT_SIZE, got: ct_bytes.len() });
     }
-    let mut ss_bytes = crate::mlkem::raw_decapsulate(sk_bytes, ct_bytes).ok_or(OtrError::MlKem)?;
-    let secret = SecretVec::from_slice(&ss_bytes);
-    ss_bytes.zeroize();
-    Ok(secret)
+    let ss_bytes = crate::mlkem::raw_decapsulate(sk_bytes, ct_bytes).ok_or(OtrError::MlKem)?;
+    Ok(SecretVec::from_slice(&ss_bytes))  // ss_bytes is wiped on drop
 }
 
 // ─── ML-DSA-87 helpers ────────────────────────────────────────────────────────
@@ -471,7 +467,9 @@ fn mldsa_keygen() -> Result<(Vec<u8>, SecretBytes<MLDSA_PRV_SIZE>)> {
     }
     arr.copy_from_slice(&sk_raw);
     sk_raw.zeroize();
-    Ok((pk_bytes, SecretBytes::new(arr)))
+    let sk = SecretBytes::new(arr);
+    arr.zeroize(); // `arr` is Copy: the move above left this copy behind
+    Ok((pk_bytes, sk))
 }
 
 /// Sign with ML-DSA-87, binding pq_binding_key into the signed message.

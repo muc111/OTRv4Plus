@@ -235,15 +235,14 @@ fn mlkem_encap(pk_r: &[u8]) -> Result<(Zeroizing<Vec<u8>>, Vec<u8>), HpkeError> 
     if pk_r.len() != mlkem::PUBLIC_KEY_BYTES {
         return Err(HpkeError::InvalidInput);
     }
-    let (ss, enc) = mlkem::encapsulate(pk_r).ok_or(HpkeError::InvalidInput)?;
-    Ok((Zeroizing::new(ss), enc))
+    mlkem::encapsulate(pk_r).ok_or(HpkeError::InvalidInput)
 }
 
 fn mlkem_decap(enc: &[u8], sk_r: &[u8]) -> Result<Zeroizing<Vec<u8>>, HpkeError> {
     if enc.len() != mlkem::CIPHERTEXT_BYTES || sk_r.len() != mlkem::SECRET_KEY_BYTES {
         return Err(HpkeError::InvalidInput);
     }
-    mlkem::decapsulate(enc, sk_r).map(Zeroizing::new).ok_or(HpkeError::Decaps)
+    mlkem::decapsulate(enc, sk_r).ok_or(HpkeError::Decaps)
 }
 
 /// The ML-KEM-1024 public key inside a FIPS 203 decapsulation key
@@ -416,7 +415,7 @@ pub fn derive_key_pair_with(kem: Kem, ikm: &[u8]) -> Result<(Zeroizing<Vec<u8>>,
             let mut seed = Zeroizing::new([0u8; mlkem::SEED_BYTES]);
             shake(&[ikm], &mut seed[..]);
             let (pk, sk) = mlkem::keypair_from_seed(&seed[..]).ok_or(HpkeError::InvalidInput)?;
-            Ok((Zeroizing::new(sk), pk))
+            Ok((sk, pk))
         }
         Kem::X448MlKem1024 => {
             let mut sk_x448 = Zeroizing::new([0u8; X448_BYTES]);
@@ -425,7 +424,6 @@ pub fn derive_key_pair_with(kem: Kem, ikm: &[u8]) -> Result<(Zeroizing<Vec<u8>>,
             shake(&[HYBRID_LABEL, b"/mlkem", ikm], &mut seed[..]);
             let (pk_mlkem, sk_mlkem) =
                 mlkem::keypair_from_seed(&seed[..]).ok_or(HpkeError::InvalidInput)?;
-            let sk_mlkem = Zeroizing::new(sk_mlkem);
             let mut sk = Zeroizing::new(Vec::with_capacity(kem.secret_key_bytes()));
             sk.extend_from_slice(&sk_x448[..]);
             sk.extend_from_slice(&sk_mlkem);

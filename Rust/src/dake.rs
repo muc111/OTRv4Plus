@@ -882,17 +882,17 @@ impl DakeState {
         let mut bytes=[0u8;56]; getrandom::getrandom(&mut bytes).map_err(|_| OtrError::Internal)?;
         let sk = x448::Secret::from(bytes); Ok((SecretBytes::new(bytes), *x448::PublicKey::from(&sk).as_bytes()))
     }
-    fn generate_mlkem_keypair() -> Result<(Vec<u8>,Vec<u8>)> {
+    fn generate_mlkem_keypair() -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>)> {
         // FIPS 203 ML-KEM-1024, the pure-Rust `ml-kem` crate (crate::mlkem).
         // Returns (ek 1568, expanded dk 3168).
         Ok(crate::mlkem::raw_keypair())
     }
-    fn mlkem_encapsulate(ek: &[u8]) -> Result<(Vec<u8>,Vec<u8>)> {
+    fn mlkem_encapsulate(ek: &[u8]) -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>)> {
         // Returns (ciphertext, shared secret) to match the caller's
         // destructuring `let (ct, mlkem_ss) = mlkem_encapsulate(...)`.
         crate::mlkem::raw_encapsulate(ek).ok_or(OtrError::MlKem)
     }
-    fn mlkem_decapsulate(sk: &[u8], ct: &[u8]) -> Result<Vec<u8>> {
+    fn mlkem_decapsulate(sk: &[u8], ct: &[u8]) -> Result<zeroize::Zeroizing<Vec<u8>>> {
         crate::mlkem::raw_decapsulate(sk, ct).ok_or(OtrError::MlKem)
     }
     fn mldsa_verify(pub_key: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {

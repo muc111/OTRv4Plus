@@ -38,7 +38,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes};
 use pyo3::exceptions::PyValueError;
 
-use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey, B32};
+use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey,
+             ExpandedSigningKeyBytes, B32};
+use zeroize::Zeroizing;
 
 const MLDSA_SK_LEN: usize = 4896;
 const MLDSA_PK_LEN: usize = 2592;
@@ -48,15 +50,15 @@ const MLDSA_PK_LEN: usize = 2592;
 /// A fresh keypair as `(pk 2592, expanded sk 4896)`, the former PQClean
 /// encoding.  Driven by a 32-byte FIPS 204 seed from the OS CSPRNG.
 #[allow(deprecated)] // `to_expanded` gives the 4896-byte PQClean-compatible form
-pub(crate) fn raw_keypair() -> (Vec<u8>, Vec<u8>) {
-    let mut xi = [0u8; 32];
-    getrandom::getrandom(&mut xi).expect("OS CSPRNG for ML-DSA key generation");
-    let seed: B32 = xi.into();
-    xi.iter_mut().for_each(|b| *b = 0);
+/// The secret key is returned in a wiped buffer; the seed and the encoded
+/// key are wiped too.
+pub(crate) fn raw_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
+    let mut seed = Zeroizing::new(B32::default());
+    getrandom::getrandom(seed.as_mut_slice()).expect("OS CSPRNG for ML-DSA key generation");
     let esk = ExpandedSigningKey::<MlDsa87>::from_seed(&seed);
     let pk = esk.verifying_key().encode().as_slice().to_vec();
-    let sk = esk.to_expanded().as_slice().to_vec();
-    (pk, sk)
+    let expanded = Zeroizing::new(esk.to_expanded());
+    (pk, Zeroizing::new(expanded.as_slice().to_vec()))
 }
 
 /// FIPS 204 ML-DSA.Sign (Algorithm 2), hedged, pure, empty context:
@@ -67,7 +69,7 @@ pub(crate) fn raw_keypair() -> (Vec<u8>, Vec<u8>) {
 pub(crate) fn sign_hedged(esk: &ExpandedSigningKey<MlDsa87>, msg: &[u8])
     -> Option<Signature<MlDsa87>>
 {
-    let mut rnd = zeroize::Zeroizing::new(B32::default());
+    let mut rnd = Zeroizing::new(B32::default());
     getrandom::getrandom(rnd.as_mut_slice()).ok()?;
     Some(esk.sign_internal(&[&[0u8], &[0u8], msg], &rnd))
 }
@@ -77,7 +79,8 @@ pub(crate) fn sign_hedged(esk: &ExpandedSigningKey<MlDsa87>, msg: &[u8])
 /// secret key.
 #[allow(deprecated)] // `from_expanded` consumes the 4896-byte PQClean-compatible form
 pub(crate) fn raw_sign(sk: &[u8], msg: &[u8]) -> Option<Vec<u8>> {
-    let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&sk.try_into().ok()?);
+    let enc: Zeroizing<ExpandedSigningKeyBytes<MlDsa87>> = Zeroizing::new(sk.try_into().ok()?);
+    let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&enc);
     let sig = sign_hedged(&esk, msg)?;
     Some(sig.encode().as_slice().to_vec())
 }

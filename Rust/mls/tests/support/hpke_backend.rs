@@ -150,7 +150,8 @@ impl HpkeCrypto for CoreHpke {
     /// (encapsulation key, decapsulation key) from the FIPS 203 seed.
     fn kem_key_gen_derand(alg: KemAlgorithm, seed: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
         Self::supports_kem(alg)?;
-        mlkem::keypair_from_seed(seed).ok_or(Error::KemInvalidSecretKey)
+        // hpke-rs's trait wants plain Vecs (test only; never shipped).
+        mlkem::keypair_from_seed(seed).map(|(pk, sk)| (pk, sk.to_vec())).ok_or(Error::KemInvalidSecretKey)
     }
 
     /// (shared secret, encapsulation) -- the order hpke-rs expects.
@@ -160,12 +161,12 @@ impl HpkeCrypto for CoreHpke {
         _prng: &mut Self::HpkePrng,
     ) -> Result<(Vec<u8>, Vec<u8>), Error> {
         Self::supports_kem(alg)?;
-        mlkem::encapsulate(pk_r).ok_or(Error::KemInvalidPublicKey)
+        mlkem::encapsulate(pk_r).map(|(ss, ct)| (ss.to_vec(), ct)).ok_or(Error::KemInvalidPublicKey)
     }
 
     fn kem_decaps(alg: KemAlgorithm, ct: &[u8], sk_r: &[u8]) -> Result<Vec<u8>, Error> {
         Self::supports_kem(alg)?;
-        mlkem::decapsulate(ct, sk_r).ok_or(Error::KemInvalidCiphertext)
+        mlkem::decapsulate(ct, sk_r).map(|ss| ss.to_vec()).ok_or(Error::KemInvalidCiphertext)
     }
 
     fn dh_validate_sk(_alg: KemAlgorithm, _sk: &[u8]) -> Result<Vec<u8>, Error> {

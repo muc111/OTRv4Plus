@@ -58,7 +58,8 @@ use openmls_traits::{
     },
     OpenMlsProvider,
 };
-use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey, B32};
+use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey,
+             ExpandedSigningKeyBytes, B32};
 use sha2::{Digest, Sha512};
 use tls_codec::SecretVLBytes;
 use zeroize::{Zeroize, Zeroizing};
@@ -137,15 +138,13 @@ fn aes256(alg: AeadType, key: &[u8], nonce: &[u8]) -> Result<Aes256Gcm, CryptoEr
 
 /// A fresh ML-DSA-87 keypair as `(pk 2592, expanded sk 4896)`.
 #[allow(deprecated)] // `to_expanded` gives the 4896-byte PQClean-compatible form
-fn mldsa87_keypair() -> (Vec<u8>, Vec<u8>) {
-    let mut xi = [0u8; 32];
-    getrandom::getrandom(&mut xi).expect("OS CSPRNG for ML-DSA key generation");
-    let seed: B32 = xi.into();
-    xi.iter_mut().for_each(|b| *b = 0);
+fn mldsa87_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
+    let mut seed = Zeroizing::new(B32::default());
+    getrandom::getrandom(seed.as_mut_slice()).expect("OS CSPRNG for ML-DSA key generation");
     let esk = ExpandedSigningKey::<MlDsa87>::from_seed(&seed);
     let pk = esk.verifying_key().encode().as_slice().to_vec();
-    let sk = esk.to_expanded().as_slice().to_vec();
-    (pk, sk)
+    let expanded = Zeroizing::new(esk.to_expanded());
+    (pk, Zeroizing::new(expanded.as_slice().to_vec()))
 }
 
 /// ML-DSA-87 detached signature: FIPS 204 ML-DSA.Sign (Algorithm 2),
@@ -154,8 +153,9 @@ fn mldsa87_keypair() -> (Vec<u8>, Vec<u8>) {
 /// `secret` is the 4896-byte expanded signing key.
 #[allow(deprecated)] // `from_expanded` consumes the 4896-byte PQClean-compatible sk
 pub(crate) fn mldsa87_sign(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(
-        &secret.try_into().map_err(|_| CryptoError::InvalidLength)?);
+    let enc: Zeroizing<ExpandedSigningKeyBytes<MlDsa87>> =
+        Zeroizing::new(secret.try_into().map_err(|_| CryptoError::InvalidLength)?);
+    let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&enc);
     let mut rnd = Zeroizing::new(B32::default());
     getrandom::getrandom(rnd.as_mut_slice()).map_err(|_| CryptoError::InsufficientRandomness)?;
     let sig = esk.sign_internal(&[&[0u8], &[0u8], data], &rnd);
@@ -522,7 +522,7 @@ impl SignatureKeyPair {
             SignatureScheme::MLDSA87 => Ok(Self {
                 scheme,
                 public: ml_pk,
-                secret: Zeroizing::new(ml_sk),
+                secret: ml_sk,
             }),
             COMPOSITE => {
                 let mut seed = Zeroizing::new([0u8; ED448_SEED_BYTES]);
