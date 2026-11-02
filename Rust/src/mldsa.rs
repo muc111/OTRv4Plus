@@ -1,49 +1,86 @@
 //! ML-DSA-87 (FIPS 204) PyO3 bindings.
 //!
-//! v10.6.18 (Phase 5.3j): replaces the `otr4_mldsa_ext` C extension.
-//!
 //! Exposes three functions to Python with byte-identical wire output to
-//! the prior C extension (same FIPS 204 ML-DSA-87 parameter set, same
-//! PQClean reference implementation underneath):
+//! the prior PQClean implementation (same FIPS 204 ML-DSA-87 parameter set,
+//! same key/signature encodings):
 //!
 //! - `mldsa87_keygen() -> (bytes, bytearray)`
 //!   Generates a fresh ML-DSA-87 keypair.  Returns `(pub_bytes, priv_bytearray)`.
 //!   Public bytes as immutable `bytes`; private bytes as mutable `bytearray`
-//!   so the caller can `_ossl.cleanse(priv)` it.  Same shape as the C
-//!   extension's `mldsa87_keygen()`.
+//!   so the caller can `_ossl.cleanse(priv)` it.
 //!
 //! - `mldsa87_sign(priv: bytes, msg: bytes) -> bytes`
 //!   Signs `msg` with the ML-DSA-87 secret key.  Returns the 4627-byte
-//!   detached signature (FIPS 204 §5.4).  Wire-identical to the C
-//!   extension output.  Raises `ValueError` on invalid private key bytes.
+//!   detached signature (FIPS 204 §5.4).  Raises `ValueError` on invalid
+//!   private key bytes.
 //!
 //! - `mldsa87_verify(pub: bytes, msg: bytes, sig: bytes) -> bool`
 //!   Verifies a detached signature.  Returns `True` on success, `False`
-//!   on any failure (parse error, signature mismatch).  Never raises;
-//!   matches the C extension's tolerant verify behaviour so the
-//!   Python `MLDSA87Auth.verify()` classmethod logic stays unchanged.
+//!   on any failure (parse error, signature mismatch).  Never raises.
 //!
 //! Byte sizes (FIPS 204 §4 - ML-DSA-87 parameter set):
-//!   Public key: 2592 bytes  (PQCLEAN_MLDSA87_CLEAN_CRYPTO_PUBLICKEYBYTES)
-//!   Secret key: 4896 bytes  (PQCLEAN_MLDSA87_CLEAN_CRYPTO_SECRETKEYBYTES)
-//!   Signature:  4627 bytes  (PQCLEAN_MLDSA87_CLEAN_CRYPTO_BYTES)
+//!   Public key: 2592 bytes
+//!   Secret key: 4896 bytes  (the expanded signing key)
+//!   Signature:  4627 bytes
 //!
-//! Implementation note: `pqcrypto-mldsa` is pinned to
-//! `default-features = false, features = ["std"]` in Cargo.toml to disable
-//! the AVX2 and NEON code paths, which caused SIGILL on Termux/aarch64
-//! the same way `pqcrypto-mlkem` did before its hardening.  The portable
-//! C reference implementation is used.
+//! Implementation note (v10.32): the implementation is the pure-Rust
+//! RustCrypto `ml-dsa` crate, replacing the unmaintained PQClean C bindings
+//! (`pqcrypto-mldsa`). The byte encodings are identical (the secret key is
+//! the 4896-byte expanded form, the public key 2592, the detached signature
+//! 4627), cross-checked against PQClean in `Rust/audit`. Signing uses the
+//! FIPS 204 DETERMINISTIC variant (`sign_deterministic`, empty context), so
+//! no randomness is drawn at sign time; the signatures are standard and
+//! verify identically. No FFI: the crate keeps `#![forbid(unsafe_code)]`.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes};
 use pyo3::exceptions::PyValueError;
 
-use pqcrypto_mldsa::mldsa87;
-use pqcrypto_traits::sign::{
-    PublicKey       as _PqPubKey,
-    SecretKey       as _PqSecKey,
-    DetachedSignature as _PqSig,
-};
+use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey, B32};
+
+const MLDSA_SK_LEN: usize = 4896;
+const MLDSA_PK_LEN: usize = 2592;
+
+// ─── raw byte helpers (one implementation, shared by DAKE / SMP / identity) ───
+
+/// A fresh keypair as `(pk 2592, expanded sk 4896)`, the former PQClean
+/// encoding.  Driven by a 32-byte FIPS 204 seed from the OS CSPRNG.
+#[allow(deprecated)] // `to_expanded` gives the 4896-byte PQClean-compatible form
+pub(crate) fn raw_keypair() -> (Vec<u8>, Vec<u8>) {
+    let mut xi = [0u8; 32];
+    getrandom::getrandom(&mut xi).expect("OS CSPRNG for ML-DSA key generation");
+    let seed: B32 = xi.into();
+    xi.iter_mut().for_each(|b| *b = 0);
+    let esk = ExpandedSigningKey::<MlDsa87>::from_seed(&seed);
+    let pk = esk.verifying_key().encode().as_slice().to_vec();
+    let sk = esk.to_expanded().as_slice().to_vec();
+    (pk, sk)
+}
+
+/// A 4627-byte detached signature over `msg` under the expanded secret key
+/// `sk` (4896), empty FIPS 204 context, deterministic.  `None` on a
+/// malformed secret key.
+#[allow(deprecated)] // `from_expanded` consumes the 4896-byte PQClean-compatible form
+pub(crate) fn raw_sign(sk: &[u8], msg: &[u8]) -> Option<Vec<u8>> {
+    let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&sk.try_into().ok()?);
+    let sig = esk.sign_deterministic(msg, b"").ok()?;
+    Some(sig.encode().as_slice().to_vec())
+}
+
+/// Verify a detached signature.  `false` on any failure (bad key, bad
+/// signature, or an invalid signature).  Empty FIPS 204 context.
+pub(crate) fn raw_verify(pk: &[u8], msg: &[u8], sig: &[u8]) -> bool {
+    let vk_enc: EncodedVerifyingKey<MlDsa87> = match pk.try_into() {
+        Ok(v) => v,
+        Err(_) => return false,
+    };
+    let vk = VerifyingKey::<MlDsa87>::decode(&vk_enc);
+    let signature = match Signature::<MlDsa87>::try_from(sig) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    vk.verify_with_context(msg, b"", &signature)
+}
 
 /// Generate a fresh ML-DSA-87 keypair.
 ///
@@ -51,9 +88,9 @@ use pqcrypto_traits::sign::{
 /// (mutable) so the caller can `_ossl.cleanse` them on key destruction.
 #[pyfunction]
 pub fn mldsa87_keygen<'py>(py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyByteArray>)> {
-    let (pk, sk) = mldsa87::keypair();
-    let pub_bytes  = PyBytes::new(py, pk.as_bytes());
-    let priv_array = PyByteArray::new(py, sk.as_bytes());
+    let (pk, sk) = raw_keypair();
+    let pub_bytes  = PyBytes::new(py, &pk);
+    let priv_array = PyByteArray::new(py, &sk);
     Ok((pub_bytes, priv_array))
 }
 
@@ -63,30 +100,20 @@ pub fn mldsa87_keygen<'py>(py: Python<'py>) -> PyResult<(Bound<'py, PyBytes>, Bo
 /// private key bytes are the wrong length or otherwise invalid.
 #[pyfunction]
 pub fn mldsa87_sign<'py>(py: Python<'py>, priv_bytes: &[u8], msg: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-    let sk = mldsa87::SecretKey::from_bytes(priv_bytes)
-        .map_err(|_| PyValueError::new_err(
-            "mldsa87_sign: invalid secret key bytes (expected 4896 bytes)"
-        ))?;
-    let sig = mldsa87::detached_sign(msg, &sk);
-    Ok(PyBytes::new(py, sig.as_bytes()))
+    let sig = raw_sign(priv_bytes, msg).ok_or_else(|| {
+        PyValueError::new_err("mldsa87_sign: invalid secret key bytes (expected 4896 bytes)")
+    })?;
+    Ok(PyBytes::new(py, &sig))
 }
 
 /// Verify an ML-DSA-87 detached signature.
 ///
 /// Returns `True` on successful verification, `False` on any failure
 /// (parse error in pub/sig, length mismatch, signature invalid).
-/// Never raises - same tolerant behaviour as the C extension it replaces.
+/// Never raises.
 #[pyfunction]
 pub fn mldsa87_verify(pub_bytes: &[u8], msg: &[u8], sig_bytes: &[u8]) -> PyResult<bool> {
-    let pk = match mldsa87::PublicKey::from_bytes(pub_bytes) {
-        Ok(k)  => k,
-        Err(_) => return Ok(false),
-    };
-    let sig = match mldsa87::DetachedSignature::from_bytes(sig_bytes) {
-        Ok(s)  => s,
-        Err(_) => return Ok(false),
-    };
-    Ok(mldsa87::verify_detached_signature(&sig, msg, &pk).is_ok())
+    Ok(raw_verify(pub_bytes, msg, sig_bytes))
 }
 
 /// An ML-DSA-87 signing key that never leaves Rust.
@@ -106,10 +133,10 @@ pub struct MlDsa87KeyHandle {
 impl MlDsa87KeyHandle {
     #[new]
     fn new() -> Self {
-        let (pk, sk) = mldsa87::keypair();
+        let (pk, sk) = raw_keypair();
         Self {
-            public: pk.as_bytes().to_vec(),
-            secret: Some(crate::secure_mem::SecretVec::from_slice(sk.as_bytes())),
+            public: pk,
+            secret: Some(crate::secure_mem::SecretVec::from_slice(&sk)),
         }
     }
 
@@ -125,10 +152,9 @@ impl MlDsa87KeyHandle {
             pyo3::exceptions::PyRuntimeError::new_err(
                 "ML-DSA-87 signing key has been destroyed")
         })?;
-        let sk = mldsa87::SecretKey::from_bytes(secret.expose())
-            .map_err(|_| PyValueError::new_err("internal: invalid ML-DSA-87 secret key"))?;
-        let sig = mldsa87::detached_sign(msg, &sk);
-        Ok(PyBytes::new(py, sig.as_bytes()))
+        let sig = raw_sign(secret.expose(), msg)
+            .ok_or_else(|| PyValueError::new_err("internal: invalid ML-DSA-87 secret key"))?;
+        Ok(PyBytes::new(py, &sig))
     }
 
     /// Destroy the signing key. Idempotent.
@@ -155,9 +181,7 @@ impl MlDsa87KeyHandle {
     /// secret never becomes a Python object.
     pub(crate) fn sign_internal(&self, msg: &[u8]) -> Result<Vec<u8>, &'static str> {
         let secret = self.secret.as_ref().ok_or("ML-DSA-87 signing key has been destroyed")?;
-        let sk = mldsa87::SecretKey::from_bytes(secret.expose())
-            .map_err(|_| "invalid ML-DSA-87 secret key")?;
-        Ok(mldsa87::detached_sign(msg, &sk).as_bytes().to_vec())
+        raw_sign(secret.expose(), msg).ok_or("invalid ML-DSA-87 secret key")
     }
 }
 
@@ -173,8 +197,6 @@ impl MlDsa87KeyHandle {
 
 const MLDSA_RECORD_VERSION: u8 = 1;
 const MLDSA_AAD_DOMAIN: &[u8] = b"otrv4plus.mldsa-identity";
-const MLDSA_SK_LEN: usize = 4896;
-const MLDSA_PK_LEN: usize = 2592;
 
 fn mldsa_aad(version: u8, key_id: u32) -> Vec<u8> {
     let mut aad = MLDSA_AAD_DOMAIN.to_vec();
@@ -222,10 +244,7 @@ impl MlDsa87KeyHandle {
         // The pair must be a pair: a record whose halves disagree would sign
         // under a key nobody can verify.
         let probe = h.sign_internal(b"otrv4plus.mldsa-identity.check")?;
-        let ok = mldsa87::PublicKey::from_bytes(pk).ok()
-            .zip(mldsa87::DetachedSignature::from_bytes(&probe).ok())
-            .is_some_and(|(pk, sig)| mldsa87::verify_detached_signature(
-                &sig, b"otrv4plus.mldsa-identity.check", &pk).is_ok());
+        let ok = raw_verify(pk, b"otrv4plus.mldsa-identity.check", &probe);
         if !ok { return Err("record holds a mismatched key pair"); }
         Ok(h)
     }
@@ -256,6 +275,8 @@ pub fn unseal_mldsa_identity_under(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn a_sealed_identity_reopens_as_the_same_key_and_nothing_else_opens_it() {
         let h = MlDsa87KeyHandle::new();
@@ -270,41 +291,30 @@ mod tests {
         assert_ne!(h.seal(&[7u8; 32], 1).unwrap(), blob, "a fresh nonce per seal");
     }
 
-    use super::*;
-
     /// Round-trip: keygen, sign, verify - known-good input.
     #[test]
     fn mldsa87_roundtrip_succeeds() {
-        let (pk, sk) = mldsa87::keypair();
-        let msg = b"OTRv4+ v10.6.18 mldsa87 round-trip";
-        let sig = mldsa87::detached_sign(msg, &sk);
-        assert!(
-            mldsa87::verify_detached_signature(&sig, msg, &pk).is_ok(),
-            "fresh keypair should sign and verify cleanly"
-        );
+        let (pk, sk) = raw_keypair();
+        let msg = b"OTRv4+ mldsa87 round-trip";
+        let sig = raw_sign(&sk, msg).expect("sign");
+        assert!(raw_verify(&pk, msg, &sig), "fresh keypair should sign and verify cleanly");
     }
 
     /// Tampered message must fail to verify.
     #[test]
     fn mldsa87_tampered_msg_rejected() {
-        let (pk, sk) = mldsa87::keypair();
-        let msg     = b"original";
-        let tampered = b"original!";
-        let sig = mldsa87::detached_sign(msg, &sk);
-        assert!(
-            mldsa87::verify_detached_signature(&sig, tampered, &pk).is_err(),
-            "tampered message must not verify"
-        );
+        let (pk, sk) = raw_keypair();
+        let sig = raw_sign(&sk, b"original").expect("sign");
+        assert!(!raw_verify(&pk, b"original!", &sig), "tampered message must not verify");
     }
 
-    /// FIPS 204 ML-DSA-87 byte sizes (sanity check that
-    /// pqcrypto-mldsa hasn't shifted constants between releases).
+    /// FIPS 204 ML-DSA-87 byte sizes.
     #[test]
     fn mldsa87_byte_sizes_match_spec() {
-        let (pk, sk) = mldsa87::keypair();
-        assert_eq!(pk.as_bytes().len(), 2592, "ML-DSA-87 pubkey must be 2592 bytes");
-        assert_eq!(sk.as_bytes().len(), 4896, "ML-DSA-87 seckey must be 4896 bytes");
-        let sig = mldsa87::detached_sign(b"x", &sk);
-        assert_eq!(sig.as_bytes().len(), 4627, "ML-DSA-87 signature must be 4627 bytes");
+        let (pk, sk) = raw_keypair();
+        assert_eq!(pk.len(), MLDSA_PK_LEN, "ML-DSA-87 pubkey must be 2592 bytes");
+        assert_eq!(sk.len(), MLDSA_SK_LEN, "ML-DSA-87 seckey must be 4896 bytes");
+        let sig = raw_sign(&sk, b"x").expect("sign");
+        assert_eq!(sig.len(), 4627, "ML-DSA-87 signature must be 4627 bytes");
     }
 }

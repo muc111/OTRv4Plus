@@ -5,8 +5,9 @@
 //! Stage 2 of docs/MLS_FEASIBILITY.md: the provider and in-process groups. No
 //! transport, no persistence, no UI yet.
 //!
-//! `unsafe` is denied everywhere except the one PQClean call in `mlkem`.
-#![deny(unsafe_code)]
+//! No `unsafe` anywhere: the pure-Rust `ml-kem` crate supplies seeded key
+//! generation, so the former PQClean FFI in `mlkem` is gone.
+#![forbid(unsafe_code)]
 
 pub mod client;
 pub mod group_voice;

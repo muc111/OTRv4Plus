@@ -4,16 +4,15 @@
 # MLS (RFC 9420) group encryption for OTRv4Plus, on the core's OWN crypto.
 #
 # Ciphersuite MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87 (draft-ietf-mls-pq-
-# ciphersuites): ML-KEM-1024 and ML-DSA-87 from PQClean (pqcrypto-mlkem /
-# pqcrypto-mldsa, the same crates and versions otrv4_core uses), AES-256-GCM
-# from aes-gcm, HKDF/HMAC/SHA-384 from hkdf/hmac/sha2 -- no second
+# ciphersuites): ML-KEM-1024 and ML-DSA-87 from the pure-Rust RustCrypto
+# crates (ml-kem / ml-dsa, the same crates and versions otrv4_core uses),
+# AES-256-GCM from aes-gcm, HKDF/HMAC/SHA from hkdf/hmac/sha2 -- no second
 # implementation of any primitive the core already has. The MLS protocol is
 # OpenMLS; HPKE (RFC 9180) is src/hpke.rs on the same primitives.
 #
-# SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec: one small FFI call
-# (PQClean's seeded ML-KEM key generation, which pqcrypto-mlkem compiles but
-# does not export) needs `unsafe`, and otrv4_core keeps
-# #![forbid(unsafe_code)].
+# SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec. ml-kem provides
+# seeded ML-KEM key generation in pure Rust (DecapsulationKey::from_seed),
+# so this crate needs no FFI and keeps #![forbid(unsafe_code)] like the core.
 #
 # STAGE 2 OF docs/MLS_FEASIBILITY.md: a Rust spike with in-process members only.
 # No transport, no persistence, no UI. Nothing here claims interoperability
@@ -35,9 +34,8 @@ serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
 # The core's versions, so no second copy of a primitive enters the build.
-pqcrypto-mlkem  = { version = "0.1.1", default-features = false, features = ["std"] }
-pqcrypto-mldsa  = { version = "0.1.2", default-features = false, features = ["std"] }
-pqcrypto-traits = "0.3"
+ml-kem = { version = "0.3.2", default-features = false, features = ["alloc", "zeroize"] }
+ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"] }
 # "zeroize": cipher and hash states are wiped when dropped (see ../Cargo.toml).
 aes-gcm = { version = "0.11", features = ["aes", "zeroize"] }
 hkdf = "0.13"

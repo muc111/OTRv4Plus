@@ -1,16 +1,10 @@
 //! ML-KEM-1024 (FIPS 203) PyO3 bindings.
 //!
-//! v10.7.3 (Phase 5.3i-C): replaces the `otr4_crypto_ext` C extension's
-//! `mlkem1024_keygen` / `mlkem1024_encaps` / `mlkem1024_decaps` entry
-//! points.  After this migration `otr4_crypto_ext` has no remaining
-//! callers and is deleted in Phase 5.3k.
-//!
 //! These three functions back the Python `MLKEM1024BraceKEM` class, which
 //! drives the double ratchet's post-quantum brace-key rotation.  The same
-//! `pqcrypto-mlkem` crate already powers the DAKE's ML-KEM in `dake.rs`
-//! (`generate_mlkem_keypair` / `mlkem_encapsulate` / `mlkem_decapsulate`);
-//! this module exposes the identical operations to Python so the brace
-//! KEM runs on the same audited code path as the DAKE KEM.
+//! ML-KEM-1024 implementation powers the DAKE (`dake.rs`) and SMP (`smp.rs`);
+//! this module exposes the identical operations to Python so the brace KEM
+//! runs on the same audited code path.
 //!
 //! Exposed to Python:
 //!
@@ -19,17 +13,12 @@
 //!   `(encap_key_bytes, decap_key_bytearray)`.  The encapsulation key
 //!   (public) is immutable `bytes`; the decapsulation key (private) is
 //!   a mutable `bytearray` so the caller can wipe it via `_secure_wipe`
-//!   on `MLKEM1024BraceKEM.zeroize()`.  Same shape as the C extension's
-//!   `mlkem1024_keygen()`.
+//!   on `MLKEM1024BraceKEM.zeroize()`.
 //!
 //! - `mlkem1024_encaps(ek: bytes) -> (bytes, bytes)`
 //!   Encapsulates to a peer's encapsulation key.  Returns
-//!   `(ciphertext, shared_secret)` — CIPHERTEXT FIRST.
-//!   IMPORTANT: `pqcrypto_mlkem::mlkem1024::encapsulate` returns
-//!   `(SharedSecret, Ciphertext)` — the opposite order.  This wrapper
-//!   inverts it to `(ct, ss)` to match both the C extension's contract
-//!   and the Python caller `ct, ss = MLKEM1024BraceKEM.encapsulate(ek)`.
-//!   Getting this order wrong silently desyncs the brace key.
+//!   `(ciphertext, shared_secret)` — CIPHERTEXT FIRST, matching the Python
+//!   caller `ct, ss = MLKEM1024BraceKEM.encapsulate(ek)`.
 //!   Raises `ValueError` on a malformed encapsulation key.
 //!
 //! - `mlkem1024_decaps(ct: bytes, dk: bytes) -> bytes`
@@ -39,31 +28,73 @@
 //!
 //! Byte sizes (FIPS 203 — ML-KEM-1024 parameter set):
 //!   Encapsulation key (public):  1568 bytes
-//!   Decapsulation key (secret):  3168 bytes
+//!   Decapsulation key (secret):  3168 bytes (the legacy "expanded" form)
 //!   Ciphertext:                  1568 bytes
 //!   Shared secret:                 32 bytes
 //!
-//! Implementation note: `pqcrypto-mlkem` is pinned to
-//! `default-features = false, features = ["std"]` in Cargo.toml to disable
-//! the AVX2 and NEON code paths, which caused SIGILL on Termux/aarch64
-//! (v10.6.16).  The portable PQClean C reference implementation is used.
+//! Implementation note (v10.32): the implementation is the pure-Rust
+//! RustCrypto `ml-kem` crate.  It replaced the unmaintained PQClean C
+//! bindings (`pqcrypto-mlkem`); the byte encodings are identical (the
+//! decapsulation key is the 3168-byte expanded form, cross-checked against
+//! PQClean in `Rust/audit`).  A fresh ML-KEM keypair is produced from a
+//! 64-byte FIPS 203 seed (`d || z`) and encapsulation draws a 32-byte `m`
+//! from the OS CSPRNG, so the result is a uniformly random keypair /
+//! ciphertext exactly as the randomized API gave.  No FFI: the crate keeps
+//! `#![forbid(unsafe_code)]`.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes};
 use pyo3::exceptions::PyValueError;
 
-use pqcrypto_mlkem::mlkem1024;
-use pqcrypto_traits::kem::{
-    PublicKey    as _PqPubKey,
-    SecretKey    as _PqSecKey,
-    Ciphertext   as _PqCiphertext,
-    SharedSecret as _PqSharedSecret,
-};
+use ml_kem::{MlKem1024, EncapsulationKey, DecapsulationKey, Ciphertext, Decapsulate, KeyExport};
+use ml_kem::array::Array;
+#[allow(deprecated)]
+use ml_kem::ExpandedKeyEncoding;
 
 /// ML-KEM-1024 encapsulation-key (public) length, FIPS 203.
 pub(crate) const MLKEM_EK_SIZE: usize = 1568;
 /// ML-KEM-1024 ciphertext length, FIPS 203.
 const MLKEM_CT_SIZE: usize = 1568;
+/// ML-KEM-1024 expanded decapsulation-key (secret) length, FIPS 203.
+#[cfg(test)]
+const MLKEM_DK_SIZE: usize = 3168;
+
+// ─── raw byte helpers (one implementation, shared by DAKE / SMP / ratchet) ────
+
+/// A fresh keypair as `(ek 1568, expanded dk 3168)`, the former PQClean
+/// encoding.  Driven by a 64-byte FIPS 203 seed from the OS CSPRNG.
+pub(crate) fn raw_keypair() -> (Vec<u8>, Vec<u8>) {
+    let mut seed = [0u8; 64];
+    getrandom::getrandom(&mut seed).expect("OS CSPRNG for ML-KEM key generation");
+    let dk = DecapsulationKey::<MlKem1024>::from_seed(Array::from(seed));
+    seed.iter_mut().for_each(|b| *b = 0);
+    let ek = dk.encapsulation_key().to_bytes().as_slice().to_vec();
+    #[allow(deprecated)]
+    let sk = dk.to_expanded_bytes().as_slice().to_vec();
+    (ek, sk)
+}
+
+/// Encapsulate to `ek` (1568).  Returns `(ciphertext 1568, shared secret 32)`.
+/// `None` if `ek` is not a valid encapsulation key.
+pub(crate) fn raw_encapsulate(ek: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+    let key = EncapsulationKey::<MlKem1024>::new(&Array::try_from(ek).ok()?).ok()?;
+    let mut m = [0u8; 32];
+    getrandom::getrandom(&mut m).ok()?;
+    let (ct, ss) = key.encapsulate_deterministic(&Array::from(m));
+    m.iter_mut().for_each(|b| *b = 0);
+    Some((ct.as_slice().to_vec(), ss.as_slice().to_vec()))
+}
+
+/// Decapsulate `ct` (1568) with the expanded decapsulation key `dk` (3168).
+/// Returns the 32-byte shared secret, or `None` on a malformed input.
+/// FIPS 203 implicit rejection: a tampered ciphertext yields an unrelated
+/// secret rather than an error.
+pub(crate) fn raw_decapsulate(dk: &[u8], ct: &[u8]) -> Option<Vec<u8>> {
+    #[allow(deprecated)]
+    let key = DecapsulationKey::<MlKem1024>::from_expanded_bytes(&Array::try_from(dk).ok()?).ok()?;
+    let ct = Ciphertext::<MlKem1024>::try_from(ct).ok()?;
+    Some(key.decapsulate(&ct).as_slice().to_vec())
+}
 
 /// Generate a fresh ML-KEM-1024 keypair.
 ///
@@ -74,17 +105,17 @@ const MLKEM_CT_SIZE: usize = 1568;
 pub fn mlkem1024_keygen<'py>(
     py: Python<'py>,
 ) -> PyResult<(Bound<'py, PyBytes>, Bound<'py, PyByteArray>)> {
-    let (pk, sk) = mlkem1024::keypair();
-    let ek_bytes = PyBytes::new(py, pk.as_bytes());
-    let dk_array = PyByteArray::new(py, sk.as_bytes());
+    let (ek, sk) = raw_keypair();
+    let ek_bytes = PyBytes::new(py, &ek);
+    let dk_array = PyByteArray::new(py, &sk);
     Ok((ek_bytes, dk_array))
 }
 
 /// Encapsulate to a peer's ML-KEM-1024 encapsulation key.
 ///
 /// Returns `(ciphertext, shared_secret)` — ciphertext first, matching the
-/// `otr4_crypto_ext` contract and the Python caller's destructuring.
-/// Raises `ValueError` if `ek` is not a valid encapsulation key.
+/// Python caller's destructuring.  Raises `ValueError` if `ek` is not a
+/// valid encapsulation key.
 #[pyfunction]
 pub fn mlkem1024_encaps<'py>(
     py: Python<'py>,
@@ -97,14 +128,11 @@ pub fn mlkem1024_encaps<'py>(
             ek.len()
         )));
     }
-    let pk = mlkem1024::PublicKey::from_bytes(ek)
-        .map_err(|_| PyValueError::new_err(
-            "mlkem1024_encaps: malformed ML-KEM-1024 encapsulation key",
-        ))?;
-    // pqcrypto returns (SharedSecret, Ciphertext) — invert to (ct, ss).
-    let (ss, ct) = mlkem1024::encapsulate(&pk);
-    let ct_bytes = PyBytes::new(py, ct.as_bytes());
-    let ss_bytes = PyBytes::new(py, ss.as_bytes());
+    let (ct, ss) = raw_encapsulate(ek).ok_or_else(|| {
+        PyValueError::new_err("mlkem1024_encaps: malformed ML-KEM-1024 encapsulation key")
+    })?;
+    let ct_bytes = PyBytes::new(py, &ct);
+    let ss_bytes = PyBytes::new(py, &ss);
     Ok((ct_bytes, ss_bytes))
 }
 
@@ -125,16 +153,10 @@ pub fn mlkem1024_decaps<'py>(
             ct.len()
         )));
     }
-    let sk = mlkem1024::SecretKey::from_bytes(dk)
-        .map_err(|_| PyValueError::new_err(
-            "mlkem1024_decaps: malformed ML-KEM-1024 decapsulation key",
-        ))?;
-    let ciphertext = mlkem1024::Ciphertext::from_bytes(ct)
-        .map_err(|_| PyValueError::new_err(
-            "mlkem1024_decaps: malformed ML-KEM-1024 ciphertext",
-        ))?;
-    let ss = mlkem1024::decapsulate(&ciphertext, &sk);
-    Ok(PyBytes::new(py, ss.as_bytes()))
+    let ss = raw_decapsulate(dk, ct).ok_or_else(|| {
+        PyValueError::new_err("mlkem1024_decaps: malformed ML-KEM-1024 decapsulation key or ciphertext")
+    })?;
+    Ok(PyBytes::new(py, &ss))
 }
 
 // ─── Rust-owned keypair ──────────────────────────────────────────────────────
@@ -186,10 +208,10 @@ impl MlKemKeypair {
     pub(crate) fn zeroize_key(&mut self) { self.dk = None; }
 
     pub(crate) fn generate() -> Self {
-        let (pk, sk) = mlkem1024::keypair();
+        let (ek, sk) = raw_keypair();
         Self {
-            ek: pk.as_bytes().to_vec(),
-            dk: Some(crate::secure_mem::SecretVec::from_slice(sk.as_bytes())),
+            ek,
+            dk: Some(crate::secure_mem::SecretVec::from_slice(&sk)),
         }
     }
 
@@ -221,14 +243,10 @@ impl MlKemKeypair {
                 "ML-KEM-1024 ciphertext must be {} bytes, got {}",
                 MLKEM_CT_SIZE, ct.len())));
         }
-        let sk = mlkem1024::SecretKey::from_bytes(dk.expose()).map_err(|_| {
-            PyValueError::new_err("malformed ML-KEM-1024 decapsulation key")
+        let ss = raw_decapsulate(dk.expose(), ct).ok_or_else(|| {
+            PyValueError::new_err("malformed ML-KEM-1024 decapsulation key or ciphertext")
         })?;
-        let ciphertext = mlkem1024::Ciphertext::from_bytes(ct).map_err(|_| {
-            PyValueError::new_err("malformed ML-KEM-1024 ciphertext")
-        })?;
-        let ss = mlkem1024::decapsulate(&ciphertext, &sk);
-        crate::secure_mem::SecretBytes::<32>::from_slice(ss.as_bytes())
+        crate::secure_mem::SecretBytes::<32>::from_slice(&ss)
             .ok_or_else(|| PyValueError::new_err("ML-KEM shared secret has the wrong length"))
     }
 }
@@ -243,13 +261,12 @@ pub(crate) fn encapsulate_internal(ek: &[u8])
             "ML-KEM-1024 encapsulation key must be {} bytes, got {}",
             MLKEM_EK_SIZE, ek.len())));
     }
-    let pk = mlkem1024::PublicKey::from_bytes(ek).map_err(|_| {
+    let (ct, ss) = raw_encapsulate(ek).ok_or_else(|| {
         PyValueError::new_err("malformed ML-KEM-1024 encapsulation key")
     })?;
-    let (ss, ct) = mlkem1024::encapsulate(&pk);
-    let held = crate::secure_mem::SecretBytes::<32>::from_slice(ss.as_bytes())
+    let held = crate::secure_mem::SecretBytes::<32>::from_slice(&ss)
         .ok_or_else(|| PyValueError::new_err("ML-KEM shared secret has the wrong length"))?;
-    Ok((ct.as_bytes().to_vec(), held))
+    Ok((ct, held))
 }
 
 #[cfg(test)]
@@ -260,43 +277,24 @@ mod tests {
     /// derive the same shared secret.
     #[test]
     fn mlkem1024_roundtrip_shared_secret_matches() {
-        let (pk, sk) = mlkem1024::keypair();
-        // encapsulate returns (ss, ct)
-        let (ss_enc, ct) = mlkem1024::encapsulate(&pk);
-        let ss_dec = mlkem1024::decapsulate(&ct, &sk);
+        let (ek, dk) = raw_keypair();
+        let (ct, ss_enc) = raw_encapsulate(&ek).unwrap();
+        let ss_dec = raw_decapsulate(&dk, &ct).unwrap();
         assert_eq!(
-            ss_enc.as_bytes(),
-            ss_dec.as_bytes(),
+            ss_enc, ss_dec,
             "encapsulator and decapsulator must agree on the shared secret"
         );
     }
 
-    /// FIPS 203 ML-KEM-1024 byte sizes — guards against pqcrypto-mlkem
-    /// shifting constants between releases.
+    /// FIPS 203 ML-KEM-1024 byte sizes.
     #[test]
     fn mlkem1024_byte_sizes_match_spec() {
-        let (pk, sk) = mlkem1024::keypair();
-        assert_eq!(
-            pk.as_bytes().len(),
-            MLKEM_EK_SIZE,
-            "ML-KEM-1024 encapsulation key must be 1568 bytes",
-        );
-        assert_eq!(
-            sk.as_bytes().len(),
-            3168,
-            "ML-KEM-1024 decapsulation key must be 3168 bytes",
-        );
-        let (ss, ct) = mlkem1024::encapsulate(&pk);
-        assert_eq!(
-            ct.as_bytes().len(),
-            MLKEM_CT_SIZE,
-            "ML-KEM-1024 ciphertext must be 1568 bytes",
-        );
-        assert_eq!(
-            ss.as_bytes().len(),
-            32,
-            "ML-KEM-1024 shared secret must be 32 bytes",
-        );
+        let (ek, dk) = raw_keypair();
+        assert_eq!(ek.len(), MLKEM_EK_SIZE, "ML-KEM-1024 encapsulation key must be 1568 bytes");
+        assert_eq!(dk.len(), MLKEM_DK_SIZE, "ML-KEM-1024 decapsulation key must be 3168 bytes");
+        let (ct, ss) = raw_encapsulate(&ek).unwrap();
+        assert_eq!(ct.len(), MLKEM_CT_SIZE, "ML-KEM-1024 ciphertext must be 1568 bytes");
+        assert_eq!(ss.len(), 32, "ML-KEM-1024 shared secret must be 32 bytes");
     }
 
     /// A ciphertext decapsulated under the wrong secret key must NOT
@@ -305,13 +303,12 @@ mod tests {
     /// assert inequality, not an error.)
     #[test]
     fn mlkem1024_wrong_key_does_not_match() {
-        let (pk_a, _sk_a) = mlkem1024::keypair();
-        let (_pk_b, sk_b) = mlkem1024::keypair();
-        let (ss_enc, ct) = mlkem1024::encapsulate(&pk_a);
-        let ss_wrong = mlkem1024::decapsulate(&ct, &sk_b);
+        let (ek_a, _dk_a) = raw_keypair();
+        let (_ek_b, dk_b) = raw_keypair();
+        let (ct, ss_enc) = raw_encapsulate(&ek_a).unwrap();
+        let ss_wrong = raw_decapsulate(&dk_b, &ct).unwrap();
         assert_ne!(
-            ss_enc.as_bytes(),
-            ss_wrong.as_bytes(),
+            ss_enc, ss_wrong,
             "decapsulating under the wrong key must not reproduce the secret",
         );
     }

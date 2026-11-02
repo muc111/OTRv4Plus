@@ -55,8 +55,7 @@ use openmls_traits::{
     },
     OpenMlsProvider,
 };
-use pqcrypto_mldsa::mldsa87;
-use pqcrypto_traits::sign::{DetachedSignature as _, PublicKey as _, SecretKey as _};
+use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey, B32};
 use sha2::{Digest, Sha384};
 use tls_codec::SecretVLBytes;
 use zeroize::{Zeroize, Zeroizing};
@@ -122,18 +121,39 @@ fn aes256(alg: AeadType, key: &[u8], nonce: &[u8]) -> Result<Aes256Gcm, CryptoEr
     Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)
 }
 
-/// ML-DSA-87 detached signature (FIPS 204, empty context).
+/// A fresh ML-DSA-87 keypair as `(pk 2592, expanded sk 4896)`.
+#[allow(deprecated)] // `to_expanded` gives the 4896-byte PQClean-compatible form
+fn mldsa87_keypair() -> (Vec<u8>, Vec<u8>) {
+    let mut xi = [0u8; 32];
+    getrandom::getrandom(&mut xi).expect("OS CSPRNG for ML-DSA key generation");
+    let seed: B32 = xi.into();
+    xi.iter_mut().for_each(|b| *b = 0);
+    let esk = ExpandedSigningKey::<MlDsa87>::from_seed(&seed);
+    let pk = esk.verifying_key().encode().as_slice().to_vec();
+    let sk = esk.to_expanded().as_slice().to_vec();
+    (pk, sk)
+}
+
+/// ML-DSA-87 detached signature (FIPS 204, empty context, deterministic).
+/// `secret` is the 4896-byte expanded signing key.
+#[allow(deprecated)] // `from_expanded` consumes the 4896-byte PQClean-compatible sk
 pub(crate) fn mldsa87_sign(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    let sk = mldsa87::SecretKey::from_bytes(secret).map_err(|_| CryptoError::InvalidLength)?;
-    Ok(mldsa87::detached_sign(data, &sk).as_bytes().to_vec())
+    let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(
+        &secret.try_into().map_err(|_| CryptoError::InvalidLength)?);
+    let sig = esk.sign_deterministic(data, b"").map_err(|_| CryptoError::InvalidLength)?;
+    Ok(sig.encode().as_slice().to_vec())
 }
 
 fn mldsa87_verify(pk: &[u8], data: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
-    let pk = mldsa87::PublicKey::from_bytes(pk).map_err(|_| CryptoError::InvalidLength)?;
-    let sig = mldsa87::DetachedSignature::from_bytes(signature)
-        .map_err(|_| CryptoError::InvalidLength)?;
-    mldsa87::verify_detached_signature(&sig, data, &pk)
-        .map_err(|_| CryptoError::InvalidSignature)
+    let vk_enc: EncodedVerifyingKey<MlDsa87> =
+        pk.try_into().map_err(|_| CryptoError::InvalidLength)?;
+    let vk = VerifyingKey::<MlDsa87>::decode(&vk_enc);
+    let sig = Signature::<MlDsa87>::try_from(signature).map_err(|_| CryptoError::InvalidLength)?;
+    if vk.verify_with_context(data, b"", &sig) {
+        Ok(())
+    } else {
+        Err(CryptoError::InvalidSignature)
+    }
 }
 
 fn composite_message(data: &[u8]) -> Vec<u8> {
@@ -479,12 +499,12 @@ impl SignatureKeyPair {
 
     /// A key for `scheme`: COMPOSITE or MLDSA87.
     pub fn generate_for(scheme: SignatureScheme) -> Result<Self, CryptoError> {
-        let (ml_pk, ml_sk) = mldsa87::keypair();
+        let (ml_pk, ml_sk) = mldsa87_keypair();
         match scheme {
             SignatureScheme::MLDSA87 => Ok(Self {
                 scheme,
-                public: ml_pk.as_bytes().to_vec(),
-                secret: Zeroizing::new(ml_sk.as_bytes().to_vec()),
+                public: ml_pk,
+                secret: Zeroizing::new(ml_sk),
             }),
             COMPOSITE => {
                 let mut seed = Zeroizing::new([0u8; ED448_SEED_BYTES]);
@@ -493,10 +513,10 @@ impl SignatureKeyPair {
                 let ed_pk = ed448_key(&seed[..])?.verifying_key().to_bytes();
                 let mut public = Vec::with_capacity(COMPOSITE_PUBLIC_KEY_BYTES);
                 public.extend_from_slice(&ed_pk[..]);
-                public.extend_from_slice(ml_pk.as_bytes());
+                public.extend_from_slice(&ml_pk);
                 let mut secret = Zeroizing::new(Vec::with_capacity(COMPOSITE_SECRET_KEY_BYTES));
                 secret.extend_from_slice(&seed[..]);
-                secret.extend_from_slice(ml_sk.as_bytes());
+                secret.extend_from_slice(&ml_sk);
                 Ok(Self { scheme, public, secret })
             }
             _ => Err(CryptoError::UnsupportedSignatureScheme),
@@ -519,8 +539,8 @@ impl SignatureKeyPair {
     /// Rebuild from sealed state; the scheme follows from the lengths. A
     /// composite key's Ed448 half must match its seed.
     pub(crate) fn from_parts(public: Vec<u8>, secret: Zeroizing<Vec<u8>>) -> Option<Self> {
-        if public.len() == mldsa87::public_key_bytes()
-            && secret.len() == mldsa87::secret_key_bytes()
+        if public.len() == MLDSA87_PUBLIC_KEY_BYTES
+            && secret.len() == MLDSA87_SECRET_KEY_BYTES
         {
             return Some(Self { scheme: SignatureScheme::MLDSA87, public, secret });
         }

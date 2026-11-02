@@ -64,9 +64,8 @@ pq-rust = [
     "num-bigint",
     "num-traits",
     "crypto-bigint",
-    "pqcrypto-mlkem",
-    "pqcrypto-mldsa",
-    "pqcrypto-traits",
+    "ml-kem",
+    "ml-dsa",
     "x448",
     "getrandom",
     "ed448-goldilocks-plus",
@@ -184,9 +183,12 @@ crypto-bigint = { version = "0.7.8", optional = true }
 getrandom     = { version = "0.2",   optional = true }
 x448          = { version = "0.6",   optional = true }
 
-pqcrypto-mlkem  = { version = "0.1.1", optional = true, default-features = false, features = ["std"] }
-pqcrypto-mldsa  = { version = "0.1.2", optional = true, default-features = false, features = ["std"] }
-pqcrypto-traits = { version = "0.3",   optional = true }
+# v10.32: the unmaintained PQClean C bindings (pqcrypto-mlkem / pqcrypto-mldsa)
+# replaced by the pure-Rust RustCrypto crates. Byte formats are identical
+# (expanded dk 3168, ek 1568, ct 1568; expanded sk 4896, vk 2592, sig 4627),
+# cross-checked in Rust/audit. No FFI, so #![forbid(unsafe_code)] is kept.
+ml-kem = { version = "0.3.2", optional = true, default-features = false, features = ["alloc", "zeroize"] }
+ml-dsa = { version = "0.1.1", optional = true, default-features = false, features = ["alloc", "zeroize"] }
 
 # v10.13.0: Argon2id for the SMP passphrase stretch (SMP wire version 0x03).
 # default-features = false drops the `password-hash`/`rand` surface -- we only

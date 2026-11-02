@@ -11,14 +11,6 @@ use pyo3::types::PyBytes;
 use pyo3::types::PyByteArray;
 use zeroize::{Zeroize, ZeroizeOnDrop};   // R8: Zeroize wipes the raw DH/KEM Vec<u8>s
 
-use pqcrypto_traits::kem::{
-    PublicKey as KemPublicKey, SecretKey as KemSecretKey,
-    Ciphertext as KemCiphertext, SharedSecret as KemSharedSecret,
-};
-use pqcrypto_traits::sign::{
-    PublicKey as SignPublicKey, DetachedSignature as SignDetachedSignature,
-};
-
 use crate::error::{OtrError, Result};
 use crate::kdf::{self, usage};
 use crate::secure_mem::{SecretBytes, SecretVec, DakeSessionKeys};
@@ -891,32 +883,26 @@ impl DakeState {
         let sk = x448::Secret::from(bytes); Ok((SecretBytes::new(bytes), *x448::PublicKey::from(&sk).as_bytes()))
     }
     fn generate_mlkem_keypair() -> Result<(Vec<u8>,Vec<u8>)> {
-        // v10.6.16: pqcrypto-kyber 0.8 (round-3 Kyber) replaced by
-        // pqcrypto-mlkem 0.1.1 (FIPS 203 ML-KEM-1024).  API surface
-        // (keypair / encapsulate / decapsulate / from_bytes) is identical;
-        // wire format differs in the domain-separator constants embedded
-        // in the FO transform.  No interop with v10.6.15 or earlier peers.
-        let (pk,sk) = pqcrypto_mlkem::mlkem1024::keypair(); Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
+        // FIPS 203 ML-KEM-1024, the pure-Rust `ml-kem` crate (crate::mlkem).
+        // Returns (ek 1568, expanded dk 3168).
+        Ok(crate::mlkem::raw_keypair())
     }
     fn mlkem_encapsulate(ek: &[u8]) -> Result<(Vec<u8>,Vec<u8>)> {
-        let pk = pqcrypto_mlkem::mlkem1024::PublicKey::from_bytes(ek).map_err(|_| OtrError::MlKem)?;
-        // CRITICAL: pqcrypto_mlkem::mlkem1024::encapsulate returns
-        //   (SharedSecret, Ciphertext)   - NOT (Ciphertext, SharedSecret).
-        // Same footgun as the pqcrypto-kyber crate it replaced.  We
-        // return (Ciphertext, SharedSecret) to match the caller's
+        // Returns (ciphertext, shared secret) to match the caller's
         // destructuring `let (ct, mlkem_ss) = mlkem_encapsulate(...)`.
-        let (ss, ct) = pqcrypto_mlkem::mlkem1024::encapsulate(&pk);
-        Ok((ct.as_bytes().to_vec(), ss.as_bytes().to_vec()))
+        crate::mlkem::raw_encapsulate(ek).ok_or(OtrError::MlKem)
     }
     fn mlkem_decapsulate(sk: &[u8], ct: &[u8]) -> Result<Vec<u8>> {
-        let sk = pqcrypto_mlkem::mlkem1024::SecretKey::from_bytes(sk).map_err(|_| OtrError::MlKem)?;
-        let ct = pqcrypto_mlkem::mlkem1024::Ciphertext::from_bytes(ct).map_err(|_| OtrError::MlKem)?;
-        Ok(pqcrypto_mlkem::mlkem1024::decapsulate(&ct,&sk).as_bytes().to_vec())
+        crate::mlkem::raw_decapsulate(sk, ct).ok_or(OtrError::MlKem)
     }
     fn mldsa_verify(pub_key: &[u8], msg: &[u8], sig: &[u8]) -> Result<()> {
-        let pk = pqcrypto_mldsa::mldsa87::PublicKey::from_bytes(pub_key).map_err(|_| OtrError::MlDsa)?;
-        let sig = pqcrypto_mldsa::mldsa87::DetachedSignature::from_bytes(sig).map_err(|_| OtrError::MlDsa)?;
-        pqcrypto_mldsa::mldsa87::verify_detached_signature(&sig, msg, &pk).map_err(|_| OtrError::SignatureInvalid)
+        // FIPS 204 ML-DSA-87, empty context (crate::mldsa). A malformed key
+        // or signature, and an invalid signature, are all an auth failure.
+        if crate::mldsa::raw_verify(pub_key, msg, sig) {
+            Ok(())
+        } else {
+            Err(OtrError::SignatureInvalid)
+        }
     }
     fn x448_dh(priv_bytes: &[u8], pub_bytes: &[u8;56]) -> Result<Vec<u8>> {
         let sk = x448::Secret::from(<[u8;56]>::try_from(priv_bytes).map_err(|_| OtrError::Internal)?);

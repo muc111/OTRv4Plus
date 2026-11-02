@@ -1737,7 +1737,7 @@ mod f4_containment_tests {
         let prov = include_str!("provider.rs");
         let gen = &prov[prov.find("pub fn generate_for(").unwrap()..];
         let gen = &gen[..gen.find("\n    }\n").unwrap()];
-        assert!(gen.contains("mldsa87::keypair()") && gen.contains("getrandom::getrandom"));
+        assert!(gen.contains("mldsa87_keypair()") && gen.contains("getrandom::getrandom"));
         // And behaviourally: three rotations, four unrelated keys.
         let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
         group_of(G, &mut a, &mut [&mut b]);
