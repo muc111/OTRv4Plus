@@ -880,7 +880,10 @@ impl DakeState {
 
     fn generate_x448_ephemeral() -> Result<(SecretBytes<56>, [u8; X448_PUB_SIZE])> {
         let mut bytes=[0u8;56]; getrandom::getrandom(&mut bytes).map_err(|_| OtrError::Internal)?;
-        let sk = x448::Secret::from(bytes); Ok((SecretBytes::new(bytes), *x448::PublicKey::from(&sk).as_bytes()))
+        let public = crate::rfc7748::public_key(&bytes);
+        let secret = SecretBytes::new(bytes);
+        zeroize::Zeroize::zeroize(&mut bytes); // Copy: the move above left this copy behind
+        Ok((secret, public))
     }
     fn generate_mlkem_keypair() -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>)> {
         // FIPS 203 ML-KEM-1024, the pure-Rust `ml-kem` crate (crate::mlkem).
@@ -905,9 +908,11 @@ impl DakeState {
         }
     }
     fn x448_dh(priv_bytes: &[u8], pub_bytes: &[u8;56]) -> Result<Vec<u8>> {
-        let sk = x448::Secret::from(<[u8;56]>::try_from(priv_bytes).map_err(|_| OtrError::Internal)?);
-        let pk = x448::PublicKey::from_bytes(pub_bytes).ok_or(OtrError::Internal)?;
-        Ok(sk.as_diffie_hellman(&pk).ok_or(OtrError::Internal)?.as_bytes().to_vec())
+        // RFC 7748 X448; refuses a low-order peer key and an all-zero result.
+        let sk = zeroize::Zeroizing::new(
+            <[u8;56]>::try_from(priv_bytes).map_err(|_| OtrError::Internal)?);
+        let ss = crate::rfc7748::diffie_hellman(&sk, pub_bytes).ok_or(OtrError::Internal)?;
+        Ok(ss.to_vec())
     }
     fn derive_session_keys(mixed_secret: &[u8], brace_key: &SecretBytes<32>, ssid: &[u8;8]) -> Result<DakeSessionKeys> {
         use zeroize::Zeroize;

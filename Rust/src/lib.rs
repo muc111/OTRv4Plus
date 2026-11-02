@@ -24,6 +24,7 @@ pub mod smp_vault;
 pub mod ratchet;
 pub mod ring_sig;
 pub mod key_handles;
+pub mod rfc7748;          // X448 (RFC 7748) on ed448-goldilocks-plus
 pub mod test_vectors;     // v10.6.17: RFC 8032 Ed448 test vectors (Phase 5.3f-narrow)
 pub mod mldsa;            // v10.6.18: ML-DSA-87 PyO3 bindings (Phase 5.3j)
 pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, part B)

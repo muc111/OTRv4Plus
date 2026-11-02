@@ -65,6 +65,7 @@ use sha3::digest::{ExtendableOutput, Update, XofReader};
 use zeroize::Zeroizing;
 
 use crate::mlkem;
+use ed448_goldilocks_plus::{x448 as rfc7748, MontgomeryPoint};
 
 const KDF_ID: u16 = 0x0003;
 const NH: usize = 64;
@@ -251,25 +252,26 @@ fn mlkem_pk_of(sk: &[u8]) -> &[u8] {
     &sk[1536..1536 + mlkem::PUBLIC_KEY_BYTES]
 }
 
+/// RFC 7748 X448 on ed448-goldilocks-plus (its `x448` module), whose secrets
+/// and shared secrets are ZeroizeOnDrop. It replaced x448 0.6.
 fn x448_public(sk: &[u8]) -> Result<[u8; X448_BYTES], HpkeError> {
-    let arr: [u8; X448_BYTES] = sk.try_into().map_err(|_| HpkeError::InvalidInput)?;
-    let secret = Zeroizing::new(arr);
-    let sk = x448::Secret::from(*secret);
-    Ok(*x448::PublicKey::from(&sk).as_bytes())
+    let secret = Zeroizing::new(<[u8; X448_BYTES]>::try_from(sk).map_err(|_| HpkeError::InvalidInput)?);
+    Ok(rfc7748::PublicKey::from(&rfc7748::StaticSecret::from(*secret)).to_bytes())
 }
 
-/// X448(sk, pk); refuses a low-order point (an all-zero result).
+/// X448(sk, pk); refuses a low-order peer key (InvalidInput, as before) and
+/// an all-zero, non-contributory result (Decaps).
 fn x448_dh(sk: &[u8], pk: &[u8]) -> Result<Zeroizing<Vec<u8>>, HpkeError> {
-    let arr: [u8; X448_BYTES] = sk.try_into().map_err(|_| HpkeError::InvalidInput)?;
-    let secret = Zeroizing::new(arr);
-    let sk = x448::Secret::from(*secret);
-    let pk = x448::PublicKey::from_bytes(pk).ok_or(HpkeError::InvalidInput)?;
-    let shared = sk.as_diffie_hellman(&pk).ok_or(HpkeError::Decaps)?;
-    let out = Zeroizing::new(shared.as_bytes().to_vec());
-    if out.iter().all(|&b| b == 0) {
+    let secret = Zeroizing::new(<[u8; X448_BYTES]>::try_from(sk).map_err(|_| HpkeError::InvalidInput)?);
+    let pk: [u8; X448_BYTES] = pk.try_into().map_err(|_| HpkeError::InvalidInput)?;
+    if MontgomeryPoint(pk).is_low_order() {
+        return Err(HpkeError::InvalidInput);
+    }
+    let shared = rfc7748::StaticSecret::from(*secret).diffie_hellman(&rfc7748::PublicKey::from(pk));
+    if !shared.was_contributory() {
         return Err(HpkeError::Decaps);
     }
-    Ok(out)
+    Ok(Zeroizing::new(shared.as_bytes().to_vec()))
 }
 
 fn combine(ss_mlkem: &[u8], ss_x448: &[u8], ct_x448: &[u8], pk_x448: &[u8],
@@ -458,6 +460,28 @@ mod tests {
     }
 
     const H: Kem = Kem::X448MlKem1024;
+
+    /// The X448 half is RFC 7748: the §6.2 public keys and shared secret,
+    /// and a low-order peer key (u = 0, 1) refused.
+    #[test]
+    fn x448_half_is_rfc7748() {
+        fn h(s: &str) -> Vec<u8> {
+            (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        }
+        let a = h("9a8f4925d1519f5775cf46b04b5800d4ee9ee8bae8bc5565d498c28dd9c9baf574a9419744897391006382a6f127ab1d9ac2d8c0a598726b");
+        let b = h("1c306a7ac2a0e2e0990b294470cba339e6453772b075811d8fad0d1d6927c120bb5ee8972b0d3e21374c9c921b09d1b0366f10b65173992d");
+        let pa = x448_public(&a).unwrap();
+        let pb = x448_public(&b).unwrap();
+        assert_eq!(pa.to_vec(), h("9b08f7cc31b7e3e67d22d5aea121074a273bd2b83de09c63faa73d2c22c5d9bbc836647241d953d40c5b12da88120d53177f80e532c41fa0"));
+        assert_eq!(pb.to_vec(), h("3eb7a829b0cd20f5bcfc0b599b6feccf6da4627107bdb0d4f345b43027d8b972fc3e34fb4232a13ca706dcb57aec3dae07bdc1c67bf33609"));
+        let k = h("07fff4181ac6cc95ec1c16a94a0f74d12da232ce40a77552281d282bb60c0b56fd2464c335543936521c24403085d59a449a5037514a879d");
+        assert_eq!(x448_dh(&a, &pb).unwrap().as_slice(), &k[..]);
+        assert_eq!(x448_dh(&b, &pa).unwrap().as_slice(), &k[..]);
+        let mut one = [0u8; X448_BYTES];
+        one[0] = 1;
+        assert_eq!(x448_dh(&a, &[0u8; X448_BYTES]).unwrap_err(), HpkeError::InvalidInput);
+        assert_eq!(x448_dh(&a, &one).unwrap_err(), HpkeError::InvalidInput);
+    }
 
     #[test]
     fn hybrid_round_trip_sizes_and_determinism() {

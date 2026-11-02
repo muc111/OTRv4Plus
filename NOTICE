@@ -21,7 +21,7 @@ never enabled is not in the shipped artifact and is not attributed here.
 
 
 ----------------------------------------------------------------------------
-1. Rust crates compiled into otrv4_core (121)
+1. Rust crates compiled into otrv4_core (116)
 ----------------------------------------------------------------------------
 
 aead 0.6.1
@@ -275,11 +275,6 @@ digest 0.11.3
     Copyright (c) 2017-2025 RustCrypto Developers
     Copyright (c) 2017 Artyom Pavlov
 
-ed448-goldilocks 0.7.2
-    Licence: BSD-3-Clause
-    Source:  https://github.com/crate-crypto/Ed448-Goldilocks
-    Copyright (c) Kevaundray Wedderburn <kevtheappdev@gmail.com>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
-
 ed448-goldilocks-plus 0.18.1
     Licence: BSD-3-Clause
     Source:  https://github.com/mikelodder7/Ed448-Goldilocks
@@ -308,14 +303,6 @@ ff 0.14.0
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2017 Sean Bowe
-
-fiat-crypto 0.1.20
-    Offered: MIT OR Apache-2.0 OR BSD-1-Clause
-    Taken:   MIT
-    Source:  https://github.com/mit-plv/fiat-crypto
-    Copyright 2015-2020 the fiat-crypto authors (see the AUTHORS file)
-    Copyright (c) 2015-2020 the fiat-crypto authors (see the AUTHORS file)
-    Copyright (c) 2015-2020 the fiat-crypto authors (see the AUTHORS file).
 
 funty 2.0.0
     Licence: MIT
@@ -390,16 +377,6 @@ heck 0.5.0
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2015 The Rust Project Developers
-
-hex 0.4.3
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/KokaKiwi/rust-hex
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright {yyyy} {name of copyright owner}
-    Copyright (c) 2013-2014 The Rust Project Developers.
-    Copyright (c) 2015-2020 The rust-hex Developers
 
 hkdf 0.13.0
     Offered: MIT OR Apache-2.0
@@ -672,15 +649,6 @@ rand_chacha 0.3.1
     Copyright 2018 Developers of the Rand project
     Copyright (c) 2014 The Rust Project Developers
 
-rand_core 0.5.1
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rust-random/rand
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright 2018 Developers of the Rand project
-    Copyright (c) 2014 The Rust Project Developers
-
 rand_core 0.6.4
     Offered: MIT OR Apache-2.0
     Taken:   MIT
@@ -926,11 +894,6 @@ wyz 0.5.1
     Licence: MIT
     Source:  https://github.com/myrrlyn/wyz
     Copyright (c) 2018 myrrlyn (Alexander Payne)
-
-x448 0.6.0
-    Licence: BSD-3-Clause
-    Source:  https://github.com/crate-crypto/x448
-    Copyright (c) Kevaundray Wedderburn <kevtheappdev@gmail.com>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
 
 zerocopy 0.8.63
     Offered: BSD-2-Clause OR Apache-2.0 OR MIT

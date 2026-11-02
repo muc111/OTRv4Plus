@@ -758,26 +758,21 @@ impl PyVoiceKex {
                  scalar is single-use by design")
         })?;
 
-        // from_bytes, not from_bytes_unchecked: it rejects points that are
-        // not on the curve before any scalar multiplication happens.
-        let peer_pk = x448::PublicKey::from_bytes(peer_public).ok_or_else(|| {
+        // A low-order peer key is refused before any scalar multiplication.
+        let peer: [u8; 56] = peer_public.try_into().map_err(|_| {
             PyValueError::new_err("peer X448 public key is not a valid point")
         })?;
-        let own = x448::Secret::from(*secret.expose());
+        if crate::rfc7748::is_low_order(&peer) {
+            return Err(PyValueError::new_err("peer X448 public key is not a valid point"));
+        }
 
-        // None for a low-order / degenerate peer key.  RFC 7748 requires the
-        // exchange be aborted rather than the all-zero result used: anyone
-        // who forced it could derive the same root we did.
-        let shared = own.as_diffie_hellman(&peer_pk).ok_or_else(|| {
+        // RFC 7748 requires the exchange be aborted rather than an all-zero
+        // result used: anyone who forced it could derive the same root we did.
+        let shared = crate::rfc7748::diffie_hellman(secret.expose(), &peer).ok_or_else(|| {
             PyValueError::new_err(
                 "degenerate X448 shared secret - aborting")
         })?;
-        let bytes = shared.as_bytes();
-        if bytes.iter().all(|b| *b == 0) {
-            return Err(PyValueError::new_err(
-                "degenerate X448 shared secret - aborting"));
-        }
-        SecretBytes::<56>::from_slice(bytes).ok_or_else(|| {
+        SecretBytes::<56>::from_slice(&shared[..]).ok_or_else(|| {
             PyRuntimeError::new_err("X448 shared secret has the wrong length")
         })
     }
@@ -792,9 +787,7 @@ impl PyVoiceKex {
         let mut sk = [0u8; 56];
         rand::rngs::OsRng.fill_bytes(&mut sk);
 
-        let secret = x448::Secret::from(sk);
-        let public = x448::PublicKey::from(&secret);
-        let pub_bytes: [u8; 56] = *public.as_bytes();
+        let pub_bytes: [u8; 56] = crate::rfc7748::public_key(&sk);
 
         let held = SecretBytes::new(sk);
         sk.zeroize();

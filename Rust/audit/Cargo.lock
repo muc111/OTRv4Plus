@@ -309,17 +309,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 
 [[package]]
-name = "ed448-goldilocks"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87b5fa9e9e3dd5fe1369f380acd3dcdfa766dbd0a1cd5b048fb40e38a6a78e79"
-dependencies = [
- "fiat-crypto",
- "hex",
- "subtle",
-]
-
-[[package]]
 name = "ed448-goldilocks-plus"
 version = "0.18.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -386,12 +375,6 @@ dependencies = [
  "quote",
  "syn 2.0.119",
 ]
-
-[[package]]
-name = "fiat-crypto"
-version = "0.1.20"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e825f6987101665dea6ec934c09ec6d721de7bc1bf92248e1d5810c8cd636b77"
 
 [[package]]
 name = "find-msvc-tools"
@@ -721,7 +704,6 @@ dependencies = [
  "shake",
  "subtle",
  "thiserror",
- "x448",
  "zeroize",
 ]
 
@@ -959,12 +941,6 @@ dependencies = [
  "ppv-lite86",
  "rand_core 0.6.4",
 ]
-
-[[package]]
-name = "rand_core"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90bde5296fc891b0cef12a6d03ddccc162ce7b2aff54160af9338f8d40df6d19"
 
 [[package]]
 name = "rand_core"
@@ -1268,17 +1244,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
-]
-
-[[package]]
-name = "x448"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4cd07d4fae29e07089dbcacf7077cd52dce7760125ca9a4dd5a35ca603ffebb"
-dependencies = [
- "ed448-goldilocks",
- "hex",
- "rand_core 0.5.1",
 ]
 
 [[package]]
