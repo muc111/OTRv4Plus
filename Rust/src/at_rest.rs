@@ -811,7 +811,7 @@ mod tests {
         let path = tmp_key_path("erase");
         create_key_file(&path).unwrap();
         uninstall();
-        let err = read_key_file(&path).err().expect("opened without the KEK");
+        let err = read_key_file(&path).expect_err("opened without the KEK");
         assert!(err.contains("no key-wrapping key"), "{}", err);
         // A different KEK does not open it either.
         install([10u8; KEY_LEN]);
