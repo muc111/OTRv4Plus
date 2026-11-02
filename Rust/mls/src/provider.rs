@@ -20,13 +20,16 @@
 //!
 //! THE COMPOSITE SIGNATURE (0xFEA1)
 //! ================================
-//!   m'  = "OTRv4+MLS/CompositeSig/v1" || m
+//!   m'  = "OTRv4+MLS/CompositeSig/v2" || SHA-512(pk) || m
 //!   sig = Ed448(sk_ed, m') (114) || ML-DSA-87(sk_ml, m') (4627)
 //!   pk  = pk_ed (57) || pk_ml (2592);  sk = seed_ed (57) || sk_ml (4896)
 //! Verification requires BOTH to pass; a length that is not exact is
 //! refused. Pure Ed448 (RFC 8032, empty context), as the core's identity
-//! keys; ML-DSA-87 as below. The prefix keeps a composite signature from
-//! being taken apart and either half used as a plain signature on `m`.
+//! keys; ML-DSA-87 as below. The label keeps a composite signature from
+//! being taken apart and either half used as a plain signature on `m`, and
+//! SHA-512(pk) binds BOTH component public keys into what each half signs,
+//! so neither half verifies when paired with another key's half (label v2;
+//! v1 bound neither).
 //!
 //! | MLS needs            | from                                        |
 //! |----------------------|---------------------------------------------|
@@ -88,7 +91,7 @@ pub const ED448_SIGNATURE_BYTES: usize = 114;
 pub const COMPOSITE_PUBLIC_KEY_BYTES: usize = ED448_PUBLIC_KEY_BYTES + MLDSA87_PUBLIC_KEY_BYTES;
 pub const COMPOSITE_SECRET_KEY_BYTES: usize = ED448_SEED_BYTES + MLDSA87_SECRET_KEY_BYTES;
 pub const COMPOSITE_SIGNATURE_BYTES: usize = ED448_SIGNATURE_BYTES + MLDSA87_SIGNATURE_BYTES;
-const COMPOSITE_LABEL: &[u8] = b"OTRv4+MLS/CompositeSig/v1";
+const COMPOSITE_LABEL: &[u8] = b"OTRv4+MLS/CompositeSig/v2";
 
 /// Stateless: every primitive is a pure function of its inputs, randomness
 /// comes from the OS per call.
@@ -174,11 +177,30 @@ fn mldsa87_verify(pk: &[u8], data: &[u8], signature: &[u8]) -> Result<(), Crypto
     }
 }
 
-fn composite_message(data: &[u8]) -> Vec<u8> {
-    let mut m = Vec::with_capacity(COMPOSITE_LABEL.len() + data.len());
+/// m' = label || SHA-512(pk_composite) || m. The hash of the whole
+/// composite public key (pk_ed || pk_ml) binds both halves: a signature
+/// made for one (Ed448, ML-DSA-87) pair verifies under no other.
+fn composite_message(pk_composite: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(COMPOSITE_LABEL.len() + 64 + data.len());
     m.extend_from_slice(COMPOSITE_LABEL);
+    m.extend_from_slice(&Sha512::digest(pk_composite));
     m.extend_from_slice(data);
     m
+}
+
+/// The composite public key `pk_ed (57) || pk_ml (2592)` that `secret`
+/// (seed_ed || expanded ml sk) signs for. Decoding our own signing key, so
+/// `from_expanded` cannot be driven by an attacker here.
+#[allow(deprecated)]
+fn composite_public_from_secret(seed: &[u8], ml_sk: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let ed_pub = ed448_key(seed)?.verifying_key().to_bytes();
+    let enc: ExpandedSigningKeyBytes<MlDsa87> =
+        ml_sk.try_into().map_err(|_| CryptoError::InvalidLength)?;
+    let ml_vk = ExpandedSigningKey::<MlDsa87>::from_expanded(&enc).verifying_key().encode();
+    let mut pk = Vec::with_capacity(COMPOSITE_PUBLIC_KEY_BYTES);
+    pk.extend_from_slice(&ed_pub[..]);
+    pk.extend_from_slice(ml_vk.as_slice());
+    Ok(pk)
 }
 
 fn ed448_key(seed: &[u8]) -> Result<ed448_goldilocks_plus::SigningKey, CryptoError> {
@@ -191,7 +213,8 @@ pub(crate) fn composite_sign(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, Cryp
         return Err(CryptoError::InvalidLength);
     }
     let (seed, ml_sk) = secret.split_at(ED448_SEED_BYTES);
-    let m = composite_message(data);
+    let pk = composite_public_from_secret(seed, ml_sk)?;
+    let m = composite_message(&pk, data);
     let ed = ed448_key(seed)?.sign_raw(&m).to_bytes();
     let ml = mldsa87_sign(ml_sk, &m)?;
     let mut sig = Vec::with_capacity(COMPOSITE_SIGNATURE_BYTES);
@@ -207,7 +230,7 @@ pub(crate) fn composite_verify(pk: &[u8], data: &[u8], signature: &[u8]) -> Resu
     }
     let (ed_pk, ml_pk) = pk.split_at(ED448_PUBLIC_KEY_BYTES);
     let (ed_sig, ml_sig) = signature.split_at(ED448_SIGNATURE_BYTES);
-    let m = composite_message(data);
+    let m = composite_message(pk, data);
     let ed_ok = (|| {
         let pk: &[u8; 57] = ed_pk.try_into().ok()?;
         let vk = ed448_goldilocks_plus::VerifyingKey::from_bytes(pk).ok()?;
@@ -624,6 +647,28 @@ mod composite_tests {
         assert!(c.verify_signature(COMPOSITE, b"same", k.public(), &b).is_ok());
         let m = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
         assert_ne!(m.sign(b"same").unwrap(), m.sign(b"same").unwrap());
+    }
+
+    /// Each half is bound to the whole composite public key: neither
+    /// verifies when spliced onto a different key's matching half.
+    #[test]
+    fn a_half_cannot_be_recombined_with_another_keys_half() {
+        let (a, b) = (SignatureKeyPair::generate(), SignatureKeyPair::generate());
+        let (sa, sb) = (a.sign(b"m").unwrap(), b.sign(b"m").unwrap());
+        let ed = ED448_SIGNATURE_BYTES;
+        let edp = ED448_PUBLIC_KEY_BYTES;
+        let c = CoreCrypto;
+        // A's Ed448 half + B's ML-DSA half, under the mixed public key
+        // (A's Ed448 pk + B's ML-DSA pk). Both halves are individually
+        // valid signatures for their own key, yet the composite is refused.
+        let mut mixed_sig = sa[..ed].to_vec();
+        mixed_sig.extend_from_slice(&sb[ed..]);
+        let mut mixed_pk = a.public()[..edp].to_vec();
+        mixed_pk.extend_from_slice(&b.public()[edp..]);
+        assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &mixed_sig).is_err());
+        // And each real signature is refused under the mixed key.
+        assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &sa).is_err());
+        assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &sb).is_err());
     }
 
     #[test]

@@ -183,8 +183,9 @@ halves add about 2-3 % to the PQ-only sizes.
 
 As built, versus the design below: the signature code point is 0xFEA1 (the
 TLS SignatureScheme private range is 0xFE00-0xFFFF, unlike MLS's), the
-composite message is `"OTRv4+MLS/CompositeSig/v1" || m` (MLS already
-labels and length-prefixes what it signs, so no separate context field),
+composite message is `"OTRv4+MLS/CompositeSig/v2" || SHA-512(pk) || m`
+(MLS already labels and length-prefixes what it signs, so no separate
+context field; the SHA-512 of the composite public key binds both halves),
 and the HPKE secret key is `sk_x448 || sk_mlkem` (the ML-KEM public key is
 inside the FIPS 203 decapsulation key, the X448 one is derived). Only
 `openmls_traits` is patched (`Rust/vendor/VENDORED.md`); `openmls` takes
@@ -215,10 +216,13 @@ be added without patching both crates. Options:
   from one seed with labels `"…/x448"` and `"…/mlkem"`.
 - **Signature (composite):**
   `sig = Ed448(m') || ML-DSA-87(m')` with
-  `m' = "OTRv4+MLS/CompositeSig/v1" || len(ctx) || ctx || m`. Verification
-  requires **both** to pass, and the public key is `pk_ed448 || pk_mldsa`.
-- Both halves come from crates the core already uses (`x448`,
-  `ed448-goldilocks-plus`, PQClean), with no new primitive implementation.
+  `m' = "OTRv4+MLS/CompositeSig/v2" || SHA-512(pk) || m` and
+  `pk = pk_ed448 || pk_mldsa`. Verification requires **both** to pass;
+  `SHA-512(pk)` binds both component public keys, so neither half verifies
+  when paired with another key's half.
+- Both halves come from crates the core already uses
+  (`ed448-goldilocks-plus` for Ed448 and its RFC 7748 X448, the pure-Rust
+  `ml-dsa` / `ml-kem`), with no new primitive implementation.
 - Existing groups cannot survive the change (a new suite means new groups).
   The core version bumps and Termux needs `build.sh`.
 
