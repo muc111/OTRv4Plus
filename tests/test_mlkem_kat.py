@@ -1,22 +1,33 @@
 #!/usr/bin/env python3
 """
 ML-KEM-1024 Known-Answer Tests (FIPS 203, NIST Level 5)
-Tests the ML-KEM-1024 C extension implementation.
-No Python fallback — C extension is required.
+
+Exercises the pure-Rust ML-KEM-1024 in otrv4_core (the `ml-kem` crate; the
+old otr4_crypto_ext C extension is retired). The raw `mlkem1024_*` entry
+points are gated behind the `raw-key-test-api` build feature and exist for
+the test suite only, so a release wheel does not carry them: this module
+skips cleanly in that case rather than failing to import.
 """
 
 import os
 import sys
 import unittest
-import otrv4_core as _ossl  # 5.3k: was otr4_crypto_ext (C ext retired)
 
-# Hard check — no fallback
+import pytest
+
+import otrv4_core as _ossl  # pure Rust; was otr4_crypto_ext (C ext retired)
+
+# The raw entry points only exist in a test wheel built with
+# `raw-key-test-api` (OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1). Skip, don't error,
+# when running against a release wheel that deliberately omits them.
 _REQUIRED = ('mlkem1024_keygen', 'mlkem1024_encaps', 'mlkem1024_decaps')
 _missing = [s for s in _REQUIRED if not hasattr(_ossl, s)]
 if _missing:
-    raise ImportError(
-        f"otr4_crypto_ext missing ML-KEM-1024 symbols: {_missing}\n"
-        "Rebuild: python setup_otr4.py build_ext --inplace"
+    pytest.skip(
+        "otrv4_core lacks the raw ML-KEM-1024 test API %s; rebuild with "
+        "--features raw-key-test-api (OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1)"
+        % (_missing,),
+        allow_module_level=True,
     )
 
 # ML-KEM-1024 sizes (FIPS 203)

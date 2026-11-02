@@ -21,7 +21,7 @@ never enabled is not in the shipped artifact and is not attributed here.
 
 
 ----------------------------------------------------------------------------
-1. Rust crates compiled into otrv4_core (122)
+1. Rust crates compiled into otrv4_core (121)
 ----------------------------------------------------------------------------
 
 aead 0.6.1
@@ -336,15 +336,6 @@ getrandom 0.2.17
     Copyright (c) 2018-2024 The rust-random Project Developers
     Copyright (c) 2014 The Rust Project Developers
 
-getrandom 0.3.4
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rust-random/getrandom
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2018-2025 The rust-random Project Developers
-    Copyright (c) 2014 The Rust Project Developers
-
 getrandom 0.4.3
     Offered: MIT OR Apache-2.0
     Taken:   MIT
@@ -452,6 +443,13 @@ keccak 0.2.2
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2026 The RustCrypto Project Developers
 
+kem 0.3.0
+    Offered: Apache-2.0 OR MIT
+    Taken:   MIT
+    Source:  https://github.com/RustCrypto/traits
+    Copyright 2021 RustCrypto Developers
+    Copyright (c) 2021-2026 RustCrypto Developers
+
 libc 0.2.191
     Offered: MIT OR Apache-2.0
     Taken:   MIT
@@ -475,6 +473,31 @@ log 0.4.34
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2014 The Rust Project Developers
+
+ml-dsa 0.1.1
+    Offered: Apache-2.0 OR MIT
+    Taken:   MIT
+    Source:  https://github.com/RustCrypto/signatures
+    copyright notice that is included in or attached to the work
+    copyright license to reproduce, prepare Derivative Works of,
+    Copyright 2024 Trail of Bits
+    Copyright (c) 2024-2026 RustCrypto Developers
+
+ml-kem 0.3.2
+    Offered: Apache-2.0 OR MIT
+    Taken:   MIT
+    Source:  https://github.com/RustCrypto/KEMs
+    copyright notice that is included in or attached to the work
+    copyright license to reproduce, prepare Derivative Works of,
+    Copyright (c) 2024-2026 RustCrypto Developers
+
+module-lattice 0.2.3
+    Offered: Apache-2.0 OR MIT
+    Taken:   MIT
+    Source:  https://github.com/RustCrypto/KEMs
+    copyright notice that is included in or attached to the work
+    copyright license to reproduce, prepare Derivative Works of,
+    Copyright (c) 2024-2026 RustCrypto Developers
 
 num-bigint 0.4.8
     Offered: MIT OR Apache-2.0
@@ -543,13 +566,6 @@ password-hash 0.5.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2020-2023 RustCrypto Developers
 
-paste 1.0.15
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/dtolnay/paste
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-
 pem-rfc7468 1.0.0
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
@@ -582,29 +598,6 @@ ppv-lite86 0.2.21
     copyright license to reproduce, prepare Derivative Works of,
     Copyright 2019 The CryptoCorrosion Contributors
     Copyright (c) 2019 The CryptoCorrosion Contributors
-
-pqcrypto-internals 0.2.11
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rustpq/pqcrypto
-
-pqcrypto-mldsa 0.1.2
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rustpq/pqcrypto/
-    Copyright (c) Thom Wiggers <thom@thomwiggers.nl>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
-
-pqcrypto-mlkem 0.1.1
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rustpq/pqcrypto/
-    Copyright (c) Thom Wiggers <thom@thomwiggers.nl>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
-
-pqcrypto-traits 0.3.5
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rustpq/pqclean/
-    Copyright (c) Thom Wiggers <thom@thomwiggers.nl>   [from Cargo.toml authors: the crate ships no licence file to read a holder from]
 
 proc-macro2 1.0.107
     Offered: MIT OR Apache-2.0
@@ -781,6 +774,18 @@ sha2 0.11.1
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2016-2026 The RustCrypto Project Developers
     Copyright (c) 2016 Artyom Pavlov
+    Copyright (c) 2009-2013 Mozilla Foundation
+    Copyright (c) 2006-2009 Graydon Hoare
+
+sha3 0.11.0
+    Offered: MIT OR Apache-2.0
+    Taken:   MIT
+    Source:  https://github.com/RustCrypto/hashes
+    copyright notice that is included in or attached to the work
+    copyright license to reproduce, prepare Derivative Works of,
+    Copyright (c) 2020-2026 The RustCrypto Project Developers
+    Copyright (c) 2016-2023 Artyom Pavlov, Marek Kotewicz
+    Copyright (c) 2014 Sébastien Martini
     Copyright (c) 2009-2013 Mozilla Foundation
     Copyright (c) 2006-2009 Graydon Hoare
 

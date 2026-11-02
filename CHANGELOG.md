@@ -35,6 +35,11 @@ starts at **rc.190-untested** (versionCode 191).
     provider and hpke-rs on the SHA-512 path. The HPKE binding combiner
     (SHA3-256) and the composite signature are unchanged.
   - **`MAX_MESSAGE` for MLS group payloads raised 1 MiB → 4 MiB.**
+  - Tidy-up: `NOTICE` regenerated from the shipped dependency graph (the
+    four `pqcrypto-*` attributions drop out, `ml-kem` / `ml-dsa` come in);
+    `tests/test_mlkem_kat.py` now points at the pure-Rust `otrv4_core`
+    entry points and skips cleanly on a release wheel that omits the
+    `raw-key-test-api` test gate, instead of failing to import.
 - **Updated: the built-in router is i2pd 3.0.0.1** (was 2.61.0), phone build
   **rc.191-untested** (versionCode 192). Among its fixes: a SAM session
   closed a few seconds after a reconnect, invalid sessions for
