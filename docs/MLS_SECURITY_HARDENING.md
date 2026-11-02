@@ -165,7 +165,7 @@ vendored table binds 0xF0A1 to `Sha2_512` / `HkdfSha512`). The provider
 also serves one non-hybrid suite,
 `MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87` (0x0906, ML-KEM-1024 alone,
 also SHA-512): it is a standard code point, so the reference OpenMLS
-provider understands it, which is what `tests/interop.rs` cross-checks
+provider understands it, which is what `Rust/mls/tests/interop.rs` cross-checks
 against (the private hybrid code point no other client understands). The
 earlier SHA-384 code point 0x0907 is no longer served.
 

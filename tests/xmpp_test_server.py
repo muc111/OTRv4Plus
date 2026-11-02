@@ -9,7 +9,10 @@ ejabberd use:
 
     ok            <register/> offered; form asks username + password; set -> result
     conflict      as ok, but the set is answered <conflict/>
-    captcha       the form is a XEP-0004 data form carrying a XEP-0158 CAPTCHA
+    captcha       a XEP-0158 CAPTCHA form with NO inline image (the app cannot
+                  show it, so it is refused and no password is sent)
+    captcha_image a XEP-0158 CAPTCHA form with the image inline as XEP-0231
+                  bits-of-binary; the set carries the OCR answer, checked here
     not_allowed   the registration GET is answered <not-allowed/>
     no_register   no <register/> feature; SASL only
     close_after_tls   the server drops the connection after the TLS restart
@@ -62,6 +65,12 @@ class XmppTestServer:
         self.log: list[str] = []
         self.password_received = False
         self.registered_user = None
+        #: captcha_image: the text the client must echo in the OCR field, and
+        #: what it actually sent. The image the server offers is opaque bytes
+        #: (the test knows the answer out of band, as a human reading an image
+        #: would); the server checks only that the submitted OCR matches.
+        self.captcha_answer = "AB12"
+        self.captcha_ocr_received = None
         self._stop = False
         threading.Thread(target=self._serve, daemon=True).start()
 
@@ -176,6 +185,26 @@ class XmppTestServer:
                     tls.sendall(("<iq type='error' id='%s'><error type='cancel'>"
                                  "<conflict xmlns='urn:ietf:params:xml:ns:"
                                  "xmpp-stanzas'/></error></iq>" % iid).encode())
+                elif self.mode == "captcha_image":
+                    # The set must carry the completed CAPTCHA form. Pull the
+                    # OCR field's value and check it; a wrong answer is
+                    # <not-acceptable/>, exactly as a real server rejects it.
+                    field = re.search(
+                        r"<field[^>]*\bvar=['\"]ocr['\"][^>]*>(.*?)</field>",
+                        stanza, re.S)
+                    ocr = ""
+                    if field:
+                        v = re.search(r"<value>([^<]*)</value>", field.group(1))
+                        ocr = v.group(1) if v else ""
+                    self.captcha_ocr_received = ocr
+                    if ocr == self.captcha_answer:
+                        self.registered_user = u.group(1) if u else None
+                        tls.sendall(("<iq type='result' id='%s'/>" % iid).encode())
+                    else:
+                        tls.sendall((
+                            "<iq type='error' id='%s'><error type='modify'>"
+                            "<not-acceptable xmlns='urn:ietf:params:xml:ns:"
+                            "xmpp-stanzas'/></error></iq>" % iid).encode())
                 else:
                     self.registered_user = u.group(1) if u else None
                     tls.sendall(("<iq type='result' id='%s'/>" % iid).encode())
@@ -194,6 +223,26 @@ class XmppTestServer:
                     "<field var='password' type='text-private'><required/></field>"
                     "<field var='ocr' type='text-single' label='Enter the text'>"
                     "<required/></field></x></query></iq>" % iid)
+        if self.mode == "captcha_image":
+            # A XEP-0158 form whose image is inline (XEP-0231 bits-of-binary),
+            # referenced by cid from the OCR field's XEP-0221 media element.
+            # The bytes are opaque; captcha.py only renders them, it does not
+            # decode a PNG. username/password come as register sub-elements.
+            import base64 as _b64
+            png = _b64.b64encode(b"\x89PNG\r\n\x1a\n" + b"fake" * 8).decode()
+            cid = "sha1+test@bob.xmpp.org"
+            return ("<iq type='result' id='%s'><query xmlns='jabber:iq:register'>"
+                    "<instructions>Type the characters in the image</instructions>"
+                    "<x xmlns='jabber:x:data' type='form'>"
+                    "<field var='FORM_TYPE' type='hidden'><value>urn:xmpp:captcha"
+                    "</value></field>"
+                    "<field var='challenge' type='hidden'><value>C-1</value></field>"
+                    "<field var='sid' type='hidden'><value>S-1</value></field>"
+                    "<field var='ocr' type='text-single' label='Enter the text'>"
+                    "<required/><media xmlns='urn:xmpp:media-element'>"
+                    "<uri type='image/png'>cid:%s</uri></media></field></x>"
+                    "<data xmlns='urn:xmpp:bob' cid='%s' type='image/png'>%s</data>"
+                    "</query></iq>" % (iid, cid, cid, png))
         return ("<iq type='result' id='%s'><query xmlns='jabber:iq:register'>"
                 "<instructions>Choose a username and password</instructions>"
                 "<username/><password/></query></iq>" % iid)

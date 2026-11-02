@@ -213,11 +213,49 @@ class TestStagesAreDistinguished:
         assert "register_set" in server.log
 
     @pytest.mark.parametrize("server", ["captcha"], indirect=True)
-    def test_captcha_is_named_and_the_password_is_not_sent(self, pki, server):
+    def test_a_captcha_without_an_image_is_refused_and_nothing_is_sent(self, pki, server):
+        # The form is a CAPTCHA but carries no inline image, so the app cannot
+        # show it: refused, and the password never leaves.
         code, detail = register(pki, server, Net(server))
-        assert code == "registration_captcha_required"
+        assert code == "registration_captcha_unsupported"
         assert "register_set" not in server.log
         assert server.password_received is False
+
+    @pytest.mark.parametrize("server", ["captcha_image"], indirect=True)
+    def test_a_showable_captcha_registers_in_two_phases(self, pki, server):
+        # Phase one: the form carries an inline image; register_account holds
+        # the stream open and reports the challenge, sending no password yet.
+        t = transport(pki, server, Net(server))
+        try:
+            code, _ = t.register_account()
+            assert code == "captcha_required"
+            assert "register_set" not in server.log
+            assert server.password_received is False
+            card = t.pending_captcha()
+            assert card and card["answer_var"] == "ocr"
+            assert card["image_mime"] == "image/png"
+            assert card["image_base64"]            # the inline bytes, base64
+            assert "image" in card["instructions"].lower()
+            # Phase two: the answer goes back over the SAME stream.
+            code, _ = t.submit_captcha_answer(server.captcha_answer)
+            assert code == REG.OK
+        finally:
+            t.close()
+        assert "register_set" in server.log
+        assert server.password_received is True
+        assert server.registered_user == "alice"
+        assert server.captcha_ocr_received == server.captcha_answer
+
+    @pytest.mark.parametrize("server", ["captcha_image"], indirect=True)
+    def test_a_wrong_captcha_answer_is_rejected(self, pki, server):
+        t = transport(pki, server, Net(server))
+        try:
+            assert t.register_account()[0] == "captcha_required"
+            code, _ = t.submit_captcha_answer("not-the-answer")
+            assert code == "not_acceptable"
+        finally:
+            t.close()
+        assert server.captcha_ocr_received == "not-the-answer"
 
     def test_yax_im_style_form_registers(self, pki, server):
         """<username/><password/>, no data form, no CAPTCHA."""

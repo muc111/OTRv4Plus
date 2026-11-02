@@ -345,6 +345,54 @@ never to DNS). Only `i2p_sam` enters `checking_router`; only `tor` enters
 `transport selected` with the route, resolver and certificate policy.
 `tests/test_transport_route.py`.
 
+## 8.3 Registration CAPTCHA: inline only, never a fetch (2026-11)
+
+Some servers (conversations.im and others) will not create an account in-band
+(XEP-0077) without a CAPTCHA. A server asks by answering the registration GET
+with a XEP-0004 data form whose `FORM_TYPE` is `urn:xmpp:captcha` (XEP-0158),
+carrying a field the user must fill and a XEP-0221 `<media/>` element that
+points at the challenge image. The image can be delivered two ways, and only
+one is honoured:
+
+* **Inline (XEP-0231 bits-of-binary).** A `<data xmlns='urn:xmpp:bob'>` object
+  carrying the image as base64, in the stanza the server already sent, over the
+  connection already open. This is shown.
+* **A URL (`http(s)`/`ftp`).** A media element pointing at a web server. This is
+  **refused, never fetched**: fetching it would open a connection to a
+  third-party host and reveal the user's address, turning a registration form
+  into a tracking beacon. The refusal is `registration_captcha_external`, and
+  it says to register on the server's web page instead. No password is sent.
+
+`android_bridge/captcha.py` is the pure parser and owns this rule; it has no
+network in it, so every case is a unit test rather than something only a live
+CAPTCHA server could exercise (`tests/test_registration_captcha.py`). An image
+in a format the app does not render, or over 256 KiB, is
+`registration_captcha_unsupported` — again, nothing fetched, no password sent.
+
+**The stream is held open across the user's answer.** A XEP-0158 challenge is
+bound to its connection (its `sid` and `challenge` only mean anything on the
+stream they arrived on), so the flow is two-phase and cannot close and reopen:
+`register_account()` reports `captcha_required` with the stream still up and
+the challenge parked for an answer; `submit_captcha_answer()` sends the
+completed form (every hidden field echoed verbatim, the user's text in the
+answer field, username and password as the XEP-0077 sub-elements) over that
+same stream. The park is bounded (`CAPTCHA_ANSWER_TIMEOUT`, 180 s) so an
+abandoned screen cannot hold a socket — and a SAM tunnel — open indefinitely.
+The same TLS gate as the no-CAPTCHA path applies: on a route that verifies
+certificates, the password is not submitted until TLS is actually in place
+(`transport_registration._submit_captcha`,
+`tests/test_registration_captcha_transport.py`, and the live two-phase case in
+`tests/test_clearnet_registration.py`).
+
+**Route and anonymity are unchanged.** Registering on a public clearnet server
+is a clearnet connection: it exposes the user's IP to that server, exactly as
+§8.2 describes, and the CAPTCHA image travels on that same connection. This does
+not widen the policy — `.i2p`/`.onion` registration still never touches DNS or a
+web fetch, and the inline-only rule above is what keeps a CAPTCHA from becoming
+a side-channel out of whatever route was chosen. The one transport-visible
+addition is that a held-open registration stream now outlives the
+`register_account()` call for up to the answer timeout.
+
 ## 9. Rules for anyone adding a transport
 
 1. **Selection is explicit.** By address suffix or by flag, checked before the

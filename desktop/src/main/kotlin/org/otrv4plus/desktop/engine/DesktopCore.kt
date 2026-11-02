@@ -89,11 +89,29 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     var lastRegistrationNotice: String = ""
         private set
 
-    fun register(password: String): RegistrationOutcome {
-        val r = call("register", "password" to password) as? JsonObject ?: JsonObject(emptyMap())
+    fun register(password: String): RegistrationOutcome =
+        outcomeFrom(call("register", "password" to password))
+
+    /** Answer the CAPTCHA the last [register] reported, over the stream it
+     *  left open. Same shape as [register]; a protocol error if none waits. */
+    fun submitCaptcha(answer: String): RegistrationOutcome =
+        outcomeFrom(call("submit_captcha", "answer" to answer))
+
+    private fun outcomeFrom(raw: Any?): RegistrationOutcome {
+        val r = raw as? JsonObject ?: JsonObject(emptyMap())
         lastRegistrationNotice = r.str("notice")
-        return RegistrationOutcome(ok = r["ok"].asBool(), code = r.str("code").ifBlank { "unknown" },
-                                   detail = r.str("detail"))
+        val cap = r["captcha"] as? JsonObject
+        val img = cap?.str("image_base64").orEmpty()
+        val captcha = if (cap != null && img.isNotBlank())
+            RegistrationCaptcha(
+                imageBase64 = img,
+                imageMime = cap.str("image_mime").ifBlank { "image/png" },
+                instructions = cap.str("instructions"),
+                answerVar = cap.str("answer_var").ifBlank { "ocr" },
+            ) else null
+        return RegistrationOutcome(ok = r["ok"].asBool(),
+                                   code = r.str("code").ifBlank { "unknown" },
+                                   detail = r.str("detail"), captcha = captcha)
     }
 
     fun disconnect() { call("disconnect") }

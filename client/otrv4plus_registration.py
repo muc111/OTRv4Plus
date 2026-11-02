@@ -94,6 +94,20 @@ CODES = {
                            "stream with an error.",
     "server_closed_connection": "The server was reached, then closed the "
                                 "connection before registration finished.",
+    # The app CAN show this one: a readable image came inline and the Register
+    # screen should display it and ask for the characters. Distinct from the
+    # two refusals below, which mean "a CAPTCHA, but not one we can show".
+    "captcha_required": "This server shows a CAPTCHA. Type the characters in "
+                        "the image to create the account.",
+    "registration_captcha_external": "This server's CAPTCHA image is hosted on "
+                                     "a web page, which the app will not fetch "
+                                     "(it would reveal your address). Register "
+                                     "on the server's web page instead. Your "
+                                     "password was not sent.",
+    "registration_captcha_unsupported": "This server's CAPTCHA could not be "
+                                        "shown. Register on the server's web "
+                                        "page, then log in here. Your password "
+                                        "was not sent.",
     "registration_captcha_required": "This server wants a CAPTCHA to create "
                                      "an account, which the app cannot show. "
                                      "Register on the server's web page, then "

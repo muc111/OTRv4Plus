@@ -3651,6 +3651,50 @@ class _RegistrationOnly:
         pass
 
 
+_CAPTCHA_EXT = {"image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg",
+                "image/gif": ".gif", "image/webp": ".webp", "image/bmp": ".bmp"}
+
+
+def _prompt_captcha(cap):
+    """Show a registration CAPTCHA and read the answer. Returns the typed
+    text, or None if the user cancelled (blank/EOF).
+
+    A terminal cannot render the image inline, so the inline bytes the server
+    sent -- never a URL, the bridge refuses those -- are written to a temp
+    file for the user to open, then removed once the answer is in. Nothing is
+    fetched and nothing is left on disk."""
+    import base64
+    import os
+    import tempfile
+    data = base64.b64decode((cap.get("image_base64") or "").encode("ascii"))
+    if not data:
+        sys.exit("[register] The server's CAPTCHA had no image the app can "
+                 "show. Create the account on the server's web page instead.")
+    ext = _CAPTCHA_EXT.get((cap.get("image_mime") or "").lower(), ".png")
+    fd, path = tempfile.mkstemp(prefix="otrv4plus-captcha-", suffix=ext)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    try:
+        print("[register] This server requires a CAPTCHA to create the account.")
+        instr = (cap.get("instructions") or "").strip()
+        if instr:
+            print("[register] %s" % instr)
+        print("[register] The challenge image was saved to:")
+        print("    %s" % path)
+        print("[register] Open it, then type the characters you see.")
+        try:
+            answer = input("[register] CAPTCHA answer (blank to cancel): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            answer = ""
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+    return answer or None
+
+
 def _register_account(args, password):
     """--register: create the account exactly as the apps' Create account
     does (`android_bridge.connection.ConnectionController.register`): the
@@ -3675,7 +3719,22 @@ def _register_account(args, password):
     except Exception as exc:
         sys.exit("[register] %s" % exc)
     print("[register] creating %s ..." % args.jid)
-    result = ConnectionController(_RegistrationOnly(), profile).register(password)
+    ctl = ConnectionController(_RegistrationOnly(), profile)
+    result = ctl.register(password)
+    # A CAPTCHA holds the stream open: show it, answer it, and resubmit. A
+    # rejected answer gets a fresh challenge, up to a few tries.
+    for _ in range(3):
+        if result.get("code") != "captcha_required":
+            break
+        answer = _prompt_captcha(result.get("captcha") or {})
+        if answer is None:
+            ctl.submit_captcha("")          # best-effort: release the stream
+            sys.exit("[register] Cancelled; the account was not created.")
+        result = ctl.submit_captcha(answer)
+        if result.get("code") == "not_acceptable":
+            print("[register] That answer was not accepted; requesting a new "
+                  "CAPTCHA.")
+            result = ctl.register(password)
     if not result.get("ok"):
         sys.exit("[register] The account was not created: %s (%s)"
                  % (result.get("detail") or "no reason given", result.get("code") or "unknown"))

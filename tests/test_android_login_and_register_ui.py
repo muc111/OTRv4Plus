@@ -333,5 +333,7 @@ class TestTheBridgeCall:
         assert 'OtrBridgeException("not_prepared")' in block
 
     def test_a_missing_code_becomes_unknown_rather_than_blank(self, bridge):
-        block = body_of(bridge, "fun register(password")
+        # register() and submitCaptcha() both flow through outcomeFrom(), where
+        # a blank code is defended against for either entry point.
+        block = body_of(bridge, "fun outcomeFrom")
         assert 'ifBlank { "unknown" }' in block

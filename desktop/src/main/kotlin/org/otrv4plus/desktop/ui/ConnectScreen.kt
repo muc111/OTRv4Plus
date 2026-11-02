@@ -2,6 +2,7 @@
 // Copyright (C) 2025-2026 muc111
 package org.otrv4plus.desktop.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +35,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -151,14 +153,22 @@ fun ConnectScreen(model: AppModel) {
                     } else Text("Create account")
                 }
                 model.registration?.let { r ->
-                    Text(if (r.ok) "Account created, signing in…" else "Could not create the account",
-                         style = MaterialTheme.typography.titleSmall,
-                         color = if (r.ok) MaterialTheme.colorScheme.onSurface
-                                 else MaterialTheme.colorScheme.error)
-                    if (!r.ok) Text(r.detail.ifBlank { "The server said: ${r.code}" },
-                                    style = MaterialTheme.typography.bodySmall)
-                    if (r.ok && model.registrationNotice.isNotBlank()) Text(model.registrationNotice,
-                                    style = MaterialTheme.typography.bodySmall)
+                    if (r.needsCaptcha) {
+                        CaptchaBlock(
+                            captcha = r.captcha!!,
+                            onSubmit = { model.submitCaptcha(it) },
+                            onCancel = { model.cancelCaptcha() },
+                        )
+                    } else {
+                        Text(if (r.ok) "Account created, signing in…" else "Could not create the account",
+                             style = MaterialTheme.typography.titleSmall,
+                             color = if (r.ok) MaterialTheme.colorScheme.onSurface
+                                     else MaterialTheme.colorScheme.error)
+                        if (!r.ok) Text(r.detail.ifBlank { "The server said: ${r.code}" },
+                                        style = MaterialTheme.typography.bodySmall)
+                        if (r.ok && model.registrationNotice.isNotBlank()) Text(model.registrationNotice,
+                                        style = MaterialTheme.typography.bodySmall)
+                    }
                 }
                 model.problemLine()?.let { line ->
                     Text(line.text, style = MaterialTheme.typography.bodyMedium,
@@ -172,6 +182,57 @@ fun ConnectScreen(model: AppModel) {
     }
 }
 
+
+/**
+ * The server's CAPTCHA, shown inline on the Connect screen. The image is the
+ * bytes the server sent over the connection already open
+ * ([RegistrationCaptcha.imageBase64]); the bridge refused any image hosted on
+ * a web page, so nothing here is fetched and no address is leaked. The
+ * registration stream stays open while this is shown.
+ */
+@Composable
+private fun CaptchaBlock(
+    captcha: org.otrv4plus.android.bridge.RegistrationCaptcha,
+    onSubmit: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var answer by remember { mutableStateOf("") }
+    val bitmap = remember(captcha.imageBase64) {
+        runCatching {
+            val bytes = java.util.Base64.getDecoder().decode(captcha.imageBase64)
+            org.jetbrains.skia.Image.makeFromEncoded(bytes)
+                .toComposeImageBitmap()
+        }.getOrNull()
+    }
+    Text("Create the account", style = MaterialTheme.typography.titleSmall)
+    Text(captcha.instructions.ifBlank {
+             "Type the characters shown in the image to prove you are a person."
+         },
+         style = MaterialTheme.typography.bodySmall)
+    if (bitmap != null) {
+        Image(bitmap = bitmap, contentDescription = "CAPTCHA challenge image",
+              modifier = Modifier.height(96.dp))
+    } else {
+        Text("The CAPTCHA image could not be shown. Cancel and create the " +
+             "account on the server's web page instead.",
+             color = MaterialTheme.colorScheme.error,
+             style = MaterialTheme.typography.bodySmall)
+    }
+    OutlinedTextField(
+        value = answer,
+        onValueChange = { answer = it },
+        label = { Text("Characters in the image") },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(onClick = { onSubmit(answer) },
+               enabled = answer.isNotBlank() && bitmap != null) {
+            Text("Submit")
+        }
+        TextButton(onClick = onCancel) { Text("Cancel") }
+    }
+}
 
 /** N1: shown under a SAM host that is not this machine. */
 internal const val SAM_ELSEWHERE_WARNING =

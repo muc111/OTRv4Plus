@@ -26,6 +26,32 @@ class RegistrationOutcomeTest {
         assertTrue(outcome("ok", ok = true).ok)
     }
 
+    // ── a CAPTCHA is a paused registration, not a result ────────────────────
+
+    @Test
+    fun `needsCaptcha only when the code says so and an image is present`() {
+        val image = RegistrationCaptcha(
+            imageBase64 = "AAAA", imageMime = "image/png",
+            instructions = "Type it", answerVar = "ocr")
+        // Both halves: the actionable code AND an image to show.
+        assertTrue(RegistrationOutcome(false, "captcha_required", "…", image).needsCaptcha)
+        // The code without an image is not something to prompt for.
+        assertFalse(RegistrationOutcome(false, "captcha_required", "…", null).needsCaptcha)
+        // An image on a different code is not a CAPTCHA prompt either.
+        assertFalse(RegistrationOutcome(false, "conflict", "…", image).needsCaptcha)
+    }
+
+    @Test
+    fun `the refusal codes are not actionable captchas`() {
+        // These mean "a CAPTCHA, but not one the app can show": a plain
+        // failure the user reads, never a prompt.
+        for (code in listOf("registration_captcha_external",
+                            "registration_captcha_unsupported",
+                            "registration_captcha_required")) {
+            assertFalse(outcome(code).needsCaptcha, code)
+        }
+    }
+
     // ── put the focus where the fix is ──────────────────────────────────────
 
     @Test
@@ -117,7 +143,9 @@ class RegistrationOutcomeTest {
         val fields = RegistrationOutcome::class.java.declaredFields
             .map { it.name }
         assertFalse(fields.contains("connected"))
-        assertEquals(setOf("ok", "code", "detail"),
+        // `captcha` is the one addition: a paused registration carries the
+        // challenge to show. Still nothing resembling a live session.
+        assertEquals(setOf("ok", "code", "detail", "captcha"),
             fields.filter { !it.contains('$') }.toSet())
     }
 }

@@ -9,14 +9,26 @@ is, so it runs only over TLS (or I2P) and says plainly why a server refused."""
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 from typing import Any, Dict, Optional
 
 import otrv4plus_registration as _registration
 
+from . import captcha as _captcha
 from . import route as _route_mod
 from .trace import TRACE as _TRACE
 from .transport_base import CONNECT_TIMEOUT, DEFAULT_C2S_PORT, TransportError
 from .transport_stream import _StreamWatch, _stream_failure_text, _tls_in_place
+
+
+#: How long the open stream waits for the user to type a CAPTCHA answer before
+#: giving up. The XEP-0158 challenge is bound to this stream (its `sid` and
+#: `challenge` only mean anything on the connection they arrived on), so the
+#: answer cannot be deferred past the life of the connection; it must come back
+#: while the socket is still up. Three minutes is long enough to read a few
+#: distorted characters and short enough that an abandoned screen does not hold
+#: a socket (and a SAM tunnel) open indefinitely.
+CAPTCHA_ANSWER_TIMEOUT = 180.0
 
 
 #: What a transport-level failure means to somebody trying to create an account.
@@ -210,9 +222,13 @@ class RegistrationMixin:
         holding it to the first, and the credential being sent is the one that
         matters most.
 
-        The stream is always torn down before returning. Registration leaves
-        slixmpp authenticated on some servers, and keeping that would mean two
-        ways to arrive at a live session; `connect()` stays the only one.
+        The stream is torn down before returning EXCEPT when the server asks
+        for a CAPTCHA the app can show: then this returns `("captcha_required",
+        ...)` with the stream still up and the challenge live (an XEP-0158
+        challenge is bound to its connection -- its `sid`/`challenge` mean
+        nothing on a fresh stream), and the caller completes it with
+        `submit_captcha_answer`. Every other outcome, success included, leaves
+        no live session: `connect()` stays the only way to one.
         """
         problem = _registration.validate(
             _localpart(self._profile.jid), self._password)
@@ -222,6 +238,16 @@ class RegistrationMixin:
             return problem
 
         loop = self._ensure_loop()
+        # Two hand-offs across the thread boundary: `_reg_stage1` carries the
+        # first outcome register_account() returns on (a terminal result, or
+        # "captcha_required" with the stream held open); `_reg_final` carries
+        # the terminal result of a CAPTCHA flow for submit_captcha_answer().
+        # concurrent.futures.Future because the coroutine sets them on the loop
+        # thread and these methods read them on the caller's thread.
+        self._reg_stage1 = concurrent.futures.Future()
+        self._reg_final = concurrent.futures.Future()
+        self._reg_captcha = None
+        self._reg_answer = None
         future = asyncio.run_coroutine_threadsafe(self._register(), loop)
         # Recorded in the same slot a connect uses so `cancel()` stops this
         # too. A cold tunnel is minutes and Android will rotate the screen
@@ -229,28 +255,125 @@ class RegistrationMixin:
         with self._lock:
             self._connect_future = future
         try:
-            future.result(timeout=CONNECT_TIMEOUT)
+            code, detail = self._reg_stage1.result(timeout=CONNECT_TIMEOUT)
         except BaseException as exc:                 # noqa: BLE001 -- see below
             # Deliberately everything, CancelledError included: `classify` is
             # total and answers "cancelled" for that case, and an exception
             # escaping here would reach Kotlin as a Chaquopy PyException with
-            # the stanza still inside its message.
-            code, detail = _registration.classify(exc)
+            # the stanza still inside its message. If the coroutine already
+            # failed, classify its exception rather than this wait's timeout.
+            source = exc
+            if future.done():
+                try:
+                    inner = future.exception(timeout=0)
+                    if inner is not None:
+                        source = inner
+                except BaseException:                # pragma: no cover
+                    pass
+            code, detail = _registration.classify(source)
+            with self._lock:
+                self._connect_future = None
             _TRACE.record("registration", "failed", "warn", code=code)
             return code, detail
+        if code == "captcha_required":
+            # Phase one. The challenge is live and the stream is held open; the
+            # coroutine is parked in `_submit_captcha` awaiting the answer, so
+            # `_connect_future` stays set (a cancel still reaches it) and the
+            # transport is NOT torn down here. submit_captcha_answer() finishes.
+            _TRACE.record("registration", "captcha_required", "info")
+            return code, detail
+        # Terminal already: the coroutine set stage1 only after its `finally`
+        # tore the stream down, so there is nothing left to keep.
+        with self._lock:
+            self._connect_future = None
+        _TRACE.record("registration",
+                      "succeeded" if code == _registration.OK else "failed",
+                      "info" if code == _registration.OK else "warn", code=code)
+        return code, detail
+
+    def pending_captcha(self) -> Optional[Dict[str, Any]]:
+        """The live CAPTCHA challenge for the Register screen to show, or None.
+
+        Meaningful only between register_account() returning "captcha_required"
+        and submit_captcha_answer(). `image_base64` is the inline challenge
+        image (never a fetched one -- see captcha.py); the UI renders it and
+        asks for the characters."""
+        ch = self._reg_captcha
+        if ch is None:
+            return None
+        return {"image_base64": ch.image_base64(),
+                "image_mime": ch.image_mime,
+                "instructions": ch.instructions,
+                "answer_var": ch.answer_var}
+
+    def submit_captcha_answer(self, answer: str) -> "tuple[str, str]":
+        """Phase two: answer the CAPTCHA register_account() reported, over the
+        stream it held open, and wait for the server's verdict. Blocks.
+
+        Returns `(code, detail)` like register_account() -- `("ok", ...)` when
+        the account was created. The stream is torn down before returning
+        whatever the outcome: there is still no live session to keep. Returns
+        a protocol error if no CAPTCHA is actually waiting (a double submit, or
+        a submit after the park already timed out)."""
+        loop = self._ensure_loop()
+        answer_future = self._reg_answer
+        final = self._reg_final
+        if answer_future is None or final is None:
+            return ("registration_protocol_error",
+                    "No CAPTCHA is waiting to be answered.")
+        text = "" if answer is None else str(answer)
+
+        def _resolve():
+            if not answer_future.done():
+                answer_future.set_result(text)
+
+        loop.call_soon_threadsafe(_resolve)
+        _TRACE.record("registration", "captcha_answered", "info")
+        try:
+            code, detail = final.result(timeout=CONNECT_TIMEOUT)
+        except BaseException as exc:                 # noqa: BLE001
+            code, detail = _registration.classify(exc)
+            _TRACE.record("registration", "failed", "warn", code=code)
+        else:
+            _TRACE.record("registration",
+                          "succeeded" if code == _registration.OK else "failed",
+                          "info" if code == _registration.OK else "warn",
+                          code=code)
         finally:
             with self._lock:
                 self._connect_future = None
-        _TRACE.record("registration", "succeeded", "info")
-        return _registration.OK, _registration.describe(_registration.OK)
+        return code, detail
+
+    def _reg_set_stage1(self, code: str, detail: str) -> None:
+        fut = getattr(self, "_reg_stage1", None)
+        if fut is not None and not fut.done():
+            fut.set_result((code, detail))
+
+    def _reg_set_final(self, code: str, detail: str) -> None:
+        fut = getattr(self, "_reg_final", None)
+        if fut is not None and not fut.done():
+            fut.set_result((code, detail))
 
     async def _register(self) -> None:
         try:
             await self._register_inner()
+            result = (_registration.OK,
+                      _registration.describe(_registration.OK))
+        except BaseException as exc:                 # noqa: BLE001
+            # Total, like register_account's own catch: the outcome is handed
+            # across to a waiting thread as a (code, detail), never as a raised
+            # exception carrying a stanza.
+            result = _registration.classify(exc)
         finally:
             # Unconditional, unlike `_connect`'s teardown which only runs on
             # failure. There is no session to keep here even when it worked.
             await self._abandon()
+        # Hand the terminal outcome to whoever is waiting. For the no-CAPTCHA
+        # path register_account() is blocked on stage1; for the CAPTCHA path
+        # stage1 was already set to "captcha_required" (so this is a no-op on
+        # it) and submit_captcha_answer() is blocked on final.
+        self._reg_set_stage1(*result)
+        self._reg_set_final(*result)
 
     async def _register_inner(self) -> None:
         try:
@@ -288,8 +411,16 @@ class RegistrationMixin:
             _TRACE.record("registration", "form_received", "info",
                           fields=_form_field_names(form),
                           blocker=blocker or "none")
+            if blocker == "registration_captcha_required":
+                # A CAPTCHA. If the image is inline and showable, this parks on
+                # the open stream for the user's answer and submits it; if it
+                # can only be fetched from a web server, or cannot be shown,
+                # `_submit_captcha` fails with the right code and nothing (no
+                # password) is sent.
+                await self._submit_captcha(client, form, done)
+                return
             if blocker is not None:
-                # A CAPTCHA or an extra required field: the server would
+                # An extra required field (not a CAPTCHA): the server would
                 # refuse a username-and-password submission, so the password
                 # is not sent at all.
                 if not done.done():
@@ -375,6 +506,108 @@ class RegistrationMixin:
         # The server answered the registration as this name's server: pin
         # the destination it was reached at (X1; I2P names only).
         self._confirm_destination()
+
+    async def _submit_captcha(self, client, form, done) -> None:
+        """Hold the stream open across the CAPTCHA, then submit the answer.
+
+        Called from `on_register` (itself a task, so awaiting here does not
+        stall slixmpp) when the registration form is a CAPTCHA. It:
+
+          1. parses the form with `captcha.extract_challenge`, which renders
+             the image ONLY from the inline bits-of-binary the server already
+             sent and REFUSES an image hosted at an http(s)/ftp URL (fetching
+             it would leak the user's address). A refusal ends the attempt
+             here with the right code and no password is ever sent;
+          2. checks TLS is in place first -- the submission carries the new
+             password, exactly as the no-CAPTCHA path does;
+          3. signals phase one ("captcha_required") so register_account()
+             returns with the stream still up, and parks on `_reg_answer`;
+          4. when submit_captcha_answer() supplies the answer, builds the
+             XEP-0004 submit form (every hidden field echoed verbatim, the
+             user's text in the answer field) and sends it with the username
+             and password as the XEP-0077 register sub-elements.
+        """
+        try:
+            query_xml = form["register"].xml
+        except Exception:
+            query_xml = None
+        try:
+            challenge = _captcha.extract_challenge(query_xml)
+        except _captcha.CaptchaError as exc:
+            # Refused (external image, unshowable, oversized) or unreadable:
+            # the stream is up but we send nothing. The code is already one of
+            # the registration vocabulary, with the "password not sent" line.
+            _TRACE.record("registration", "captcha_refused", "info",
+                          code=exc.code)
+            if not done.done():
+                done.set_exception(
+                    _registration.RegistrationFailed(exc.code, exc.detail))
+            return
+        except Exception:
+            if not done.done():
+                done.set_exception(_registration.RegistrationFailed(
+                    "registration_protocol_error"))
+            return
+
+        if self._route.verify_certificate and not _tls_in_place(client):
+            # The submission will carry the new password; refuse to send it in
+            # the clear. (The GET that brought the form is harmless; the SET is
+            # the one that matters.)
+            if not done.done():
+                done.set_exception(
+                    _registration.RegistrationFailed("tls_required"))
+            return
+
+        loop = asyncio.get_event_loop()
+        answer_future = loop.create_future()
+        self._reg_captcha = challenge
+        self._reg_answer = answer_future
+        # Phase one done: let register_account() return with the challenge
+        # live. This is the one place stage1 becomes "captcha_required".
+        self._reg_set_stage1(
+            "captcha_required", _registration.describe("captcha_required"))
+        _TRACE.record("registration", "captcha_wait", "info")
+        try:
+            answer = await asyncio.wait_for(answer_future, CAPTCHA_ANSWER_TIMEOUT)
+        except asyncio.TimeoutError:
+            # The screen was abandoned. End the attempt so the stream (and any
+            # tunnel under it) is released by `_register`'s teardown.
+            _TRACE.record("registration", "captcha_timeout", "info")
+            if not done.done():
+                done.set_exception(_registration.RegistrationFailed("cancelled"))
+            return
+
+        if not (answer or "").strip():
+            # An empty answer is the UI's cancel (nobody submits a blank
+            # CAPTCHA): release the stream without putting anything on the wire.
+            _TRACE.record("registration", "captcha_cancelled", "info")
+            if not done.done():
+                done.set_exception(_registration.RegistrationFailed("cancelled"))
+            return
+
+        try:
+            submit = client["xep_0004"].make_form(ftype="submit")
+            for var, vals in _captcha.submission_fields(challenge, answer).items():
+                ftype = ("text-single" if var == challenge.answer_var
+                         else "hidden")
+                value = vals[0] if len(vals) == 1 else list(vals)
+                submit.add_field(var=var, ftype=ftype, value=value)
+            iq = client.Iq()
+            iq["type"] = "set"
+            iq["register"]["username"] = _localpart(self._profile.jid)
+            iq["register"]["password"] = self._password
+            iq["register"].append(submit.xml)
+            _TRACE.record("registration", "captcha_submitted", "info")
+            await iq.send()
+        except Exception as exc:
+            _TRACE.record("registration", "captcha_rejected", "info",
+                          condition=_safe_condition(exc))
+            if not done.done():
+                done.set_exception(exc)
+        else:
+            _TRACE.record("registration", "accepted", "info")
+            if not done.done():
+                done.set_result(True)
 
     def _plan_clearnet_dns(self, client, watch, host) -> None:
         """SRV-first address plan for a clearnet name (see dns_srv).

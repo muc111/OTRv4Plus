@@ -452,6 +452,29 @@ class ConnectionViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Answer the CAPTCHA the last Create account reported. Goes through the
+     * service, like [register]: the service holds the open registration stream
+     * and, once the server accepts the answer, saves the credentials and signs
+     * in. [registration] is set again only if it did not work.
+     */
+    fun submitCaptcha(answer: String) {
+        val a = answer.trim()
+        if (a.isEmpty()) { cancelCaptcha(); return }
+        error = null
+        registration = null
+        busy = "Checking the CAPTCHA…"
+        revision++
+        OtrConnectionService.submitCaptcha(getApplication(), a)
+    }
+
+    /** Back out of the CAPTCHA: release the held stream and clear the prompt. */
+    fun cancelCaptcha() {
+        busy = null
+        registration = null
+        OtrConnectionService.submitCaptcha(getApplication(), "")
+    }
+
     /** Dismiss the last registration result. */
     fun clearRegistration() {
         registration = null

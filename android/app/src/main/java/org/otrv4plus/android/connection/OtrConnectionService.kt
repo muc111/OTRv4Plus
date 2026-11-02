@@ -426,6 +426,12 @@ class OtrConnectionService : Service() {
                 }
                 startConnection()
             }
+            ACTION_SUBMIT_CAPTCHA -> {
+                // Required within seconds of startForegroundService.
+                goForeground()
+                submitCaptcha(intent.getStringExtra(EXTRA_CAPTCHA_ANSWER).orEmpty())
+                intent.removeExtra(EXTRA_CAPTCHA_ANSWER)
+            }
             else -> goForeground()
         }
         // START_STICKY would have Android restart the service with a null
@@ -671,9 +677,70 @@ class OtrConnectionService : Service() {
                 }
                 afterRegistration = true
                 startConnection()
+            } else if (out.needsCaptcha) {
+                // The server wants a CAPTCHA the app can show. The registration
+                // stream stays open inside the bridge (the challenge is bound
+                // to it); surface the image for the Connect screen and wait for
+                // the user's answer (submitCaptcha). The router keeps running.
+                registration = out
+                idle()
             } else {
                 registration = out
                 // The router keeps running, as after a failed Log in.
+                idle()
+            }
+        }
+    }
+
+    /**
+     * Answer the CAPTCHA [startRegistration] reported, on the stream the bridge
+     * held open. A blank answer cancels: the held stream is released and no
+     * error is shown. On success the credentials are saved and the sign-in
+     * starts, exactly as [startRegistration] does.
+     */
+    private fun submitCaptcha(answer: String) {
+        if (worker?.isActive == true || registering) return
+        if (answer.isBlank()) {
+            // Cancel: release the held stream, quietly.
+            scope.launch {
+                withContext(Dispatchers.IO) { runCatching { core.submitCaptcha("") } }
+                registration = null
+                idle()
+            }
+            return
+        }
+        registration = null
+        registering = true
+        registerAttempt = 0
+        enter(LinkPhase.CONNECTING, "checking the CAPTCHA")
+        worker = scope.launch {
+            val out = withContext(Dispatchers.IO) {
+                runCatching { core.submitCaptcha(answer) }.getOrElse {
+                    org.otrv4plus.android.bridge.RegistrationOutcome(
+                        ok = false, code = codeOf(it),
+                        detail = "The account could not be created (${codeOf(it)}).")
+                }
+            }
+            registering = false
+            worker = null
+            runCatching {
+                core.note("service", "captcha", if (out.ok) "info" else "warning", out.code)
+            }
+            if (out.ok) {
+                runCatching { credentials.save(Credentials(jid, password)) }
+                val notice = core.lastRegistrationNotice
+                if (notice.isNotBlank()) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        runCatching {
+                            android.widget.Toast.makeText(
+                                applicationContext, notice, android.widget.Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+                afterRegistration = true
+                startConnection()
+            } else {
+                registration = out
                 idle()
             }
         }
@@ -1631,6 +1698,10 @@ class OtrConnectionService : Service() {
         /** Create the account first, then sign in (startRegistration). */
         const val EXTRA_REGISTER = "register"
 
+        /** Answer the CAPTCHA a prior register reported (submitCaptcha). */
+        const val ACTION_SUBMIT_CAPTCHA = "org.otrv4plus.android.SUBMIT_CAPTCHA"
+        const val EXTRA_CAPTCHA_ANSWER = "captcha_answer"
+
         /** The route, or absent for the JID's own domain. Not a secret. */
         const val EXTRA_SERVER = "server"
 
@@ -1661,6 +1732,17 @@ class OtrConnectionService : Service() {
                 .putExtra(EXTRA_PASSWORD, password)
                 .putExtra(EXTRA_SERVER, server)
                 .putExtra(EXTRA_REGISTER, register)
+            ContextCompat.startForegroundService(context, intent)
+        }
+
+        /**
+         * Answer the CAPTCHA the last Create account reported, over the stream
+         * the bridge held open. A blank [answer] cancels and releases it.
+         */
+        fun submitCaptcha(context: Context, answer: String) {
+            val intent = Intent(context, OtrConnectionService::class.java)
+                .setAction(ACTION_SUBMIT_CAPTCHA)
+                .putExtra(EXTRA_CAPTCHA_ANSWER, answer)
             ContextCompat.startForegroundService(context, intent)
         }
 
