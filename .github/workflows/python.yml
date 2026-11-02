@@ -104,13 +104,16 @@ jobs:
             --out dist
           pip install dist/*.whl
 
-      # MLS group encryption (Rust/mls), stage 2: the OpenMLS provider on
-      # the core's PQClean ML-KEM-1024 / ML-DSA-87, AES-256-GCM and SHA-384,
-      # in-process groups, and a cross-check against OpenMLS's reference
-      # provider (a dev-dependency only). Not in the APK yet.
+      # MLS group encryption (Rust/mls): the OpenMLS provider on the core's
+      # pure-Rust ML-KEM-1024 / ML-DSA-87, AES-256-GCM and SHA-512, and
+      # in-process groups -- first as shipped (hybrid suite 0xF0A1 only),
+      # then with the test-only non-hybrid suite for the cross-check against
+      # OpenMLS's reference provider (a dev-dependency only).
       - name: MLS provider and group tests
         working-directory: Rust/mls
-        run: cargo test --release --locked
+        run: |
+          cargo test --release --locked
+          cargo test --release --locked --features reference-interop
 
       # The runtime closure the APK ships, which `verify_python_closure.py`
       # already holds `android/app/build.gradle.kts` to, PLUS the packages only

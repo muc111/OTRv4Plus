@@ -9,9 +9,15 @@ use otrv4_mls::provider::{COMPOSITE, LEGACY_CIPHERSUITE};
 use otrv4_mls::{CoreProvider, SignatureKeyPair, CIPHERSUITE};
 
 /// The hybrid suite is a private code point, outside OpenMLS's default
-/// capabilities: every leaf must declare it (as MlsClient does).
+/// capabilities: every leaf must declare it (as MlsClient does). The
+/// non-hybrid suite is declared only when built for the reference
+/// cross-check.
 fn caps() -> Capabilities {
-    Capabilities::new(None, Some(&[CIPHERSUITE, LEGACY_CIPHERSUITE]), None, None, None)
+    #[cfg(feature = "reference-interop")]
+    let suites = [CIPHERSUITE, LEGACY_CIPHERSUITE];
+    #[cfg(not(feature = "reference-interop"))]
+    let suites = [CIPHERSUITE];
+    Capabilities::new(None, Some(&suites), None, None, None)
 }
 
 struct Member {
@@ -167,8 +173,18 @@ fn a_tampered_message_is_rejected() {
 }
 
 #[test]
-fn only_the_two_suites_are_served() {
+fn only_the_hybrid_suite_is_served_as_shipped() {
     let p = CoreProvider::default();
+    // As shipped (no `reference-interop`): the hybrid suite alone; the
+    // non-hybrid one is refused outright.
+    #[cfg(not(feature = "reference-interop"))]
+    {
+        assert_eq!(p.crypto().supported_ciphersuites(), vec![CIPHERSUITE]);
+        assert!(p.crypto().supports(LEGACY_CIPHERSUITE).is_err());
+        let ml = HpkeConfig(HpkeKemType::MlKem1024, HpkeKdfType::HkdfSha512, HpkeAeadType::AesGcm256);
+        assert!(p.crypto().hpke_seal(ml, &[0u8; 1568], b"", b"", b"x").is_err());
+    }
+    #[cfg(feature = "reference-interop")]
     assert_eq!(p.crypto().supported_ciphersuites(), vec![CIPHERSUITE, LEGACY_CIPHERSUITE]);
     assert_eq!(u16::from(CIPHERSUITE), 0xF0A1);
     assert_eq!(CIPHERSUITE.hpke_kem_algorithm(), HpkeKemType::X448MlKem1024);
@@ -206,6 +222,9 @@ fn signer_is_composite_ed448_ml_dsa_87() {
     assert_eq!(format!("{s:?}"), "SignatureKeyPair { .. }", "Debug never prints key bytes");
 }
 
+/// Only built for the reference cross-check: the shipped provider refuses
+/// this suite (see `only_the_hybrid_suite_is_served_as_shipped`).
+#[cfg(feature = "reference-interop")]
 #[test]
 fn a_group_of_the_non_hybrid_suite_works() {
     // The non-hybrid suite: ML-KEM-1024 / ML-DSA-87 only, no X448 combiner.

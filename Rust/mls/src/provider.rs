@@ -68,9 +68,11 @@ use crate::hpke::{self, Aead as HpkeAead, Kem};
 /// The ciphersuite of every new group: hybrid KEM, composite signature.
 pub const CIPHERSUITE: Ciphersuite =
     Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87;
-/// The non-hybrid PQ suite: ML-KEM-1024 alone, no X448 combiner. The
-/// reference OpenMLS provider (tests/interop.rs) has no private hybrid code
-/// point, so this standard suite is what the independent cross-check runs on.
+/// The non-hybrid PQ suite: ML-KEM-1024 alone, no X448 combiner. TEST ONLY:
+/// served only with the `reference-interop` feature, because the reference
+/// OpenMLS provider (tests/interop.rs) has no private hybrid code point and
+/// this standard suite is what the independent cross-check runs on. The
+/// shipped build serves `CIPHERSUITE` alone.
 pub const LEGACY_CIPHERSUITE: Ciphersuite =
     Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87;
 /// The composite signature scheme of `CIPHERSUITE`.
@@ -99,11 +101,18 @@ fn sha512_only(hash_type: HashType) -> Result<(), CryptoError> {
     }
 }
 
-/// The HPKE configurations the two suites use; anything else is refused.
+/// Whether a suite is served: the hybrid one, plus the test-only non-hybrid
+/// one when built for the reference cross-check.
+fn served(ciphersuite: Ciphersuite) -> bool {
+    ciphersuite == CIPHERSUITE
+        || (cfg!(feature = "reference-interop") && ciphersuite == LEGACY_CIPHERSUITE)
+}
+
+/// The HPKE configurations the served suites use; anything else is refused.
 fn hpke_suite(config: &HpkeConfig) -> Result<(Kem, HpkeAead), CryptoError> {
     let kem = match config.0 {
         HpkeKemType::X448MlKem1024 => Kem::X448MlKem1024,
-        HpkeKemType::MlKem1024 => Kem::MlKem1024,
+        HpkeKemType::MlKem1024 if cfg!(feature = "reference-interop") => Kem::MlKem1024,
         _ => return Err(CryptoError::UnsupportedCiphersuite),
     };
     if config.1 != HpkeKdfType::HkdfSha512 {
@@ -212,7 +221,7 @@ pub(crate) fn composite_verify(pk: &[u8], data: &[u8], signature: &[u8]) -> Resu
 
 impl OpenMlsCrypto for CoreCrypto {
     fn supports(&self, ciphersuite: Ciphersuite) -> Result<(), CryptoError> {
-        if ciphersuite == CIPHERSUITE || ciphersuite == LEGACY_CIPHERSUITE {
+        if served(ciphersuite) {
             Ok(())
         } else {
             Err(CryptoError::UnsupportedCiphersuite)
@@ -220,7 +229,7 @@ impl OpenMlsCrypto for CoreCrypto {
     }
 
     fn supported_ciphersuites(&self) -> Vec<Ciphersuite> {
-        vec![CIPHERSUITE, LEGACY_CIPHERSUITE]
+        [CIPHERSUITE, LEGACY_CIPHERSUITE].into_iter().filter(|c| served(*c)).collect()
     }
 
     fn hkdf_extract(

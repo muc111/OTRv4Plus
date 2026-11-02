@@ -55,6 +55,19 @@ getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
 thiserror = "2.0"
 
+[features]
+# TEST ONLY: the provider also serves the non-hybrid suite 0x0906
+# (ML-KEM-1024 / ML-DSA-87 alone). The reference OpenMLS provider has no
+# private hybrid code point, so tests/interop.rs cross-checks ours on this
+# standard one. Never enabled by otrv4_core: the shipped provider and
+# client serve only the hybrid suite 0xF0A1.
+#     cargo test --release --features reference-interop
+reference-interop = []
+
+[[test]]
+name = "interop"
+required-features = ["reference-interop"]
+
 [dev-dependencies]
 # TEST ONLY, never shipped: the reference provider, so our provider is
 # checked against an independent implementation of the same suite.

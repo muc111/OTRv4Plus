@@ -75,7 +75,7 @@ use openmls::prelude::{tls_codec::*, *};
 use sha2::{Digest, Sha512};
 use zeroize::Zeroizing;
 
-use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE, LEGACY_CIPHERSUITE};
+use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE};
 
 /// Sealed-state header: magic, then format version.
 const STATE_MAGIC: &[u8; 4] = b"OMLS";
@@ -327,13 +327,12 @@ pub struct MlsClient {
     wiped: bool,
 }
 
-/// What our leaves say they support: the hybrid suite (every new group)
-/// and the earlier PQ-only one (existing groups). The hybrid suite is a
+/// What our leaves say they support: the hybrid suite, and only it. It is a
 /// private code point, so it is not in OpenMLS's default list and must be
 /// declared, or OpenMLS refuses a leaf that does not list its own group's
-/// suite.
+/// suite. No non-hybrid suite is offered, so none can be negotiated.
 fn capabilities() -> Capabilities {
-    Capabilities::new(None, Some(&[CIPHERSUITE, LEGACY_CIPHERSUITE]), None, None, None)
+    Capabilities::new(None, Some(&[CIPHERSUITE]), None, None, None)
 }
 
 fn create_config() -> MlsGroupCreateConfig {
@@ -585,8 +584,8 @@ impl MlsClient {
         ids
     }
 
-    /// The group's ciphersuite code point: 0xF0A1 (hybrid) or 0x0907
-    /// (the earlier PQ-only suite).
+    /// The group's ciphersuite code point: always 0xF0A1 (hybrid); the
+    /// client creates and joins no other.
     pub fn ciphersuite(&mut self, group_id: &[u8]) -> Result<u16> {
         Ok(u16::from(self.group(group_id)?.ciphersuite()))
     }
@@ -637,8 +636,8 @@ impl MlsClient {
             let kp = kp_in.validate(self.provider.crypto(), ProtocolVersion::Mls10)
                 .map_err(|_| MlsError::Refused("invalid key package"))?;
             if kp.ciphersuite() != suite {
-                // A group of the earlier PQ-only suite cannot take members
-                // whose clients now make hybrid KeyPackages: re-create it.
+                // Every group and every KeyPackage is hybrid; anything
+                // else is refused, never mixed in.
                 return Err(MlsError::Refused("key package for another ciphersuite"));
             }
             kps.push(kp);
@@ -768,7 +767,7 @@ impl MlsClient {
             .map_err(|_| MlsError::Refused("welcome not for us or invalid"))?
             .into_group(&self.provider)
             .map_err(|_| MlsError::Failed("join"))?;
-        if group.ciphersuite() != CIPHERSUITE && group.ciphersuite() != LEGACY_CIPHERSUITE {
+        if group.ciphersuite() != CIPHERSUITE {
             return Err(MlsError::Refused("group uses another ciphersuite"));
         }
         let id = group.group_id().as_slice().to_vec();
