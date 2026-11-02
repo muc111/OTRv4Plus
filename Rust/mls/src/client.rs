@@ -1531,6 +1531,17 @@ mod retired_key_tests {
         let spliced = [&current.secret()[..ed], &other.secret()[ed..]].concat();
         assert!(revealed_fingerprints(&body(&[(current.public(), &spliced)]), None).is_empty(),
                 "an ML-DSA half that does not sign for its public half");
+        // An ML-DSA half that `from_expanded` would abort on (panic=abort):
+        // the Ed448 half matches its seed, so only the decodability check
+        // catches it. It must be dropped, never reach from_expanded.
+        let ed = crate::provider::ED448_SEED_BYTES;
+        let mut undecodable = other.secret().to_vec();
+        for b in &mut undecodable[ed..] { *b = 0xff; }
+        let ed_pub = &other.public()[..crate::provider::ED448_PUBLIC_KEY_BYTES];
+        let mut mixed_pub = ed_pub.to_vec();
+        mixed_pub.extend_from_slice(&other.public()[crate::provider::ED448_PUBLIC_KEY_BYTES..]);
+        assert!(revealed_fingerprints(&body(&[(&mixed_pub, &undecodable)]), None).is_empty(),
+                "an undecodable ML-DSA half is dropped, not decoded");
         let good = body(&[(other.public(), other.secret())]);
         assert_eq!(revealed_fingerprints(&good, now), vec![fingerprint(other.public())]);
         assert!(revealed_fingerprints(&good[..good.len() - 1], now).is_empty(), "truncated");

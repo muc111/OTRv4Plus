@@ -203,6 +203,40 @@ fn composite_public_from_secret(seed: &[u8], ml_sk: &[u8]) -> Result<Vec<u8>, Cr
     Ok(pk)
 }
 
+/// Whether a 4896-byte expanded ML-DSA-87 signing key can be decoded by
+/// `ExpandedSigningKey::from_expanded` WITHOUT panicking.
+///
+/// Layout: rho 32 | K 32 | tr 64 | s1 672 | s2 768 | t0 3328. `ml-dsa`'s
+/// BitUnpack asserts every s1/s2 coefficient (eta = 2, packed in 3 bits) is
+/// <= 2*eta = 4 and panics otherwise; t0 (13-bit) cannot exceed its bound
+/// and rho/K/tr are raw bytes, so s1||s2 is the entire panic surface. The
+/// build is panic=abort and F4 key-reveal publications carry an
+/// attacker-chosen expanded key (client::revealed_fingerprints), so an
+/// undecodable one would abort the process: `from_parts` refuses it here,
+/// before it can reach `from_expanded`. The 1440 bytes of s1||s2 hold
+/// 3840 three-bit fields, LSB-first with no padding (256*(7+8)*3 bits =
+/// 1440*8), so the check is independent of the coefficient order.
+fn mldsa_expanded_decodable(sk: &[u8]) -> bool {
+    if sk.len() != MLDSA87_SECRET_KEY_BYTES {
+        return false;
+    }
+    const S1_S2: core::ops::Range<usize> = 128..128 + 672 + 768;
+    let mut acc: u32 = 0;
+    let mut bits: u32 = 0;
+    for &byte in &sk[S1_S2] {
+        acc |= (byte as u32) << bits;
+        bits += 8;
+        while bits >= 3 {
+            if acc & 0b111 > 4 {
+                return false;
+            }
+            acc >>= 3;
+            bits -= 3;
+        }
+    }
+    true
+}
+
 fn ed448_key(seed: &[u8]) -> Result<ed448_goldilocks_plus::SigningKey, CryptoError> {
     ed448_goldilocks_plus::SigningKey::try_from(seed).map_err(|_| CryptoError::InvalidLength)
 }
@@ -583,6 +617,11 @@ impl SignatureKeyPair {
         if public.len() == MLDSA87_PUBLIC_KEY_BYTES
             && secret.len() == MLDSA87_SECRET_KEY_BYTES
         {
+            // A key reaching here may be attacker-supplied (F4 reveal); refuse
+            // an ML-DSA half that from_expanded would abort on.
+            if !mldsa_expanded_decodable(&secret) {
+                return None;
+            }
             return Some(Self { scheme: SignatureScheme::MLDSA87, public, secret });
         }
         if public.len() == COMPOSITE_PUBLIC_KEY_BYTES
@@ -590,6 +629,9 @@ impl SignatureKeyPair {
         {
             let ed_pk = ed448_key(&secret[..ED448_SEED_BYTES]).ok()?.verifying_key().to_bytes();
             if ed_pk[..] != public[..ED448_PUBLIC_KEY_BYTES] {
+                return None;
+            }
+            if !mldsa_expanded_decodable(&secret[ED448_SEED_BYTES..]) {
                 return None;
             }
             return Some(Self { scheme: COMPOSITE, public, secret });
@@ -669,6 +711,36 @@ mod composite_tests {
         // And each real signature is refused under the mixed key.
         assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &sa).is_err());
         assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &sb).is_err());
+    }
+
+    /// A published "retired key" (F4) carries an attacker-chosen expanded
+    /// ML-DSA half. from_parts must refuse one that `from_expanded` would
+    /// abort on (panic=abort), before is_consistent/sign can reach it.
+    #[test]
+    fn from_parts_refuses_an_undecodable_mldsa_half() {
+        // Every freshly generated key is decodable.
+        for _ in 0..64 {
+            let k = SignatureKeyPair::generate();
+            assert!(mldsa_expanded_decodable(&k.secret()[ED448_SEED_BYTES..]));
+            let m = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
+            assert!(mldsa_expanded_decodable(m.secret()));
+        }
+        // A real composite key with its ML-DSA half overwritten: the Ed448
+        // half still matches its seed, so only the ML-DSA check can catch it.
+        let k = SignatureKeyPair::generate();
+        let mut bad = Zeroizing::new(k.secret().to_vec());
+        for b in &mut bad[ED448_SEED_BYTES..] { *b = 0xff; }
+        assert!(!mldsa_expanded_decodable(&bad[ED448_SEED_BYTES..]));
+        assert!(SignatureKeyPair::from_parts(k.public().to_vec(), bad).is_none(),
+                "an undecodable ML-DSA half must be refused");
+        // The genuine key still round-trips through from_parts.
+        assert!(SignatureKeyPair::from_parts(
+            k.public().to_vec(), Zeroizing::new(k.secret().to_vec())).is_some());
+        // Same for the plain MLDSA87 scheme.
+        let m = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
+        let mut bad = Zeroizing::new(m.secret().to_vec());
+        for b in bad.iter_mut() { *b = 0xff; }
+        assert!(SignatureKeyPair::from_parts(m.public().to_vec(), bad).is_none());
     }
 
     #[test]
