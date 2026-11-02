@@ -43,11 +43,37 @@ starts at **rc.190-untested** (versionCode 191).
   - **NIST ACVP vectors pinned against the shipping `ml-kem` / `ml-dsa`**
     (test-only, `Rust/audit`): ML-KEM-1024 keyGen, encapsulation,
     decapsulation (incl. implicit rejection) and both FIPS 203 key checks;
-    ML-DSA-87 keyGen, deterministic sigGen and sigVer, through the same crate
+    ML-DSA-87 keyGen, hedged sigGen and sigVer, through the same crate
     calls the shipping wrappers make. Extracted from ACVP-Server at a pinned
     commit with SHA-256-checked sources (`vectors/extract_acvp.py`); a
     version-parity test keeps the audit lockfile on the shipped versions;
     CI job `acvp.yml`.
+  - **Post-quantum hardening pass** (security-audit findings F1-F7,
+    2026-11-02):
+    - **F1: ML-DSA-87 signing is hedged again** (FIPS 204 Algorithm 2 with
+      fresh per-signature randomness, as the PQClean bindings did). The
+      migration had switched every signer to the deterministic variant,
+      which is weaker against fault and side-channel attacks. Verification
+      and wire format unchanged.
+    - **F7: a malformed published ML-DSA key can no longer abort the
+      process.** `ml-dsa`'s `from_expanded` panics (so, with `panic=abort`,
+      crashes) on a bad expanded key, and an F4 "retired key" publication
+      carries an attacker-chosen one. `from_parts` now refuses an
+      undecodable key before it is ever decoded.
+    - **F6: the composite signature binds both component public keys**
+      (`m' = label-v2 || SHA-512(pk) || m`), so neither half verifies
+      paired with another key's half. Wire-format change (no users).
+    - **F3: the client offers and accepts only the hybrid suite 0xF0A1;**
+      the non-hybrid 0x0906 is served only behind the test-only
+      `reference-interop` feature (for the OpenMLS cross-check).
+    - **F2: per-input MLS size bounds** (key package 64 KiB, room message
+      1 MiB, Welcome 4 MiB), the same in Rust and the Python bridge, pinned
+      by a test. The earlier single 4 MiB bound never took effect.
+    - **F5: X448 moved to `ed448-goldilocks-plus`** (its RFC 7748 X448,
+      secrets `ZeroizeOnDrop`), retiring the unmaintained `x448` 0.6 /
+      `ed448-goldilocks` 0.7; RFC 7748 vectors pinned. **F4: PQ key and
+      shared-secret temporaries are now owned in wiped buffers.** Five
+      crates leave the shipped graph.
 - **Updated: the built-in router is i2pd 3.0.0.1** (was 2.61.0), phone build
   **rc.191-untested** (versionCode 192). Among its fixes: a SAM session
   closed a few seconds after a reconnect, invalid sessions for

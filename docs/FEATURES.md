@@ -13,17 +13,17 @@ exists in this repository today; planned work lives in [ROADMAP.md](ROADMAP.md).
 
 | Primitive | Purpose | Implementation |
 |---|---|---|
-| Ed448 | Long-term identity signing + ClientProfile verification | `ed448-goldilocks-plus` 0.16 (pure Rust) |
-| X448 | Ephemeral DH (DAKE and ratchet) | `x448` 0.6 (pure Rust) — both the DAKE and the double-ratchet DH run on this crate as of v10.6.21 |
-| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey, hybrid SMP binding) | `pqcrypto-mlkem` 0.1.1 (FIPS 203) — pure Rust.  v10.7.3 moved `MLKEM1024BraceKEM` off the `otr4_crypto_ext` C extension onto Rust via `src/mlkem.rs`; v10.7.4 (5.3k) deleted the C extension. |
-| ML-DSA-87 | Post-quantum signature (hybrid DAKE auth + per-step hybrid SMP signatures) | `pqcrypto-mldsa` 0.1.2 (FIPS 204) — pure Rust (v10.6.18 retired the `otr4_mldsa_ext` C extension). |
+| Ed448 | Long-term identity signing + ClientProfile verification | `ed448-goldilocks-plus` 0.18 (pure Rust) |
+| X448 | Ephemeral DH (DAKE and ratchet) | `ed448-goldilocks-plus` 0.18 (its RFC 7748 X448, `kex` feature; secrets `ZeroizeOnDrop`). Replaced `x448` 0.6 / `ed448-goldilocks` 0.7 (2026-11; unmaintained, no zeroization). |
+| ML-KEM-1024 | Post-quantum KEM (DAKE brace key, ratchet rekey, hybrid SMP binding) | `ml-kem` 0.3 (FIPS 203) — pure-Rust RustCrypto, replaced `pqcrypto-mlkem` (PQClean C bindings) in 2026-11; byte-identical encodings, NIST ACVP vectors pinned in `Rust/audit`. |
+| ML-DSA-87 | Post-quantum signature (hybrid DAKE auth + per-step hybrid SMP signatures) | `ml-dsa` 0.1 (FIPS 204) — pure-Rust RustCrypto, replaced `pqcrypto-mldsa` in 2026-11. FIPS 204 hedged signing (fresh randomness per signature). |
 | SHAKE-256 | KDF, ring sig challenge, transcript hash; also the SMP passphrase→scalar stretch on **legacy** wire version 0x02 (50,000 iterated rounds) | `sha3` 0.10 |
 | AES-256-GCM | Message encryption + SMP-secrets store + secure-file-destroy | `aes-gcm` 0.10 via Rust `Rust/src/aead.rs` PyO3 bindings (v10.6.19 retired the `cryptography.AESGCM` runtime uses; v10.7.4 (5.3i-D) moved off the deprecated `from_slice` helper to `new_from_slice`). |
 | Argon2id (SMP) | **The SMP passphrase→scalar derivation on wire version 0x03**, salted with the session ID and both fingerprints | `argon2` 0.5 (pure Rust) in `Rust/src/smp.rs::stretch_argon2id`, m=64 MiB / t=3 / p=4. New at v10.13.0; the 0x02 SHAKE stretch above is retained for peers that have not updated. |
 | Argon2id (at rest) | Reading SMP-secrets files written before 0.7.0 | Rust, `src/at_rest.rs::legacy_key`, the same m=64 MiB / t=3 / p=4 the Python `argon2-cffi` code used, so an existing store migrates without its passphrases entering Python. The current format keys AES-256-GCM from the random 32-byte `.smp_seed` through the OTRv4 KDF (a KDF stretch over a random seed buys nothing). The Python derivation and its `hashlib.scrypt` fallback were removed in 0.7.0. `src/smp_vault.rs` remains an in-memory zeroizing store with no KDF in it; a table here once said otherwise. |
 | SHA3-512 | Fingerprint hash | `hashlib` (Python stdlib) |
 | HKDF-SHA512 | The whole voice key schedule — epoch root, media keys, sub-epoch ratchet, confirmations and endpoint tags — derives in `Rust/src/voice.rs` (`hkdf` 0.12 + `sha2` 0.10) as of v10.13.2. The root is `SecretBytes<64>` behind a handle with no accessor |
-| X448 (voice) | Ephemeral DH for the voice key exchange | `x448` 0.6 (pure Rust) via `RustVoiceKex` as of v10.13.2. The private scalar is `SecretBytes<56>`, single-use, zeroized on drop; it was previously an OpenSSL object Python could neither wipe nor reach |
+| X448 (voice) | Ephemeral DH for the voice key exchange | `ed448-goldilocks-plus` 0.18 (RFC 7748 X448) via `RustVoiceKex`. The private scalar is `SecretBytes<56>`, single-use, zeroized on drop; it was previously an OpenSSL object Python could neither wipe nor reach |
 | AES-256-GCM (voice media) | Per-frame media AEAD | `aes-gcm` 0.10 via `RustVoiceCipher` as of v10.13.2. Media keys are `SecretBytes<32>` with no getter; Python calls `seal`/`open` and never holds a key. Byte-for-byte identical to the Python construction it replaced, pinned by `tests/test_voice_rust_parity.py` against a reference built from primitives |
 | Opus | Voice codec (16 kHz mono, 60 ms, 24 kbit/s CBR, FEC on, DTX off) | `libopus` via `ctypes` |
 | RFC 8032 Ed448 vectors | Build-time correctness gate | `src/test_vectors.rs` (Rust `#[cfg(test)]`) |
