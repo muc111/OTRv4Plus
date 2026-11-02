@@ -139,13 +139,17 @@ fn mldsa87_keypair() -> (Vec<u8>, Vec<u8>) {
     (pk, sk)
 }
 
-/// ML-DSA-87 detached signature (FIPS 204, empty context, deterministic).
+/// ML-DSA-87 detached signature: FIPS 204 ML-DSA.Sign (Algorithm 2),
+/// hedged, pure, empty context, i.e. Sign_internal over `M' = 0 || 0 || M`
+/// with 32 fresh bytes of OS randomness. (`sign_internal` takes M' as given.)
 /// `secret` is the 4896-byte expanded signing key.
 #[allow(deprecated)] // `from_expanded` consumes the 4896-byte PQClean-compatible sk
 pub(crate) fn mldsa87_sign(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
     let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(
         &secret.try_into().map_err(|_| CryptoError::InvalidLength)?);
-    let sig = esk.sign_deterministic(data, b"").map_err(|_| CryptoError::InvalidLength)?;
+    let mut rnd = Zeroizing::new(B32::default());
+    getrandom::getrandom(rnd.as_mut_slice()).map_err(|_| CryptoError::InsufficientRandomness)?;
+    let sig = esk.sign_internal(&[&[0u8], &[0u8], data], &rnd);
     Ok(sig.encode().as_slice().to_vec())
 }
 
@@ -598,6 +602,20 @@ impl Signer for SignatureKeyPair {
 #[cfg(test)]
 mod composite_tests {
     use super::*;
+
+    /// ML-DSA signing is hedged: one key, one message, two different
+    /// signatures, both valid (for the composite and for plain ML-DSA-87).
+    #[test]
+    fn signing_is_hedged_not_deterministic() {
+        let k = SignatureKeyPair::generate();
+        let (a, b) = (k.sign(b"same").unwrap(), k.sign(b"same").unwrap());
+        assert_ne!(a, b);
+        let c = CoreCrypto;
+        assert!(c.verify_signature(COMPOSITE, b"same", k.public(), &a).is_ok());
+        assert!(c.verify_signature(COMPOSITE, b"same", k.public(), &b).is_ok());
+        let m = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
+        assert_ne!(m.sign(b"same").unwrap(), m.sign(b"same").unwrap());
+    }
 
     #[test]
     fn both_halves_must_verify() {

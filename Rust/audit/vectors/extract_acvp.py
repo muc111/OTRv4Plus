@@ -19,10 +19,10 @@ Kept (all cases of each group):
                encapsulationKeyCheck  ek -> valid?  (FIPS 203 s7.2)
                decapsulationKeyCheck  dk -> valid?  (FIPS 203 s7.3)
   ML-DSA-87    keyGen                 seed -> pk, sk
-               sigGen  deterministic, external, pure   sk, message, context -> sig
+               sigGen  hedged, external, pure          sk, message, context, rnd -> sig
                sigVer  external, pure                  pk, message, context, sig -> pass?
-These are the groups whose code paths shipping uses (deterministic signing;
-expanded dk / sk encodings). The commit is the one research/epochal-mldsa
+These are the groups whose code paths shipping uses (hedged signing through
+Sign_internal with M' = 0 || len(ctx) || ctx || M; expanded dk / sk encodings). The commit is the one research/epochal-mldsa
 already pins; the three ML-DSA files hash identically there.
 """
 import hashlib
@@ -117,7 +117,7 @@ def main():
     dsv = load("ML-DSA-sigVer-FIPS204", local)
     p = "ML-DSA-87"
     g_kg = group(dkg, parameterSet=p)
-    g_sg = group(dsg, parameterSet=p, deterministic=True, signatureInterface="external",
+    g_sg = group(dsg, parameterSet=p, deterministic=False, signatureInterface="external",
                  preHash="pure", externalMu=False)
     g_sv = group(dsv, parameterSet=p, signatureInterface="external", preHash="pure",
                  externalMu=False)
@@ -129,7 +129,7 @@ def main():
              "pk_sha3": sha3(t["pk"]), "sk_sha3": sha3(t["sk"])} for t in g_kg["tests"]]},
         "sigGen": {"tgId": g_sg["tgId"], "tests": [
             {"tcId": t["tcId"], "sk": t["sk"], "message": t["message"],
-             "context": t["context"], "signature_sha3": sha3(t["signature"])}
+             "context": t["context"], "rnd": t["rnd"], "signature_sha3": sha3(t["signature"])}
             for t in g_sg["tests"]]},
         "sigVer": {"tgId": g_sv["tgId"], "tests": [
             {"tcId": t["tcId"], "pk": t["pk"], "message": t["message"], "context": t["context"],

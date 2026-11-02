@@ -480,7 +480,7 @@ fn mldsa_keygen() -> Result<(Vec<u8>, SecretBytes<MLDSA_PRV_SIZE>)> {
 /// binding keys cannot be confused. This is domain separation in the
 /// message, NOT the FIPS 204 context: that is encoded as
 /// `0 || len(ctx) || ctx || M`, and the ml-dsa crate does offer it
-/// (`sign_deterministic(M, ctx)`). Changing to it would change the wire
+/// (as the M' prefix of `sign_internal`). Changing to it would change the wire
 /// (audit 2026-10-26; docs/CRYPTOGRAPHER_QUESTIONS.md Q7).
 fn mldsa_sign_with_context(
     sk_bytes: &[u8],

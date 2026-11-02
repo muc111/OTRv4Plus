@@ -27,10 +27,12 @@
 //! RustCrypto `ml-dsa` crate, replacing the unmaintained PQClean C bindings
 //! (`pqcrypto-mldsa`). The byte encodings are identical (the secret key is
 //! the 4896-byte expanded form, the public key 2592, the detached signature
-//! 4627), cross-checked against PQClean in `Rust/audit`. Signing uses the
-//! FIPS 204 DETERMINISTIC variant (`sign_deterministic`, empty context), so
-//! no randomness is drawn at sign time; the signatures are standard and
-//! verify identically. No FFI: the crate keeps `#![forbid(unsafe_code)]`.
+//! 4627), cross-checked against PQClean in `Rust/audit`. Signing is the
+//! FIPS 204 HEDGED variant (Algorithm 2, pure, empty context) with 32 bytes
+//! of fresh OS randomness per signature, as PQClean signed: the deterministic
+//! variant is the one exposed to single-fault key recovery and makes repeated
+//! side-channel traces of one message line up. Signatures verify exactly as
+//! before. No FFI: the crate keeps `#![forbid(unsafe_code)]`.
 
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes};
@@ -57,13 +59,26 @@ pub(crate) fn raw_keypair() -> (Vec<u8>, Vec<u8>) {
     (pk, sk)
 }
 
+/// FIPS 204 ML-DSA.Sign (Algorithm 2), hedged, pure, empty context:
+/// `M' = 0 || 0 || M` through Sign_internal with a fresh 32-byte `rnd` from
+/// the OS. (`sign_internal` takes M' as given; the two leading bytes are the
+/// pure-mode domain separator and the context length.) `None` only if the
+/// OS gives no randomness.
+pub(crate) fn sign_hedged(esk: &ExpandedSigningKey<MlDsa87>, msg: &[u8])
+    -> Option<Signature<MlDsa87>>
+{
+    let mut rnd = zeroize::Zeroizing::new(B32::default());
+    getrandom::getrandom(rnd.as_mut_slice()).ok()?;
+    Some(esk.sign_internal(&[&[0u8], &[0u8], msg], &rnd))
+}
+
 /// A 4627-byte detached signature over `msg` under the expanded secret key
-/// `sk` (4896), empty FIPS 204 context, deterministic.  `None` on a
-/// malformed secret key.
+/// `sk` (4896), empty FIPS 204 context, hedged.  `None` on a malformed
+/// secret key.
 #[allow(deprecated)] // `from_expanded` consumes the 4896-byte PQClean-compatible form
 pub(crate) fn raw_sign(sk: &[u8], msg: &[u8]) -> Option<Vec<u8>> {
     let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&sk.try_into().ok()?);
-    let sig = esk.sign_deterministic(msg, b"").ok()?;
+    let sig = sign_hedged(&esk, msg)?;
     Some(sig.encode().as_slice().to_vec())
 }
 
@@ -306,6 +321,17 @@ mod tests {
         let (pk, sk) = raw_keypair();
         let sig = raw_sign(&sk, b"original").expect("sign");
         assert!(!raw_verify(&pk, b"original!", &sig), "tampered message must not verify");
+    }
+
+    /// Hedged: the same key and message give a different signature each
+    /// time (fresh rnd), and every one of them verifies.
+    #[test]
+    fn mldsa87_signing_is_hedged_not_deterministic() {
+        let (pk, sk) = raw_keypair();
+        let a = raw_sign(&sk, b"same message").expect("sign");
+        let b = raw_sign(&sk, b"same message").expect("sign");
+        assert_ne!(a, b, "two signatures of one message must differ (hedged)");
+        assert!(raw_verify(&pk, b"same message", &a) && raw_verify(&pk, b"same message", &b));
     }
 
     /// FIPS 204 ML-DSA-87 byte sizes.

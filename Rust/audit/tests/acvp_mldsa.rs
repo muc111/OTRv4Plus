@@ -9,10 +9,12 @@
 //! (src/mldsa.rs, mls/src/provider.rs):
 //! * keyGen: `ExpandedSigningKey::from_seed(xi)`, then the 2592-byte
 //!   `verifying_key().encode()` and the 4896-byte expanded `to_expanded()`.
-//! * sigGen: `from_expanded(sk)`, then `sign_deterministic(M, ctx)` -- the
-//!   DETERMINISTIC, external, pure group, which is how shipping signs.
-//!   Shipping always passes an empty FIPS 204 context; NIST's group has two
-//!   empty-context cases among contexts up to 255 bytes, and both are run.
+//! * sigGen: `from_expanded(sk)`, then `sign_internal(M', rnd)` with
+//!   `M' = 0 || len(ctx) || ctx || M` -- the HEDGED, external, pure group,
+//!   which is how shipping signs (FIPS 204 Algorithm 2 with fresh rnd; here
+//!   NIST's rnd, so the result is checkable). Shipping always passes an
+//!   empty FIPS 204 context; NIST's group has one empty-context case among
+//!   contexts up to 255 bytes. A wrong M' framing fails every case.
 //! * sigVer: `VerifyingKey::decode(pk)`, `Signature::try_from(sig)`, then
 //!   `verify_with_context(M, ctx, sig)`: NIST's valid signatures verify and
 //!   each of its modified ones (message, commitment, hint, z) is refused.
@@ -84,15 +86,16 @@ fn acvp_keygen_the_seed_rebuilds_the_fips_204_keys() {
 }
 
 #[test]
-fn acvp_siggen_deterministic_signing_gives_nists_signature() {
+fn acvp_siggen_hedged_signing_gives_nists_signature() {
     let v = vectors();
     let n = check_all(&v, "sigGen", |t| {
         let sk = bytes(t, "sk");
         let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&sk[..].try_into().unwrap());
-        match esk.sign_deterministic(&bytes(t, "message"), &bytes(t, "context")) {
-            Ok(sig) => sha3_hex(sig.encode().as_slice()) == t["signature_sha3"],
-            Err(_) => false,
-        }
+        let ctx = bytes(t, "context");
+        let rnd: [u8; 32] = bytes(t, "rnd").try_into().unwrap();
+        let rnd: B32 = rnd.into();
+        let sig = esk.sign_internal(&[&[0u8], &[ctx.len() as u8], &ctx, &bytes(t, "message")], &rnd);
+        sha3_hex(sig.encode().as_slice()) == t["signature_sha3"]
     });
     assert_eq!(n, 15);
     // The empty context, which is the only one shipping uses, is among them.
