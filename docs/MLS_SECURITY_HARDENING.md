@@ -159,18 +159,22 @@ and decide on 3", was settled on 2026-10-26: 3 is done, as F4.)
 **Since rc.27 (M4):** every new group uses
 `MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87` (private code point
 0xF0A1), served by our own provider (`Rust/mls/src/provider.rs`, which
-refuses everything else). Before rc.27 it was
-`MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87` (0x0907, PQ-only); groups made
-then keep working (the provider still serves that suite for them) but take
-no new members: a hybrid KeyPackage cannot join a 0x0907 group, and the
-app says to create a new group.
+refuses everything else). The code point's name keeps the historical
+`SHA384` token, but the suite hashes and HKDFs with **SHA-512** (the
+vendored table binds 0xF0A1 to `Sha2_512` / `HkdfSha512`). The provider
+also serves one non-hybrid suite,
+`MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87` (0x0906, ML-KEM-1024 alone,
+also SHA-512): it is a standard code point, so the reference OpenMLS
+provider understands it, which is what `tests/interop.rs` cross-checks
+against (the private hybrid code point no other client understands). The
+earlier SHA-384 code point 0x0907 is no longer served.
 
 | requirement | since rc.27 | status |
 |---|---|---|
 | AEAD AES-256-GCM only | AES-256-GCM (HPKE and MLS) | **MET** |
 | KEM X448 + ML-KEM-1024, binding combiner | `Rust/mls/src/hpke.rs`, KEM 0xF0A1 | **MET** |
 | Signature Ed448 + ML-DSA-87 | composite, both must verify, 0xFEA1 | **MET** |
-| Hash/KDF | SHA-384 / HKDF-SHA384 | fine |
+| Hash/KDF | SHA-512 / HKDF-SHA512 | fine |
 
 Measured (4-member group): a KeyPackage is 15.4 KB, adding one member
 31.0 KB (Welcome 26.5 KB), adding two 49.8 KB, a self-update 22.3 KB, a

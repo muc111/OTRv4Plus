@@ -9,7 +9,7 @@
 //!     or encrypted, made to be sent;
 //!   * a received message's plaintext and its sender's identity -- the text
 //!     the user is about to read;
-//!   * public facts: members, epoch, group ids, fingerprints (SHA-384 of a
+//!   * public facts: members, epoch, group ids, fingerprints (SHA-512 of a
 //!     signature PUBLIC key);
 //!   * a sealed blob of the whole state, AES-256-GCM under a key derived in
 //!     Rust from a `FileDek` Python never sees the bytes of.
@@ -43,7 +43,7 @@ fn err(e: MlsError) -> PyErr {
 
 /// Bounds on what Python may hand in, so a hostile room cannot make this
 /// allocate or parse without limit.
-const MAX_MESSAGE: usize = 1 << 20;
+const MAX_MESSAGE: usize = 4 << 20;
 const MAX_ID: usize = 1024;
 const MAX_PLAINTEXT: usize = 256 << 10;
 const MAX_BATCH: usize = 64;

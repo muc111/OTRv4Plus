@@ -156,7 +156,7 @@ fn fingerprints_bind_a_member_to_the_key_they_hold() {
     assert_eq!(a.member_fingerprint(GROUP, b"carol@example.i2p").unwrap(),
                c.own_fingerprint(GROUP).unwrap());
     assert_ne!(b.own_fingerprint(GROUP).unwrap(), c.own_fingerprint(GROUP).unwrap());
-    assert_eq!(a.own_fingerprint(GROUP).unwrap().len(), 48);
+    assert_eq!(a.own_fingerprint(GROUP).unwrap().len(), 64);
     assert_eq!(a.own_fingerprint(b"no such group"), Err(MlsError::NoSuchGroup));
     assert_eq!(a.member_fingerprint(GROUP, b"nobody"), Err(MlsError::NoSuchMember));
     // A reload keeps the same signing key.
@@ -167,7 +167,7 @@ fn fingerprints_bind_a_member_to_the_key_they_hold() {
     let mut impostor = MlsClient::new(b"bob@example.i2p");
     impostor.create_group(GROUP).unwrap();
     assert_ne!(impostor.own_fingerprint(GROUP).unwrap(), b.own_fingerprint(GROUP).unwrap());
-    assert_eq!(fingerprint(b"x").len(), 48);
+    assert_eq!(fingerprint(b"x").len(), 64);
 }
 
 #[test]

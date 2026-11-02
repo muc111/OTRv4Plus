@@ -376,7 +376,7 @@ over I2P between phones.
 
 ### Stage 5: identity binding (automated)
 
-* A member is **verified** only when their MLS fingerprint (SHA-384 of the
+* A member is **verified** only when their MLS fingerprint (SHA-512 of the
   signature public key) arrived over an SMP-verified OTRv4+ session with
   that JID; **bound** when it arrived over any OTRv4+ session; otherwise
   shown by name only.

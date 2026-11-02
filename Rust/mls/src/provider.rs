@@ -2,15 +2,18 @@
 // Copyright (C) 2025-2026 muc111
 //! The OpenMLS provider: OpenMLS's crypto trait on the core's primitives.
 //!
-//! Two ciphersuites, and nothing else:
+//! Two ciphersuites, and nothing else. Both hash and HKDF with SHA-512.
 //!
 //!   * **MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87** (0xF0A1,
 //!     private; every new group). KEM X448 + ML-KEM-1024 with a binding
 //!     combiner (`crate::hpke`), signature Ed448 + ML-DSA-87 composite
-//!     (below). Breaking one half of either does not break the group.
-//!   * MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87 (0x0907; the PQ-only
-//!     suite of earlier versions), kept so groups made with it keep
-//!     working. No new group uses it.
+//!     (below). Breaking one half of either does not break the group. The
+//!     code point's name keeps the historical `SHA384` token, but this
+//!     private suite is bound to SHA-512 in the vendored ciphersuite table.
+//!   * MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 (0x0906; ML-KEM-1024
+//!     alone, no X448 combiner). A standard code point, so it is what the
+//!     reference OpenMLS provider cross-checks against (tests/interop.rs);
+//!     also hash/HKDF SHA-512.
 //!
 //! Anything outside them (another hash, AEAD, signature scheme or KEM) is
 //! refused with an error, never quietly served by something else.
@@ -27,10 +30,10 @@
 //!
 //! | MLS needs            | from                                        |
 //! |----------------------|---------------------------------------------|
-//! | SHA-384, HKDF, HMAC  | sha2 / hkdf / hmac (the core's versions)    |
+//! | SHA-512, HKDF, HMAC  | sha2 / hkdf / hmac (the core's versions)    |
 //! | AES-256-GCM          | aes-gcm (the core's version)                |
-//! | ML-DSA-87            | pqcrypto-mldsa, PQClean (as the core's DAKE)|
-//! | HPKE, ML-KEM-1024    | `crate::hpke` (RFC 9180) on PQClean ML-KEM  |
+//! | ML-DSA-87            | the `ml-dsa` crate (as the core's DAKE)     |
+//! | HPKE, ML-KEM-1024    | `crate::hpke` (RFC 9180) on `ml-kem`        |
 //! | randomness           | the operating system (getrandom)            |
 //!
 //! ML-DSA-87 private keys are PQClean's 4896-byte expanded form. They are
@@ -56,7 +59,7 @@ use openmls_traits::{
     OpenMlsProvider,
 };
 use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey, B32};
-use sha2::{Digest, Sha384};
+use sha2::{Digest, Sha512};
 use tls_codec::SecretVLBytes;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -65,9 +68,11 @@ use crate::hpke::{self, Aead as HpkeAead, Kem};
 /// The ciphersuite of every new group: hybrid KEM, composite signature.
 pub const CIPHERSUITE: Ciphersuite =
     Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87;
-/// The PQ-only suite of earlier versions: existing groups only.
+/// The non-hybrid PQ suite: ML-KEM-1024 alone, no X448 combiner. The
+/// reference OpenMLS provider (tests/interop.rs) has no private hybrid code
+/// point, so this standard suite is what the independent cross-check runs on.
 pub const LEGACY_CIPHERSUITE: Ciphersuite =
-    Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87;
+    Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87;
 /// The composite signature scheme of `CIPHERSUITE`.
 pub const COMPOSITE: SignatureScheme = SignatureScheme::ED448_MLDSA87;
 
@@ -87,9 +92,9 @@ const COMPOSITE_LABEL: &[u8] = b"OTRv4+MLS/CompositeSig/v1";
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CoreCrypto;
 
-fn sha384_only(hash_type: HashType) -> Result<(), CryptoError> {
+fn sha512_only(hash_type: HashType) -> Result<(), CryptoError> {
     match hash_type {
-        HashType::Sha2_384 => Ok(()),
+        HashType::Sha2_512 => Ok(()),
         _ => Err(CryptoError::UnsupportedHashAlgorithm),
     }
 }
@@ -101,7 +106,7 @@ fn hpke_suite(config: &HpkeConfig) -> Result<(Kem, HpkeAead), CryptoError> {
         HpkeKemType::MlKem1024 => Kem::MlKem1024,
         _ => return Err(CryptoError::UnsupportedCiphersuite),
     };
-    if config.1 != HpkeKdfType::HkdfSha384 {
+    if config.1 != HpkeKdfType::HkdfSha512 {
         return Err(CryptoError::UnsupportedKdf);
     }
     match config.2 {
@@ -220,8 +225,8 @@ impl OpenMlsCrypto for CoreCrypto {
         salt: &[u8],
         ikm: &[u8],
     ) -> Result<SecretVLBytes, CryptoError> {
-        sha384_only(hash_type)?;
-        let (mut prk, _) = Hkdf::<Sha384>::extract(Some(salt), ikm);
+        sha512_only(hash_type)?;
+        let (mut prk, _) = Hkdf::<Sha512>::extract(Some(salt), ikm);
         let out = prk[..].into();
         prk[..].zeroize();
         Ok(out)
@@ -233,9 +238,9 @@ impl OpenMlsCrypto for CoreCrypto {
         key: &[u8],
         message: &[u8],
     ) -> Result<SecretVLBytes, CryptoError> {
-        sha384_only(hash_type)?;
+        sha512_only(hash_type)?;
         let mut mac =
-            <Hmac<Sha384> as hmac::KeyInit>::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)?;
+            <Hmac<Sha512> as hmac::KeyInit>::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)?;
         mac.update(message);
         let mut tag = mac.finalize().into_bytes();
         let out = tag[..].into();
@@ -250,8 +255,8 @@ impl OpenMlsCrypto for CoreCrypto {
         info: &[u8],
         okm_len: usize,
     ) -> Result<SecretVLBytes, CryptoError> {
-        sha384_only(hash_type)?;
-        let hkdf = Hkdf::<Sha384>::from_prk(prk).map_err(|_| CryptoError::HkdfOutputLengthInvalid)?;
+        sha512_only(hash_type)?;
+        let hkdf = Hkdf::<Sha512>::from_prk(prk).map_err(|_| CryptoError::HkdfOutputLengthInvalid)?;
         let mut okm = Zeroizing::new(vec![0u8; okm_len]);
         hkdf.expand(info, &mut okm)
             .map_err(|_| CryptoError::HkdfOutputLengthInvalid)?;
@@ -259,8 +264,8 @@ impl OpenMlsCrypto for CoreCrypto {
     }
 
     fn hash(&self, hash_type: HashType, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        sha384_only(hash_type)?;
-        Ok(Sha384::digest(data).to_vec())
+        sha512_only(hash_type)?;
+        Ok(Sha512::digest(data).to_vec())
     }
 
     fn aead_encrypt(

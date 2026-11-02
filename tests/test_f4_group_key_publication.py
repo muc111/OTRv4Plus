@@ -95,7 +95,7 @@ def test_only_fingerprints_come_out_of_rust():
     a.groups.make_deniable(ROOM)
     [ev] = [e for e in seen if e.get("kind") == "keys_revealed"]
     assert set(ev) == {"kind", "sender", "fingerprints"}
-    assert all(len(bytes(f)) == 48 for f in ev["fingerprints"]), "SHA-384 fingerprints"
+    assert all(len(bytes(f)) == 64 for f in ev["fingerprints"]), "SHA-512 fingerprints"
 
 
 def test_refused_while_a_change_of_ours_is_on_its_way():

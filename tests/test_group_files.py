@@ -262,14 +262,14 @@ class TestWhoMaySendAndReceive:
         w, (a, b, c), now, _vol = _sharing(3)
         _verify_all([a, b])            # nobody verified Carol
         for m in (a, b):
-            m.groups._bound[ROOM]["carol@x.i2p"] = ("00" * 48, False)
+            m.groups._bound[ROOM]["carol@x.i2p"] = ("00" * 64, False)
         assert a.files.send(ROOM, _file(tmp_path, 10)) == "unverified"
         assert not [e for e in b.events if isinstance(e, FileTransferChanged)]
 
     def test_an_offer_from_an_unverified_member_is_refused(self, tmp_path):
         w, (a, b), now, _vol = _sharing(2)
         _verify_all([a, b])
-        b.groups._bound[ROOM]["alice@x.i2p"] = ("00" * 48, False)
+        b.groups._bound[ROOM]["alice@x.i2p"] = ("00" * 64, False)
         assert a.files.send(ROOM, _file(tmp_path, 10)) == "started"
         assert not [e for e in b.events if isinstance(e, FileTransferChanged)]
         assert "group_file_unverified" in [e.code for e in b.events
@@ -326,7 +326,7 @@ class TestWhoMaySendAndReceive:
         a.files.send(ROOM, _file(tmp_path, 5 * G.CHUNK))
         tid = _offer(b).transfer_id
         b.files.accept(tid)
-        a.groups._bound[ROOM]["carol@x.i2p"] = ("00" * 48, False)
+        a.groups._bound[ROOM]["carol@x.i2p"] = ("00" * 64, False)
         a.files.tick()
         row = _received(a, tid)
         assert row["state"] == "cancelled" and row["reason"] == "unverified_member"

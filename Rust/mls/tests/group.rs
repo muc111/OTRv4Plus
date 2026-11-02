@@ -174,10 +174,12 @@ fn only_the_two_suites_are_served() {
     assert_eq!(CIPHERSUITE.hpke_kem_algorithm(), HpkeKemType::X448MlKem1024);
     assert_eq!(CIPHERSUITE.signature_algorithm(), COMPOSITE);
     assert_eq!(CIPHERSUITE.aead_algorithm(), AeadType::Aes256Gcm);
-    assert_eq!(CIPHERSUITE.hash_algorithm(), HashType::Sha2_384);
+    assert_eq!(CIPHERSUITE.hash_algorithm(), HashType::Sha2_512);
     assert_eq!(Ciphersuite::try_from(0xF0A1u16).unwrap(), CIPHERSUITE);
     assert!(p.crypto().supports(Ciphersuite::MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519).is_err());
-    assert!(p.crypto().supports(Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87).is_err());
+    // The old SHA-384 ML-KEM code point is no longer served; its SHA-512
+    // sibling (0x0906) is now the non-hybrid suite.
+    assert!(p.crypto().supports(Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87).is_err());
     assert!(p.crypto().supports(Ciphersuite::MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448).is_err());
     assert!(p.crypto().hash(HashType::Sha2_256, b"x").is_err());
     assert!(p.crypto().signature_key_gen(SignatureScheme::ED25519).is_err());
@@ -205,8 +207,8 @@ fn signer_is_composite_ed448_ml_dsa_87() {
 }
 
 #[test]
-fn a_group_of_the_earlier_suite_keeps_working() {
-    // Made as rc.27 and earlier made them: ML-KEM-1024 / ML-DSA-87 only.
+fn a_group_of_the_non_hybrid_suite_works() {
+    // The non-hybrid suite: ML-KEM-1024 / ML-DSA-87 only, no X448 combiner.
     fn legacy(name: &'static str) -> Member {
         let signer = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
         let credential = CredentialWithKey {

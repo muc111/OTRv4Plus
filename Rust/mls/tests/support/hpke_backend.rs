@@ -6,7 +6,7 @@
 //!
 //! hpke-rs does the RFC 9180 composition (key schedule, labelled KDF,
 //! nonces, export); this supplies the primitives it asks for, for the one
-//! configuration the MLS suite uses: KEM ML-KEM-1024, KDF HKDF-SHA384, AEAD
+//! configuration the MLS suite uses: KEM ML-KEM-1024, KDF HKDF-SHA512, AEAD
 //! AES-256-GCM (plus export-only). Everything else is refused.
 
 use aes_gcm::{
@@ -19,7 +19,7 @@ use hpke_rs_crypto::{
     types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm},
     HpkeCrypto, HpkeTestRng,
 };
-use sha2::Sha384;
+use sha2::Sha512;
 use zeroize::Zeroize;
 
 use otrv4_mls::mlkem;
@@ -89,7 +89,7 @@ impl HpkeCrypto for CoreHpke {
 
     fn supports_kdf(alg: KdfAlgorithm) -> Result<(), Error> {
         match alg {
-            KdfAlgorithm::HkdfSha384 => Ok(()),
+            KdfAlgorithm::HkdfSha512 => Ok(()),
             _ => Err(Error::UnknownKdfAlgorithm),
         }
     }
@@ -114,7 +114,7 @@ impl HpkeCrypto for CoreHpke {
 
     fn kdf_extract(alg: KdfAlgorithm, salt: &[u8], ikm: &[u8]) -> Result<Vec<u8>, Error> {
         Self::supports_kdf(alg)?;
-        Ok(Hkdf::<Sha384>::extract(Some(salt), ikm).0.to_vec())
+        Ok(Hkdf::<Sha512>::extract(Some(salt), ikm).0.to_vec())
     }
 
     fn kdf_expand(
@@ -124,7 +124,7 @@ impl HpkeCrypto for CoreHpke {
         output_size: usize,
     ) -> Result<Vec<u8>, Error> {
         Self::supports_kdf(alg)?;
-        let hkdf = Hkdf::<Sha384>::from_prk(prk).map_err(|_| Error::HpkeInvalidOutputLength)?;
+        let hkdf = Hkdf::<Sha512>::from_prk(prk).map_err(|_| Error::HpkeInvalidOutputLength)?;
         let mut okm = vec![0u8; output_size];
         hkdf.expand(info, &mut okm)
             .map_err(|_| Error::HpkeInvalidOutputLength)?;

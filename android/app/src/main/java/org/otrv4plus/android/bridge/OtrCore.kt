@@ -1182,7 +1182,7 @@ fun interface OtrEventSink {
 }
 
 /**
- * A member of a secure group. [fingerprint] is public (SHA-384 of the MLS
+ * A member of a secure group. [fingerprint] is public (SHA-512 of the MLS
  * signature key). [verified] only when that key arrived over an SMP-verified
  * OTRv4+ session with [jid]; [bound] when it arrived over any OTRv4+ session.
  */

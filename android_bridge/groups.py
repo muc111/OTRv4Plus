@@ -21,7 +21,7 @@ IDENTITY BINDING IS NOT MEMBERSHIP
 ==================================
 MLS proves a message came from the holder of a leaf's signing key. It does
 not prove the leaf's credential ("bob@server") names the person you think.
-A member is `verified` here only when their MLS fingerprint (SHA-384 of the
+A member is `verified` here only when their MLS fingerprint (SHA-512 of the
 signature public key) was received over an SMP-verified OTRv4+ session with
 that same JID. Everyone else in the group is shown by name, unverified.
 
@@ -104,7 +104,7 @@ WELCOME_MAX_SENDS = 20
 MAX_MEMBERS_PER_ADD = 16
 
 _ROOM_RE = re.compile(r"^[^\s@/|]{1,128}@[^\s@/|]{1,120}$")
-_FP_RE = re.compile(r"^[0-9a-f]{96}$")
+_FP_RE = re.compile(r"^[0-9a-f]{128}$")
 
 
 class GroupError(RuntimeError):

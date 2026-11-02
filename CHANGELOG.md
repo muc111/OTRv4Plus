@@ -11,6 +11,30 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 it is marked **untested** in its version name until it is tested too. This
 starts at **rc.190-untested** (versionCode 191).
 
+- **Post-quantum crypto on pure Rust, and MLS hashing to SHA-512** (owner
+  go-ahead, 2026-11-02):
+  - **`pqcrypto-mlkem` / `pqcrypto-mldsa` / `pqcrypto-traits` (unmaintained
+    C bindings) replaced by the pure-Rust `ml-kem` 0.3 and `ml-dsa` 0.1**
+    across the whole shipping tree — core wrappers (`src/mlkem.rs`,
+    `src/mldsa.rs`), DAKE, SMP, and the MLS crate (`mls/src/mlkem.rs`). The
+    wire byte formats are unchanged (FIPS 203 ek 1568 / expanded dk 3168,
+    FIPS 204 pk 2592 / expanded sk 4896 / sig 4627), cross-checked in
+    `Rust/audit`. `cargo tree` now shows no `pqcrypto-*` in the build.
+  - **`otrv4-mls` is now `#![forbid(unsafe_code)]`** (was `deny`): the
+    former PQClean FFI for seeded ML-KEM key generation is gone, since
+    `ml-kem` provides `DecapsulationKey::from_seed` in safe Rust. The core
+    was already `forbid`.
+  - **The hybrid MLS suite 0xF0A1 now hashes and HKDFs with SHA-512**
+    (was SHA-384). The vendored ciphersuite table binds 0xF0A1 to
+    `Sha2_512` / `HkdfSha512`; the provider, HPKE (`mls/src/hpke.rs`) and
+    group fingerprints follow (fingerprints are 64 bytes now, not 48). The
+    private code point's name keeps its historical `SHA384` token. The
+    non-hybrid reference-cross-check suite moved from 0x0907 (SHA-384) to
+    the standard 0x0906 (`…_SHA512_MLDSA87`); `tests/interop.rs` and
+    `tests/hpke_cross.rs` agree byte-for-byte with the reference OpenMLS
+    provider and hpke-rs on the SHA-512 path. The HPKE binding combiner
+    (SHA3-256) and the composite signature are unchanged.
+  - **`MAX_MESSAGE` for MLS group payloads raised 1 MiB → 4 MiB.**
 - **Updated: the built-in router is i2pd 3.0.0.1** (was 2.61.0), phone build
   **rc.191-untested** (versionCode 192). Among its fixes: a SAM session
   closed a few seconds after a reconnect, invalid sessions for

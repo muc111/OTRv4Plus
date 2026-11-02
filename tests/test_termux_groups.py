@@ -654,7 +654,7 @@ class TestFailClosed:
 
     def test_an_unencrypted_group_signal_is_refused(self, world, capsys):
         w = world
-        w.server.send(w.c.jid, w.a.jid, SIGNAL_PREFIX + "INVITE:%s|%s" % (ROOM, "0" * 96),
+        w.server.send(w.c.jid, w.a.jid, SIGNAL_PREFIX + "INVITE:%s|%s" % (ROOM, "0" * 128),
                       "chat")
         run(w.server.pump())
         assert "ignoring UNENCRYPTED group setup message" in capsys.readouterr().out

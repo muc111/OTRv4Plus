@@ -3,11 +3,13 @@
 #
 #   cd Rust/audit && cargo test --release
 #
-# The core uses PQClean via pqcrypto-mlkem / pqcrypto-mldsa. These tests
-# check them against an independent implementation (RustCrypto ml-kem /
-# ml-dsa): same keys, cross encapsulation and signing, and FIPS 203
-# implicit rejection on tampered ciphertexts, which a KAT file does not
-# exercise from the other side.
+# The core now uses the pure-Rust RustCrypto ml-kem / ml-dsa. This harness
+# keeps the old PQClean bindings (pqcrypto-mlkem / pqcrypto-mldsa) as a
+# dev-only cross-check and proves the two agree byte for byte: same keys,
+# cross encapsulation and signing, and FIPS 203 implicit rejection on
+# tampered ciphertexts, which a KAT file does not exercise from the other
+# side. That equivalence is what made the migration safe; nothing here is
+# shipped (this crate is not a workspace member and nothing depends on it).
 [package]
 name = "otrv4-core-audit"
 version = "0.0.0"

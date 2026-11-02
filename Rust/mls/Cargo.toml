@@ -3,12 +3,14 @@
 #
 # MLS (RFC 9420) group encryption for OTRv4Plus, on the core's OWN crypto.
 #
-# Ciphersuite MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87 (draft-ietf-mls-pq-
-# ciphersuites): ML-KEM-1024 and ML-DSA-87 from the pure-Rust RustCrypto
-# crates (ml-kem / ml-dsa, the same crates and versions otrv4_core uses),
-# AES-256-GCM from aes-gcm, HKDF/HMAC/SHA from hkdf/hmac/sha2 -- no second
-# implementation of any primitive the core already has. The MLS protocol is
-# OpenMLS; HPKE (RFC 9180) is src/hpke.rs on the same primitives.
+# Every new group uses the hybrid suite 0xF0A1 (X448+ML-KEM-1024, Ed448+
+# ML-DSA-87); a non-hybrid ML-KEM-1024 suite 0x0906 exists for the reference
+# cross-check (tests/interop.rs). Both hash and HKDF with SHA-512. ML-KEM-1024
+# and ML-DSA-87 come from the pure-Rust RustCrypto crates (ml-kem / ml-dsa,
+# the same crates and versions otrv4_core uses), AES-256-GCM from aes-gcm,
+# HKDF/HMAC/SHA from hkdf/hmac/sha2 -- no second implementation of any
+# primitive the core already has. The MLS protocol is OpenMLS; HPKE (RFC
+# 9180) is src/hpke.rs on the same primitives.
 #
 # SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec. ml-kem provides
 # seeded ML-KEM key generation in pure Rust (DecapsulationKey::from_seed),

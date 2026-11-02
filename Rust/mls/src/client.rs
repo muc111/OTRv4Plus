@@ -72,7 +72,7 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use openmls::prelude::{tls_codec::*, *};
 
-use sha2::{Digest, Sha384};
+use sha2::{Digest, Sha512};
 use zeroize::Zeroizing;
 
 use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE, LEGACY_CIPHERSUITE};
@@ -198,10 +198,10 @@ fn state_aad(context: &[u8]) -> Vec<u8> {
     aad
 }
 
-/// SHA-384 of an ML-DSA-87 signature public key: what a member's MLS
+/// SHA-512 of an ML-DSA-87 signature public key: what a member's MLS
 /// identity is compared by. Public, so it may be shown and sent.
 pub fn fingerprint(signature_public_key: &[u8]) -> Vec<u8> {
-    Sha384::digest(signature_public_key).to_vec()
+    Sha512::digest(signature_public_key).to_vec()
 }
 
 /// The fingerprints of the keys in a publication of retired signing keys
@@ -1007,7 +1007,7 @@ impl MlsClient {
 
     pub fn is_wiped(&self) -> bool { self.wiped }
 
-    /// Our MLS fingerprint in a group (SHA-384 of our signature public key
+    /// Our MLS fingerprint in a group (SHA-512 of our signature public key
     /// there). Different in every group, and new after each self-update.
     pub fn own_fingerprint(&self, group_id: &[u8]) -> Result<Vec<u8>> {
         self.live()?;
@@ -1731,7 +1731,7 @@ mod f4_containment_tests {
         let body = &src[src.find("pub fn self_update(").unwrap()..];
         let body = &body[..body.find("\n    }\n").unwrap()];
         assert!(body.contains("SignatureKeyPair::generate_for(scheme)"), "fresh keygen");
-        for derive in ["secret()", "from_parts", "Sha384", "hkdf", "derive"] {
+        for derive in ["secret()", "from_parts", "Sha512", "hkdf", "derive"] {
             assert!(!body.contains(derive), "the new key must not be computed from the old ({derive})");
         }
         let prov = include_str!("provider.rs");

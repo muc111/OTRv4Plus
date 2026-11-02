@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
 //! HPKE (RFC 9180), base mode, for the suites MLS uses here:
-//! KDF HKDF-SHA384 (0x0002), AEAD AES-256-GCM (0x0002) or export-only
+//! KDF HKDF-SHA512 (0x0003), AEAD AES-256-GCM (0x0002) or export-only
 //! (0xFFFF), and KEM either
 //!   * X448 + ML-KEM-1024 with a binding combiner (0xF0A1, private; the
 //!     hybrid suite, docs/MLS_SECURITY_HARDENING.md §2), or
-//!   * ML-KEM-1024 alone (0x0042; the earlier PQ-only suite, kept so
-//!     groups made with it keep working).
+//!   * ML-KEM-1024 alone (0x0042; the non-hybrid PQ suite the reference
+//!     provider cross-checks against).
 //!
 //! THE HYBRID KEM (0xF0A1)
 //! =======================
@@ -49,7 +49,7 @@
 //!   secret        = LabeledExtract(shared_secret, "secret", "")
 //!   key           = LabeledExpand(secret, "key", context, Nk)
 //!   base_nonce    = LabeledExpand(secret, "base_nonce", context, Nn)
-//!   exporter      = LabeledExpand(secret, "exp", context, 48)
+//!   exporter      = LabeledExpand(secret, "exp", context, Nh=64)
 //!   Export(ctx,L) = LabeledExpand(exporter, "sec", ctx, L)
 //!   DeriveKeyPair(ikm) = ML-KEM-1024.KeyGen_internal(d || z = SHAKE256(ikm, 64))
 //!
@@ -60,14 +60,14 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use hkdf::Hkdf;
-use sha2::Sha384;
+use sha2::Sha512;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use zeroize::Zeroizing;
 
 use crate::mlkem;
 
-const KDF_ID: u16 = 0x0002;
-const NH: usize = 48;
+const KDF_ID: u16 = 0x0003;
+const NH: usize = 64;
 const HPKE_VERSION: &[u8] = b"HPKE-v1";
 const MODE_BASE: u8 = 0x00;
 
@@ -163,7 +163,7 @@ fn labeled_extract(salt: &[u8], suite: &[u8], label: &[u8], ikm: &[u8]) -> Zeroi
     labeled.extend_from_slice(suite);
     labeled.extend_from_slice(label);
     labeled.extend_from_slice(ikm);
-    let (prk, _) = Hkdf::<Sha384>::extract(Some(salt), &labeled);
+    let (prk, _) = Hkdf::<Sha512>::extract(Some(salt), &labeled);
     Zeroizing::new(prk.to_vec())
 }
 
@@ -179,7 +179,7 @@ fn labeled_expand(prk: &[u8], suite: &[u8], label: &[u8], info: &[u8], len: usiz
     labeled.extend_from_slice(suite);
     labeled.extend_from_slice(label);
     labeled.extend_from_slice(info);
-    let hk = Hkdf::<Sha384>::from_prk(prk).map_err(|_| HpkeError::InvalidInput)?;
+    let hk = Hkdf::<Sha512>::from_prk(prk).map_err(|_| HpkeError::InvalidInput)?;
     let mut out = Zeroizing::new(vec![0u8; len]);
     hk.expand(&labeled, &mut out).map_err(|_| HpkeError::InvalidInput)?;
     Ok(out)
