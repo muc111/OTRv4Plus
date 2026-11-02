@@ -32,7 +32,7 @@ pub fn keypair_from_seed(seed: &[u8]) -> Option<(Vec<u8>, Zeroizing<Vec<u8>>)> {
         return None;
     }
     let seed: Zeroizing<Seed> = Zeroizing::new(Array::try_from(seed).ok()?);
-    let dk = DecapsulationKey::<MlKem1024>::from_seed((*seed).clone());
+    let dk = DecapsulationKey::<MlKem1024>::from_seed(*seed);
     let pk = dk.encapsulation_key().to_bytes().as_slice().to_vec();
     #[allow(deprecated)]
     let expanded = Zeroizing::new(dk.to_expanded_bytes());
