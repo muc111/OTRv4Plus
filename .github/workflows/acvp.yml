@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# NIST ACVP known-answer vectors against the SHIPPING ML-KEM-1024 / ML-DSA-87
+# (Rust/audit: tests/acvp_mlkem.rs, tests/acvp_mldsa.rs), plus the check that
+# the audit crate locks the same ml-kem / ml-dsa versions the core and MLS
+# ship (tests/version_parity.rs). The vectors are committed extracts; see
+# Rust/audit/vectors/extract_acvp.py for how to regenerate and compare them.
+#
+# Runs on any change to the audit crate or to either shipped lockfile, so a
+# crate bump that skips the audit lockfile fails here. Test-only: nothing
+# here builds or ships the app.
+name: ACVP
+
+on:
+  push:
+    branches: [main, dev, acvp-vectors, "claude/**"]
+    paths:
+      - "Rust/audit/**"
+      - "Rust/Cargo.lock"
+      - "Rust/mls/Cargo.lock"
+      - ".github/workflows/acvp.yml"
+  pull_request:
+    paths:
+      - "Rust/audit/**"
+      - "Rust/Cargo.lock"
+      - "Rust/mls/Cargo.lock"
+      - ".github/workflows/acvp.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acvp:
+    name: ML-KEM-1024 / ML-DSA-87 vs NIST ACVP
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: Rust/audit
+    steps:
+      - uses: actions/checkout@v4
+
+      # otrv4_core (a dev-dependency) is a PyO3 crate; its test build links
+      # libpython.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Rust/audit/target
+          key: cargo-acvp-${{ hashFiles('Rust/audit/Cargo.lock') }}
+          restore-keys: cargo-acvp-
+
+      - name: ACVP vectors and version parity
+        run: cargo test --release --locked --test acvp_mlkem --test acvp_mldsa --test version_parity

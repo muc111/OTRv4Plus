@@ -40,6 +40,14 @@ starts at **rc.190-untested** (versionCode 191).
     `tests/test_mlkem_kat.py` now points at the pure-Rust `otrv4_core`
     entry points and skips cleanly on a release wheel that omits the
     `raw-key-test-api` test gate, instead of failing to import.
+  - **NIST ACVP vectors pinned against the shipping `ml-kem` / `ml-dsa`**
+    (test-only, `Rust/audit`): ML-KEM-1024 keyGen, encapsulation,
+    decapsulation (incl. implicit rejection) and both FIPS 203 key checks;
+    ML-DSA-87 keyGen, deterministic sigGen and sigVer, through the same crate
+    calls the shipping wrappers make. Extracted from ACVP-Server at a pinned
+    commit with SHA-256-checked sources (`vectors/extract_acvp.py`); a
+    version-parity test keeps the audit lockfile on the shipped versions;
+    CI job `acvp.yml`.
 - **Updated: the built-in router is i2pd 3.0.0.1** (was 2.61.0), phone build
   **rc.191-untested** (versionCode 192). Among its fixes: a SAM session
   closed a few seconds after a reconnect, invalid sessions for
