@@ -466,6 +466,8 @@ mod tests {
     #[test]
     fn x448_half_is_rfc7748() {
         fn h(s: &str) -> Vec<u8> {
+            // std StepBy<Range<usize>>, not a PyO3 Python-sequence iterator:
+            // GHSA-36hh-v3qg-5jq4 not reachable here (see SECURITY.md).
             (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
         }
         let a = h("9a8f4925d1519f5775cf46b04b5800d4ee9ee8bae8bc5565d498c28dd9c9baf574a9419744897391006382a6f127ab1d9ac2d8c0a598726b");

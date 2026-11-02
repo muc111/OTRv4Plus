@@ -47,6 +47,9 @@ mod tests {
     use super::*;
 
     fn h(s: &str) -> [u8; X448_LEN] {
+        // `(0..len).step_by(2)` is std's StepBy<Range<usize>>, not PyO3's
+        // BoundListIterator/BoundTupleIterator: no Python sequence, constant
+        // step -> GHSA-36hh-v3qg-5jq4 is not reachable here (see SECURITY.md).
         let v: Vec<u8> = (0..s.len()).step_by(2)
             .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect();
         v.try_into().unwrap()

@@ -226,9 +226,25 @@ and read memory past the sequence's storage.
 `&[u8]`, `&str`, `u32`/`u64`, `bool`, `&Bound<PyByteArray>`, `&Bound<PyAny>` and
 opaque pyclass handles. No `#[pyfunction]` or `#[pymethods]` entry point accepts
 a Python list or tuple, `PyList` and `PyTuple` appear nowhere in the crate, and
-`nth`/`nth_back`/`step_by` are called on nothing. There is no sequence for the
-vulnerable iterators to walk, and no attacker-controlled `n` to overflow. This
-is asserted, not asserted-once: the reachability check is a test.
+`nth`/`nth_back` are called on nothing, and the only `step_by` calls are over a
+Rust integer `Range<usize>` (see the re-check below), not a Python sequence.
+There is no sequence for the vulnerable iterators to walk, and no
+attacker-controlled `n` to overflow. This is asserted, not asserted-once: the
+reachability check is a test (`tests/test_dependency_advisories.py`).
+
+**Re-check, 2026-11 (PQ migration).** The reachability test flagged two new
+textual `.step_by(` occurrences, introduced with the RFC 7748 X448 vectors:
+`Rust/src/rfc7748.rs` and `Rust/mls/src/hpke.rs`. Both are
+`(0..s.len()).step_by(2)` inside `#[cfg(test)]` hex decoders — the standard
+library's `StepBy<Range<usize>>` over a Rust integer range, with a constant
+step of 2. They are not PyO3's `BoundListIterator`/`BoundTupleIterator`, walk
+no Python sequence, and carry no attacker-controlled index, so the vulnerable
+`get_item_unchecked` path is not reached and the argument above still holds.
+The two sites are cleared by an explicit, line-exact allowance in the test
+(`REVIEWED`), so any edit to them — or any new `.step_by(`/`.nth(` elsewhere —
+re-trips the check for a fresh review. The crate surface is still
+list/tuple-free: `PyList`/`PyTuple`/`BoundListIterator`/`BoundTupleIterator`
+appear nowhere.
 
 **Why it was upgraded anyway.** An unreachable bug in the boundary layer is one
 refactor away from reachable, and 0.29.2 was a compatible release: MSRV 1.83
