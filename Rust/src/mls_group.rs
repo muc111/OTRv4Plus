@@ -42,8 +42,15 @@ fn err(e: MlsError) -> PyErr {
 }
 
 /// Bounds on what Python may hand in, so a hostile room cannot make this
-/// allocate or parse without limit.
-const MAX_MESSAGE: usize = 4 << 20;
+/// allocate or parse without limit. Each input has its own: a key package
+/// is ~15 KiB; a room message (application message or commit; an add is at
+/// most 16 members) is well under 1 MiB; only a Welcome, which carries the
+/// whole ratchet tree and arrives over an authenticated 1:1 session from
+/// an inviter we accepted, needs megabytes. android_bridge/groups.py
+/// decodes to the same bounds; tests/test_mls_size_limits.py pins the two.
+const MAX_KEY_PACKAGE: usize = 64 << 10;
+const MAX_ROOM_MESSAGE: usize = 1 << 20;
+const MAX_WELCOME: usize = 4 << 20;
 const MAX_ID: usize = 1024;
 const MAX_PLAINTEXT: usize = 256 << 10;
 const MAX_BATCH: usize = 64;
@@ -182,7 +189,7 @@ impl RustMlsClient {
             return Err(PyValueError::new_err("mls: bad number of key packages"));
         }
         for kp in &key_packages {
-            bounded(kp, MAX_MESSAGE, "key package")?;
+            bounded(kp, MAX_KEY_PACKAGE, "key package")?;
         }
         let commit = match identities {
             Some(ids) => self.with(|c| c.add_members_as(group_id, &key_packages, &ids))?,
@@ -194,7 +201,7 @@ impl RustMlsClient {
     /// The identity a KeyPackage's credential names (not yet validated).
     #[staticmethod]
     fn key_package_identity<'py>(py: Python<'py>, key_package: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-        bounded(key_package, MAX_MESSAGE, "key package")?;
+        bounded(key_package, MAX_KEY_PACKAGE, "key package")?;
         let who = MlsClient::key_package_identity(key_package).map_err(err)?;
         Ok(PyBytes::new(py, &who))
     }
@@ -215,7 +222,7 @@ impl RustMlsClient {
     }
 
     fn join<'py>(&self, py: Python<'py>, welcome: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-        bounded(welcome, MAX_MESSAGE, "welcome")?;
+        bounded(welcome, MAX_WELCOME, "welcome")?;
         let gid = self.with(|c| c.join(welcome))?;
         Ok(PyBytes::new(py, &gid))
     }
@@ -242,7 +249,7 @@ impl RustMlsClient {
     fn process<'py>(&self, py: Python<'py>, group_id: &[u8], message: &[u8])
         -> PyResult<Bound<'py, PyDict>>
     {
-        bounded(message, MAX_MESSAGE, "message")?;
+        bounded(message, MAX_ROOM_MESSAGE, "message")?;
         let ev = self.with(|c| c.process(group_id, message))?;
         let d = PyDict::new(py);
         match ev {
