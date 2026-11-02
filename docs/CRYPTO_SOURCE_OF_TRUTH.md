@@ -38,9 +38,9 @@ not retain (`android_bridge/app.py`, `bind_smp_secret`).
 
 | Operation | Crate | Rust module | Python sees |
 |---|---|---|---|
-| X448 (DAKE, ratchet DH, voice) | `x448` | `key_handles.rs`, `ratchet.rs`, `dake.rs`, `voice.rs` | `X448KeyHandle` (no private getter); DH outputs never |
-| ML-KEM-1024 (DAKE, brace KEM, voice) | `pqcrypto-mlkem` | `mlkem.rs`, `dake.rs`, `ratchet.rs`, `voice.rs` | `MlKem1024Keypair`; shared secrets never |
-| ML-DSA-87 (DAKE authentication) | `pqcrypto-mldsa` | `mldsa.rs` | `MlDsa87KeyHandle`; signatures and public keys |
+| X448 (DAKE, ratchet DH, voice) | `ed448-goldilocks-plus` | `key_handles.rs`, `ratchet.rs`, `dake.rs`, `voice.rs` | `X448KeyHandle` (no private getter); DH outputs never |
+| ML-KEM-1024 (DAKE, brace KEM, voice) | `ml-kem` | `mlkem.rs`, `dake.rs`, `ratchet.rs`, `voice.rs` | `MlKem1024Keypair`; shared secrets never |
+| ML-DSA-87 (DAKE authentication) | `ml-dsa` | `mldsa.rs` | `MlDsa87KeyHandle`; signatures and public keys |
 | Ed448 (identity, profile signatures, ring signature) | `ed448-goldilocks-plus` | `key_handles.rs`, `ring_sig.rs` | `Ed448KeyHandle` (no seed getter) |
 | OTRv4 KDF, SHAKE-256 / SHA3 | `sha3` | `kdf.rs`, `dake.rs`, `ratchet.rs` | derived keys never |
 | AES-256-GCM (messages, media, files, at-rest) | `aes-gcm` | `ratchet.rs`, `voice.rs`, `filetransfer.rs`, `aead.rs`, `identity.rs` | ciphertext; keys only for at-rest storage (see residuals) |
@@ -131,16 +131,25 @@ built artifact exposes neither surface.
 ## Dependency advisories
 
 `cargo audit` (RustSec) runs weekly and on every lock change with
-`--deny warnings` (`.github/workflows/rust-audit.yml`). As of 2026-09-24:
-**no vulnerabilities**. Five crates are flagged **unmaintained**, and they
-matter here: `pqcrypto-mlkem`, `pqcrypto-mldsa`, `pqcrypto-traits` and
-`pqcrypto-internals` are the ML-KEM-1024 and ML-DSA-87 implementations, and
-the PQClean project they vendor is being archived (`paste` is a compile-time
-helper of `pqcrypto-mldsa`). Unmaintained is not vulnerable, but it means no
-future fix will arrive. Moving to a maintained implementation is a change of
-cryptographic implementation, to be made on its own with the known-answer and
-cross-implementation tests, not as a dependency bump. The decision and its
-reasons are in `Rust/.cargo/audit.toml`.
+`--deny warnings` (`.github/workflows/rust-audit.yml`).
+
+The post-quantum primitives are now the pure-Rust RustCrypto crates:
+ML-KEM-1024 (FIPS 203) on `ml-kem` 0.3.2 and ML-DSA-87 (FIPS 204) on
+`ml-dsa` 0.1.1, with X448 (RFC 7748) on `ed448-goldilocks-plus` 0.18.1.
+This replaced the earlier PQClean C bindings (`pqcrypto-mlkem` /
+`pqcrypto-mldsa` and their `pqcrypto-traits` / `pqcrypto-internals` /
+`paste` helpers), which were flagged **unmaintained** because the PQClean
+project they vendored is being archived; those crates are gone from
+`Rust/Cargo.lock` entirely. The migration was made as its own reviewed
+change, kept behaviour-identical, and is covered by the known-answer and
+cross-implementation tests (`tests/test_mlkem_cross_implementation.py`,
+the NIST ACVP vectors, and `Rust/mls/tests/interop.rs`). It is recorded in
+`docs/PQC_DECISIONS.md` and `docs/MLS_SECURITY_HARDENING.md`.
+
+The `cargo audit` ignore list in `Rust/.cargo/audit.toml` still carries the
+RUSTSEC entries for those removed pqcrypto crates; with the crates no longer
+in the tree those ignores match nothing and are stale, pending a separate
+audit-config cleanup.
 
 ## Documentation licence
 
