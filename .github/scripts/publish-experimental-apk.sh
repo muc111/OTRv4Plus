@@ -82,11 +82,13 @@ case "$VERSION" in
     *.rc.*) TAG="android-v${VERSION}"; KIND="release candidate" ;;
     *)      TAG="android-experimental"; KIND="development build" ;;
 esac
-# A build of `main` is the one tested on phones and a laptop (owner,
-# 2026-10-30: keep it "accessible for people who clone from the main branch
-# while we test the dev"). It gets its own tag, is the repository's Latest
-# release, and only ever replaces an earlier tested release; dev builds never
-# remove it.
+# A build of `main` is the one tested on phones and a laptop. It gets its own
+# tag and is the repository's Latest release. Since 2026-11-02 the page keeps
+# EXACTLY ONE Android APK (owner's instruction, see the deletion step at the
+# end): a `main` build and a `dev` build no longer coexist -- whichever
+# published last is the only one on the page, the tested tag included. The
+# flow is: publish from `dev` for device testing, then merge to `main` once it
+# is confirmed on devices, which republishes as the tested build.
 TESTED=false
 if [ "${GITHUB_REF:-}" = "refs/heads/main" ]; then
     TESTED=true
@@ -253,6 +255,10 @@ later regression is marked in its row. Builds since are in the next table.
 | Identity, wipe and groups | Sign in twice to the same account: same fingerprint, and the contact is not warned; a second account has another. Wipe & Exit with a chat open: the contact receives the closing message. Delete a group: members see they were removed before it goes. Desktop: the Rooms tab flashes for an unseen invitation | rc.184 |
 | Invites and deniability | Invite by name and from the online list, also right after Make Chat Deniable: the other client receives it. Make Chat Deniable and Make Group Deniable delete that chat's history here. In a group, after Make Group Deniable the other members carry on talking normally | rc.185 |
 | Deniability | Make Chat Deniable says your server confirmed the keys; with the phone offline at the press it says not yet, and confirms once back online. The contact keeps chatting in the new session | rc.186 |
+| Post-quantum on pure Rust + MLS SHA-512 (F1-F7) | Nothing new to *do* on the phone, but the post-quantum crypto moved to the pure-Rust \`ml-kem\`/\`ml-dsa\`, the hybrid MLS suite now hashes with SHA-512, and the group hardening pass landed (hedged ML-DSA signing, hybrid-only suite, per-input size caps, a composite signature that binds both public keys, X448 on a maintained crate). **Both phones must be on this build or newer** (the group suite and signatures changed; an older phone cannot share an encrypted group). **Group fingerprints changed to 64 bytes, so re-verify each secure group.** Two phones on this build: 1:1 chat both ways, a secure-group message both ways, a call, and a file transfer all still work | rc.190 |
+| Built-in router i2pd 3.0.0.1 | Nothing new to see: the bundled I2P router was updated (SAM-only, torrents compiled out). With no separate I2P app, sign in over I2P: the built-in router starts and carries everything, as before | rc.191 |
+| RustCrypto hashes and AES-GCM | Nothing new to see: the hash and cipher crates were updated and their zeroize-on-drop turned on. 1:1 chat, a group message and a call still work as on the previous build | rc.192 |
+| Create account with a CAPTCHA | On a server that needs a CAPTCHA (e.g. conversations.im), Create account shows the challenge **image inline** and a text box; type the characters and the account is created and you are signed in. A server that offers the image only as a web link is **refused** with "register on the server's web page" and **no password is sent** (the app never fetches the image). On Termux the image is saved to a temp file, its path printed, then deleted after you answer; a wrong answer is rejected. Cross-check the same flow on the desktop app | rc.193 |
 
 ## ⚠️ Known limits
 
@@ -435,21 +441,17 @@ gh release create "$TAG" "$ROUT" "$OUT" "$MANIFEST" "${SHOTS[@]}" \
 
 echo "published $TAG: $ROUT ($RSHA256), $OUT ($SHA256)"
 
-# ONE APK ON THE RELEASES PAGE. The owner's instruction: older builds must
-# not stay available to be installed by mistake. Only after the new release
-# exists -- deleting first could leave the page with nothing on it if the
-# upload failed -- every OTHER Android release (android-v*, and the rolling
-# android-experimental) is deleted together with its tag. Only Android APK
-# releases are touched; nothing else on the page is.
-# The tested release from main is a family of its own: a dev build never
-# removes it, and a new tested build removes only the older tested one.
-if [ "$TESTED" = true ]; then
-    FAMILY='^android-tested-v'
-else
-    FAMILY='^android-(v|experimental$)'
-fi
+# EXACTLY ONE APK ON THE RELEASES PAGE (owner, 2026-11-02). Older builds must
+# not stay available to be installed by mistake, and there is now a single
+# latest APK rather than one per family: after the new release exists --
+# deleting first could leave the page empty if the upload failed -- every
+# OTHER Android release is deleted together with its tag, the tested-from-main
+# build included. A dev publish therefore removes the previous tested release
+# and vice versa; whichever build published last is the only one on the page.
+# Only Android APK releases (tags beginning `android`) are touched; nothing
+# else on the page is.
 gh release list --limit 200 --json tagName --jq '.[].tagName' |
-    grep -E "$FAMILY" |
+    grep -E '^android' |
     while read -r old; do
         if [ "$old" != "$TAG" ]; then
             echo "removing superseded release $old"
