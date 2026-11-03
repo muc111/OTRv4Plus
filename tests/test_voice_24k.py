@@ -215,3 +215,103 @@ class TestLinuxEchoCancellation:
     def test_the_user_can_name_one(self, monkeypatch):
         monkeypatch.setenv("OTRV4PLUS_PULSE_SOURCE", "my-mic")
         assert A.pulse_device("source", which=lambda b: None) == "my-mic"
+
+
+class _FakePulse:
+    """A pactl stand-in: no echo canceller until one is loaded, then it is
+    listed; records loads and unloads. Driven through the runner/which hooks
+    so no real PulseAudio is touched."""
+
+    def __init__(self, preloaded=False):
+        self.loaded = preloaded
+        self.load_calls = 0
+        self.unloaded = []
+
+    def which(self, binary):
+        return "/usr/bin/" + binary
+
+    def run(self, argv):
+        if "load-module" in argv:
+            self.load_calls += 1
+            self.loaded = True
+            return "42"
+        if "unload-module" in argv:
+            self.unloaded.append(argv[-1])
+            self.loaded = False
+            return ""
+        if "list" in argv:                       # pactl list short sources/sinks
+            if self.loaded:
+                return ("0\talsa_input.pci\tx\tRUNNING\n"
+                        "42\techo-cancel-source\tmodule-echo-cancel.c\tx\tIDLE\n")
+            return "0\talsa_input.pci\tx\tRUNNING\n"
+        return ""
+
+
+class TestAutoEchoCancel:
+    """A desktop call now loads module-echo-cancel itself when nothing is
+    cancelling echo, and unloads it on teardown -- so a laptop on speakers is
+    clear by default, like a phone, without changing the user's audio system
+    permanently."""
+
+    def _clear_env(self, monkeypatch):
+        for name in ("OTRV4PLUS_NO_AUTO_ECHO_CANCEL", "OTRV4PLUS_PULSE_SOURCE",
+                     "OTRV4PLUS_PULSE_SINK"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_it_loads_when_nothing_is_cancelling(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        fake = _FakePulse(preloaded=False)
+        index = A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        assert index == 42 and fake.load_calls == 1
+
+    def test_it_does_not_load_over_an_existing_one(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        fake = _FakePulse(preloaded=True)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) is None
+        assert fake.load_calls == 0
+
+    def test_a_pinned_device_is_left_alone(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_PULSE_SOURCE", "my-mic")
+        fake = _FakePulse(preloaded=False)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) is None
+        assert fake.load_calls == 0
+
+    def test_the_opt_out_is_honoured(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_NO_AUTO_ECHO_CANCEL", "1")
+        fake = _FakePulse(preloaded=False)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) is None
+        assert fake.load_calls == 0
+
+    def test_no_pactl_means_no_load(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        assert A.ensure_echo_cancel(which=lambda b: None,
+                                    runner=lambda argv: "") is None
+
+    def test_a_load_that_does_not_appear_is_undone(self, monkeypatch):
+        """If the module loads but no usable source shows up, the call must not
+        be routed through a device that is not there -- undo and fall back to
+        the default, which is a working (if echoing) call rather than silence."""
+        self._clear_env(monkeypatch)
+
+        class Ghost(_FakePulse):
+            def run(self, argv):
+                out = super().run(argv)
+                if "list" in argv:
+                    return "0\talsa_input.pci\tx\tRUNNING\n"   # never appears
+                return out
+
+        ghost = Ghost(preloaded=False)
+        assert A.ensure_echo_cancel(which=ghost.which, runner=ghost.run) is None
+        assert ghost.load_calls == 1 and ghost.unloaded == ["42"]
+
+    def test_unload_undoes_exactly_what_was_loaded(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        fake = _FakePulse(preloaded=False)
+        index = A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        A.unload_module(index, which=fake.which, runner=fake.run)
+        assert fake.unloaded == ["42"] and fake.loaded is False
+
+    def test_unload_of_nothing_is_harmless(self):
+        A.unload_module(None)                     # no raise, no pactl needed

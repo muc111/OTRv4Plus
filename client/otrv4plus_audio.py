@@ -1608,10 +1608,20 @@ class AAudioPlayback(AAudioStreamBase):
 # brief says to leave alone.  It is simply no longer the default for calls.
 
 #: The command that turns echo cancellation on for PulseAudio or PipeWire
-#: (webrtc AEC, the same family as a phone's). Not run by us: it changes the
-#: user's audio system, so /audiotest says it and the user decides.
+#: (webrtc AEC, the same family as a phone's). The call now loads this itself
+#: when nothing is cancelling echo yet (see ensure_echo_cancel) and unloads it
+#: on teardown; /audiotest still prints it for a user who wants it by hand or
+#: has turned the automatic one off with OTRV4PLUS_NO_AUTO_ECHO_CANCEL.
 ECHO_CANCEL_COMMAND = ("pactl load-module module-echo-cancel aec_method=webrtc "
                        "source_name=echo-cancel-source sink_name=echo-cancel-sink")
+
+#: The source/sink names ensure_echo_cancel creates, matched by pulse_device.
+ECHO_CANCEL_SOURCE = "echo-cancel-source"
+ECHO_CANCEL_SINK = "echo-cancel-sink"
+
+
+def _env_true(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
 
 
 def pulse_device(kind: str, which=None, env=None, runner=None) -> str:
@@ -1649,6 +1659,87 @@ def pulse_device(kind: str, which=None, env=None, runner=None) -> str:
     return ""
 
 
+def ensure_echo_cancel(which=None, env=None, runner=None):
+    """Load module-echo-cancel if nothing is cancelling echo yet, so a laptop
+    on speakers does not loop the far end's voice back. Returns the module
+    index we loaded (to unload on teardown), or None if we loaded nothing.
+
+    WHY THIS IS NOW AUTOMATIC. The module used to be the user's job: it
+    "changes the user's audio system." But a phone's AEC is automatic, a
+    desktop call without one echoes, and "clear on the phone, echo on the
+    laptop" is not an acceptable cross-platform call. So the call loads it
+    itself -- NARROWLY and REVERSIBLY, which is what makes that safe:
+
+      * the source and sink are NAMED and NOT made default, so only our own
+        parec/pacat select them (pulse_device); every other app is untouched;
+      * we unload exactly what we loaded, on teardown, so the system is left
+        as we found it;
+      * we never load over an existing one, a pinned device
+        (OTRV4PLUS_PULSE_SOURCE/_SINK), or an opt-out
+        (OTRV4PLUS_NO_AUTO_ECHO_CANCEL=1);
+      * if the load fails or the device does not actually appear, we undo it
+        and the call proceeds on the default device exactly as before -- a
+        missing canceller is echo, but a call routed through a device that is
+        not there is silence, and silence is the worse failure.
+
+    Not used on Android: there the platform AEC rides the VOICE_COMMUNICATION
+    streams and this backend is never opened.
+    """
+    if _env_true("OTRV4PLUS_NO_AUTO_ECHO_CANCEL"):
+        return None
+    if (os.environ.get("OTRV4PLUS_PULSE_SOURCE", "").strip()
+            or os.environ.get("OTRV4PLUS_PULSE_SINK", "").strip()):
+        return None                              # the user pinned the devices
+    which = which or _default_which
+    pactl = which("pactl")
+    if pactl is None:
+        return None
+    if pulse_device("source", which, env, runner=runner):
+        return None                              # already cancelling; leave it
+    try:
+        args = [pactl, "load-module", "module-echo-cancel", "aec_method=webrtc",
+                "source_name=" + ECHO_CANCEL_SOURCE,
+                "sink_name=" + ECHO_CANCEL_SINK]
+        if runner is None:
+            import subprocess
+            out = subprocess.run(args, capture_output=True, text=True,
+                                 timeout=5, env=env or dict(os.environ))
+            if out.returncode != 0:
+                return None
+            raw = out.stdout.strip()
+        else:
+            raw = str(runner(args)).strip()
+        index = int(raw) if raw.isdigit() else None
+    except Exception:
+        return None
+    # Confirm the source really appeared. A load that reports success but
+    # leaves no usable device must not route the call through nothing.
+    if not pulse_device("source", which, env, runner=runner):
+        unload_module(index, which, env, runner)
+        return None
+    return index
+
+
+def unload_module(index, which=None, env=None, runner=None) -> None:
+    """Unload a PulseAudio module we loaded. Never raises."""
+    if index is None:
+        return
+    which = which or _default_which
+    pactl = which("pactl")
+    if pactl is None:
+        return
+    args = [pactl, "unload-module", str(index)]
+    try:
+        if runner is None:
+            import subprocess
+            subprocess.run(args, capture_output=True, text=True, timeout=5,
+                           env=env or dict(os.environ))
+        else:
+            runner(args)
+    except Exception:
+        pass
+
+
 class PulseCapture(AudioStream):
     """parec -> pipe.  The legacy path, kept as an explicit opt-in."""
 
@@ -1663,6 +1754,11 @@ class PulseCapture(AudioStream):
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, "parec not found")
         self._read_exact = read_exact
         self._closed = False
+        # Make echo cancellation exist before choosing the source: on a laptop
+        # with nothing loaded this is what stops the far end hearing itself.
+        # We own this module and unload it in stop(); None if one was already
+        # there, a device was pinned, or auto-load is off (ensure_echo_cancel).
+        self._ec_module = ensure_echo_cancel(which, env)
         #: The echo-cancelled source when one is loaded (see pulse_device).
         self.device = pulse_device("source", which, env)
         self.echo_cancelled = "echo-cancel" in self.device
@@ -1700,6 +1796,12 @@ class PulseCapture(AudioStream):
             return
         self._closed = True
         _terminate(self._proc)
+        # Leave the audio system as we found it: unload the echo canceller only
+        # if THIS stream loaded it. One module provides both the source and the
+        # sink, so unloading here takes the playback sink down with it.
+        if getattr(self, "_ec_module", None) is not None:
+            unload_module(self._ec_module)
+            self._ec_module = None
 
     def diagnostics(self) -> dict:
         return {"backend": "pulseaudio", "direction": "input",
