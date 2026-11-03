@@ -307,12 +307,12 @@ class XmppTestServer:
                     "<required/></field>"
                     "<field var='password' type='text-private' label='Password'>"
                     "<required/></field>"
-                    + extra +
+                    "%s"
                     "<field var='ocr' type='text-single' label='Enter the text'>"
                     "<required/><media xmlns='urn:xmpp:media-element'>"
                     "<uri type='image/png'>cid:%s</uri></media></field></x>"
                     "<data xmlns='urn:xmpp:bob' cid='%s' type='image/png'>%s</data>"
-                    "</query></iq>" % (iid, cid, cid, png))
+                    "</query></iq>" % (iid, extra, cid, cid, png))
         return ("<iq type='result' id='%s'><query xmlns='jabber:iq:register'>"
                 "<instructions>Choose a username and password</instructions>"
                 "<username/><password/></query></iq>" % iid)
