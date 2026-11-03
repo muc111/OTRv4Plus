@@ -544,6 +544,18 @@ class TestTheAudioSetupReachesTheReport:
         assert code == "audio_earpiece_route"
         assert "VOICE_COMMUNICATION" in reason
 
+    def test_the_teardown_tally_keeps_its_counts(self):
+        """sent/received/dropped is the one per-call health line a 1:1 call
+        leaves; a high drop count is the jitter/loss that glitches audio. It
+        must reach the report with its numbers, and not be confused with the
+        "call signal dropped" error."""
+        from android_bridge.voice import call_stage
+        code, _severity, reason = call_stage(
+            "[voice] sent 100, received 98, dropped 2")
+        assert code == "call_stats"
+        assert "dropped 2" in reason and "sent 100" in reason
+        assert call_stage("[voice] call signal dropped")[0] == "signal_dropped"
+
     def test_the_underrun_line_is_not_swallowed_by_the_setup_needles(self):
         """"playout: the device buffer" must still be its own warning, not be
         captured by the setup "burst"/"playout" matching."""

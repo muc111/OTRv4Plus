@@ -691,6 +691,12 @@ CALL_STAGES = (
     ("audio: ", "audio_setup", "info"),
     ("burst", "audio_playout", "info"),
     ("declared as VOICE_COMMUNICATION", "audio_earpiece_route", "info"),
+    # The per-call teardown tally (sent/received/dropped). A high drop count is
+    # the signature of the jitter/loss that makes a call glitch, and it is the
+    # one number a 1:1 call otherwise leaves nowhere a report can reach. ",
+    # dropped" is unique to this line (the "call signal dropped" error carries
+    # its own full phrase), so it cannot shadow or be shadowed.
+    (", dropped", "call_stats", "info"),
     ("building I2P tunnel", "tunnels_building", "info"),
     ("waiting for an answer", "ringing_out", "info"),
     ("Answer? [y/n]", "ringing_in", "info"),
@@ -746,7 +752,7 @@ CALL_STAGES = (
 #: facts a "high pitch / echo" report is about. The redactor still aliases
 #: any identity by shape; these lines carry only rates, channels and names.
 DETAIL_CODES = frozenset({"audio_codec", "audio_setup", "audio_playout",
-                          "audio_earpiece_route"})
+                          "audio_earpiece_route", "call_stats"})
 
 
 def call_stage(line: str):
