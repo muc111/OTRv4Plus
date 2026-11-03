@@ -112,18 +112,50 @@ class TestArming:
         c._clear_peer_gone("our transport dropped")
         assert c._peer_gone_at == {}
 
-    def test_our_disconnect_handler_calls_it(self):
-        # Ten disconnects in one live call; not one may clear a session.
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._on_disconnected)
-        assert "_clear_peer_gone" in src
+    # Run, not read (Phase 5): the real handlers on the fake client.
 
-    def test_presence_handlers_are_wired_both_ways(self):
-        import inspect
-        gone = inspect.getsource(xmpp.OTRv4PlusXMPP._on_presence_unavailable)
-        back = inspect.getsource(xmpp.OTRv4PlusXMPP._on_presence_available)
-        assert "_arm_peer_gone" in gone
-        assert "_peer_is_alive" in back
+    class _From:
+        def __init__(self, jid, resource="phone"):
+            self.bare, self.resource = jid, resource
+
+    def _presence(self, jid, resource="phone"):
+        return {"from": self._From(jid, resource), "show": "", "status": "",
+                "caps": {"node": ""}}
+
+    def _wire(self, c):
+        c._own_bare = "me@example.i2p"
+        c._peer_resources = {}
+        c._groups = None
+        for name in ("_on_presence_unavailable", "_on_presence_available",
+                     "_on_disconnected"):
+            setattr(c, name, getattr(xmpp.OTRv4PlusXMPP, name).__get__(c))
+        return c
+
+    def test_our_disconnect_handler_calls_it(self, capsys):
+        # Ten disconnects in one live call; not one may clear a session.
+        c = self._wire(_FakeClient())
+        c._peer_gone_at = {PEER: 1.0}
+        c._keepalive_task = None
+        c._clear_trades = lambda why: None
+        c._schedule_reconnect = lambda why: None
+        c._on_disconnected(None)
+        assert c._peer_gone_at == {}, "our own drop counted against the peer"
+        assert PEER in c._encrypted
+
+    def test_presence_handlers_are_wired_both_ways(self, capsys):
+        c = self._wire(_FakeClient())
+        c._on_presence_available(self._presence(PEER))
+        c._on_presence_unavailable(self._presence(PEER))
+        assert PEER in c._peer_gone_at, "the peer's last resource leaving armed nothing"
+        c._on_presence_available(self._presence(PEER))
+        assert PEER not in c._peer_gone_at, "the peer coming back did not disarm it"
+
+    def test_one_resource_leaving_does_not_arm_it(self, capsys):
+        c = self._wire(_FakeClient())
+        c._on_presence_available(self._presence(PEER, "phone"))
+        c._on_presence_available(self._presence(PEER, "laptop"))
+        c._on_presence_unavailable(self._presence(PEER, "phone"))
+        assert PEER not in c._peer_gone_at
 
     def test_an_inbound_message_counts_as_proof_of_life(self):
         import inspect
@@ -169,12 +201,18 @@ class TestForget:
     def test_it_does_not_forget_the_pinned_fingerprint(self):
         # Long-term identity is not session state. Forgetting it would turn
         # every reconnect into a fresh trust-on-first-use decision, which is
-        # exactly where a MITM wants the user.
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._forget_otr)
-        for forbidden in ("untrust", "forget_fingerprint", "unpin",
-                          "remove_fingerprint", "trust_db"):
-            assert forbidden not in src
+        # exactly where a MITM wants the user. Run, not read (Phase 5): the
+        # engine's trust database fails the test if it is touched, and the
+        # client has no trust handle of its own to reach for.
+        class _Untouchable:
+            def __getattr__(self, name):
+                raise AssertionError("_forget_otr touched the trust database (%s)" % name)
+
+        c = _FakeClient()
+        c.otr.trust_db = _Untouchable()
+        c._trust = _Untouchable()
+        c._forget_otr(PEER, "offline")
+        assert PEER not in c._encrypted, "the session itself was not forgotten"
 
     def test_a_peer_with_nothing_to_clear_is_a_no_op(self):
         c = _FakeClient(encrypted=())
@@ -197,16 +235,23 @@ class TestForget:
 # ---------------------------------------------------------------------------
 
 def _sweep(client):
-    """One pass of the production sweeper's decision, without the sleep."""
-    now = time.monotonic()
-    for peer, since in list(client._peer_gone_at.items()):
-        if now - since < client.PEER_GONE_SECONDS:
-            continue
-        if client._peer_in_call(peer):
-            client._peer_gone_at[peer] = now
-            continue
-        client._peer_gone_at.pop(peer, None)
-        client._forget_otr(peer, "offline")
+    """One pass of the PRODUCTION sweeper (Phase 5: this used to be a copy of
+    its loop, so the tests checked the copy). Its sleep returns at once the
+    first time and cancels it the second, so exactly one pass runs."""
+    import asyncio
+    calls = []
+
+    async def _sleep(_seconds):
+        calls.append(1)
+        if len(calls) > 1:
+            raise asyncio.CancelledError
+
+    real = xmpp.asyncio.sleep
+    xmpp.asyncio.sleep = _sleep
+    try:
+        asyncio.run(xmpp.OTRv4PlusXMPP._peer_gone_sweeper(client))
+    finally:
+        xmpp.asyncio.sleep = real
 
 
 class TestSweeper:
@@ -246,11 +291,8 @@ class TestSweeper:
         _sweep(c)
         assert PEER not in c._encrypted
 
-    def test_the_production_sweeper_defers_on_a_call(self):
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._peer_gone_sweeper)
-        assert "_peer_in_call(peer)" in src
-        assert src.index("_peer_in_call") < src.index("_forget_otr")
+    # "The production sweeper defers on a call" is now every test in this
+    # class: _sweep runs the production sweeper itself (Phase 5).
 
     def test_no_voice_manager_is_not_a_call(self):
         c = _FakeClient()

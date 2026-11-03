@@ -151,7 +151,7 @@ fn forgetting_a_group_forgets_its_key() {
     let w = welcome_of(c.process(G2, &add));
     assert!(matches!(b.join(&w), Err(MlsError::Refused(_))));
     assert!(!b.has_group(G2));
-    assert_eq!(fingerprint(b"").len(), 48);
+    assert_eq!(fingerprint(b"").len(), 64);
 }
 
 #[test]

@@ -6,7 +6,7 @@
 //!
 //! hpke-rs does the RFC 9180 composition (key schedule, labelled KDF,
 //! nonces, export); this supplies the primitives it asks for, for the one
-//! configuration the MLS suite uses: KEM ML-KEM-1024, KDF HKDF-SHA384, AEAD
+//! configuration the MLS suite uses: KEM ML-KEM-1024, KDF HKDF-SHA512, AEAD
 //! AES-256-GCM (plus export-only). Everything else is refused.
 
 use aes_gcm::{
@@ -19,7 +19,7 @@ use hpke_rs_crypto::{
     types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm},
     HpkeCrypto, HpkeTestRng,
 };
-use sha2::Sha384;
+use sha2::Sha512;
 use zeroize::Zeroize;
 
 use otrv4_mls::mlkem;
@@ -89,7 +89,7 @@ impl HpkeCrypto for CoreHpke {
 
     fn supports_kdf(alg: KdfAlgorithm) -> Result<(), Error> {
         match alg {
-            KdfAlgorithm::HkdfSha384 => Ok(()),
+            KdfAlgorithm::HkdfSha512 => Ok(()),
             _ => Err(Error::UnknownKdfAlgorithm),
         }
     }
@@ -114,7 +114,7 @@ impl HpkeCrypto for CoreHpke {
 
     fn kdf_extract(alg: KdfAlgorithm, salt: &[u8], ikm: &[u8]) -> Result<Vec<u8>, Error> {
         Self::supports_kdf(alg)?;
-        Ok(Hkdf::<Sha384>::extract(Some(salt), ikm).0.to_vec())
+        Ok(Hkdf::<Sha512>::extract(Some(salt), ikm).0.to_vec())
     }
 
     fn kdf_expand(
@@ -124,7 +124,7 @@ impl HpkeCrypto for CoreHpke {
         output_size: usize,
     ) -> Result<Vec<u8>, Error> {
         Self::supports_kdf(alg)?;
-        let hkdf = Hkdf::<Sha384>::from_prk(prk).map_err(|_| Error::HpkeInvalidOutputLength)?;
+        let hkdf = Hkdf::<Sha512>::from_prk(prk).map_err(|_| Error::HpkeInvalidOutputLength)?;
         let mut okm = vec![0u8; output_size];
         hkdf.expand(info, &mut okm)
             .map_err(|_| Error::HpkeInvalidOutputLength)?;
@@ -150,7 +150,8 @@ impl HpkeCrypto for CoreHpke {
     /// (encapsulation key, decapsulation key) from the FIPS 203 seed.
     fn kem_key_gen_derand(alg: KemAlgorithm, seed: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Error> {
         Self::supports_kem(alg)?;
-        mlkem::keypair_from_seed(seed).ok_or(Error::KemInvalidSecretKey)
+        // hpke-rs's trait wants plain Vecs (test only; never shipped).
+        mlkem::keypair_from_seed(seed).map(|(pk, sk)| (pk, sk.to_vec())).ok_or(Error::KemInvalidSecretKey)
     }
 
     /// (shared secret, encapsulation) -- the order hpke-rs expects.
@@ -160,12 +161,12 @@ impl HpkeCrypto for CoreHpke {
         _prng: &mut Self::HpkePrng,
     ) -> Result<(Vec<u8>, Vec<u8>), Error> {
         Self::supports_kem(alg)?;
-        mlkem::encapsulate(pk_r).ok_or(Error::KemInvalidPublicKey)
+        mlkem::encapsulate(pk_r).map(|(ss, ct)| (ss.to_vec(), ct)).ok_or(Error::KemInvalidPublicKey)
     }
 
     fn kem_decaps(alg: KemAlgorithm, ct: &[u8], sk_r: &[u8]) -> Result<Vec<u8>, Error> {
         Self::supports_kem(alg)?;
-        mlkem::decapsulate(ct, sk_r).ok_or(Error::KemInvalidCiphertext)
+        mlkem::decapsulate(ct, sk_r).map(|ss| ss.to_vec()).ok_or(Error::KemInvalidCiphertext)
     }
 
     fn dh_validate_sk(_alg: KemAlgorithm, _sk: &[u8]) -> Result<Vec<u8>, Error> {
@@ -187,7 +188,7 @@ impl HpkeCrypto for CoreHpke {
             return Err(Error::AeadInvalidNonce);
         }
         cipher
-            .encrypt(nonce.into(), Payload { msg, aad })
+            .encrypt(nonce.try_into().map_err(|_| Error::AeadInvalidNonce)?, Payload { msg, aad })
             .map_err(|_| Error::CryptoLibraryError("aes-gcm seal".into()))
     }
 
@@ -206,7 +207,7 @@ impl HpkeCrypto for CoreHpke {
             return Err(Error::AeadInvalidNonce);
         }
         cipher
-            .decrypt(nonce.into(), Payload { msg, aad })
+            .decrypt(nonce.try_into().map_err(|_| Error::AeadInvalidNonce)?, Payload { msg, aad })
             .map_err(|_| Error::AeadOpenError)
     }
 }

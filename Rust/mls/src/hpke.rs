@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
 //! HPKE (RFC 9180), base mode, for the suites MLS uses here:
-//! KDF HKDF-SHA384 (0x0002), AEAD AES-256-GCM (0x0002) or export-only
+//! KDF HKDF-SHA512 (0x0003), AEAD AES-256-GCM (0x0002) or export-only
 //! (0xFFFF), and KEM either
 //!   * X448 + ML-KEM-1024 with a binding combiner (0xF0A1, private; the
 //!     hybrid suite, docs/MLS_SECURITY_HARDENING.md §2), or
-//!   * ML-KEM-1024 alone (0x0042; the earlier PQ-only suite, kept so
-//!     groups made with it keep working).
+//!   * ML-KEM-1024 alone (0x0042; the non-hybrid PQ suite the reference
+//!     provider cross-checks against).
 //!
 //! THE HYBRID KEM (0xF0A1)
 //! =======================
@@ -49,7 +49,7 @@
 //!   secret        = LabeledExtract(shared_secret, "secret", "")
 //!   key           = LabeledExpand(secret, "key", context, Nk)
 //!   base_nonce    = LabeledExpand(secret, "base_nonce", context, Nn)
-//!   exporter      = LabeledExpand(secret, "exp", context, 48)
+//!   exporter      = LabeledExpand(secret, "exp", context, Nh=64)
 //!   Export(ctx,L) = LabeledExpand(exporter, "sec", ctx, L)
 //!   DeriveKeyPair(ikm) = ML-KEM-1024.KeyGen_internal(d || z = SHAKE256(ikm, 64))
 //!
@@ -60,14 +60,15 @@ use aes_gcm::{
     Aes256Gcm, Nonce,
 };
 use hkdf::Hkdf;
-use sha2::Sha384;
+use sha2::Sha512;
 use sha3::digest::{ExtendableOutput, Update, XofReader};
 use zeroize::Zeroizing;
 
 use crate::mlkem;
+use ed448_goldilocks_plus::{x448 as rfc7748, MontgomeryPoint};
 
-const KDF_ID: u16 = 0x0002;
-const NH: usize = 48;
+const KDF_ID: u16 = 0x0003;
+const NH: usize = 64;
 const HPKE_VERSION: &[u8] = b"HPKE-v1";
 const MODE_BASE: u8 = 0x00;
 
@@ -163,7 +164,7 @@ fn labeled_extract(salt: &[u8], suite: &[u8], label: &[u8], ikm: &[u8]) -> Zeroi
     labeled.extend_from_slice(suite);
     labeled.extend_from_slice(label);
     labeled.extend_from_slice(ikm);
-    let (prk, _) = Hkdf::<Sha384>::extract(Some(salt), &labeled);
+    let (prk, _) = Hkdf::<Sha512>::extract(Some(salt), &labeled);
     Zeroizing::new(prk.to_vec())
 }
 
@@ -179,7 +180,7 @@ fn labeled_expand(prk: &[u8], suite: &[u8], label: &[u8], info: &[u8], len: usiz
     labeled.extend_from_slice(suite);
     labeled.extend_from_slice(label);
     labeled.extend_from_slice(info);
-    let hk = Hkdf::<Sha384>::from_prk(prk).map_err(|_| HpkeError::InvalidInput)?;
+    let hk = Hkdf::<Sha512>::from_prk(prk).map_err(|_| HpkeError::InvalidInput)?;
     let mut out = Zeroizing::new(vec![0u8; len]);
     hk.expand(&labeled, &mut out).map_err(|_| HpkeError::InvalidInput)?;
     Ok(out)
@@ -235,15 +236,14 @@ fn mlkem_encap(pk_r: &[u8]) -> Result<(Zeroizing<Vec<u8>>, Vec<u8>), HpkeError> 
     if pk_r.len() != mlkem::PUBLIC_KEY_BYTES {
         return Err(HpkeError::InvalidInput);
     }
-    let (ss, enc) = mlkem::encapsulate(pk_r).ok_or(HpkeError::InvalidInput)?;
-    Ok((Zeroizing::new(ss), enc))
+    mlkem::encapsulate(pk_r).ok_or(HpkeError::InvalidInput)
 }
 
 fn mlkem_decap(enc: &[u8], sk_r: &[u8]) -> Result<Zeroizing<Vec<u8>>, HpkeError> {
     if enc.len() != mlkem::CIPHERTEXT_BYTES || sk_r.len() != mlkem::SECRET_KEY_BYTES {
         return Err(HpkeError::InvalidInput);
     }
-    mlkem::decapsulate(enc, sk_r).map(Zeroizing::new).ok_or(HpkeError::Decaps)
+    mlkem::decapsulate(enc, sk_r).ok_or(HpkeError::Decaps)
 }
 
 /// The ML-KEM-1024 public key inside a FIPS 203 decapsulation key
@@ -252,25 +252,26 @@ fn mlkem_pk_of(sk: &[u8]) -> &[u8] {
     &sk[1536..1536 + mlkem::PUBLIC_KEY_BYTES]
 }
 
+/// RFC 7748 X448 on ed448-goldilocks-plus (its `x448` module), whose secrets
+/// and shared secrets are ZeroizeOnDrop. It replaced x448 0.6.
 fn x448_public(sk: &[u8]) -> Result<[u8; X448_BYTES], HpkeError> {
-    let arr: [u8; X448_BYTES] = sk.try_into().map_err(|_| HpkeError::InvalidInput)?;
-    let secret = Zeroizing::new(arr);
-    let sk = x448::Secret::from(*secret);
-    Ok(*x448::PublicKey::from(&sk).as_bytes())
+    let secret = Zeroizing::new(<[u8; X448_BYTES]>::try_from(sk).map_err(|_| HpkeError::InvalidInput)?);
+    Ok(rfc7748::PublicKey::from(&rfc7748::StaticSecret::from(*secret)).to_bytes())
 }
 
-/// X448(sk, pk); refuses a low-order point (an all-zero result).
+/// X448(sk, pk); refuses a low-order peer key (InvalidInput, as before) and
+/// an all-zero, non-contributory result (Decaps).
 fn x448_dh(sk: &[u8], pk: &[u8]) -> Result<Zeroizing<Vec<u8>>, HpkeError> {
-    let arr: [u8; X448_BYTES] = sk.try_into().map_err(|_| HpkeError::InvalidInput)?;
-    let secret = Zeroizing::new(arr);
-    let sk = x448::Secret::from(*secret);
-    let pk = x448::PublicKey::from_bytes(pk).ok_or(HpkeError::InvalidInput)?;
-    let shared = sk.as_diffie_hellman(&pk).ok_or(HpkeError::Decaps)?;
-    let out = Zeroizing::new(shared.as_bytes().to_vec());
-    if out.iter().all(|&b| b == 0) {
+    let secret = Zeroizing::new(<[u8; X448_BYTES]>::try_from(sk).map_err(|_| HpkeError::InvalidInput)?);
+    let pk: [u8; X448_BYTES] = pk.try_into().map_err(|_| HpkeError::InvalidInput)?;
+    if MontgomeryPoint(pk).is_low_order() {
+        return Err(HpkeError::InvalidInput);
+    }
+    let shared = rfc7748::StaticSecret::from(*secret).diffie_hellman(&rfc7748::PublicKey::from(pk));
+    if !shared.was_contributory() {
         return Err(HpkeError::Decaps);
     }
-    Ok(out)
+    Ok(Zeroizing::new(shared.as_bytes().to_vec()))
 }
 
 fn combine(ss_mlkem: &[u8], ss_x448: &[u8], ct_x448: &[u8], pk_x448: &[u8],
@@ -341,7 +342,7 @@ pub fn seal_with(kem: Kem, pk_r: &[u8], info: &[u8], aad: &[u8], pt: &[u8])
     let (ss, enc) = encap(kem, pk_r)?;
     let ctx = key_schedule(kem, &ss, info, Aead::Aes256Gcm)?;
     let ct = ctx.cipher()?
-        .encrypt(<&Nonce<_>>::from(&ctx.base_nonce[..]), Payload { msg: pt, aad })
+        .encrypt(&Nonce::try_from(&ctx.base_nonce[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: pt, aad })
         .map_err(|_| HpkeError::Seal)?;
     Ok((enc, ct))
 }
@@ -359,7 +360,7 @@ pub fn open_with(kem: Kem, enc: &[u8], sk_r: &[u8], info: &[u8], aad: &[u8], ct:
     let ss = decap(kem, enc, sk_r)?;
     let ctx = key_schedule(kem, &ss, info, Aead::Aes256Gcm)?;
     ctx.cipher()?
-        .decrypt(<&Nonce<_>>::from(&ctx.base_nonce[..]), Payload { msg: ct, aad })
+        .decrypt(&Nonce::try_from(&ctx.base_nonce[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: ct, aad })
         .map(Zeroizing::new)
         .map_err(|_| HpkeError::Open)
 }
@@ -398,7 +399,7 @@ pub fn receiver_export_with(kem: Kem, enc: &[u8], sk_r: &[u8], info: &[u8], aead
 }
 
 fn shake(parts: &[&[u8]], out: &mut [u8]) {
-    let mut xof = sha3::Shake256::default();
+    let mut xof = shake::Shake256::default();
     for p in parts {
         xof.update(p);
     }
@@ -416,7 +417,7 @@ pub fn derive_key_pair_with(kem: Kem, ikm: &[u8]) -> Result<(Zeroizing<Vec<u8>>,
             let mut seed = Zeroizing::new([0u8; mlkem::SEED_BYTES]);
             shake(&[ikm], &mut seed[..]);
             let (pk, sk) = mlkem::keypair_from_seed(&seed[..]).ok_or(HpkeError::InvalidInput)?;
-            Ok((Zeroizing::new(sk), pk))
+            Ok((sk, pk))
         }
         Kem::X448MlKem1024 => {
             let mut sk_x448 = Zeroizing::new([0u8; X448_BYTES]);
@@ -425,7 +426,6 @@ pub fn derive_key_pair_with(kem: Kem, ikm: &[u8]) -> Result<(Zeroizing<Vec<u8>>,
             shake(&[HYBRID_LABEL, b"/mlkem", ikm], &mut seed[..]);
             let (pk_mlkem, sk_mlkem) =
                 mlkem::keypair_from_seed(&seed[..]).ok_or(HpkeError::InvalidInput)?;
-            let sk_mlkem = Zeroizing::new(sk_mlkem);
             let mut sk = Zeroizing::new(Vec::with_capacity(kem.secret_key_bytes()));
             sk.extend_from_slice(&sk_x448[..]);
             sk.extend_from_slice(&sk_mlkem);
@@ -460,6 +460,30 @@ mod tests {
     }
 
     const H: Kem = Kem::X448MlKem1024;
+
+    /// The X448 half is RFC 7748: the §6.2 public keys and shared secret,
+    /// and a low-order peer key (u = 0, 1) refused.
+    #[test]
+    fn x448_half_is_rfc7748() {
+        fn h(s: &str) -> Vec<u8> {
+            // std StepBy<Range<usize>>, not a PyO3 Python-sequence iterator:
+            // GHSA-36hh-v3qg-5jq4 not reachable here (see SECURITY.md).
+            (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        }
+        let a = h("9a8f4925d1519f5775cf46b04b5800d4ee9ee8bae8bc5565d498c28dd9c9baf574a9419744897391006382a6f127ab1d9ac2d8c0a598726b");
+        let b = h("1c306a7ac2a0e2e0990b294470cba339e6453772b075811d8fad0d1d6927c120bb5ee8972b0d3e21374c9c921b09d1b0366f10b65173992d");
+        let pa = x448_public(&a).unwrap();
+        let pb = x448_public(&b).unwrap();
+        assert_eq!(pa.to_vec(), h("9b08f7cc31b7e3e67d22d5aea121074a273bd2b83de09c63faa73d2c22c5d9bbc836647241d953d40c5b12da88120d53177f80e532c41fa0"));
+        assert_eq!(pb.to_vec(), h("3eb7a829b0cd20f5bcfc0b599b6feccf6da4627107bdb0d4f345b43027d8b972fc3e34fb4232a13ca706dcb57aec3dae07bdc1c67bf33609"));
+        let k = h("07fff4181ac6cc95ec1c16a94a0f74d12da232ce40a77552281d282bb60c0b56fd2464c335543936521c24403085d59a449a5037514a879d");
+        assert_eq!(x448_dh(&a, &pb).unwrap().as_slice(), &k[..]);
+        assert_eq!(x448_dh(&b, &pa).unwrap().as_slice(), &k[..]);
+        let mut one = [0u8; X448_BYTES];
+        one[0] = 1;
+        assert_eq!(x448_dh(&a, &[0u8; X448_BYTES]).unwrap_err(), HpkeError::InvalidInput);
+        assert_eq!(x448_dh(&a, &one).unwrap_err(), HpkeError::InvalidInput);
+    }
 
     #[test]
     fn hybrid_round_trip_sizes_and_determinism() {

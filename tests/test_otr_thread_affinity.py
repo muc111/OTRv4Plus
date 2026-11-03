@@ -104,10 +104,41 @@ class TestTheExecutorIsSingleThreaded:
 class TestEveryOtrEntryPointUsesThatExecutor:
     """One serialising queue is only a guarantee if nothing bypasses it."""
 
+    @staticmethod
+    def _inbound_threads(with_termsync):
+        """Run one inbound frame and return the thread the engine ran on."""
+        import asyncio
+        import types
+        seen = []
+
+        def _engine(peer, body):
+            seen.append(threading.current_thread().name)
+            raise RuntimeError("stop here")    # handler returns on errors
+
+        cli = xmpp.OTRv4PlusXMPP.__new__(xmpp.OTRv4PlusXMPP)
+        cli._run_out_filters = None      # slixmpp's __del__ reads it
+        cli._probe = False
+        cli._dbg = lambda *a: None
+        cli._send_final_revelations = lambda: None
+        cli._otr_executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="otr-crypto")
+        cli.otr = types.SimpleNamespace(handle_incoming_message=_engine)
+        if not with_termsync:
+            cli._ts_decrypt = None        # the fallback, with no TermSync
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(
+                cli._handle_otr_in_async("bob@example.org", "?OTR:AAQD"))
+        finally:
+            loop.close()
+            cli._otr_executor.shutdown()
+        return seen
+
     def test_inbound_otr_goes_through_the_executor(self):
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._handle_otr_in_async)
-        assert "self._otr_executor, self.otr.handle_incoming_message" in src
+        for with_termsync in (False, True):
+            seen = self._inbound_threads(with_termsync)
+            assert len(seen) == 1 and seen[0].startswith("otr-crypto"), (
+                "inbound OTR ran on %r, not the OTR executor" % seen)
 
     def test_smp_start_goes_through_the_executor(self):
         import inspect
@@ -144,11 +175,9 @@ class TestEveryOtrEntryPointUsesThatExecutor:
 
     def test_the_default_executor_is_not_used_for_otr(self):
         # run_in_executor(None, ...) would use the shared default pool, whose
-        # worker count is unbounded in practice.
-        import inspect
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._handle_otr_in_async)
-        assert "run_in_executor(\n" in src or "run_in_executor(" in src
-        assert "None, self.otr" not in src
+        # worker count is unbounded in practice. Its threads are not named
+        # otr-crypto, so the run above already tells the two apart.
+        self.test_inbound_otr_goes_through_the_executor()
 
 
 class TestNoPyclassIsUnsendable:

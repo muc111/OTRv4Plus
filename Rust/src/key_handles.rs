@@ -308,10 +308,8 @@ impl X448KeyHandle {
         let mut priv_arr = [0u8; 56];
         priv_arr.copy_from_slice(priv_bytes);
 
-        // Derive public via x448 crate (matches what dake.rs already uses).
-        let sk = x448::Secret::from(priv_arr);
-        let pk = x448::PublicKey::from(&sk);
-        let pub_arr: [u8; 56] = *pk.as_bytes();
+        // Derive public via crate::rfc7748 (the same function dake.rs uses).
+        let pub_arr: [u8; 56] = crate::rfc7748::public_key(&priv_arr);
 
         let secret = SecretBytes::new(priv_arr);
         priv_arr.zeroize();
@@ -362,13 +360,14 @@ impl X448KeyHandle {
         })?;
         let mut priv_arr: [u8; 56] = self.priv_bytes.expose_slice().try_into()
             .map_err(|_| PyValueError::new_err("internal: priv_bytes wrong length"))?;
-        let sk = x448::Secret::from(priv_arr);
+        if crate::rfc7748::is_low_order(&pk_arr) {
+            priv_arr.zeroize();
+            return Err(PyValueError::new_err("invalid X448 public key"));
+        }
+        let ss = crate::rfc7748::diffie_hellman(&priv_arr, &pk_arr);
         priv_arr.zeroize();
-        let pk = x448::PublicKey::from_bytes(&pk_arr)
-            .ok_or_else(|| PyValueError::new_err("invalid X448 public key"))?;
-        let ss = sk.as_diffie_hellman(&pk)
-            .ok_or_else(|| PyValueError::new_err("X448 DH produced all-zero shared secret"))?;
-        Ok(SecretBytes::new(*ss.as_bytes()))
+        let ss = ss.ok_or_else(|| PyValueError::new_err("X448 DH produced all-zero shared secret"))?;
+        Ok(SecretBytes::new(*ss))
     }
 
     /// The public half, for Rust callers.
@@ -398,9 +397,7 @@ impl X448KeyHandle {
         priv_arr.copy_from_slice(priv_bytes);
 
         // Same derivation the PyO3 constructor and dake.rs use.
-        let sk = x448::Secret::from(priv_arr);
-        let pk = x448::PublicKey::from(&sk);
-        let pub_arr: [u8; 56] = *pk.as_bytes();
+        let pub_arr: [u8; 56] = crate::rfc7748::public_key(&priv_arr);
 
         let secret = SecretBytes::new(priv_arr);
         priv_arr.zeroize();
@@ -415,9 +412,7 @@ pub fn generate_x448_keypair() -> PyResult<X448KeyHandle> {
     let mut priv_arr = [0u8; 56];
     OsRng.fill_bytes(&mut priv_arr);
 
-    let sk = x448::Secret::from(priv_arr);
-    let pk = x448::PublicKey::from(&sk);
-    let pub_arr: [u8; 56] = *pk.as_bytes();
+    let pub_arr: [u8; 56] = crate::rfc7748::public_key(&priv_arr);
 
     let secret = SecretBytes::new(priv_arr);
     priv_arr.zeroize();
@@ -538,17 +533,13 @@ mod tests {
             0x6f,
         ];
 
-        // x448::Secret::from clamps internally (RFC 7748).  The RFC's
-        // worked example feeds the *raw* scalar through the same clamp,
-        // so Secret::from(scalar) reproduces the RFC's clamped scalar.
-        let sk = x448::Secret::from(scalar);
-        let pk = x448::PublicKey::from_bytes(&u_coord)
-            .expect("RFC 7748 u-coordinate is a valid point");
-        let ss = sk.as_diffie_hellman(&pk)
+        // crate::rfc7748 clamps the scalar as RFC 7748 specifies; the RFC's
+        // worked example feeds the *raw* scalar through the same clamp.
+        let ss = crate::rfc7748::diffie_hellman(&scalar, &u_coord)
             .expect("RFC 7748 vector must not be low-order");
         assert_eq!(
-            ss.as_bytes()[..], expected[..],
-            "x448 crate diverged from RFC 7748 X448 vector — ratchet would desync"
+            ss[..], expected[..],
+            "X448 diverged from RFC 7748 X448 vector — ratchet would desync"
         );
     }
 
@@ -565,19 +556,11 @@ mod tests {
         let bob_priv: [u8; 56] =
             bob.expose_priv_slice().try_into().expect("bob priv 56");
 
-        let alice_sk = x448::Secret::from(alice_priv);
-        let bob_sk   = x448::Secret::from(bob_priv);
-
-        let alice_pk = x448::PublicKey::from_bytes(&alice.pub_bytes)
-            .expect("alice pub valid");
-        let bob_pk   = x448::PublicKey::from_bytes(&bob.pub_bytes)
-            .expect("bob pub valid");
-
-        let ss_a = alice_sk.as_diffie_hellman(&bob_pk).expect("a dh");
-        let ss_b = bob_sk.as_diffie_hellman(&alice_pk).expect("b dh");
+        let ss_a = crate::rfc7748::diffie_hellman(&alice_priv, &bob.pub_bytes).expect("a dh");
+        let ss_b = crate::rfc7748::diffie_hellman(&bob_priv, &alice.pub_bytes).expect("b dh");
 
         assert_eq!(
-            ss_a.as_bytes()[..], ss_b.as_bytes()[..],
+            ss_a[..], ss_b[..],
             "X448 DH must be symmetric — ratchet send/recv secrets would not match"
         );
     }

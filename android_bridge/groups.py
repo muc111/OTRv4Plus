@@ -21,7 +21,7 @@ IDENTITY BINDING IS NOT MEMBERSHIP
 ==================================
 MLS proves a message came from the holder of a leaf's signing key. It does
 not prove the leaf's credential ("bob@server") names the person you think.
-A member is `verified` here only when their MLS fingerprint (SHA-384 of the
+A member is `verified` here only when their MLS fingerprint (SHA-512 of the
 signature public key) was received over an SMP-verified OTRv4+ session with
 that same JID. Everyone else in the group is shown by name, unverified.
 
@@ -94,7 +94,16 @@ GROUP_DELETED_SIGNAL = SIGNAL_PREFIX + "DELETED:"
 
 #: Bounds on what a peer or a room can make us hold.
 MAX_ROOM_LEN = 256
-MAX_FRAME_B64 = 2 * 1024 * 1024
+#: Decoded-byte bounds on MLS inputs: the same values as the Rust binding
+#: (Rust/src/mls_group.rs), pinned by tests/test_mls_size_limits.py. A key
+#: package is ~15 KiB; a room message (a commit adds at most
+#: MAX_MEMBERS_PER_ADD) is well under 1 MiB; only a Welcome, which carries
+#: the ratchet tree and comes over an authenticated 1:1 session, is large.
+MAX_KEY_PACKAGE = 64 * 1024
+MAX_ROOM_MESSAGE = 1024 * 1024
+MAX_WELCOME = 4 * 1024 * 1024
+#: A room password travelling with an invitation.
+MAX_ROOM_PASSWORD = 4 * 1024
 MAX_PENDING_INVITES = 32
 INVITE_TTL = 30 * 60.0
 #: How long, and how often at most, an unconfirmed Welcome is sent again.
@@ -104,7 +113,7 @@ WELCOME_MAX_SENDS = 20
 MAX_MEMBERS_PER_ADD = 16
 
 _ROOM_RE = re.compile(r"^[^\s@/|]{1,128}@[^\s@/|]{1,120}$")
-_FP_RE = re.compile(r"^[0-9a-f]{96}$")
+_FP_RE = re.compile(r"^[0-9a-f]{128}$")
 
 
 class GroupError(RuntimeError):
@@ -126,10 +135,15 @@ def _b64e(data: bytes) -> str:
     return base64.b64encode(bytes(data)).decode("ascii")
 
 
-def _b64d(text: str) -> bytes:
-    if len(text) > MAX_FRAME_B64:
+def _b64d(text: str, max_bytes: int) -> bytes:
+    """Strict base64 of at most `max_bytes` decoded bytes. The text length is
+    checked before decoding, so an oversized frame is never decoded."""
+    if len(text) > 4 * ((max_bytes + 2) // 3):
         raise ValueError("frame too large")
-    return base64.b64decode(text.encode("ascii"), validate=True)
+    data = base64.b64decode(text.encode("ascii"), validate=True)
+    if len(data) > max_bytes:
+        raise ValueError("frame too large")
+    return data
 
 
 def _room_ok(room: str) -> bool:
@@ -837,7 +851,7 @@ class SecureGroups:
         each("pending_binding", lambda kv: self._pending_binding.__setitem__(
             str(kv[0]), [(str(p), bool(v)) for p, v in kv[1]]))
         each("unconfirmed", lambda kv: self._unconfirmed.__setitem__(
-            str(kv[0]), [_b64d(str(kv[1][0])), int(kv[1][1])]))
+            str(kv[0]), [_b64d(str(kv[1][0]), MAX_WELCOME), int(kv[1][1])]))
         each("since_rekey", lambda kv: self._since_rekey.__setitem__(
             str(kv[0]), [int(kv[1][0]), float(kv[1][1])]))
         each("welcome_out", lambda v: self._welcome_out.__setitem__(
@@ -1303,7 +1317,7 @@ class SecureGroups:
     def _on_room_password(self, peer: str, arg: str) -> None:
         room, _, b64 = arg.partition("|")
         try:
-            password = _b64d(b64).decode("utf-8")
+            password = _b64d(b64, MAX_ROOM_PASSWORD).decode("utf-8")
         except (ValueError, binascii.Error, UnicodeDecodeError):
             self.stats.malformed += 1
             return
@@ -1556,7 +1570,7 @@ class SecureGroups:
             if not client.has_group(room.encode()):
                 raise GroupError("not_a_group")
             try:
-                kp = _b64d(b64)
+                kp = _b64d(b64, MAX_KEY_PACKAGE)
             except (ValueError, binascii.Error):
                 raise GroupError("malformed")
             if not self._kp_names(client, kp, peer):
@@ -1645,7 +1659,7 @@ class SecureGroups:
             client = self._need()
             inv = self._invites.get(room)
             try:
-                welcome = _b64d(b64)
+                welcome = _b64d(b64, MAX_WELCOME)
             except (ValueError, binascii.Error):
                 raise GroupError("malformed")
             if inv is not None and inv.rejoin and client.has_group(room.encode()):
@@ -2333,7 +2347,7 @@ class SecureGroups:
                 self._emit(ErrorOccurred(peer=room, code="room_plaintext_refused"))
             return True
         try:
-            mls = _b64d(body[len(ROOM_PREFIX):])
+            mls = _b64d(body[len(ROOM_PREFIX):], MAX_ROOM_MESSAGE)
         except (ValueError, binascii.Error):
             self.stats.malformed += 1
             return True

@@ -1,5 +1,6 @@
 package org.otrv4plus.android.ui
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardActions
@@ -10,6 +11,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.VisualTransformation
@@ -477,15 +479,24 @@ private fun ConnectOutcome(model: ConnectionViewModel) {
         }
     }
 
-    // Registration is its own outcome, not a connection state.
+    // Registration is its own outcome, not a connection state. A CAPTCHA is a
+    // paused registration, not a result: it gets its own prompt.
     registration?.let {
-        Text(
-            if (it.ok) "Account created" else "Could not create the account",
-            style = MaterialTheme.typography.titleSmall,
-            color = if (it.ok) MaterialTheme.colorScheme.onSurface
-                    else MaterialTheme.colorScheme.error,
-        )
-        Text(it.detail, style = MaterialTheme.typography.bodySmall)
+        if (it.needsCaptcha) {
+            CaptchaPrompt(
+                captcha = it.captcha!!,
+                onSubmit = { answer -> model.submitCaptcha(answer) },
+                onCancel = { model.cancelCaptcha() },
+            )
+        } else {
+            Text(
+                if (it.ok) "Account created" else "Could not create the account",
+                style = MaterialTheme.typography.titleSmall,
+                color = if (it.ok) MaterialTheme.colorScheme.onSurface
+                        else MaterialTheme.colorScheme.error,
+            )
+            Text(it.detail, style = MaterialTheme.typography.bodySmall)
+        }
     }
 
     if (model.savedKeysUnopenable) {
@@ -557,6 +568,66 @@ private fun ConnectOutcome(model: ConnectionViewModel) {
             color = MaterialTheme.colorScheme.error,
             style = MaterialTheme.typography.bodySmall,
         )
+    }
+}
+
+/**
+ * The server's CAPTCHA, shown inline. The image is the bytes the server sent
+ * over the connection already open ([RegistrationCaptcha.imageBase64]) -- the
+ * bridge refused any image hosted on a web page, so there is nothing here to
+ * fetch and no address to leak. The registration stream is held open while
+ * this is on screen; [onSubmit] answers it, [onCancel] releases it.
+ */
+@Composable
+private fun CaptchaPrompt(
+    captcha: org.otrv4plus.android.bridge.RegistrationCaptcha,
+    onSubmit: (String) -> Unit,
+    onCancel: () -> Unit,
+) {
+    var answer by rememberSaveable { mutableStateOf("") }
+    val bitmap = remember(captcha.imageBase64) {
+        runCatching {
+            val bytes = android.util.Base64.decode(
+                captcha.imageBase64, android.util.Base64.DEFAULT)
+            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+        }.getOrNull()
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Create the account", style = MaterialTheme.typography.titleSmall)
+        Text(captcha.instructions.ifBlank {
+                 "Type the characters shown in the image to prove you are a person."
+             },
+             style = MaterialTheme.typography.bodySmall)
+        if (bitmap != null) {
+            Image(bitmap = bitmap.asImageBitmap(),
+                  contentDescription = "CAPTCHA challenge image",
+                  modifier = Modifier.fillMaxWidth().height(96.dp))
+        } else {
+            // Decoding failed (an image type the phone cannot show): there is
+            // nothing to look at, so do not pretend there is.
+            Text("The CAPTCHA image could not be shown. Cancel and create the " +
+                 "account on the server's web page instead.",
+                 color = MaterialTheme.colorScheme.error,
+                 style = MaterialTheme.typography.bodySmall)
+        }
+        OutlinedTextField(
+            value = answer,
+            onValueChange = { answer = it },
+            label = { Text("Characters in the image") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            keyboardActions = KeyboardActions(onDone = {
+                if (answer.isNotBlank()) onSubmit(answer)
+            }),
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { onSubmit(answer) },
+                   enabled = answer.isNotBlank() && bitmap != null) {
+                Text("Submit")
+            }
+            TextButton(onClick = onCancel) { Text("Cancel") }
+        }
     }
 }
 

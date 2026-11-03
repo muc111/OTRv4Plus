@@ -40,8 +40,8 @@ The Rust crate is roughly 3,500–4,000 lines across:
 | `smp.rs` | Hybrid PQC Socialist Millionaire Protocol |
 | `smp_vault.rs` | SMP secret storage (`ZeroizeOnDrop`) |
 | `ring_sig.rs` | Ed448 Schnorr ring signature (deniable auth) |
-| `mlkem.rs` | ML-KEM-1024 (FIPS 203) via `pqcrypto-mlkem` |
-| `mldsa.rs` | ML-DSA-87 (FIPS 204) via `pqcrypto-mldsa` |
+| `mlkem.rs` | ML-KEM-1024 (FIPS 203) via the pure-Rust `ml-kem` |
+| `mldsa.rs` | ML-DSA-87 (FIPS 204) via the pure-Rust `ml-dsa` (hedged signing) |
 | `aead.rs` | AES-256-GCM via `aes-gcm` |
 | `kdf.rs` | SHAKE-256 KDF, HMAC-SHA3-512, fingerprints |
 | `key_handles.rs` | Opaque Ed448 / X448 key handles |
@@ -125,10 +125,10 @@ cp target/release/libotrv4_core.so ../otrv4_core.so
 cd ..
 ```
 
-The `--no-default-features --features pq-rust` flag set is **required** on
-Termux/aarch64: the default AVX2/NEON-optimised code paths of `pqcrypto-mlkem`
-and `pqcrypto-mldsa` cause `SIGILL` on this platform. The portable PQClean
-reference path is selected instead.
+The post-quantum primitives are the pure-Rust `ml-kem` / `ml-dsa` crates,
+which have no platform-specific assembly. (The former `pqcrypto-mlkem` /
+`pqcrypto-mldsa` C bindings needed `--no-default-features` on Termux/aarch64
+to dodge a `SIGILL` from their AVX2/NEON paths; that concern is gone.)
 
 ---
 
@@ -295,14 +295,15 @@ retain sensitive data in the small-object arenas.
 
 ## Dependency notes
 
-- `pqcrypto-mlkem` 0.1.1 (FIPS 203), `pqcrypto-mldsa` 0.1.2 (FIPS 204) — built
-  with `default-features = false` to force the portable path on aarch64.
+- `ml-kem` 0.3 (FIPS 203), `ml-dsa` 0.1 (FIPS 204) — pure-Rust RustCrypto,
+  `#![forbid(unsafe_code)]`, hedged ML-DSA signing. NIST ACVP vectors pinned
+  against them in `Rust/audit`.
 - `crypto-bigint` 0.5 — constant-time modular exponentiation for SMP. Promoted
   from transitive to direct dependency at v10.7.6.
 - `num-bigint` — still used for public-value ZKP arithmetic and random sampling
   (no secret-dependent timing in those paths). See the known limitation in
   [SECURITY.md](../SECURITY.md) regarding the ZKP scalar response.
-- `ed448-goldilocks-plus` 0.16, `x448` 0.6 — pure-Rust Ed448 / X448.
+- `ed448-goldilocks-plus` 0.18 — pure-Rust Ed448 and its RFC 7748 X448 (`kex`).
 - `aes-gcm` 0.10, `sha3` 0.10, `zeroize`, `subtle` — AEAD, hashing, wiping,
   constant-time comparison.
 

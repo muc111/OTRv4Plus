@@ -868,9 +868,17 @@ class TestRecoveryLifecycle:
         assert [f for f in mgr.client.sent if "MEDIAPATH" in f] == []
 
     def test_the_recovery_task_is_cancelled_by_teardown(self):
-        import inspect
-        src = inspect.getsource(V.VoiceCallSession.end)
-        assert "_recover_task" in src
+        # Run, not read (Phase 5): a real session's end() cancels the task.
+        async def _drive():
+            session = V.VoiceCallSession(PEER, asyncio.get_event_loop(), CALL_ID, False)
+            task = asyncio.ensure_future(asyncio.sleep(3600))
+            session._recover_task = task
+            await session.end()
+            return task, session
+
+        task, session = asyncio.run(asyncio.wait_for(_drive(), 5))
+        assert task.cancelled(), "teardown left the recovery task running"
+        assert session._recover_task is None
 
     def test_cancellation_also_hands_the_deadline_back(self):
         # Teardown cancels the task. If the flag survived, a session that
@@ -1198,11 +1206,8 @@ class TestCryptographicStateSurvives:
     def test_the_destination_is_not_part_of_the_transcript(self):
         # Checked on the signature, not the prose: the docstring discusses
         # destinations at length and a substring search matches that.
-        import ast
         import inspect
-        tree = ast.parse(inspect.getsource(V.build_transcript))
-        fn = tree.body[0]
-        params = [a.arg for a in fn.args.args]
+        params = list(inspect.signature(V.build_transcript).parameters)
         for name in params:
             assert "dest" not in name and "endpoint" not in name, (
                 "the media keys depend on the endpoint (%s), so moving it "
@@ -1211,8 +1216,14 @@ class TestCryptographicStateSurvives:
 
     def test_the_transcript_is_what_actually_derives_the_root(self):
         # Guards the test above from becoming vacuous if the derivation moves.
-        import inspect
-        assert "transcript" in inspect.getsource(V.derive_voice_root)
+        # Run, not read (Phase 5): the same agreement under two transcripts
+        # gives two roots, and the same transcript the same root.
+        x448, mlkem = b"\x01" * 56, b"\x02" * 32
+        one = V.derive_voice_root(x448, mlkem, b"transcript one").confirmations(CALL_ID, 0)
+        again = V.derive_voice_root(x448, mlkem, b"transcript one").confirmations(CALL_ID, 0)
+        two = V.derive_voice_root(x448, mlkem, b"transcript two").confirmations(CALL_ID, 0)
+        assert one == again
+        assert one != two, "the root does not depend on the transcript"
 
     def test_replay_protection_survives_an_endpoint_change(self):
         # A packet already accepted must stay rejected afterwards: recovery

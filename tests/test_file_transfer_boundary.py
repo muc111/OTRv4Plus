@@ -807,15 +807,33 @@ class TestATransferSaysWhatItIsDoing:
 
     def test_nothing_printed_carries_the_filename_unsanitised(self, wired):
         """Every line naming the file goes through sanitise_filename: it is
-        remote input, and a progress line is not exempt from that."""
-        import inspect
-        for fn in (ft.FileTransferManager._report_progress,
-                   ft.FileTransferManager.on_done):
-            src = inspect.getsource(fn)
-            if "offer.filename" in src:
-                assert "sanitise_filename(offer.filename)" in src \
-                    or "sanitise_filename(transfer.offer.filename)" in src, (
-                    "%s prints a raw peer-supplied filename" % fn.__name__)
+        remote input, and a progress line is not exempt from that. Run, not
+        read (Phase 5): a name carrying a terminal escape and a carriage
+        return goes through a whole transfer, and no printed line on either
+        side contains them."""
+        import dataclasses
+        evil = "clip\x1b[2Jcleared\rfake.mp4"
+        wire, a_ratchet, b_ratchet = wired
+        # An honest sender cleans the name when it builds the offer.
+        path, _ = _source_file(3000, evil)
+        wire.drop.add("OFFER")           # Bob gets only the hostile copy
+        honest = wire.alice.offer_file("bob", path, a_ratchet)
+        wire.drop.discard("OFFER")
+        assert "\x1b" not in honest.offer.filename
+        # A hostile one sends whatever it likes: the receiver must clean it
+        # on every line it prints -- the offer, the progress, the result.
+        hostile = dataclasses.replace(honest.offer, filename=evil)
+        wire.notes.clear()
+        incoming = wire.bob.on_offer("alice", hostile.encode())
+        assert incoming is not None and incoming.offer.filename == evil, (
+            "the hostile offer was not delivered as sent, so this proves nothing")
+        wire.bob.accept(incoming.offer.transfer_id, b_ratchet)
+        wire.alice._pump(honest)
+        printed = " ".join(str(n) for n in wire.notes)
+        assert "\x1b" not in printed and "\r" not in printed, (
+            "a peer-supplied filename reached the screen unsanitised")
+        assert any("clip" in str(n) for n in wire.notes), (
+            "no line named the file at all, so this test proved nothing")
 
 
 class TestProgressIsThrottled:

@@ -313,9 +313,55 @@ class AppModel(
             registering = false
             registrationNotice = if (outcome.ok) core.lastRegistrationNotice else ""
             registration = outcome
+            // A CAPTCHA pauses registration on an open stream: keep the
+            // password to finish the sign-in once it is answered.
+            captchaPassword = if (outcome.needsCaptcha) password else null
             changed()
             if (outcome.ok) connect(password)
         }
+    }
+
+    /** The password Create account used, kept only while a CAPTCHA is on
+     *  screen so the sign-in can follow a correct answer. Cleared otherwise. */
+    private var captchaPassword: String? = null
+
+    /**
+     * Answer the CAPTCHA [register] reported, on the stream the bridge held
+     * open. On success the account exists and the sign-in follows, exactly as
+     * [register] does. A blank answer cancels and releases the stream.
+     */
+    fun submitCaptcha(answer: String) {
+        if (connecting || registering) return
+        val pw = captchaPassword ?: return
+        val trimmed = answer.trim()
+        if (trimmed.isEmpty()) { cancelCaptcha(); return }
+        registering = true
+        registration = null
+        changed()
+        ui.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching { core.submitCaptcha(trimmed) }.getOrElse { e ->
+                    org.otrv4plus.android.bridge.RegistrationOutcome(
+                        ok = false,
+                        code = (e as? OtrBridgeException)?.code ?: "bridge_error",
+                        detail = "")
+                }
+            }
+            registering = false
+            registrationNotice = if (outcome.ok) core.lastRegistrationNotice else ""
+            registration = outcome
+            if (!outcome.needsCaptcha) captchaPassword = null
+            changed()
+            if (outcome.ok) connect(pw)
+        }
+    }
+
+    /** Back out of the CAPTCHA: release the held stream and clear the prompt. */
+    fun cancelCaptcha() {
+        captchaPassword = null
+        registration = null
+        changed()
+        ui.launch { withContext(Dispatchers.IO) { runCatching { core.submitCaptcha("") } } }
     }
 
     fun disconnect() {
@@ -1436,6 +1482,9 @@ class AppModel(
     /** Wipe & Exit's opt-in: also delete the account on the server. Off by default. */
     var wipeDeletesAccount by mutableStateOf(false)
 
+    /** The last wipe's report: the WIPED screen says whether it was verified. */
+    var lastWipe: org.otrv4plus.android.bridge.WipeReport? by mutableStateOf(null)
+
     fun wipeAndExit(onDone: () -> Unit) {
         val deleteAccount = wipeDeletesAccount
         viewedFile = null
@@ -1443,12 +1492,16 @@ class AppModel(
             withContext(Dispatchers.IO) {
                 // The viewer's transient plaintext goes first.
                 runCatching { org.otrv4plus.desktop.ui.viewDirectory().deleteRecursively() }
-                runCatching { core.wipe(deleteAccount) }
+                lastWipe = runCatching { core.wipe(deleteAccount) }
+                    .getOrDefault(org.otrv4plus.android.bridge.WipeReport.UNREACHABLE)
             }
             chat.bindAccount(AccountScope.NONE)
             screen = Screen.WIPED
             changed()
-            onDone()
+            // Close only on a wipe that checked itself. Otherwise stay on the
+            // WIPED screen, which says what is left, rather than exit as if
+            // it had worked.
+            if (lastWipe?.verified == true) onDone()
         }
     }
 

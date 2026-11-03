@@ -246,17 +246,45 @@ class TestTheSmpPassphraseIsNotCopied:
             vault.store_from_bytearray("", buf)      # empty name
         assert bytes(buf) == b"\x00" * 25
 
+    # Phase 5 (2026-10-30): run set_smp_secret against a vault that records
+    # what it is handed, instead of reading the source for names.
+
+    class _Vault:
+        """Keeps the buffer it was given and does NOT wipe it, so a zeroed
+        buffer afterwards is the engine's own wipe."""
+
+        def __init__(self, raise_first=False):
+            self.got, self.raise_first = [], raise_first
+
+        def store_from_bytearray(self, name, buf):
+            self.got.append((name, buf))
+            if self.raise_first:
+                raise RuntimeError("refused before reaching Rust")
+
+        def store(self, name, value):
+            raise AssertionError("an immutable bytes copy was stored: %r" % type(value))
+
+    def _set(self, vault, secret="correct horse battery staple"):
+        session = otr.EnhancedOTRSession.__new__(otr.EnhancedOTRSession)
+        session._bind_smp_secret = lambda fill: fill(vault)
+        session.set_smp_secret(secret)
+
     def test_the_engine_no_longer_makes_the_copy(self):
-        import inspect
-        src = inspect.getsource(otr.EnhancedOTRSession.set_smp_secret)
-        assert 'store("smp_secret", bytes(raw))' not in src, (
-            "the immutable copy is back, so the wipe below it is decorative")
-        assert "store_from_bytearray" in src
+        vault = self._Vault()
+        self._set(vault)
+        assert [type(b) for _n, b in vault.got] == [bytearray], (
+            "the secret did not go down as a wipeable bytearray")
 
     def test_the_belt_and_braces_wipe_is_still_there(self):
-        """store_from_bytearray wipes, and this still runs if it raised
-        before reaching Rust."""
-        import inspect
-        src = inspect.getsource(otr.EnhancedOTRSession.set_smp_secret)
-        assert "finally:" in src
-        assert "raw[i] = 0" in src
+        """store_from_bytearray wipes, and the engine still wipes its buffer
+        if that call raised before reaching Rust."""
+        vault = self._Vault()
+        self._set(vault)
+        (_name, buf), = vault.got
+        assert bytes(buf) == b"\x00" * len(buf), "the engine left the secret in its buffer"
+        failing = self._Vault(raise_first=True)
+        with pytest.raises(RuntimeError):
+            self._set(failing)
+        (_name, buf), = failing.got
+        assert len(buf) and bytes(buf) == b"\x00" * len(buf), (
+            "a failed store left the secret in the buffer")

@@ -192,8 +192,28 @@ fun FileViewerDialog(
     }
 }
 
-/** Where the viewer's transient plaintext lives: beside the received files, 0700. */
-fun viewDirectory(): File = File(System.getProperty("user.home"), ".otrv4plus${File.separator}view")
+/**
+ * Where the viewer's transient plaintext lives, 0700.
+ *
+ * In memory where the system has a per-user RAM filesystem: on Linux,
+ * `$XDG_RUNTIME_DIR` (a 0700 tmpfs the login session owns, gone at logout),
+ * else `/dev/shm`. A copy there never reaches the disk, so no SSD can keep
+ * it (unless the system swaps it out). Elsewhere -- macOS, Windows -- there is
+ * no such place, and it falls back beside the received files, where it is
+ * deleted on close and by Wipe & Exit.
+ */
+fun viewDirectory(
+    env: (String) -> String? = { System.getenv(it) },
+    home: String = System.getProperty("user.home"),
+    isDir: (File) -> Boolean = { it.isDirectory && it.canWrite() },
+): File {
+    val user = System.getProperty("user.name").orEmpty().filter { it.isLetterOrDigit() }
+    val ram = listOfNotNull(env("XDG_RUNTIME_DIR")?.takeIf { it.startsWith("/") }?.let(::File),
+                            File("/dev/shm"))
+        .firstOrNull(isDir)
+    return if (ram != null) File(ram, "otrv4plus-view" + if (ram.path == "/dev/shm") "-$user" else "")
+           else File(home, ".otrv4plus${File.separator}view")
+}
 
 /** The desktop's own save dialog; null when cancelled. */
 private fun pickSaveFile(suggested: String): String? {

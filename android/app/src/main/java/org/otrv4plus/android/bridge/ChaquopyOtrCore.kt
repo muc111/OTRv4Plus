@@ -400,13 +400,43 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     fun register(password: String): RegistrationOutcome {
         lastRegistrationNotice = ""
         val ctl = controller ?: throw OtrBridgeException("not_prepared")
-        val result = ctl.callAttr("register", password)
+        return outcomeFrom(ctl.callAttr("register", password))
+    }
+
+    /**
+     * Answer the CAPTCHA the last [register] reported, over the stream it left
+     * open. Returns the same shape [register] does. Only meaningful after a
+     * `captcha_required` outcome; otherwise the bridge answers a protocol
+     * error.
+     */
+    fun submitCaptcha(answer: String): RegistrationOutcome {
+        lastRegistrationNotice = ""
+        val ctl = controller ?: throw OtrBridgeException("not_prepared")
+        return outcomeFrom(ctl.callAttr("submit_captcha", answer))
+    }
+
+    private fun outcomeFrom(result: com.chaquo.python.PyObject?): RegistrationOutcome {
         fun str(k: String) = result?.callAttr("get", k)?.toString() ?: ""
         lastRegistrationNotice = str("notice")
+        val cap = result?.callAttr("get", "captcha")
+        val captcha = if (cap != null && !cap.toString().isNullOrBlank() &&
+                          cap.toString() != "{}") {
+            fun capStr(k: String) = cap.callAttr("get", k)?.toString() ?: ""
+            val img = capStr("image_base64")
+            if (img.isNotBlank())
+                RegistrationCaptcha(
+                    imageBase64 = img,
+                    imageMime = capStr("image_mime").ifBlank { "image/png" },
+                    instructions = capStr("instructions"),
+                    answerVar = capStr("answer_var").ifBlank { "ocr" },
+                )
+            else null
+        } else null
         return RegistrationOutcome(
             ok = result?.callAttr("get", "ok")?.toBoolean() ?: false,
             code = str("code").ifBlank { "unknown" },
             detail = str("detail"),
+            captcha = captcha,
         )
     }
 
@@ -1224,6 +1254,10 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             filesDestroyed = int("files_destroyed"),
             filesUnlinkedOnly = int("files_unlinked_only"),
             errors = errors,
+            verified = runCatching {
+                report.callAttr("get", "verified", false)?.toBoolean() ?: false
+            }.getOrDefault(false),
+            survivors = int("survivors"),
         )
     }
 

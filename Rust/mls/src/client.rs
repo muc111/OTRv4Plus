@@ -72,10 +72,10 @@ use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
 use openmls::prelude::{tls_codec::*, *};
 
-use sha2::{Digest, Sha384};
+use sha2::{Digest, Sha512};
 use zeroize::Zeroizing;
 
-use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE, LEGACY_CIPHERSUITE};
+use crate::provider::{CoreProvider, SignatureKeyPair, CIPHERSUITE};
 
 /// Sealed-state header: magic, then format version.
 const STATE_MAGIC: &[u8; 4] = b"OMLS";
@@ -198,10 +198,10 @@ fn state_aad(context: &[u8]) -> Vec<u8> {
     aad
 }
 
-/// SHA-384 of an ML-DSA-87 signature public key: what a member's MLS
+/// SHA-512 of an ML-DSA-87 signature public key: what a member's MLS
 /// identity is compared by. Public, so it may be shown and sent.
 pub fn fingerprint(signature_public_key: &[u8]) -> Vec<u8> {
-    Sha384::digest(signature_public_key).to_vec()
+    Sha512::digest(signature_public_key).to_vec()
 }
 
 /// The fingerprints of the keys in a publication of retired signing keys
@@ -327,13 +327,12 @@ pub struct MlsClient {
     wiped: bool,
 }
 
-/// What our leaves say they support: the hybrid suite (every new group)
-/// and the earlier PQ-only one (existing groups). The hybrid suite is a
+/// What our leaves say they support: the hybrid suite, and only it. It is a
 /// private code point, so it is not in OpenMLS's default list and must be
 /// declared, or OpenMLS refuses a leaf that does not list its own group's
-/// suite.
+/// suite. No non-hybrid suite is offered, so none can be negotiated.
 fn capabilities() -> Capabilities {
-    Capabilities::new(None, Some(&[CIPHERSUITE, LEGACY_CIPHERSUITE]), None, None, None)
+    Capabilities::new(None, Some(&[CIPHERSUITE]), None, None, None)
 }
 
 fn create_config() -> MlsGroupCreateConfig {
@@ -585,8 +584,8 @@ impl MlsClient {
         ids
     }
 
-    /// The group's ciphersuite code point: 0xF0A1 (hybrid) or 0x0907
-    /// (the earlier PQ-only suite).
+    /// The group's ciphersuite code point: always 0xF0A1 (hybrid); the
+    /// client creates and joins no other.
     pub fn ciphersuite(&mut self, group_id: &[u8]) -> Result<u16> {
         Ok(u16::from(self.group(group_id)?.ciphersuite()))
     }
@@ -637,8 +636,8 @@ impl MlsClient {
             let kp = kp_in.validate(self.provider.crypto(), ProtocolVersion::Mls10)
                 .map_err(|_| MlsError::Refused("invalid key package"))?;
             if kp.ciphersuite() != suite {
-                // A group of the earlier PQ-only suite cannot take members
-                // whose clients now make hybrid KeyPackages: re-create it.
+                // Every group and every KeyPackage is hybrid; anything
+                // else is refused, never mixed in.
                 return Err(MlsError::Refused("key package for another ciphersuite"));
             }
             kps.push(kp);
@@ -768,7 +767,7 @@ impl MlsClient {
             .map_err(|_| MlsError::Refused("welcome not for us or invalid"))?
             .into_group(&self.provider)
             .map_err(|_| MlsError::Failed("join"))?;
-        if group.ciphersuite() != CIPHERSUITE && group.ciphersuite() != LEGACY_CIPHERSUITE {
+        if group.ciphersuite() != CIPHERSUITE {
             return Err(MlsError::Refused("group uses another ciphersuite"));
         }
         let id = group.group_id().as_slice().to_vec();
@@ -1007,7 +1006,7 @@ impl MlsClient {
 
     pub fn is_wiped(&self) -> bool { self.wiped }
 
-    /// Our MLS fingerprint in a group (SHA-384 of our signature public key
+    /// Our MLS fingerprint in a group (SHA-512 of our signature public key
     /// there). Different in every group, and new after each self-update.
     pub fn own_fingerprint(&self, group_id: &[u8]) -> Result<Vec<u8>> {
         self.live()?;
@@ -1099,7 +1098,7 @@ impl MlsClient {
         let mut nonce = [0u8; 12];
         getrandom::getrandom(&mut nonce).map_err(|_| MlsError::Failed("randomness"))?;
         let aad = state_aad(context);
-        let ct = cipher.encrypt(<&Nonce<_>>::from(&nonce[..]), Payload { msg: &plain, aad: &aad })
+        let ct = cipher.encrypt(&Nonce::try_from(&nonce[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: &plain, aad: &aad })
             .map_err(|_| MlsError::Failed("seal"))?;
         let mut out = Vec::with_capacity(5 + 12 + ct.len());
         out.extend_from_slice(STATE_MAGIC);
@@ -1127,7 +1126,7 @@ impl MlsClient {
         let mut aad = state_aad(context);
         aad[4] = version;
         let plain = Zeroizing::new(
-            cipher.decrypt(<&Nonce<_>>::from(&blob[5..17]), Payload { msg: &blob[17..], aad: &aad })
+            cipher.decrypt(&Nonce::try_from(&blob[5..17]).expect("a 12-byte AES-GCM nonce"), Payload { msg: &blob[17..], aad: &aad })
                 .map_err(|_| MlsError::Refused("sealed MLS state did not open"))?,
         );
         let state: StateIn = if version == STATE_VERSION_1 {
@@ -1303,7 +1302,7 @@ mod storage_tests {
         let mut aad = state_aad(b"ctx");
         aad[4] = STATE_VERSION_1;
         let nonce = [1u8; 12];
-        let ct = cipher.encrypt(<&Nonce<_>>::from(&nonce[..]),
+        let ct = cipher.encrypt(&Nonce::try_from(&nonce[..]).expect("a 12-byte AES-GCM nonce"),
                                 Payload { msg: &plain, aad: &aad }).unwrap();
         let mut blob = STATE_MAGIC.to_vec();
         blob.push(STATE_VERSION_1);
@@ -1363,13 +1362,14 @@ mod storage_tests {
         }
     }
 
-    /// A tampered copy is refused -- and, as OpenMLS's secret tree deletes a
-    /// generation's key when it is first used, the GENUINE message arriving
-    /// after it is refused too. Fail closed, never a wrong acceptance; the
-    /// effect is that of the relay dropping the message, which a relay can
-    /// do anyway. Recorded here so a change to it is deliberate.
+    /// A tampered copy is refused, and the GENUINE message arriving after it
+    /// is still delivered. Up to openmls 0.9.1 the rejected copy spent the
+    /// generation's key, so the genuine message was refused too
+    /// (GHSA-p276-g3f3-wwgh: "Rejected private messages can advance the
+    /// sender ratchet and block later messages from that sender"), and this
+    /// test recorded that. 0.9.2 fixes it; the change is deliberate.
     #[test]
-    fn a_tampered_copy_is_refused_and_spends_the_generation() {
+    fn a_tampered_copy_is_refused_and_the_genuine_one_still_arrives() {
         let mut a = MlsClient::new(b"alice");
         let mut b = MlsClient::new(b"bob");
         a.create_group(b"g").unwrap();
@@ -1385,7 +1385,10 @@ mod storage_tests {
         let i = tampered.len() - 10;
         tampered[i] ^= 0x01;
         assert!(a.process(b"g", &tampered).is_err(), "a tampered message was accepted");
-        assert!(a.process(b"g", &genuine).is_err());
+        match a.process(b"g", &genuine).unwrap() {
+            Event::Application { plaintext, .. } => assert_eq!(&plaintext[..], b"first"),
+            _ => panic!("expected the genuine application message"),
+        }
 
         // The group is unharmed: the next message decrypts.
         let next = b.encrypt(b"g", b"second").unwrap();
@@ -1528,6 +1531,17 @@ mod retired_key_tests {
         let spliced = [&current.secret()[..ed], &other.secret()[ed..]].concat();
         assert!(revealed_fingerprints(&body(&[(current.public(), &spliced)]), None).is_empty(),
                 "an ML-DSA half that does not sign for its public half");
+        // An ML-DSA half that `from_expanded` would abort on (panic=abort):
+        // the Ed448 half matches its seed, so only the decodability check
+        // catches it. It must be dropped, never reach from_expanded.
+        let ed = crate::provider::ED448_SEED_BYTES;
+        let mut undecodable = other.secret().to_vec();
+        for b in &mut undecodable[ed..] { *b = 0xff; }
+        let ed_pub = &other.public()[..crate::provider::ED448_PUBLIC_KEY_BYTES];
+        let mut mixed_pub = ed_pub.to_vec();
+        mixed_pub.extend_from_slice(&other.public()[crate::provider::ED448_PUBLIC_KEY_BYTES..]);
+        assert!(revealed_fingerprints(&body(&[(&mixed_pub, &undecodable)]), None).is_empty(),
+                "an undecodable ML-DSA half is dropped, not decoded");
         let good = body(&[(other.public(), other.secret())]);
         assert_eq!(revealed_fingerprints(&good, now), vec![fingerprint(other.public())]);
         assert!(revealed_fingerprints(&good[..good.len() - 1], now).is_empty(), "truncated");
@@ -1727,13 +1741,13 @@ mod f4_containment_tests {
         let body = &src[src.find("pub fn self_update(").unwrap()..];
         let body = &body[..body.find("\n    }\n").unwrap()];
         assert!(body.contains("SignatureKeyPair::generate_for(scheme)"), "fresh keygen");
-        for derive in ["secret()", "from_parts", "Sha384", "hkdf", "derive"] {
+        for derive in ["secret()", "from_parts", "Sha512", "hkdf", "derive"] {
             assert!(!body.contains(derive), "the new key must not be computed from the old ({derive})");
         }
         let prov = include_str!("provider.rs");
         let gen = &prov[prov.find("pub fn generate_for(").unwrap()..];
         let gen = &gen[..gen.find("\n    }\n").unwrap()];
-        assert!(gen.contains("mldsa87::keypair()") && gen.contains("getrandom::getrandom"));
+        assert!(gen.contains("mldsa87_keypair()") && gen.contains("getrandom::getrandom"));
         // And behaviourally: three rotations, four unrelated keys.
         let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
         group_of(G, &mut a, &mut [&mut b]);

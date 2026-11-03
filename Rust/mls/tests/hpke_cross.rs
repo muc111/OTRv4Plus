@@ -13,7 +13,7 @@ use hpke_rs_crypto::types::{AeadAlgorithm, KdfAlgorithm, KemAlgorithm};
 use otrv4_mls::hpke::{self, Aead};
 
 fn reference(aead: AeadAlgorithm) -> Hpke<CoreHpke> {
-    Hpke::new(Mode::Base, KemAlgorithm::MlKem1024, KdfAlgorithm::HkdfSha384, aead)
+    Hpke::new(Mode::Base, KemAlgorithm::MlKem1024, KdfAlgorithm::HkdfSha512, aead)
 }
 
 #[test]

@@ -113,56 +113,125 @@ class TestEndSessionExists:
 class TestItIsATeardownNotAGoodbye:
     """All three callers want local state gone, not a wire message."""
 
+    # Phase 5 (2026-10-30): these run end_session against recording
+    # sessions instead of reading its source for names.
+
+    class _Recording(_Session):
+        """Records every way a session could put something on the wire."""
+
+        def __init__(self):
+            super().__init__()
+            self.sent = []
+            self.final_revelation = []
+
+        def send_disconnect(self):
+            self.sent.append("disconnect")
+            return "?OTRv4 disconnect"
+
+        def close_with_revelation(self, announce=False):
+            self.sent.append(("close", announce))
+
+    class _NoTrust:
+        """A trust database that fails the test if anything reads it."""
+
+        def __getattr__(self, name):
+            raise AssertionError("end_session touched the trust database (%s)" % name)
+
     def test_no_disconnected_tlv_is_sent(self):
         """A stuck handshake has no encrypted session to send through, and on
         glare we are about to answer the peer's DAKE1 as responder -- saying
         we disconnected first is the opposite of what is happening."""
-        src = inspect.getsource(otr.EnhancedSessionManager.end_session)
-        assert "send_disconnect" not in src
-        assert "_disconnect_callbacks" not in src
+        mgr = _manager()
+        said = []
+        mgr._disconnect_callbacks = said
+        session = self._Recording()
+        mgr.sessions["bob"] = session
+        assert mgr.end_session("bob") is True
+        assert "disconnect" not in session.sent
+        assert ("close", True) not in session.sent, "the reset announced itself"
+        assert said == []
 
     def test_the_trust_database_is_not_touched(self):
         """A pinned fingerprint is long-term identity. Forgetting it on reset
         would turn every reset into a fresh trust-on-first-use decision --
         the failure mode TOFU exists to make visible."""
-        src = inspect.getsource(otr.EnhancedSessionManager.end_session)
-        assert "trust_db" not in src
+        mgr = _manager()
+        mgr.trust_db = self._NoTrust()
+        mgr.sessions["bob"] = self._Recording()
+        mgr.dake_engines["bob"] = object()
+        assert mgr.end_session("bob") is True
 
     def test_the_graceful_path_still_announces(self):
         """SessionManager.end_session is the goodbye path and keeps its TLV;
         this is a different method for a different job."""
-        src = inspect.getsource(otr.SessionManager.end_session)
-        assert "send_disconnect" in src
+        import threading
+        mgr = otr.SessionManager.__new__(otr.SessionManager)
+        mgr.lock = threading.RLock()
+        mgr.sessions = {"bob": self._Recording()}
+        mgr._disconnect_callbacks = []
+        mgr.logger = type("L", (), {"debug": lambda *a, **k: None})()
+        mgr.end_session("bob")
+        assert mgr._disconnect_callbacks == [("bob", "?OTRv4 disconnect")]
+        assert "bob" not in mgr.sessions
 
 
 class TestTheResetCleansUpEvenIfTheEngineFails:
+    """Run, not read (Phase 5): start_otr against an engine whose first start
+    refuses (a stuck handshake) and whose end_session raises."""
 
-    def test_client_cleanup_is_not_inside_the_engine_try(self):
+    class _Engine:
+        def __init__(self):
+            self.starts = 0
+
+        def handle_outgoing_message(self, peer, text):
+            self.starts += 1
+            return ("", False) if self.starts == 1 else ("?OTRv4 DAKE1", True)
+
+        def end_session(self, peer):
+            raise RuntimeError("half-built session")
+
+    def _stuck_client(self):
+        import otrv4plus_smpflow as smpflow
+        from xmpp_double import bare_client
+        c = bare_client(xmpp.OTRv4PlusXMPP)
+        c.otr = self._Engine()
+        c._otr_mode = None
+        c._hs_started = {}
+        c._encrypted = {"bob"}
+        c._last_dake1 = {"bob": "?OTRv4 old"}
+        c._secret_request = "bob"
+        c._mask_next_input = lambda on: True
+        c._smp_reported = {("bob", "x"), ("carol", "y")}
+        c._smp_flows = smpflow.SmpFlowRegistry()
+        c._smp_flows.get("bob")
+        c.sent = []
+        c.send_otr_fragmented = lambda peer, msg: c.sent.append((peer, msg))
+        c._dbg = lambda *a: None
+        c._probe = False
+        return c
+
+    def test_client_cleanup_is_not_inside_the_engine_try(self, capsys):
         """They were one try block. When end_session raised, every line below
         it was skipped, so an engine failure also left the client holding
         stale state and the retry had no chance."""
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.start_otr)
-        reset = src[src.index("resetting stuck session"):]
-        engine_try = reset.index("self.otr.end_session(peer)")
-        discard = reset.index("self._encrypted.discard(peer)")
-        between = reset[engine_try:discard]
-        assert "except" in between, (
-            "the client-side cleanup is still inside the engine's try, so an "
-            "engine failure skips it")
+        c = self._stuck_client()
+        c.start_otr("bob")
+        assert c.sent == [("bob", "?OTRv4 DAKE1")], "the retry did not run"
 
-    def test_every_piece_of_stale_state_is_dropped(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.start_otr)
-        reset = src[src.index("resetting stuck session"):]
-        for cleanup in ("self._encrypted.discard(peer)",
-                        "self._last_dake1.pop(peer, None)",
-                        "self._smp_reported",
-                        "self._smp_flows.drop(peer)"):
-            assert cleanup in reset, "the reset leaves behind: %s" % cleanup
+    def test_every_piece_of_stale_state_is_dropped(self, capsys):
+        c = self._stuck_client()
+        c.start_otr("bob")
+        assert "bob" not in c._encrypted
+        assert c._last_dake1 == {"bob": "?OTRv4 DAKE1"}, "the old DAKE1 survived"
+        assert c._secret_request is None
+        assert c._smp_reported == {("carol", "y")}
+        assert "bob" not in c._smp_flows._flows, "the SMP flow survived the reset"
 
-    def test_the_engine_failure_is_reported_not_swallowed(self):
+    def test_the_engine_failure_is_reported_not_swallowed(self, capsys):
         """Silence would make a broken engine look like a working reset."""
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP.start_otr)
-        assert "engine teardown failed" in src
+        c = self._stuck_client()
+        c.start_otr("bob")
+        assert "engine teardown failed" in capsys.readouterr().out
 
 
 class TestEverySiteThatCallsItStillCan:

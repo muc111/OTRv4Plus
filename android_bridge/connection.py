@@ -275,6 +275,17 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         #: identity or contact pins would not open. Every attempt then answers
         #: that code and sends nothing; nothing about them is replaced.
         self._refused: Optional[Tuple[str, str]] = None
+        #: A registration transport left live because the server asked for a
+        #: CAPTCHA (XEP-0158): its stream holds the challenge, which is bound
+        #: to that connection, until `submit_captcha` finishes or cancels it.
+        #: None whenever no CAPTCHA is waiting.
+        self._captcha_transport: Any = None
+        #: The same transport while `submit_captcha` is blocked waiting for the
+        #: server's verdict. Held here, NOT in `_transport`, so `cancel()` and
+        #: `wipe()` can still reach it -- without this a stuck CAPTCHA submit
+        #: could not be cancelled (the worker sits in a blocking call) and the
+        #: screen spun until the timeout.
+        self._captcha_submit_transport: Any = None
 
         # Installed here rather than at connect time: a DAKE frame can arrive
         # in the same breath as session_start, and an event emitted before the
@@ -751,6 +762,71 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             with self._connect_lock:
                 self._connecting = False
 
+    def submit_captcha(self, answer: str) -> Dict[str, Any]:
+        """Answer the CAPTCHA a previous `register` reported, on the stream it
+        held open. Returns the same shape `register` does, and never raises.
+
+        A protocol error if no CAPTCHA is waiting (nothing to answer, or it was
+        already answered or cancelled). On success the account exists and the
+        same stale-trust cleanup `register` does runs; either way the held
+        stream is torn down before returning -- there is still no live session,
+        and the UI calls `connect` next.
+        """
+        with self._connect_lock:
+            if self._wiped:
+                return {"ok": False, "stage": self._stage, "code": "wiped",
+                        "detail": "This session was wiped. Restart the app."}
+            transport = self._captcha_transport
+            if transport is None:
+                return {"ok": False, "stage": self._stage,
+                        "code": "registration_protocol_error",
+                        "detail": _registration.describe(
+                            "registration_protocol_error")}
+            if self._connecting:
+                return {"ok": False, "stage": self._stage,
+                        "code": "already_connecting",
+                        "detail": "Something else is already running."}
+            self._connecting = True
+            self._captcha_transport = None
+            # Reachable by cancel()/wipe() for the whole blocking submit.
+            self._captcha_submit_transport = transport
+        try:
+            _TRACE.record("registration", "captcha_submitting", "info")
+            try:
+                code, detail = transport.submit_captcha_answer(answer)
+            except Exception as exc:
+                code, detail = _registration.classify(exc)
+            finally:
+                with self._connect_lock:
+                    self._captcha_submit_transport = None
+                try:
+                    transport.close()
+                except Exception:
+                    _log.warning(
+                        "the registration transport did not close cleanly")
+            ok = code == _registration.OK
+            notice = self._after_account_created() if ok else ""
+            self._enter("registered" if ok else "failed")
+            self._last = {"ok": ok,
+                          "stage": "registered" if ok else "failed",
+                          "code": code, "detail": detail}
+            if notice:
+                self._last["notice"] = notice
+            _TRACE.record("registration", "captcha_finished",
+                          "info" if ok else "warn", code=code)
+            return dict(self._last)
+        except Exception as exc:
+            _TRACE.record("registration", "captcha_raised", "error",
+                          error=type(exc).__name__)
+            code, detail = _registration.classify(exc)
+            self._enter("failed")
+            self._last = {"ok": False, "stage": "failed",
+                          "code": code, "detail": detail}
+            return dict(self._last)
+        finally:
+            with self._connect_lock:
+                self._connecting = False
+
     def _after_account_created(self) -> str:
         """After the server's yes to Create account, and only then: contact
         keys saved under this username belong to an earlier account (the
@@ -781,6 +857,15 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
     def _register(self, password: str) -> Dict[str, Any]:
         self._password_present = bool(password)
         _TRACE.record("registration", "started", "info")
+        # A previous attempt that stopped at a CAPTCHA and was never answered
+        # (the user went back and started over): drop its held stream before
+        # opening another, so an abandoned challenge cannot leave a socket up.
+        stale, self._captcha_transport = self._captcha_transport, None
+        if stale is not None:
+            try:
+                stale.close()
+            except Exception:
+                _log.warning("a stale CAPTCHA transport did not close cleanly")
         if self._refused is not None:
             # NOT refused here (owner's handset, 2026-10-27: Create account
             # stopped by "saved contact keys would not open"). Registration
@@ -831,15 +916,42 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             # because "documented not to" is not the same as "cannot", and the
             # alternative on a handset is a PyException with a stanza in it.
             code, detail = _registration.classify(exc)
-        finally:
-            # NOT `_release_transport`: that one clears `self._transport` and
-            # `app._transport`, and this object was never installed in either.
-            # Calling it would tear down a live session belonging to somebody
-            # who happened to be connected while this ran.
             try:
                 transport.close()
             except Exception:
                 _log.warning("the registration transport did not close cleanly")
+            self._enter("failed")
+            self._last = {"ok": False, "stage": "failed",
+                          "code": code, "detail": detail}
+            return dict(self._last)
+
+        if code == "captcha_required":
+            # The server wants a CAPTCHA the app can show. The stream stays up
+            # (the challenge is bound to it); the transport is held, NOT closed,
+            # until `submit_captcha` answers it. The result carries the inline
+            # image for the Register screen -- never a URL to fetch.
+            self._captcha_transport = transport
+            self._enter("captcha")
+            card = {}
+            try:
+                card = transport.pending_captcha() or {}
+            except Exception:
+                card = {}
+            self._last = {"ok": False, "stage": "captcha",
+                          "code": code, "detail": detail,
+                          "captcha": card}
+            _TRACE.record("registration", "captcha_prompt", "info")
+            return dict(self._last)
+
+        # Terminal already (success or failure): nothing to keep open.
+        # NOT `_release_transport`: that one clears `self._transport` and
+        # `app._transport`, and this object was never installed in either.
+        # Calling it would tear down a live session belonging to somebody
+        # who happened to be connected while this ran.
+        try:
+            transport.close()
+        except Exception:
+            _log.warning("the registration transport did not close cleanly")
 
         ok = code == _registration.OK
         notice = self._after_account_created() if ok else ""
@@ -910,13 +1022,28 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
 
         Returns immediately. The blocked `connect` call on the other thread is
         what actually unwinds, and it reports `cancelled` when it does.
+
+        Reaches a registration in progress too: a CAPTCHA whose answer is being
+        submitted (`_captcha_submit_transport`) or one still waiting to be
+        answered (`_captcha_transport`) lives apart from `_transport`, and
+        without this a stuck CAPTCHA submit could not be stopped.
         """
-        transport = self._transport
+        transport = (self._transport or self._captcha_submit_transport
+                     or self._captcha_transport)
         if transport is None:
             return {"ok": True, "code": "not_connecting",
                     "detail": "Nothing to cancel."}
+        # A waiting (un-submitted) CAPTCHA has no blocking caller to unwind;
+        # drop the held stream so nothing is left open.
+        if transport is self._captcha_transport:
+            self._captcha_transport = None
         try:
             transport.cancel()
+            if transport is not self._transport:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
         except Exception as exc:
             return {"ok": False, "code": "cancel_failed",
                     "detail": type(exc).__name__}
@@ -959,6 +1086,20 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         """
         with self._connect_lock:
             self._wiped = True
+        # A registration/CAPTCHA in progress lives apart from `_transport`;
+        # stop and close it too, or Wipe & Exit would wait behind it.
+        for held in (self._captcha_submit_transport, self._captcha_transport):
+            if held is not None:
+                try:
+                    held.cancel()
+                except Exception:
+                    pass
+                try:
+                    held.close()
+                except Exception:
+                    pass
+        self._captcha_submit_transport = None
+        self._captcha_transport = None
         transport = self._transport
         if transport is not None:
             try:

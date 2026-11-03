@@ -27,7 +27,6 @@ a scripted SAM bridge on loopback, and the REAL slixmpp SASL plugin.
 """
 from __future__ import annotations
 
-from source_of import app_source  # noqa: E402
 import base64
 import os
 import socket
@@ -538,9 +537,26 @@ class TestPersistence:
         assert not os.path.exists(path)
         assert SP.ServerPins(path).pinned(NAME) is None
 
-    def test_wipe_forgets_the_pins(self):
-        src = app_source()
-        assert "_pins.default_store().forget()" in src
+    def test_wipe_forgets_the_pins(self, monkeypatch):
+        # The real Wipe & Exit, in a throwaway home, over a store holding a pin.
+        from android_bridge import server_pins as SP
+        from test_wipe_and_exit import _pair
+        home = tempfile.mkdtemp(prefix="x1-wipe-home-")
+        monkeypatch.setenv("HOME", home)
+        monkeypatch.delenv("OTRV4PLUS_FILE_DIR", raising=False)
+        path = os.path.join(home, "pins.json")
+        store = SP.ServerPins(path)
+        store.check("example.org", B32_A)
+        store.confirm("example.org")
+        assert store.pinned("example.org") == B32_A and os.path.exists(path)
+        monkeypatch.setattr(SP, "_DEFAULT", store)
+        app = _pair().alice
+        try:
+            app.wipe()
+        finally:
+            app.shutdown()
+        assert store.pinned("example.org") is None
+        assert not os.path.exists(path), "the pins file outlived the wipe"
 
     def test_b32_of_destination_is_the_i2p_hash(self):
         import hashlib
@@ -646,3 +662,77 @@ class TestScramOnlyOnTheWire:
 
 async def _null_forwarder(*_a, verify=None, **_k):
     return ("127.0.0.1", 9)
+
+
+class TestThePinsFileIsSealed:
+    """With a key file the pins are AES-256-GCM sealed, and Wipe & Exit's
+    crypto-erase (key_custody) leaves them unopenable."""
+
+    def _paths(self):
+        d = tempfile.mkdtemp()
+        return os.path.join(d, "server_pins.json"), os.path.join(d, "server_pins.dek")
+
+    def _pinned(self, path, dek):
+        s = SP.ServerPins(path, dek_path=dek)
+        s.check(NAME, B32_A)
+        s.confirm(NAME)
+        return s
+
+    def test_no_address_is_on_disk_in_the_clear(self):
+        path, dek = self._paths()
+        self._pinned(path, dek)
+        with open(path, "rb") as fh:
+            raw = fh.read()
+        assert raw.startswith(SP.SEALED_MAGIC)
+        assert B32_A.encode() not in raw and NAME.encode() not in raw
+        assert SP.ServerPins(path, dek_path=dek).pinned(NAME) == B32_A
+
+    def test_a_plaintext_file_from_before_is_rewritten_sealed(self):
+        path, dek = self._paths()
+        self._pinned(path, None)                     # the old format
+        with open(path, "rb") as fh:
+            assert B32_A.encode() in fh.read()
+        s = SP.ServerPins(path, dek_path=dek)
+        assert s.pinned(NAME) == B32_A
+        with open(path, "rb") as fh:
+            assert fh.read().startswith(SP.SEALED_MAGIC)
+
+    def test_a_tampered_sealed_file_is_refused_not_emptied(self):
+        path, dek = self._paths()
+        self._pinned(path, dek)
+        with open(path, "r+b") as fh:
+            fh.seek(-1, 2)
+            last = fh.read(1)
+            fh.seek(-1, 2)
+            fh.write(bytes([last[0] ^ 1]))
+        s = SP.ServerPins(path, dek_path=dek)
+        assert s.unreadable() is not None
+        with pytest.raises(SP.PinsUnreadable):
+            s.check(NAME, B32_A)
+
+    def test_after_crypto_erase_the_pins_do_not_open(self):
+        core = pytest.importorskip("otrv4_core")
+        if not hasattr(core, "set_key_wrapping_key"):
+            pytest.skip("core built before key wrapping")
+        path, dek = self._paths()
+        core.set_key_wrapping_key(bytearray(os.urandom(32)))
+        try:
+            self._pinned(path, dek)
+        finally:
+            core.clear_key_wrapping_key()            # the KEK is deleted
+        assert os.path.exists(path) and os.path.exists(dek)
+        assert SP.ServerPins(path, dek_path=dek).unreadable() is not None
+
+    def test_forget_removes_the_key_file_too(self):
+        path, dek = self._paths()
+        self._pinned(path, dek).forget()
+        assert not os.path.exists(path) and not os.path.exists(dek)
+
+    def test_the_store_the_app_uses_is_the_sealed_one(self, monkeypatch):
+        monkeypatch.setenv("HOME", tempfile.mkdtemp(prefix="pins-home-"))
+        monkeypatch.setattr(SP, "_DEFAULT", None)
+        s = SP.default_store()
+        s.check(NAME, B32_A)
+        s.confirm(NAME)
+        with open(s.path, "rb") as fh:
+            assert fh.read().startswith(SP.SEALED_MAGIC)

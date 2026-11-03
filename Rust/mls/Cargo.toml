@@ -3,17 +3,18 @@
 #
 # MLS (RFC 9420) group encryption for OTRv4Plus, on the core's OWN crypto.
 #
-# Ciphersuite MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87 (draft-ietf-mls-pq-
-# ciphersuites): ML-KEM-1024 and ML-DSA-87 from PQClean (pqcrypto-mlkem /
-# pqcrypto-mldsa, the same crates and versions otrv4_core uses), AES-256-GCM
-# from aes-gcm, HKDF/HMAC/SHA-384 from hkdf/hmac/sha2 -- no second
-# implementation of any primitive the core already has. The MLS protocol is
-# OpenMLS; HPKE (RFC 9180) is src/hpke.rs on the same primitives.
+# Every new group uses the hybrid suite 0xF0A1 (X448+ML-KEM-1024, Ed448+
+# ML-DSA-87); a non-hybrid ML-KEM-1024 suite 0x0906 exists for the reference
+# cross-check (tests/interop.rs). Both hash and HKDF with SHA-512. ML-KEM-1024
+# and ML-DSA-87 come from the pure-Rust RustCrypto crates (ml-kem / ml-dsa,
+# the same crates and versions otrv4_core uses), AES-256-GCM from aes-gcm,
+# HKDF/HMAC/SHA from hkdf/hmac/sha2 -- no second implementation of any
+# primitive the core already has. The MLS protocol is OpenMLS; HPKE (RFC
+# 9180) is src/hpke.rs on the same primitives.
 #
-# SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec: one small FFI call
-# (PQClean's seeded ML-KEM key generation, which pqcrypto-mlkem compiles but
-# does not export) needs `unsafe`, and otrv4_core keeps
-# #![forbid(unsafe_code)].
+# SEPARATE FROM otrv4_core ON PURPOSE, like opus-codec. ml-kem provides
+# seeded ML-KEM key generation in pure Rust (DecapsulationKey::from_seed),
+# so this crate needs no FFI and keeps #![forbid(unsafe_code)] like the core.
 #
 # STAGE 2 OF docs/MLS_FEASIBILITY.md: a Rust spike with in-process members only.
 # No transport, no persistence, no UI. Nothing here claims interoperability
@@ -26,7 +27,7 @@ license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 publish = false
 
 [dependencies]
-openmls = { version = "=0.9.1", default-features = false, features = ["draft-ietf-mls-pq-ciphersuites"] }
+openmls = { version = "=0.9.2", default-features = false, features = ["draft-ietf-mls-pq-ciphersuites"] }
 openmls_traits = { version = "=0.6.0", features = ["draft-ietf-mls-pq-ciphersuites"] }
 # The storage traits only; the store itself is src/storage.rs (zeroizing,
 # CBOR), derived from openmls_memory_storage, which is not a dependency.
@@ -35,22 +36,37 @@ serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
 # The core's versions, so no second copy of a primitive enters the build.
-pqcrypto-mlkem  = { version = "0.1.1", default-features = false, features = ["std"] }
-pqcrypto-mldsa  = { version = "0.1.2", default-features = false, features = ["std"] }
-pqcrypto-traits = "0.3"
-aes-gcm = { version = "0.10", features = ["aes"] }
-hkdf = "0.12"
-hmac = "0.12"
-sha2 = "0.10"
+ml-kem = { version = "0.3.2", default-features = false, features = ["alloc", "zeroize"] }
+ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"] }
+# "zeroize": cipher and hash states are wiped when dropped (see ../Cargo.toml).
+aes-gcm = { version = "0.11", features = ["aes", "zeroize"] }
+hkdf = "0.13"
+hmac = { version = "0.13", features = ["zeroize"] }
+sha2 = { version = "0.11", features = ["zeroize"] }
 # SHAKE256 for HPKE DeriveKeyPair (src/hpke.rs): the core's sha3.
-sha3 = "0.10"
+sha3 = { version = "0.12", features = ["zeroize"] }
+# sha3 0.12 moved SHAKE-256 to its own crate (same RustCrypto Keccak).
+shake = { version = "0.1", features = ["zeroize"] }
 # The classical halves of the hybrid suite (docs/MLS_SECURITY_HARDENING.md §2):
 # the core's X448 (DAKE, voice) and Ed448 (identity keys) crates.
-x448 = "0.6"
-ed448-goldilocks-plus = { version = "0.18.1", default-features = false, features = ["alloc", "signing", "pkcs8"] }
+# "kex": its RFC 7748 X448 for the hybrid KEM (src/hpke.rs), which replaced x448 0.6.
+ed448-goldilocks-plus = { version = "0.18.1", default-features = false, features = ["alloc", "signing", "pkcs8", "kex"] }
 getrandom = "0.2"
 zeroize = { version = "1.8", features = ["derive", "alloc"] }
-thiserror = "1.0"
+thiserror = "2.0"
+
+[features]
+# TEST ONLY: the provider also serves the non-hybrid suite 0x0906
+# (ML-KEM-1024 / ML-DSA-87 alone). The reference OpenMLS provider has no
+# private hybrid code point, so tests/interop.rs cross-checks ours on this
+# standard one. Never enabled by otrv4_core: the shipped provider and
+# client serve only the hybrid suite 0xF0A1.
+#     cargo test --release --features reference-interop
+reference-interop = []
+
+[[test]]
+name = "interop"
+required-features = ["reference-interop"]
 
 [dev-dependencies]
 # TEST ONLY, never shipped: the reference provider, so our provider is

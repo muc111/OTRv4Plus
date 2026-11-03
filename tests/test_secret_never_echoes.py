@@ -88,40 +88,26 @@ class TestTheEngineCanHideIt:
 
 class TestTheClientTurnsItOn:
 
-    def test_the_prompt_masks(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._arm_secret_prompt)
-        assert "_mask_next_input(True)" in src
-
-    def test_the_answer_unmasks(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._handle_smp_secret_answer)
-        assert "_mask_next_input(False)" in src, (
-            "the mask is never cleared, so every later command is hidden too")
-
-    def test_unmasking_happens_before_any_early_return(self):
-        """`skip` and a validation failure both return early."""
-        import ast, textwrap
-        fn = ast.parse(textwrap.dedent(
-            inspect.getsource(xmpp.OTRv4PlusXMPP._handle_smp_secret_answer))).body[0]
-        calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call)
-                 and isinstance(n.func, ast.Attribute)
-                 and n.func.attr == "_mask_next_input"]
-        assert calls, "nothing clears the mask"
-        first_return = min((n.lineno for n in ast.walk(fn)
-                            if isinstance(n, ast.Return)), default=10 ** 9)
-        assert min(c.lineno for c in calls) < first_return, (
-            "an early return can leave the input line masked for good")
+    # The prompt masking, the answer unmasking, and the unmasking on every
+    # early return (cancel, a rejected passphrase) are run, not read, in
+    # tests/test_no_remote_input_capture.py::TestBehaviour (Phase 5).
 
     def test_it_reaches_the_engine(self):
         src = inspect.getsource(xmpp.OTRv4PlusXMPP._mask_next_input)
         assert "set_input_mask" in src
 
-    def test_the_plain_reader_uses_getpass_for_it(self):
-        src = inspect.getsource(xmpp._input_loop)
-        assert "getpass" in src, "the non-TUI reader still echoes the passphrase"
-        assert "_secret_request" in src, (
-            "the hidden read is driven by the display mask rather than by the "
-            "explicit request; a stray display state must not be able to "
-            "start a hidden read")
+    def test_the_plain_reader_uses_getpass_for_it(self, monkeypatch):
+        """Run, not read (Phase 5): with a passphrase requested the line is
+        read by getpass; the display mask alone does not start a hidden read."""
+        import input_loop_double as D
+        asked = D.LoopClient(secret_request="bob@example.i2p")
+        seen = D.run(xmpp, monkeypatch, asked,
+                     [("getpass", "a passphrase\n", lambda c: setattr(c, "_secret_request", None)),
+                      ("readline", "", None)])
+        assert seen[0][0] == "getpass" and "passphrase" in seen[0][1]
+        stray = D.LoopClient()
+        stray._mask_input = True          # a display state, not a request
+        D.run(xmpp, monkeypatch, stray, [("readline", "", None)])
 
 
 class TestTheTerminalItselfStopsEchoing:
@@ -270,21 +256,38 @@ class TestItNeverPromisesWhatItCannotDo:
 
 
 class TestTheInlineFormIsDiscouraged:
+    """Run, not read (Phase 5): /smp-secret is dispatched on a client whose
+    store and prompt are recorded; the warning itself runs for real."""
 
-    def test_a_bare_command_prompts_instead_of_storing(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_smp)
-        i = src.index('"/smp-secret", "/smpsecret"')
-        assert "_request_smp_secret" in src[i:i + 400], (
+    def _client(self):
+        c = bare_client(xmpp.OTRv4PlusXMPP)
+        c._groups = None
+        c.asked, c.stored = [], []
+        c._request_smp_secret = lambda peer: c.asked.append(peer)
+        c.store_smp_secret = lambda peer, secret: c.stored.append((peer, secret))
+        return c
+
+    def test_a_bare_command_prompts_instead_of_storing(self, capsys):
+        c = self._client()
+        assert c._dispatch_smp("bob@x", "/smp-secret") is True
+        assert c.asked == ["bob@x"] and c.stored == [], (
             "/smp-secret with no argument does not offer the hidden prompt")
 
-    def test_the_inline_form_warns_that_it_was_echoed(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_smp)
-        assert src.count("_warn_inline_secret") >= 2, (
-            "not every inline passphrase path warns")
+    @pytest.mark.parametrize("line,stored", [
+        ("/smp-secret a long passphrase", ("bob@x", "a long passphrase")),
+        ("/smp-secret carol@x a long passphrase", ("carol@x", "a long passphrase")),
+    ])
+    def test_the_inline_form_warns_that_it_was_echoed(self, capsys, line, stored):
+        c = self._client()
+        c._dispatch_smp("bob@x", line)
+        assert c.stored == [stored]
+        out = capsys.readouterr().out.lower()
+        assert "typed in the clear" in out, "an inline passphrase path does not warn"
 
-    def test_the_warning_says_where_it_ended_up(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._warn_inline_secret)
-        low = src.lower()
+    def test_the_warning_says_where_it_ended_up(self, capsys):
+        c = self._client()
+        c._warn_inline_secret()
+        low = capsys.readouterr().out.lower()
         assert "scrollback" in low and "capture" in low, (
             "the warning must name the log file, which is where this actually "
             "bit")

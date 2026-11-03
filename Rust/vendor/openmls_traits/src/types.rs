@@ -669,13 +669,13 @@ impl Ciphersuite {
             | Ciphersuite::MLS_128_MLKEM768X25519_CHACHA20POLY1305_SHA384_MLDSA44
             | Ciphersuite::MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65
             | Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87
-            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519
-            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HashType::Sha2_384,
+            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519 => HashType::Sha2_384,
             Ciphersuite::MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448
             | Ciphersuite::MLS_256_DHKEMP521_AES256GCM_SHA512_P521
             | Ciphersuite::MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448 => HashType::Sha2_512,
             #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
-            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 => HashType::Sha2_512,
+            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87
+            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HashType::Sha2_512,
         }
     }
 
@@ -784,15 +784,15 @@ impl Ciphersuite {
             | Ciphersuite::MLS_128_MLKEM768X25519_CHACHA20POLY1305_SHA384_MLDSA44
             | Ciphersuite::MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65
             | Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87
-            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519
-            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HpkeKdfType::HkdfSha384,
+            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519 => HpkeKdfType::HkdfSha384,
             Ciphersuite::MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448
             | Ciphersuite::MLS_256_DHKEMP521_AES256GCM_SHA512_P521
             | Ciphersuite::MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448 => {
                 HpkeKdfType::HkdfSha512
             }
             #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
-            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 => HpkeKdfType::HkdfSha512,
+            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87
+            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HpkeKdfType::HkdfSha512,
         }
     }
 

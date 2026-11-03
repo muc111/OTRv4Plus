@@ -230,21 +230,32 @@ class TestNoEchoedPassword:
         c._on_failed_auth(None)
         assert c._password_prompt is None
 
-    def test_the_reader_uses_getpass_not_readline(self):
-        import inspect
-        src = inspect.getsource(xmpp._input_loop)
-        assert "getpass.getpass" in src
-        assert src.index("getpass.getpass") < src.index("sys.stdin.readline")
+    # Phase 5 (2026-10-30): the loop is run against scripted reads
+    # (tests/input_loop_double.py) instead of being read for names.
 
-    def test_the_reader_hands_the_line_to_supply_password(self):
-        import inspect
-        src = inspect.getsource(xmpp._input_loop)
-        assert "client.supply_password(line)" in src
+    def test_the_reader_uses_getpass_not_readline(self, monkeypatch):
+        import input_loop_double as D
+        client = D.LoopClient(password_prompt="Password: ")
+        seen = D.run(xmpp, monkeypatch, client,
+                     [("getpass", "hunter2\n", None), ("readline", "", None)])
+        assert seen[0] == ("getpass", "Password: "), "the password was read with echo on"
 
-    def test_a_line_typed_before_the_prompt_appeared_is_discarded(self):
+    def test_the_reader_hands_the_line_to_supply_password(self, monkeypatch):
+        import input_loop_double as D
+        client = D.LoopClient(password_prompt="Password: ")
+        D.run(xmpp, monkeypatch, client,
+              [("getpass", "hunter2\n", None), ("readline", "", None)])
+        assert client.passwords == ["hunter2\n"]
+        assert client.dispatched == [], "the password was dispatched as a command"
+
+    def test_a_line_typed_before_the_prompt_appeared_is_discarded(self, monkeypatch):
         # Otherwise a bare Enter would be read as an empty password and end
         # the session, and a typed command would leak into the password.
-        import inspect
-        src = inspect.getsource(xmpp._input_loop)
-        after = src.split("client.supply_password(line)", 1)[1]
-        assert "continue" in after
+        import input_loop_double as D
+        client = D.LoopClient()
+        raise_prompt = lambda c: setattr(c, "_password_prompt", "Password: ")
+        D.run(xmpp, monkeypatch, client,
+              [("readline", "/status\n", raise_prompt),
+               ("getpass", "hunter2\n", None), ("readline", "", None)])
+        assert client.dispatched == [], "the line typed under the prompt was run"
+        assert client.passwords == ["hunter2\n"]

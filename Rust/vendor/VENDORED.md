@@ -25,7 +25,9 @@ declared in each leaf's capabilities instead (`Rust/mls/src/client.rs`).
   combiner. HPKE has no private-use range; the value is unassigned.
 - `Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 =
   0xF0A1` (MLS private-use range 0xF000-0xFFFF, RFC 9420 §17.1), mapped to
-  SHA-384, AES-256-GCM, HKDF-SHA384 and the two above.
+  SHA-512, AES-256-GCM, HKDF-SHA512 and the two above. The code point's
+  name keeps the historical `SHA384` token, but the suite hashes and HKDFs
+  with SHA-512 (the `Sha2_512` / `HkdfSha512` arms).
 - In `openmls_rust_crypto`: the new KEM maps to `unreachable!`, which its
   `supports()` makes unreachable (it refuses the suite first).
 

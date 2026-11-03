@@ -175,19 +175,14 @@ class TestTheClassIsFixedForTheCall:
         voice = pytest.importorskip("otrv4plus_voice")
         src = inspect.getsource(voice.VoiceCallSession.accept_endpoint)
         assert "_endpoint_tag" in src
+        # Timing is not observable from a test, so this one stays a source
+        # check. That nothing moves before the tag verifies is run, not read:
+        # test_media_recovery.py::TestAuthenticationBindings (Phase 5).
         assert "hmac.compare_digest" in src, (
             "the endpoint tag is not compared in constant time")
-        # Nothing may be adopted before the comparison.
-        assert src.index("compare_digest") < src.index("self._peer_dest ="), (
-            "the peer destination is adopted before the tag verifies")
 
-    def test_an_endpoint_announcement_cannot_be_replayed(self):
-        """Reinstating a destination the call has moved past is the same
-        attack arriving in the other direction."""
-        import inspect
-        voice = pytest.importorskip("otrv4plus_voice")
-        src = inspect.getsource(voice.VoiceCallSession.accept_endpoint)
-        assert "seq <= self._endpoint_seq_seen" in src
+    # Replay of an endpoint announcement: run, not read, in
+    # test_media_recovery.py::TestFreshness (Phase 5).
 
     def test_the_transcript_binding_is_recorded_as_not_implemented(self):
         """The strong form is specified and deferred.  If it is implemented

@@ -463,14 +463,24 @@ class TestControlCommandGating(unittest.TestCase):
         # The gate lives upstream: _on_invite refuses to allocate a session,
         # and therefore to ring, unless SMP verified the peer. A button can
         # only ever act on a session that already exists.
-        import inspect
-        src = inspect.getsource(V.VoiceCallManager._on_invite)
-        self.assertIn("_smp_verified(peer)", src)
-        self.assertLess(src.index("_smp_verified"), src.index("_start_ringing"),
-                        "ringing must be downstream of the SMP check")
-        handler = inspect.getsource(V.VoiceCallManager._on_control_command)
-        self.assertIn("self._calls.get(peer)", handler)
-        self.assertIn("CallState.RINGING", handler)
+        from unittest import mock
+        del self.mgr._calls[PEER]
+        rang, signals = [], []
+        self.mgr._start_ringing = lambda *a, **k: rang.append(a)
+        self.mgr._signal = lambda peer, kind, fields: signals.append((kind, fields))
+        self.mgr._otr_material = lambda peer: (b"b", "AA" * 64, "BB" * 64)
+        self.mgr._smp_verified = lambda peer: False
+        fields = (CALL_ID.hex(), "A" * 516,
+                  "11" * V.VoiceKeyExchange.PUB_LEN, "22" * V.MLKEM_EK_LEN)
+        with mock.patch.dict(V._HOST, {"voice_available": lambda: (True, "")}):
+            self.loop.run_until_complete(self.mgr._on_invite(PEER, fields))
+        self.assertEqual(signals, [("REJECT", (CALL_ID.hex(), "unverified"))])
+        self.assertNotIn(PEER, self.mgr._calls)
+        self.assertEqual(rang, [])
+        # And a press on the refused call reaches nothing.
+        self.mgr._on_control_command("answer", PEER, CALL_ID)
+        self.run_pending()
+        self.assertEqual(self.calls, [])
 
     def test_the_button_only_ever_calls_the_public_entry_points(self):
         import inspect
@@ -484,6 +494,13 @@ class TestControlCommandGating(unittest.TestCase):
                              % forbidden)
 
 
+class _FakeRinger:
+    stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
 class TestRingLifecycle(unittest.TestCase):
 
     def setUp(self):
@@ -492,23 +509,53 @@ class TestRingLifecycle(unittest.TestCase):
         self.mgr = V.VoiceCallManager(_Client(), self.loop)
         self.addCleanup(self.mgr._call_control.shutdown)
 
+    def _ringing(self):
+        session = V.VoiceCallSession(PEER, self.loop, CALL_ID, False)
+        session.transition(V.CallState.RINGING)
+        self.mgr._calls[PEER] = session
+        ringer = _FakeRinger()
+        self.mgr._ringers[PEER] = ringer
+        self.disarmed = []
+        self.mgr._call_control.disarm = self.disarmed.append
+        self.mgr._signal = lambda *a: None
+        return ringer
+
     def test_stopping_the_ring_revokes_the_buttons(self):
-        import inspect
-        src = inspect.getsource(V.VoiceCallManager._stop_ringing)
-        self.assertIn("_call_control.disarm(peer)", src)
+        ringer = self._ringing()
+        self.mgr._stop_ringing(PEER)
+        self.assertEqual(self.disarmed, [PEER])
+        self.assertTrue(ringer.stopped)
+        self.assertNotIn(PEER, self.mgr._ringers)
 
     def test_every_exit_from_ringing_stops_the_ring(self):
-        import inspect
         for name in ("answer_call", "reject_call", "end_call"):
-            src = inspect.getsource(getattr(V.VoiceCallManager, name))
-            self.assertIn("_stop_ringing(peer)", src,
-                          "%s leaves the notification ringing" % name)
+            ringer = self._ringing()
+            # answer refuses after silencing: the peer is no longer verified.
+            # The ring must already be silent when that gate is reached, so
+            # the refusal's own teardown cannot be what stops it.
+            silent_at_gate = []
+            self.mgr._smp_verified = (
+                lambda peer, r=ringer: silent_at_gate.append(r.stopped) or False)
+            try:
+                self.loop.run_until_complete(getattr(self.mgr, name)(PEER))
+            except Exception:
+                pass
+            self.assertTrue(ringer.stopped,
+                            "%s leaves the notification ringing" % name)
+            self.assertIn(PEER, self.disarmed, name)
+            if name == "answer_call":
+                self.assertEqual(silent_at_gate, [True],
+                                 "answer opens the call before the ring stops")
+            self.mgr._calls.pop(PEER, None)
 
     def test_teardown_closes_the_channel(self):
-        import inspect
         for name in ("cleanup", "cleanup_sync"):
-            src = inspect.getsource(getattr(V.VoiceCallManager, name))
-            self.assertIn("_call_control.shutdown()", src)
+            closed = []
+            self.mgr._call_control.shutdown = lambda: closed.append(1)
+            result = getattr(self.mgr, name)()
+            if asyncio.iscoroutine(result):
+                self.loop.run_until_complete(result)
+            self.assertEqual(closed, [1], name)
 
     def test_a_ringer_failure_never_stops_a_call_arriving(self):
         import inspect

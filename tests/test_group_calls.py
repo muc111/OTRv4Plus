@@ -108,7 +108,7 @@ class TestACall:
         w, (a, b, c), net, now, heard = _calling(3)
         _pair_all(w, [a, b])
         for m in (a, b):                       # nobody verified Carol
-            m.groups._bound[ROOM]["carol@x.i2p"] = ("00" * 48, False)
+            m.groups._bound[ROOM]["carol@x.i2p"] = ("00" * 64, False)
         a.calls.start(ROOM)
         b.calls.join(ROOM)
         c.calls.join(ROOM)
@@ -368,7 +368,7 @@ def test_the_app_joins_a_verified_ring_only_with_the_microphone_allowed():
         bridges[b.jid]._emit(ring)
         assert joined == [(b.jid, ROOM)]
         # Not from someone we have not verified.
-        b.groups._bound[ROOM][a.jid] = ("00" * 48, False)
+        b.groups._bound[ROOM][a.jid] = ("00" * 64, False)
         bridges[b.jid]._emit(ring)
         assert joined == [(b.jid, ROOM)]
     finally:

@@ -1,76 +1,64 @@
 // SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 // Copyright (C) 2025-2026 muc111
-//! ML-KEM-1024 from PQClean -- the implementation otrv4_core already uses.
+//! ML-KEM-1024 -- the pure-Rust `ml-kem` crate (the implementation
+//! otrv4_core uses).
 //!
-//! `pqcrypto-mlkem` compiles PQClean's `kem.c`, which defines FIPS 203's
-//! deterministic key generation `crypto_kem_keypair_derand(pk, sk, coins)`
-//! with `coins = d || z` (64 bytes), but the Rust crate does not export it.
-//! MLS needs exactly that: every member re-derives a tree node's HPKE key
-//! pair from a shared secret and checks it against the public key in the
-//! tree, so derivation must be deterministic and identical everywhere.
+//! MLS needs FIPS 203 deterministic key generation: every member re-derives
+//! a tree node's HPKE key pair from a shared secret and checks it against the
+//! public key in the tree, so derivation must be deterministic and identical
+//! everywhere. `ml-kem` provides this as `DecapsulationKey::from_seed(d || z)`
+//! in pure Rust, so this crate needs no FFI and keeps #![forbid(unsafe_code)].
 //!
-//! The portable "clean" build of ML-KEM-1024 is compiled on every target
-//! (pqcrypto-mlkem's build.rs), so the symbol below is always present.
-//! This is the ONLY `unsafe` in the crate.
+//! Byte encodings are the FIPS 203 forms (ek 1568, expanded dk 3168, ct 1568),
+//! identical to the former PQClean bindings and cross-checked in Rust/audit.
 
-use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _, SharedSecret as _};
-use zeroize::Zeroize;
+use ml_kem::{MlKem1024, EncapsulationKey, DecapsulationKey, Ciphertext, Decapsulate, KeyExport,
+             ExpandedDecapsulationKey, Seed, B32};
+use zeroize::Zeroizing;
+use ml_kem::array::Array;
+#[allow(deprecated)]
+use ml_kem::ExpandedKeyEncoding;
 
 pub const PUBLIC_KEY_BYTES: usize = 1568;
 pub const SECRET_KEY_BYTES: usize = 3168;
 pub const CIPHERTEXT_BYTES: usize = 1568;
 pub const SEED_BYTES: usize = 64;
 
-#[allow(unsafe_code)]
-mod ffi {
-    extern "C" {
-        pub fn PQCLEAN_MLKEM1024_CLEAN_crypto_kem_keypair_derand(
-            pk: *mut u8,
-            sk: *mut u8,
-            coins: *const u8,
-        ) -> core::ffi::c_int;
-    }
-}
-
-/// (public, secret) from a 64-byte FIPS 203 seed `d || z`.
-#[allow(unsafe_code)]
-pub fn keypair_from_seed(seed: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+/// (public, secret) from a 64-byte FIPS 203 seed `d || z`. The secret is the
+/// 3168-byte expanded decapsulation key, in a wiped buffer; the seed copy and
+/// the encoded key are wiped too.
+pub fn keypair_from_seed(seed: &[u8]) -> Option<(Vec<u8>, Zeroizing<Vec<u8>>)> {
     if seed.len() != SEED_BYTES {
         return None;
     }
-    // Make sure pqcrypto-mlkem (and so the PQClean object holding the
-    // symbol) is linked in.
-    let _ = pqcrypto_mlkem::mlkem1024::public_key_bytes();
-    let mut pk = vec![0u8; PUBLIC_KEY_BYTES];
-    let mut sk = vec![0u8; SECRET_KEY_BYTES];
-    // SAFETY: the buffers have exactly the sizes PQClean's api.h declares
-    // for ML-KEM-1024, and `seed` is exactly 64 bytes, checked above.
-    let rc = unsafe {
-        ffi::PQCLEAN_MLKEM1024_CLEAN_crypto_kem_keypair_derand(
-            pk.as_mut_ptr(),
-            sk.as_mut_ptr(),
-            seed.as_ptr(),
-        )
-    };
-    if rc != 0 {
-        sk.zeroize();
-        return None;
-    }
-    Some((pk, sk))
+    let seed: Zeroizing<Seed> = Zeroizing::new(Array::try_from(seed).ok()?);
+    let dk = DecapsulationKey::<MlKem1024>::from_seed(*seed);
+    let pk = dk.encapsulation_key().to_bytes().as_slice().to_vec();
+    #[allow(deprecated)]
+    let expanded = Zeroizing::new(dk.to_expanded_bytes());
+    Some((pk, Zeroizing::new(expanded.as_slice().to_vec())))
 }
 
-/// (shared secret, ciphertext) to `pk`.
-pub fn encapsulate(pk: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
-    let pk = pqcrypto_mlkem::mlkem1024::PublicKey::from_bytes(pk).ok()?;
-    let (ss, ct) = pqcrypto_mlkem::mlkem1024::encapsulate(&pk);
-    Some((ss.as_bytes().to_vec(), ct.as_bytes().to_vec()))
+/// (shared secret, ciphertext) to `pk`. The shared secret, and the
+/// randomness `m` that alone determines it, are held in wiped buffers.
+pub fn encapsulate(pk: &[u8]) -> Option<(Zeroizing<Vec<u8>>, Vec<u8>)> {
+    let key = EncapsulationKey::<MlKem1024>::new(&Array::try_from(pk).ok()?).ok()?;
+    let mut m = Zeroizing::new(B32::default());
+    getrandom::getrandom(m.as_mut_slice()).ok()?;
+    let (ct, ss) = key.encapsulate_deterministic(&m);
+    let ss = Zeroizing::new(ss);
+    Some((Zeroizing::new(ss.as_slice().to_vec()), ct.as_slice().to_vec()))
 }
 
-/// The shared secret in `ct`, for secret key `sk`.
-pub fn decapsulate(ct: &[u8], sk: &[u8]) -> Option<Vec<u8>> {
-    let ct = pqcrypto_mlkem::mlkem1024::Ciphertext::from_bytes(ct).ok()?;
-    let sk = pqcrypto_mlkem::mlkem1024::SecretKey::from_bytes(sk).ok()?;
-    Some(pqcrypto_mlkem::mlkem1024::decapsulate(&ct, &sk).as_bytes().to_vec())
+/// The shared secret in `ct`, for expanded secret key `sk` (3168).
+pub fn decapsulate(ct: &[u8], sk: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    let sk: Zeroizing<ExpandedDecapsulationKey<MlKem1024>> =
+        Zeroizing::new(Array::try_from(sk).ok()?);
+    #[allow(deprecated)]
+    let key = DecapsulationKey::<MlKem1024>::from_expanded_bytes(&sk).ok()?;
+    let ct = Ciphertext::<MlKem1024>::try_from(ct).ok()?;
+    let ss = Zeroizing::new(key.decapsulate(&ct));
+    Some(Zeroizing::new(ss.as_slice().to_vec()))
 }
 
 #[cfg(test)]

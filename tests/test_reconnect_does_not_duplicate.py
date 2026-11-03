@@ -37,6 +37,7 @@ Connect a second time built a second tunnel on top of the first". Neither
 path above was a failed attempt, so neither reached it.
 """
 
+import asyncio
 import inspect
 import os
 import sys
@@ -185,6 +186,32 @@ class TestTheKeepaliveDoesNotCancelItself:
         reader deletes as redundant: it compares against the RUNNING task, so
         outside a task there is nothing to spare and everything is cancelled.
         """
-        source = inspect.getsource(type(live.transport)._stop_keepalive)
-        assert "current_task" in source
-        assert "task is not current" in source
+        cls = type(live.transport)
+
+        async def _drive():
+            t = cls.__new__(cls)
+
+            async def _keepalive():
+                t._keepalive_task = asyncio.current_task()
+                t._stop_keepalive()          # asked from inside: spared
+                await asyncio.sleep(0)
+                return "finished"
+
+            own = asyncio.ensure_future(_keepalive())
+            assert await own == "finished", "the keepalive cancelled itself"
+
+            other = asyncio.ensure_future(asyncio.sleep(3600))
+            await asyncio.sleep(0)
+            t._keepalive_task = other
+            t._stop_keepalive()              # asked from elsewhere: cancelled
+            try:
+                await asyncio.wait_for(asyncio.shield(other), 1.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            cancelled = other.cancelled()
+            other.cancel()
+            return cancelled, t._keepalive_task
+
+        cancelled, left = asyncio.run(_drive())
+        assert cancelled, "a keepalive asked to stop by another task survived"
+        assert left is None

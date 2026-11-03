@@ -190,7 +190,7 @@ def test_setup_requires_an_encrypted_otr_session():
         a.groups.invite(ROOM, "bob@x.i2p")
     assert e.value.code == "otr_required"
     # A signal arriving without an encrypted session is refused.
-    b.groups.on_signal("alice@x.i2p", SIGNAL_PREFIX + "INVITE:%s|%s" % (ROOM, "0" * 96))
+    b.groups.on_signal("alice@x.i2p", SIGNAL_PREFIX + "INVITE:%s|%s" % (ROOM, "0" * 128))
     assert "group_signal_unencrypted" in b.errors()
     assert not b.groups.pending_invites()
 
@@ -229,7 +229,7 @@ def test_a_welcome_whose_inviter_key_does_not_match_the_invite_is_refused():
     w.pair("alice@x.i2p", "bob@x.i2p")
     b.join_room()
     # An invite claiming a fingerprint that is not Alice's key in the group.
-    b.groups.on_signal("alice@x.i2p", SIGNAL_PREFIX + "INVITE:%s|%s" % (ROOM, "ab" * 48))
+    b.groups.on_signal("alice@x.i2p", SIGNAL_PREFIX + "INVITE:%s|%s" % (ROOM, "ab" * 64))
     b.groups.accept(ROOM)
     # Alice (who never sent that invite) nonetheless has a group and adds Bob.
     a.join_room()
@@ -468,7 +468,7 @@ def test_invitations_are_bounded_and_expire():
     w.pair("alice@x.i2p", "bob@x.i2p")
     for i in range(40):
         b.groups.on_signal("alice@x.i2p", SIGNAL_PREFIX + "INVITE:r%d@conference.x.i2p|%s"
-                           % (i, "0" * 96))
+                           % (i, "0" * 128))
     assert len(b.groups.pending_invites()) == 32
     b.groups._clock = lambda: 1e12
     assert b.groups.pending_invites() == []
@@ -478,9 +478,9 @@ def test_malformed_signals_do_nothing():
     w = World()
     a, b = w.add("alice@x.i2p"), w.add("bob@x.i2p")
     w.pair("alice@x.i2p", "bob@x.i2p")
-    for body in ["INVITE:", "INVITE:no-at-sign|" + "0" * 96, "INVITE:%s|short" % ROOM,
+    for body in ["INVITE:", "INVITE:no-at-sign|" + "0" * 128, "INVITE:%s|short" % ROOM,
                  "KP:%s|!!!notbase64" % ROOM, "WELCOME:%s|" % ROOM, "BOGUS:x",
-                 "INVITE:a|b|c@x.i2p|" + "0" * 96]:
+                 "INVITE:a|b|c@x.i2p|" + "0" * 128]:
         b.groups.on_signal("alice@x.i2p", SIGNAL_PREFIX + body)
     assert b.groups.pending_invites() == []
     assert b.groups.rooms() == []
@@ -764,7 +764,7 @@ class TestSigningKeysRotate:
 
         def swap(frm, to, body):
             if "WELCOME:" in body:
-                body = body.rsplit("|", 1)[0] + "|" + "cd" * 48
+                body = body.rsplit("|", 1)[0] + "|" + "cd" * 64
             real(frm, to, body)
         w.private = swap
         b.groups.accept(ROOM)
@@ -956,7 +956,7 @@ class TestWelcomeDelivery:
 
     def test_a_repeated_welcome_is_acknowledged_not_refused(self):
         w, (a, b) = _group(2)
-        body = "%sWELCOME:%s|%s|%s" % (SIGNAL_PREFIX, ROOM, "AAAA", "ab" * 48)
+        body = "%sWELCOME:%s|%s|%s" % (SIGNAL_PREFIX, ROOM, "AAAA", "ab" * 64)
         a.groups._welcome_out[(ROOM, "bob@x.i2p")] = [body, 0.0, 1]
         b.groups.on_signal("alice@x.i2p", body)
         assert "refused" not in b.changes()
@@ -1292,7 +1292,7 @@ class TestVerifyingMembersForCalls:
     def test_a_key_the_group_does_not_hold_is_refused(self):
         w, (a, b, c) = _group(3)
         w.pair(b.jid, c.jid, SecurityState.SMP_VERIFIED)
-        c.groups.on_signal(b.jid, "%sFP:%s|%s" % (T_SIGNAL, ROOM, "ab" * 48))
+        c.groups.on_signal(b.jid, "%sFP:%s|%s" % (T_SIGNAL, ROOM, "ab" * 64))
         assert not self._verified(c, b.jid)
         assert "refused" in c.changes()
 

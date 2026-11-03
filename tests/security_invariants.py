@@ -478,7 +478,9 @@ INVARIANTS: Tuple[Invariant, ...] = (
                   "deleted, which is cryptographic erasure of every sealed "
                   "record.",
         limits="Files the Python side wrote (the device seed, received "
-               "files) are overwritten once and unlinked; on flash that "
+               "files) are overwritten (one pass on flash, three on a "
+               "rotational disk), unlinked, and the wipe verifies nothing is "
+               "left (`tests/test_secure_file_destroy.py`); on flash that "
                "overwrite is best effort, because wear levelling may leave "
                "the old block until the controller erases it.  No test can "
                "show that no copy of a key survives elsewhere in process "

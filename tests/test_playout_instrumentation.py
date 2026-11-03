@@ -120,38 +120,75 @@ class TestTheCountersAreNamedAfterWhatTheyCount:
         assert "overrun=%d" not in window
 
     def test_the_shed_counter_still_counts_shed_frames(self):
-        src = inspect.getsource(voice.JitterBuffer.pop)
-        assert 'stats["drift"] += 1' in src, (
+        buf = voice.JitterBuffer(prefill=1, maxlen=40, adaptive=False)
+        for i in range(30):
+            buf.push(0, i, bytearray(b"\xaa" * 8))
+        before = len(buf._heap)
+        buf.pop()
+        shed = before - 1 - len(buf._heap)
+        assert shed > 0, "the burst was not shed at all"
+        assert buf.stats["drift"] == shed, (
             "the counter the telemetry calls `shed` no longer counts frames "
             "dropped by the shedder")
 
 
+class _FakeStream:
+    def __init__(self, diag):
+        self._diag = diag
+
+    def diagnostics(self):
+        return dict(self._diag)
+
+    def read_frame(self, timeout_ms=200):
+        return b"\x10\x00" * 4
+
+    def write_frame(self, pcm):
+        pass
+
+    def stop(self):
+        pass
+
+
+def _run_probe(monkeypatch, capsys, playback):
+    """Run the real probe over fake backends and return what it printed."""
+    monkeypatch.setattr(audio, "aaudio_available", lambda: True)
+    monkeypatch.setattr(audio, "_probe_termux_api",
+                        lambda: {"available": False})
+    monkeypatch.setattr(audio, "open_capture",
+                        lambda preferred: (_FakeStream({}), None))
+    monkeypatch.setattr(audio, "open_playback", playback)
+    audio.probe(duration=0.0)
+    return capsys.readouterr().out
+
+
+_DEVICE = {"device_rate": 48000, "device_channels": 2, "resampling": True,
+           "frames_per_burst": 96, "buffer_capacity_frames": 192}
+
+
 class TestTheProbeReportsThePlaybackDevice:
 
-    def test_it_prints_what_it_already_collected(self):
-        """Assert on the format STRING, not on the field names.
-
-        The names appear in the `d.get(...)` arguments whether or not the
-        format string still has a slot for them, so checking for the names
-        passes on a gutted line.
-        """
-        src = inspect.getsource(audio.probe)
-        fmt = [n.value for n in ast.walk(ast.parse(textwrap.dedent(src)))
-               if isinstance(n, ast.Constant) and isinstance(n.value, str)]
-        joined = "".join(fmt)
-        assert "playback OK  rate=%s" in joined
-        for slot in ("burst=%s", "capacity=%s", "ch=%s", "resample=%s"):
-            assert slot in joined, (
+    def test_it_prints_what_it_already_collected(self, monkeypatch, capsys):
+        out = _run_probe(monkeypatch, capsys,
+                         lambda preferred: (_FakeStream(_DEVICE), None))
+        assert "playback OK  rate=48000" in out
+        for slot in ("burst=96", "capacity=192", "ch=2", "resample=True"):
+            assert slot in out, (
                 "the probe no longer prints %s for playback" % slot)
 
-    def test_it_flags_a_buffer_smaller_than_one_frame(self):
-        src = inspect.getsource(audio.probe)
-        assert "capacity holds" in src
+    def test_it_flags_a_buffer_smaller_than_one_frame(self, monkeypatch,
+                                                       capsys):
+        out = _run_probe(monkeypatch, capsys,
+                         lambda preferred: (_FakeStream(_DEVICE), None))
+        assert "capacity holds 4 ms of audio" in out
+        assert "capacity is smaller than one frame" in out
 
-    def test_a_failed_playback_still_reports_its_detail(self):
-        src = inspect.getsource(audio.probe)
-        i = src.index("playback FAILED")
-        assert "detail" in src[i:i + 300], (
+    def test_a_failed_playback_still_reports_its_detail(self, monkeypatch,
+                                                         capsys):
+        def refuse(preferred):
+            raise audio.AudioError("DEVICE_BUSY", "held by another app")
+        out = _run_probe(monkeypatch, capsys, refuse)
+        i = out.index("playback FAILED  DEVICE_BUSY")
+        assert "held by another app" in out[i:i + 300], (
             "a playback failure prints a code with no detail")
 
 

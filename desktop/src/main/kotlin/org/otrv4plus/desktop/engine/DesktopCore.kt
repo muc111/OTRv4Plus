@@ -22,6 +22,7 @@ import org.otrv4plus.android.bridge.OtrCore
 import org.otrv4plus.android.bridge.OtrEvent
 import org.otrv4plus.android.bridge.OtrEventSink
 import org.otrv4plus.android.bridge.PeerPresence
+import org.otrv4plus.android.bridge.RegistrationCaptcha
 import org.otrv4plus.android.bridge.RegistrationOutcome
 import org.otrv4plus.android.bridge.SecurityDetails
 import org.otrv4plus.android.bridge.SecurityState
@@ -89,11 +90,29 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     var lastRegistrationNotice: String = ""
         private set
 
-    fun register(password: String): RegistrationOutcome {
-        val r = call("register", "password" to password) as? JsonObject ?: JsonObject(emptyMap())
+    fun register(password: String): RegistrationOutcome =
+        outcomeFrom(call("register", "password" to password))
+
+    /** Answer the CAPTCHA the last [register] reported, over the stream it
+     *  left open. Same shape as [register]; a protocol error if none waits. */
+    fun submitCaptcha(answer: String): RegistrationOutcome =
+        outcomeFrom(call("submit_captcha", "answer" to answer))
+
+    private fun outcomeFrom(raw: Any?): RegistrationOutcome {
+        val r = raw as? JsonObject ?: JsonObject(emptyMap())
         lastRegistrationNotice = r.str("notice")
-        return RegistrationOutcome(ok = r["ok"].asBool(), code = r.str("code").ifBlank { "unknown" },
-                                   detail = r.str("detail"))
+        val cap = r["captcha"] as? JsonObject
+        val img = cap?.str("image_base64").orEmpty()
+        val captcha = if (cap != null && img.isNotBlank())
+            RegistrationCaptcha(
+                imageBase64 = img,
+                imageMime = cap.str("image_mime").ifBlank { "image/png" },
+                instructions = cap.str("instructions"),
+                answerVar = cap.str("answer_var").ifBlank { "ocr" },
+            ) else null
+        return RegistrationOutcome(ok = r["ok"].asBool(),
+                                   code = r.str("code").ifBlank { "unknown" },
+                                   detail = r.str("detail"), captcha = captcha)
     }
 
     fun disconnect() { call("disconnect") }
@@ -568,6 +587,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
             identityKeys = r["identity_keys"].asInt(), filesDestroyed = r["files_destroyed"].asInt(),
             filesUnlinkedOnly = r["files_unlinked_only"].asInt(),
             errors = (r["errors"] as? JsonArray).orEmpty().map { it.asStr() },
+            verified = r["verified"].asBool(), survivors = r["survivors"].asInt(),
+            cryptoErased = r["crypto_erased"].asBool(), keyStore = r.str("key_store").ifBlank { "none" },
         )
     }.getOrDefault(WipeReport.UNREACHABLE)
 

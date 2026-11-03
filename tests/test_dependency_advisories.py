@@ -203,15 +203,36 @@ class TestTheVulnerableCodeIsUnreachable:
         ".step_by(",
     )
 
+    #: Call sites re-reviewed and cleared for GHSA-36hh-v3qg-5jq4 (2026-11, the
+    #: PQ migration's RFC 7748 X448 vectors). Each is `(0..len).step_by(2)` over
+    #: a Rust integer `Range<usize>` inside a `#[cfg(test)]` hex decoder: this
+    #: is the standard library's `StepBy<Range<usize>>`, never PyO3's
+    #: `BoundListIterator`/`BoundTupleIterator`, with no Python sequence and a
+    #: constant (non-attacker-controlled) step, so the vulnerable
+    #: `get_item_unchecked` path is not reached. See SECURITY.md's
+    #: GHSA-36hh-v3qg-5jq4 re-check note. Keyed on the exact stripped source
+    #: line so ANY edit to these lines -- or any new `.step_by(`/`.nth(`
+    #: elsewhere -- re-trips the check for a fresh review.
+    REVIEWED = {
+        ".step_by(": {
+            "let v: Vec<u8> = (0..s.len()).step_by(2)",
+            "(0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], "
+            "16).unwrap()).collect()",
+        },
+    }
+
     @pytest.mark.parametrize("needle", FORBIDDEN)
     def test_no_source_file_uses_it(self, needle, rust_sources):
         offenders = []
+        reviewed = self.REVIEWED.get(needle, frozenset())
         for name, body in rust_sources.items():
             for lineno, line in enumerate(body.splitlines(), 1):
                 stripped = line.strip()
                 if stripped.startswith("//") or stripped.startswith("///"):
                     continue          # a mention in a comment is not a use
                 if needle in line:
+                    if stripped in reviewed:
+                        continue      # security-reviewed; see REVIEWED above
                     offenders.append("%s:%d: %s" % (name, lineno, stripped))
         assert not offenders, (
             "%r now appears in the Rust core. GHSA-36hh-v3qg-5jq4's "

@@ -518,6 +518,36 @@ def at_rest_dek():
     return _core.FileDek.load_or_create(os.path.join(state_dir(), AT_REST_DEK_NAME))
 
 
+_RUN_KEY = None
+
+
+def _run_key():
+    """This process's RunKey: 256 random bits made in Rust and never written
+    anywhere. Partial files are sealed under it as they arrive, so one left
+    behind by a crash or a kill is ciphertext whose key died with us."""
+    global _RUN_KEY
+    if _RUN_KEY is None:
+        _RUN_KEY = _core.RunKey()
+    return _RUN_KEY
+
+
+class _RunSealedPart:
+    """A `.part` whose chunks are sealed under the run key as they arrive:
+    the file handle's place in a transfer that will rest sealed."""
+
+    def __init__(self, path: str):
+        self._writer = _core.RunSealedWriter(_run_key(), path)
+
+    def write(self, data) -> None:
+        self._writer.write(bytes(data))
+
+    def finish(self) -> int:
+        return int(self._writer.finish())
+
+    def close(self) -> None:
+        self._writer.finish()
+
+
 def _shred(path: str) -> None:
     """Overwrite a plaintext file once and unlink it. Best effort: on flash
     the old blocks may survive until the controller erases them."""
@@ -1188,7 +1218,14 @@ class FileTransferManager:
         fd, tmp = tempfile.mkstemp(prefix="ft-", suffix=".part",
                                    dir=incoming_dir())
         os.fchmod(fd, 0o600)
-        transfer.handle = os.fdopen(fd, "wb")
+        if self._seal_at_rest and hasattr(_core, "RunSealedWriter"):
+            # Never plaintext on disk: each chunk is sealed under the run
+            # key as it lands, and resealed into the container at the end.
+            os.close(fd)
+            os.unlink(tmp)
+            transfer.handle = _RunSealedPart(tmp)
+        else:
+            transfer.handle = os.fdopen(fd, "wb")
         transfer.tmp_path = tmp
         transfer.accepted = True
         # The clock starts here, not at the offer: the gap while a human reads
@@ -1328,9 +1365,13 @@ class FileTransferManager:
         rx = transfer.receiver
         if rx is None or not transfer.accepted:
             raise TransferError("transfer was never accepted")
-        transfer.handle.flush()
-        os.fsync(transfer.handle.fileno())
-        transfer.handle.close()
+        run_sealed = isinstance(transfer.handle, _RunSealedPart)
+        if run_sealed:
+            run_length = transfer.handle.finish()
+        else:
+            transfer.handle.flush()
+            os.fsync(transfer.handle.fileno())
+            transfer.handle.close()
         transfer.handle = None
 
         # 1. every chunk arrived, and the last one authenticated as last.
@@ -1353,6 +1394,8 @@ class FileTransferManager:
         # 3. the plaintext is the plaintext that was offered
         if bytes(rx.plaintext_sha256()) != offer.plaintext_sha256:
             raise TransferError("plaintext hash mismatch")
+        if run_sealed:
+            return self._finish_run_sealed(transfer, run_length)
         # 4. and the sizes agree with what was actually written
         written = os.path.getsize(transfer.tmp_path)
         if written != offer.plaintext_size or written != rx.plaintext_len:
@@ -1381,6 +1424,36 @@ class FileTransferManager:
             # Atomic within the same filesystem, so a reader never sees a
             # partial file under the final name.
             os.replace(transfer.tmp_path, final)
+        transfer.tmp_path = None
+        transfer.final_path = final
+        self._destroy_incoming(transfer)
+        return final
+
+    def _finish_run_sealed(self, transfer: IncomingTransfer, written: int) -> str:
+        """Steps 4-6 for a `.part` sealed under the run key: reseal it straight
+        into the at-rest container, and check the size and the plaintext hash
+        Rust computed on the way through. No plaintext file at any point."""
+        offer, rx = transfer.offer, transfer.receiver
+        # 4. the sizes agree with what was actually written
+        if written != offer.plaintext_size or written != rx.plaintext_len:
+            raise TransferError("size mismatch: %d bytes on disk, %d offered"
+                                % (written, offer.plaintext_size))
+        name = sanitise_filename(offer.filename)
+        final = unique_path(state_dir(), name + CONTAINER_SUFFIX)
+        # 5. an independent read-back: every chunk must authenticate under the
+        #    run key, and what came out must hash to what was offered
+        try:
+            digest = bytes(_core.otrv_reseal_run_file(
+                _run_key(), at_rest_dek(), transfer.tmp_path, final, written))
+        except Exception as exc:
+            raise TransferError("the file on disk does not match what arrived") from exc
+        if digest != offer.plaintext_sha256:
+            try:
+                os.remove(final)
+            except OSError:
+                pass
+            raise TransferError("the file on disk does not match its hash")
+        os.remove(transfer.tmp_path)            # ciphertext under a dead-at-exit key
         transfer.tmp_path = None
         transfer.final_path = final
         self._destroy_incoming(transfer)

@@ -4,6 +4,121 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Unreleased (dev) — after the tested release, 2026-10-30
+
+`main` holds the build tested on phones and a laptop: **rc.189**
+(versionCode 190), **desktop 0.14.11**, commit `359dadb`. Every build after
+it is marked **untested** in its version name until it is tested too. This
+starts at **rc.190-untested** (versionCode 191).
+
+- **Post-quantum crypto on pure Rust, and MLS hashing to SHA-512** (owner
+  go-ahead, 2026-11-02):
+  - **`pqcrypto-mlkem` / `pqcrypto-mldsa` / `pqcrypto-traits` (unmaintained
+    C bindings) replaced by the pure-Rust `ml-kem` 0.3 and `ml-dsa` 0.1**
+    across the whole shipping tree — core wrappers (`src/mlkem.rs`,
+    `src/mldsa.rs`), DAKE, SMP, and the MLS crate (`mls/src/mlkem.rs`). The
+    wire byte formats are unchanged (FIPS 203 ek 1568 / expanded dk 3168,
+    FIPS 204 pk 2592 / expanded sk 4896 / sig 4627), cross-checked in
+    `Rust/audit`. `cargo tree` now shows no `pqcrypto-*` in the build.
+  - **`otrv4-mls` is now `#![forbid(unsafe_code)]`** (was `deny`): the
+    former PQClean FFI for seeded ML-KEM key generation is gone, since
+    `ml-kem` provides `DecapsulationKey::from_seed` in safe Rust. The core
+    was already `forbid`.
+  - **The hybrid MLS suite 0xF0A1 now hashes and HKDFs with SHA-512**
+    (was SHA-384). The vendored ciphersuite table binds 0xF0A1 to
+    `Sha2_512` / `HkdfSha512`; the provider, HPKE (`mls/src/hpke.rs`) and
+    group fingerprints follow (fingerprints are 64 bytes now, not 48). The
+    private code point's name keeps its historical `SHA384` token. The
+    non-hybrid reference-cross-check suite moved from 0x0907 (SHA-384) to
+    the standard 0x0906 (`…_SHA512_MLDSA87`); `tests/interop.rs` and
+    `tests/hpke_cross.rs` agree byte-for-byte with the reference OpenMLS
+    provider and hpke-rs on the SHA-512 path. The HPKE binding combiner
+    (SHA3-256) and the composite signature are unchanged.
+  - **`MAX_MESSAGE` for MLS group payloads raised 1 MiB → 4 MiB.**
+  - Tidy-up: `NOTICE` regenerated from the shipped dependency graph (the
+    four `pqcrypto-*` attributions drop out, `ml-kem` / `ml-dsa` come in);
+    `tests/test_mlkem_kat.py` now points at the pure-Rust `otrv4_core`
+    entry points and skips cleanly on a release wheel that omits the
+    `raw-key-test-api` test gate, instead of failing to import.
+  - **NIST ACVP vectors pinned against the shipping `ml-kem` / `ml-dsa`**
+    (test-only, `Rust/audit`): ML-KEM-1024 keyGen, encapsulation,
+    decapsulation (incl. implicit rejection) and both FIPS 203 key checks;
+    ML-DSA-87 keyGen, hedged sigGen and sigVer, through the same crate
+    calls the shipping wrappers make. Extracted from ACVP-Server at a pinned
+    commit with SHA-256-checked sources (`vectors/extract_acvp.py`); a
+    version-parity test keeps the audit lockfile on the shipped versions;
+    CI job `acvp.yml`.
+  - **Post-quantum hardening pass** (security-audit findings F1-F7,
+    2026-11-02):
+    - **F1: ML-DSA-87 signing is hedged again** (FIPS 204 Algorithm 2 with
+      fresh per-signature randomness, as the PQClean bindings did). The
+      migration had switched every signer to the deterministic variant,
+      which is weaker against fault and side-channel attacks. Verification
+      and wire format unchanged.
+    - **F7: a malformed published ML-DSA key can no longer abort the
+      process.** `ml-dsa`'s `from_expanded` panics (so, with `panic=abort`,
+      crashes) on a bad expanded key, and an F4 "retired key" publication
+      carries an attacker-chosen one. `from_parts` now refuses an
+      undecodable key before it is ever decoded.
+    - **F6: the composite signature binds both component public keys**
+      (`m' = label-v2 || SHA-512(pk) || m`), so neither half verifies
+      paired with another key's half. Wire-format change (no users).
+    - **F3: the client offers and accepts only the hybrid suite 0xF0A1;**
+      the non-hybrid 0x0906 is served only behind the test-only
+      `reference-interop` feature (for the OpenMLS cross-check).
+    - **F2: per-input MLS size bounds** (key package 64 KiB, room message
+      1 MiB, Welcome 4 MiB), the same in Rust and the Python bridge, pinned
+      by a test. The earlier single 4 MiB bound never took effect.
+    - **F5: X448 moved to `ed448-goldilocks-plus`** (its RFC 7748 X448,
+      secrets `ZeroizeOnDrop`), retiring the unmaintained `x448` 0.6 /
+      `ed448-goldilocks` 0.7; RFC 7748 vectors pinned. **F4: PQ key and
+      shared-secret temporaries are now owned in wiped buffers.** Five
+      crates leave the shipped graph.
+- **Updated: the built-in router is i2pd 3.0.0.1** (was 2.61.0), phone build
+  **rc.191-untested** (versionCode 192). Among its fixes: a SAM session
+  closed a few seconds after a reconnect, invalid sessions for
+  out-of-sequence streaming packets, and stalled UDP tunnels. Its new
+  BitTorrent client is compiled out (`-DWITH_TORRENTS=OFF`); the app uses
+  SAM only. Every `i2pd.conf` key the app writes was checked against
+  3.0.0.1.
+- **Updated: Rust crates, within each version range.** Releases at least
+  two weeks old are taken, and security fixes at once whatever their age
+  (owner, 2026-10-30):
+  - **openmls 0.9.2**, for two advisories in group messaging:
+    GHSA-p276-g3f3-wwgh (a rejected private message advanced the sender's
+    ratchet and blocked that sender's next message) and GHSA-94v4-rg25-x625
+    (removed members could reappear after an external commit). A tampered
+    group message no longer costs the genuine one.
+  - **crypto-bigint 0.7.9**: 0.7.8 was yanked (a semver break, not a
+    security bug); the RUSTSEC-2026-0387 fix is in every 0.7.6+.
+  - `libc` 0.2.191; the `audit` and `fuzz` lockfiles now match the core
+    (they still had `crypto-bigint` 0.5).
+  - `thiserror` 2 and `dashmap` 6 (major versions, no cryptography): the
+    core's 199 and MLS's 78 tests pass, clippy clean.
+  - **The RustCrypto hashes and AES-GCM** (owner's go-ahead, 2026-10-30):
+    `aes-gcm` 0.11, `hmac`/`hkdf` 0.13, `sha2` 0.11, `sha3` 0.12 (its
+    SHAKE-256 is now the `shake` crate), in the core and in MLS. HMAC over
+    SHA3-512 uses `hmac::SimpleHmac`, the same RFC 2104 construction, as
+    `sha3` 0.12 no longer offers the block core `Hmac` needs. Every pinned
+    known-answer test passes unchanged (core 199, MLS 78 including the
+    byte-for-byte HPKE cross-check); phone build **rc.192-untested**
+    (versionCode 193).
+  - **pyo3 0.30.1.**
+  - **Hardened:** the new versions' `zeroize` feature is on for `aes-gcm`,
+    `hmac`, `sha2`, `sha3` and `shake`, in the core and MLS: cipher and
+    hash states are wiped when dropped. The versions they replace offered
+    no such option.
+  - Not taken: `rand` 0.10, `rand_core` 0.10, `getrandom` 0.4 and
+    `num-bigint` 0.5. They are the entropy source for every key, and the
+    curve crates (`x448` 0.6 and others) take `rand_core` 0.6 generators,
+    so moving them means a second RNG stack or replacing those crates.
+    `hpke-rs` 0.8 too: it is a test-only cross-check pinned to what MLS
+    is checked against.
+- **Hardened: the APK's Python packages are checked by SHA-256.** Every
+  third-party file the APK's Python is built from is named by hash in
+  `android/app/python-lock.txt` and downloaded with `pip --require-hashes`.
+  The build installs from nothing else (docs/SECURITY_ISSUES.md S1).
+
 ## Unreleased (dev) — audit and hardening pass, 2026-10-26
 
 Dev builds from 2026-10-27 are **rc.187** (versionCode 188) and **desktop

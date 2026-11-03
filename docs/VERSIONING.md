@@ -140,11 +140,11 @@ the lock is what backs the claim — `tests/test_dependency_advisories.py`
 asserts against the lock for that reason, and asserts the manifest floor
 separately so a later `cargo update` cannot walk back to a vulnerable release.
 
-**PyO3 compatibility, as of v10.19.0 (pyo3 0.29.2):**
+**PyO3 compatibility, as of 2026-10-30 (pyo3 0.30.1):**
 
 | Constraint | Value | Where it is enforced |
 |---|---|---|
-| Rust MSRV | 1.85 (ours; pyo3 0.29 needs 1.83) | `rust-version` in `Rust/Cargo.toml` |
+| Rust MSRV | 1.91 (openmls 0.9 needs it) | `rust-version` in `Rust/Cargo.toml` |
 | Python floor, ABI | `abi3-py39` | `Rust/Cargo.toml` features |
 | Python floor, source | **3.12** — `otrv4+.py` uses PEP 701 f-string spacing | `requires-python` in `Rust/pyproject.toml` |
 

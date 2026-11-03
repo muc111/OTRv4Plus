@@ -55,6 +55,7 @@ from typing import Any, Callable, Dict, Optional
 #: Controller operations: name -> argument names, in call order.
 CONTROLLER_OPS: Dict[str, tuple] = {
     "register": ("password",),
+    "submit_captcha": ("answer",),
     "change_password": ("current_password", "new_password"),
     "cancel": (),
     "disconnect": (),
@@ -373,6 +374,10 @@ def _real_app():
     bootstrap.ensure_runtime()
     otr = bootstrap.load_orchestration()
     from android_bridge.app import OtrApp
+    from android_bridge import key_custody
+    # Before any key file is read: with a key store, every one is wrapped by
+    # its key-wrapping key, which Wipe & Exit deletes (crypto-erase).
+    key_custody.install()
     from android_bridge.account_identity import for_desktop
     from android_bridge import account_trust
     app = OtrApp(otr.EnhancedSessionManager(otr.OTRConfig()))

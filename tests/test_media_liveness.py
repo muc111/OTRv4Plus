@@ -515,17 +515,34 @@ class TestWiring:
         assert "_rx_last_datagram = now" in src
 
     def test_teardown_cancels_the_watchdog(self):
-        import inspect
-        src = inspect.getsource(V.VoiceCallSession.end)
-        assert "_rx_watchdog_task" in src
+        async def _drive():
+            s = V.VoiceCallSession("alice@example.i2p",
+                                   asyncio.get_event_loop(),
+                                   bytes(range(16)), False)
+            task = asyncio.ensure_future(asyncio.sleep(3600))
+            s._rx_watchdog_task = task
+            await s.end()
+            return s, task
+
+        s, task = _run(_drive())
+        assert task.cancelled(), "the watchdog outlived the call"
+        assert s._rx_watchdog_task is None
 
     def test_loss_goes_through_the_existing_signal(self):
         # _handle_stream_lost already ends the call and tells the peer, and
         # is already bound to the call_id. A second teardown path would be a
         # second thing to get wrong.
-        import inspect
-        src = inspect.getsource(V.VoiceCallSession._rx_watchdog)
-        assert "_signal_stream_lost" in src
+        async def _drive():
+            s = _session()
+            signalled = []
+            s._signal_stream_lost = signalled.append
+            s.age_rx(V.VOICE_RX_DEAD_S + 1.0)
+            await _tick(s)
+            return s, signalled
+
+        s, signalled = _run(_drive())
+        assert len(signalled) == 1 and "no media received" in signalled[0]
+        assert s.lost == [], "the watchdog reported loss around the signal"
 
     def test_the_watchdog_exits_when_the_session_stops(self):
         async def _drive():

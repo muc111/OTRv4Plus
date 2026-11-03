@@ -66,7 +66,8 @@ use ed448_goldilocks_plus::{
 };
 use rand::{RngCore, rngs::OsRng};
 
-use sha3::{Shake256, digest::{Update, ExtendableOutput, XofReader}};
+use shake::Shake256;
+use sha3::digest::{Update, ExtendableOutput, XofReader};
 use subtle::ConstantTimeEq;
 
 use zeroize::Zeroize;

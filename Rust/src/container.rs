@@ -263,11 +263,16 @@ fn create_private(path: &Path) -> Result<File> {
 
 /// Seal `src` into a new container at `dst`, replacing `dst` if it exists.
 pub fn seal_file(src: &Path, dst: &Path, key: &KeySource, chunk: u32) -> Result<()> {
+    let input = File::open(src).map_err(io)?;
+    let length = input.metadata().map_err(io)?.len();
+    seal_stream(input, length, dst, key, chunk)
+}
+
+/// Seal exactly `length` bytes read from `input` into a container at `dst`.
+fn seal_stream(mut input: impl Read, length: u64, dst: &Path, key: &KeySource, chunk: u32) -> Result<()> {
     if !(MIN_CHUNK..=MAX_CHUNK).contains(&chunk) {
         return Err(ContainerError::BadArgument("chunk size out of range"));
     }
-    let mut input = File::open(src).map_err(io)?;
-    let length = input.metadata().map_err(io)?.len();
     let mut salt = [0u8; 16];
     let mut prefix = [0u8; 8];
     OsRng.fill_bytes(&mut salt);
@@ -304,10 +309,14 @@ pub fn seal_file(src: &Path, dst: &Path, key: &KeySource, chunk: u32) -> Result<
             remaining -= want as u64;
             let last = i as u64 + 1 == n;
             let ct = cipher
-                .encrypt(<&Nonce<_>>::from(&nonce(&prefix, i)[..]),
+                .encrypt(&Nonce::try_from(&nonce(&prefix, i)[..]).map_err(|_| ContainerError::Refused)?,
                          Payload { msg: &buf[..want], aad: &aad(&hbytes, i, last) })
                 .map_err(|_| ContainerError::Refused)?;
             out.write_all(&ct).map_err(io)?;
+        }
+        let mut extra = [0u8; 1];
+        if read_full(&mut input, &mut extra)? != 0 {
+            return Err(ContainerError::Io("source longer than its stated length".into()));
         }
         out.sync_all().map_err(io)?;
         fs::rename(&tmp, dst).map_err(io)?;
@@ -346,7 +355,7 @@ fn open_with(src: &Path, key: &KeySource, mut sink: impl FnMut(&[u8]) -> Result<
         let last = i as u64 + 1 == n;
         let pt = Zeroizing::new(
             cipher
-                .decrypt(<&Nonce<_>>::from(&nonce(&header.prefix, i)[..]),
+                .decrypt(&Nonce::try_from(&nonce(&header.prefix, i)[..]).map_err(|_| ContainerError::Refused)?,
                          Payload { msg: &buf[..want + TAG_LEN], aad: &aad(&hbytes, i, last) })
                 .map_err(|_| ContainerError::Refused)?,
         );
@@ -479,8 +488,239 @@ pub fn otrv_info<'py>(py: Python<'py>, src: &str) -> PyResult<Bound<'py, PyDict>
     Ok(d)
 }
 
+
+// ── per-run key: a transfer's partial file never rests in the clear ─────────
+//
+// A file arriving over OTR is decrypted chunk by chunk. Each chunk is sealed
+// at once under a RunKey -- 256 random bits made in Rust, held only in this
+// process, never written anywhere -- so the `.part` on disk is ciphertext
+// from its first byte. At completion it is resealed straight into the
+// at-rest container, and the plaintext's length and SHA-256 come back for
+// the transfer's own checks: no plaintext file exists at any point. A crash,
+// a kill or a power cut leaves only ciphertext whose key died with the
+// process, which is what makes it safe on flash.
+
+const RUN_MAGIC: &[u8; 8] = b"OTRVRK1\0";
+
+#[pyclass(name = "RunKey", module = "otrv4_core")]
+pub struct RunKey {
+    key: Option<crate::secure_mem::SecretBytes<32>>,
+}
+
+impl RunKey {
+    fn cipher(&self) -> PyResult<Aes256Gcm> {
+        let k = self.key.as_ref().ok_or_else(|| PyValueError::new_err("run key destroyed"))?;
+        Aes256Gcm::new_from_slice(k.expose_slice()).map_err(|_| PyValueError::new_err("bad run key"))
+    }
+}
+
+#[pymethods]
+impl RunKey {
+    #[new]
+    fn new() -> Self {
+        let mut k = Zeroizing::new([0u8; 32]);
+        OsRng.fill_bytes(&mut k[..]);
+        Self { key: Some(crate::secure_mem::SecretBytes::new(*k)) }
+    }
+
+    fn zeroize(&mut self) {
+        self.key = None;
+    }
+
+    fn __repr__(&self) -> &'static str {
+        "<RunKey [REDACTED]>"
+    }
+}
+
+fn run_aad(i: u32) -> [u8; 12] {
+    let mut a = [0u8; 12];
+    a[..8].copy_from_slice(RUN_MAGIC);
+    a[8..].copy_from_slice(&i.to_be_bytes());
+    a
+}
+
+/// Appends chunks to a `.part`, each sealed under a RunKey as it arrives.
+#[pyclass(name = "RunSealedWriter", module = "otrv4_core")]
+pub struct RunSealedWriter {
+    cipher: Aes256Gcm,
+    file: Option<File>,
+    prefix: [u8; 8],
+    index: u32,
+    length: u64,
+}
+
+#[pymethods]
+impl RunSealedWriter {
+    /// Create `path` (0600, new) for chunks sealed under `key`.
+    #[new]
+    fn new(key: PyRef<'_, RunKey>, path: &str) -> PyResult<Self> {
+        let cipher = key.cipher()?;
+        let mut prefix = [0u8; 8];
+        OsRng.fill_bytes(&mut prefix);
+        let mut file = create_private(Path::new(path)).map_err(py_err)?;
+        file.write_all(RUN_MAGIC).and_then(|_| file.write_all(&prefix))
+            .map_err(|e| PyOSError::new_err(e.to_string()))?;
+        Ok(Self { cipher, file: Some(file), prefix, index: 0, length: 0 })
+    }
+
+    /// Seal the next chunk and append it.
+    fn write(&mut self, data: &[u8]) -> PyResult<()> {
+        let i = self.index;
+        self.write_at(i, data)?;
+        self.index = i.checked_add(1).ok_or_else(|| PyValueError::new_err("too many chunks"))?;
+        Ok(())
+    }
+
+    /// Seal chunk `index` and append it: u32 index || u32 length || ct || tag.
+    /// Chunks may arrive in any order (group files); the reseal puts them
+    /// back in order and refuses a gap or a duplicate.
+    fn write_at(&mut self, index: u32, data: &[u8]) -> PyResult<()> {
+        let file = self.file.as_mut().ok_or_else(|| PyValueError::new_err("writer closed"))?;
+        if data.len() > MAX_CHUNK as usize * 16 {
+            return Err(PyValueError::new_err("chunk too large"));
+        }
+        let ct = self.cipher
+            .encrypt(&Nonce::from(nonce(&self.prefix, index)),
+                     Payload { msg: data, aad: &run_aad(index) })
+            .map_err(|_| PyValueError::new_err("seal failed"))?;
+        file.write_all(&index.to_be_bytes())
+            .and_then(|_| file.write_all(&(ct.len() as u32).to_be_bytes()))
+            .and_then(|_| file.write_all(&ct))
+            .map_err(|e| PyOSError::new_err(e.to_string()))?;
+        self.length += data.len() as u64;
+        Ok(())
+    }
+
+    /// fsync and close. Returns the plaintext length written.
+    fn finish(&mut self) -> PyResult<u64> {
+        if let Some(f) = self.file.take() {
+            f.sync_all().map_err(|e| PyOSError::new_err(e.to_string()))?;
+        }
+        Ok(self.length)
+    }
+
+    #[getter]
+    fn length(&self) -> u64 {
+        self.length
+    }
+}
+
+/// Reads the plaintext back out of a run-sealed file, in chunk order,
+/// hashing as it goes.
+struct RunReader {
+    input: File,
+    cipher: Aes256Gcm,
+    prefix: [u8; 8],
+    /// (offset of the ciphertext, its length), in chunk order.
+    records: Vec<(u64, usize)>,
+    next: usize,
+    buf: Zeroizing<Vec<u8>>,
+    pos: usize,
+    hash: sha2::Sha256,
+}
+
+impl RunReader {
+    fn open(path: &Path, cipher: Aes256Gcm) -> Result<Self> {
+        use std::io::{Seek, SeekFrom};
+        let mut input = File::open(path).map_err(io)?;
+        let mut head = [0u8; 16];
+        if read_full(&mut input, &mut head)? != 16 || &head[..8] != RUN_MAGIC {
+            return Err(ContainerError::Refused);
+        }
+        let prefix: [u8; 8] = head[8..].try_into().expect("8 bytes");
+        // Index every record first: chunks may have been written in any order.
+        let mut found: std::collections::BTreeMap<u32, (u64, usize)> = Default::default();
+        let mut at = 16u64;
+        loop {
+            let mut rh = [0u8; 8];
+            match read_full(&mut input, &mut rh)? {
+                0 => break,
+                8 => {}
+                _ => return Err(ContainerError::Refused),
+            }
+            let index = u32::from_be_bytes(rh[..4].try_into().expect("4"));
+            let n = u32::from_be_bytes(rh[4..].try_into().expect("4")) as usize;
+            if n < TAG_LEN || n > MAX_CHUNK as usize * 16 + TAG_LEN {
+                return Err(ContainerError::Refused);
+            }
+            if found.insert(index, (at + 8, n)).is_some() {
+                return Err(ContainerError::Refused);      // a duplicate
+            }
+            at += 8 + n as u64;
+            input.seek(SeekFrom::Start(at)).map_err(io)?;
+        }
+        // Exactly 0..n, no gap.
+        if found.keys().enumerate().any(|(i, k)| *k as usize != i) {
+            return Err(ContainerError::Refused);
+        }
+        use sha2::Digest;
+        Ok(Self { input, cipher, prefix, records: found.into_values().collect(), next: 0,
+                  buf: Zeroizing::new(Vec::new()), pos: 0, hash: sha2::Sha256::new() })
+    }
+
+    fn next_record(&mut self) -> Result<bool> {
+        use std::io::{Seek, SeekFrom};
+        let Some(&(off, n)) = self.records.get(self.next) else { return Ok(false) };
+        self.input.seek(SeekFrom::Start(off)).map_err(io)?;
+        let mut ct = vec![0u8; n];
+        if read_full(&mut self.input, &mut ct)? != n {
+            return Err(ContainerError::Refused);
+        }
+        let index = self.next as u32;
+        let pt = self.cipher
+            .decrypt(&Nonce::from(nonce(&self.prefix, index)),
+                     Payload { msg: &ct, aad: &run_aad(index) })
+            .map_err(|_| ContainerError::Refused)?;
+        use sha2::Digest;
+        self.hash.update(&pt);
+        self.buf = Zeroizing::new(pt);
+        self.pos = 0;
+        self.next += 1;
+        Ok(true)
+    }
+}
+
+impl Read for RunReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        while self.pos == self.buf.len() {
+            match self.next_record() {
+                Ok(true) => {}
+                Ok(false) => return Ok(0),
+                Err(_) => return Err(std::io::Error::other("run-sealed file failed authentication")),
+            }
+        }
+        let n = out.len().min(self.buf.len() - self.pos);
+        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        Ok(n)
+    }
+}
+
+/// Reseal a run-sealed `.part` of `length` plaintext bytes into an at-rest
+/// container at `dst`. Returns the plaintext's SHA-256. Every record must
+/// authenticate and the total must be exactly `length`, or nothing is left
+/// at `dst`.
+#[pyfunction]
+#[pyo3(signature = (run_key, dek, src, dst, length, chunk_size=DEFAULT_CHUNK))]
+pub fn otrv_reseal_run_file<'py>(py: Python<'py>, run_key: PyRef<'_, RunKey>, dek: PyRef<'_, FileDek>,
+                                 src: &str, dst: &str, length: u64, chunk_size: u32)
+                                 -> PyResult<Bound<'py, PyBytes>> {
+    let cipher = run_key.cipher()?;
+    let key = Zeroizing::new(dek.expose()?.to_vec());
+    let digest = py.detach(|| -> Result<Vec<u8>> {
+        let mut reader = RunReader::open(Path::new(src), cipher)?;
+        seal_stream(&mut reader, length, Path::new(dst), &KeySource::Device(&key), chunk_size)?;
+        use sha2::Digest;
+        Ok(reader.hash.clone().finalize().to_vec())
+    }).map_err(py_err)?;
+    Ok(PyBytes::new(py, &digest))
+}
+
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(otrv_seal_file, m)?)?;
+    m.add_class::<RunKey>()?;
+    m.add_class::<RunSealedWriter>()?;
+    m.add_function(wrap_pyfunction!(otrv_reseal_run_file, m)?)?;
     m.add_function(wrap_pyfunction!(otrv_open_file, m)?)?;
     m.add_function(wrap_pyfunction!(otrv_open_bytes, m)?)?;
     m.add_function(wrap_pyfunction!(otrv_export_file, m)?)?;

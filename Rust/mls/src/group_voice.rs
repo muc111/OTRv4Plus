@@ -308,7 +308,7 @@ impl GroupVoice {
         let head = header(own, keys.epoch, counter);
         let ad = aad(&head, &self.call_id);
         let ct = keys.send.cipher()
-            .encrypt(<&Nonce<_>>::from(&nonce(keys.epoch, counter)[..]), Payload { msg: frame, aad: &ad })
+            .encrypt(&Nonce::try_from(&nonce(keys.epoch, counter)[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: frame, aad: &ad })
             .map_err(|_| VoiceError::Auth)?;
         self.send_counter += 1;
         let mut out = Vec::with_capacity(HEADER_LEN + ct.len());
@@ -353,7 +353,7 @@ impl GroupVoice {
         let head = &packet[..HEADER_LEN];
         let ad = aad(head, &call_id);
         let pt = trial.cipher()
-            .decrypt(<&Nonce<_>>::from(&nonce(epoch, counter)[..]),
+            .decrypt(&Nonce::try_from(&nonce(epoch, counter)[..]).expect("a 12-byte AES-GCM nonce"),
                      Payload { msg: &packet[HEADER_LEN..], aad: &ad })
             .map_err(|_| VoiceError::Auth)?;
         rx.chain = trial;

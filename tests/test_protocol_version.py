@@ -156,10 +156,20 @@ class TestNoDowngrade:
             otr.OTRv4DataMessage.decode(_framed(version))
 
     def test_the_check_is_equality_not_a_minimum(self):
-        import inspect
-        src = inspect.getsource(otr.OTRv4DataMessage.decode)
-        assert "!=" in src.split("read_uint16")[1][:200], \
-            "the version gate must be strict equality, not a >= floor"
+        current = otr.OTRv4DataMessage.PROTOCOL_VERSION
+        for version in range(0x0000, 0x10000, 0x0101):
+            if version == current:
+                continue
+            with pytest.raises(otr.ProtocolVersionError):
+                otr.OTRv4DataMessage.decode(_framed(version))
+        # The current revision gets past the gate (and fails later, on the
+        # filler body, with something else).
+        try:
+            otr.OTRv4DataMessage.decode(_framed(current))
+        except otr.ProtocolVersionError:
+            pytest.fail("the version gate refuses its own revision")
+        except Exception:
+            pass
 
 
 # ── (e) malformed version fields ─────────────────────────────────────────────

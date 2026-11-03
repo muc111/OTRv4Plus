@@ -159,18 +159,22 @@ and decide on 3", was settled on 2026-10-26: 3 is done, as F4.)
 **Since rc.27 (M4):** every new group uses
 `MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87` (private code point
 0xF0A1), served by our own provider (`Rust/mls/src/provider.rs`, which
-refuses everything else). Before rc.27 it was
-`MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87` (0x0907, PQ-only); groups made
-then keep working (the provider still serves that suite for them) but take
-no new members: a hybrid KeyPackage cannot join a 0x0907 group, and the
-app says to create a new group.
+refuses everything else). The code point's name keeps the historical
+`SHA384` token, but the suite hashes and HKDFs with **SHA-512** (the
+vendored table binds 0xF0A1 to `Sha2_512` / `HkdfSha512`). The provider
+also serves one non-hybrid suite,
+`MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87` (0x0906, ML-KEM-1024 alone,
+also SHA-512): it is a standard code point, so the reference OpenMLS
+provider understands it, which is what `Rust/mls/tests/interop.rs` cross-checks
+against (the private hybrid code point no other client understands). The
+earlier SHA-384 code point 0x0907 is no longer served.
 
 | requirement | since rc.27 | status |
 |---|---|---|
 | AEAD AES-256-GCM only | AES-256-GCM (HPKE and MLS) | **MET** |
 | KEM X448 + ML-KEM-1024, binding combiner | `Rust/mls/src/hpke.rs`, KEM 0xF0A1 | **MET** |
 | Signature Ed448 + ML-DSA-87 | composite, both must verify, 0xFEA1 | **MET** |
-| Hash/KDF | SHA-384 / HKDF-SHA384 | fine |
+| Hash/KDF | SHA-512 / HKDF-SHA512 | fine |
 
 Measured (4-member group): a KeyPackage is 15.4 KB, adding one member
 31.0 KB (Welcome 26.5 KB), adding two 49.8 KB, a self-update 22.3 KB, a
@@ -179,8 +183,9 @@ halves add about 2-3 % to the PQ-only sizes.
 
 As built, versus the design below: the signature code point is 0xFEA1 (the
 TLS SignatureScheme private range is 0xFE00-0xFFFF, unlike MLS's), the
-composite message is `"OTRv4+MLS/CompositeSig/v1" || m` (MLS already
-labels and length-prefixes what it signs, so no separate context field),
+composite message is `"OTRv4+MLS/CompositeSig/v2" || SHA-512(pk) || m`
+(MLS already labels and length-prefixes what it signs, so no separate
+context field; the SHA-512 of the composite public key binds both halves),
 and the HPKE secret key is `sk_x448 || sk_mlkem` (the ML-KEM public key is
 inside the FIPS 203 decapsulation key, the X448 one is derived). Only
 `openmls_traits` is patched (`Rust/vendor/VENDORED.md`); `openmls` takes
@@ -211,10 +216,13 @@ be added without patching both crates. Options:
   from one seed with labels `"…/x448"` and `"…/mlkem"`.
 - **Signature (composite):**
   `sig = Ed448(m') || ML-DSA-87(m')` with
-  `m' = "OTRv4+MLS/CompositeSig/v1" || len(ctx) || ctx || m`. Verification
-  requires **both** to pass, and the public key is `pk_ed448 || pk_mldsa`.
-- Both halves come from crates the core already uses (`x448`,
-  `ed448-goldilocks-plus`, PQClean), with no new primitive implementation.
+  `m' = "OTRv4+MLS/CompositeSig/v2" || SHA-512(pk) || m` and
+  `pk = pk_ed448 || pk_mldsa`. Verification requires **both** to pass;
+  `SHA-512(pk)` binds both component public keys, so neither half verifies
+  when paired with another key's half.
+- Both halves come from crates the core already uses
+  (`ed448-goldilocks-plus` for Ed448 and its RFC 7748 X448, the pure-Rust
+  `ml-dsa` / `ml-kem`), with no new primitive implementation.
 - Existing groups cannot survive the change (a new suite means new groups).
   The core version bumps and Termux needs `build.sh`.
 

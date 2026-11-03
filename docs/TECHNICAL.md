@@ -1060,7 +1060,7 @@ nothing else.
    Ed448 +  ML-DSA-87            composite signature: BOTH must verify
                   |
                   v
-      MLS ratchet tree and key schedule (RFC 9420, HKDF-SHA-384)
+      MLS ratchet tree and key schedule (RFC 9420, HKDF-SHA-512)
       a new epoch with fresh keys at every change of membership or rekey
                   |
                   v
@@ -1071,9 +1071,10 @@ nothing else.
 ```
 
 The ciphersuite is `MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87`
-(0xF0A1). Breaking it means breaking **both** halves of the key exchange
-(X448 and ML-KEM-1024) or **both** halves of the signature (Ed448 and
-ML-DSA-87).
+(0xF0A1). The code point's name keeps the historical `SHA384` token, but
+the suite hashes and HKDFs with SHA-512. Breaking it means breaking
+**both** halves of the key exchange (X448 and ML-KEM-1024) or **both**
+halves of the signature (Ed448 and ML-DSA-87).
 
 | | Standard MLS suites (RFC 9420) | OTRv4+ groups |
 |---|---|---|

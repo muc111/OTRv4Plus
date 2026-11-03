@@ -31,7 +31,9 @@ class RegisterRetryTest {
     @Test
     fun `what the server said is final at once`() {
         for (code in listOf("ok", "conflict", "not_acceptable", "not_allowed", "forbidden",
-                            "registration_captcha_required", "resource_constraint",
+                            "registration_captcha_required", "captcha_required",
+                            "registration_captcha_external", "registration_captcha_unsupported",
+                            "resource_constraint",
                             "server_identity_changed", "tor_unavailable")) {
             assertFalse(RegisterRetry.again(code, 1, 0, builtInRouter = true), code)
         }

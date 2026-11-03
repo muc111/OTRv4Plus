@@ -39,8 +39,10 @@ diff -ru a/src/types.rs b/src/types.rs
      MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87 = 0x0907,
 +
 +    /// OTRv4Plus PATCH: X448+ML-KEM-1024 (binding combiner) | AES-GCM256 |
-+    /// SHA2-384 | Ed448+ML-DSA-87 (composite). MLS private-use code point
++    /// SHA2-512 | Ed448+ML-DSA-87 (composite). MLS private-use code point
 +    /// (RFC 9420 §17.1: 0xF000-0xFFFF); see MLS_SECURITY_HARDENING.md §2.
++    /// NB: the name keeps the historical SHA384 token; this suite hashes and
++    /// HKDFs with SHA-512 (see the Sha2_512 / HkdfSha512 arms below).
 +    #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
 +    MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 = 0xF0A1,
  }
@@ -55,16 +57,14 @@ diff -ru a/src/types.rs b/src/types.rs
              _ => Err(Self::Error::DecodingError(format!(
                  "{v} is not a valid ciphersuite value"
              ))),
-@@ -650,7 +669,8 @@
-             | Ciphersuite::MLS_128_MLKEM768X25519_CHACHA20POLY1305_SHA384_MLDSA44
-             | Ciphersuite::MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65
-             | Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87
--            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519 => HashType::Sha2_384,
-+            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519
-+            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HashType::Sha2_384,
+@@ -654,7 +673,8 @@
              Ciphersuite::MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448
              | Ciphersuite::MLS_256_DHKEMP521_AES256GCM_SHA512_P521
              | Ciphersuite::MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448 => HashType::Sha2_512,
+             #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
+-            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 => HashType::Sha2_512,
++            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87
++            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HashType::Sha2_512,
 @@ -705,6 +725,8 @@
              }
              #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
@@ -84,16 +84,14 @@ diff -ru a/src/types.rs b/src/types.rs
          }
      }
  
-@@ -761,7 +784,8 @@
-             | Ciphersuite::MLS_128_MLKEM768X25519_CHACHA20POLY1305_SHA384_MLDSA44
-             | Ciphersuite::MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65
-             | Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87
--            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519 => HpkeKdfType::HkdfSha384,
-+            | Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_Ed25519
-+            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HpkeKdfType::HkdfSha384,
-             Ciphersuite::MLS_256_DHKEMX448_AES256GCM_SHA512_Ed448
-             | Ciphersuite::MLS_256_DHKEMP521_AES256GCM_SHA512_P521
+@@ -789,6 +812,7 @@
              | Ciphersuite::MLS_256_DHKEMX448_CHACHA20POLY1305_SHA512_Ed448 => {
+                 HpkeKdfType::HkdfSha512
+             }
+             #[cfg(feature = "draft-ietf-mls-pq-ciphersuites")]
+-            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 => HpkeKdfType::HkdfSha512,
++            Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87
++            | Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87 => HpkeKdfType::HkdfSha512,
 @@ -800,6 +824,8 @@
              Ciphersuite::MLS_128_MLKEM768_AES256GCM_SHA384_P256
              | Ciphersuite::MLS_192_MLKEM768_AES256GCM_SHA384_MLDSA65

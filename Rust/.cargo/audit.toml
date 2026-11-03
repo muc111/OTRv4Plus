@@ -57,7 +57,8 @@ ignore = [
   "RUSTSEC-2026-0331",  # libcrux-kem 0.0.9
   # TIMING VARIABILITY in crypto-bigint 0.5 (subtraction, division, Montgomery
   # multiplication), FIXED IN WHAT WE BUILD (2026-10-25). The SMP's
-  # constant-time modexp (src/smp.rs) moved to crypto-bigint 0.7.8 and Ed448
+  # constant-time modexp (src/smp.rs) moved to crypto-bigint 0.7 (0.7.9 since
+  # 2026-10-30: 0.7.6-0.7.8 were yanked for a semver break, not a security bug) and Ed448
   # (src/ring_sig.rs, src/dake.rs, mls/src/provider.rs) to
   # ed448-goldilocks-plus 0.18.1, which is on 0.7 too; values are pinned by
   # smp::tests::mod_exp_matches_reference_* and ring_sig::cross_version.

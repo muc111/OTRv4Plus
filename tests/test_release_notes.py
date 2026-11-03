@@ -267,9 +267,12 @@ class TestNothingUnverifiedReadsAsVerified:
         assert "still chats with this one, using the previous ratchet" not in notes
 
 
-class TestTheTestedReleaseStays:
-    """Owner, 2026-10-30: the tested release from main stays downloadable
-    while dev builds come and go."""
+class TestExactlyOneAndroidRelease:
+    """Owner, 2026-11-02: the Releases page keeps EXACTLY ONE Android APK.
+    Whichever build published last is the only one left; the previous
+    release -- the tested-from-main one included -- is deleted. This
+    overrides the 2026-10-30 "the tested release stays" rule, so the
+    per-family logic that pinned that behaviour must be gone."""
 
     SCRIPT = ".github/scripts/publish-experimental-apk.sh"
 
@@ -285,17 +288,18 @@ class TestTheTestedReleaseStays:
         assert 'TAG="android-tested-v${VERSION}"' in main
         assert "RELEASE_KIND=(--latest)" in s
 
-    def test_dev_builds_never_remove_it(self):
-        import re
+    def test_every_other_android_release_is_deleted(self):
         s = self._src()
-        dev = re.search(r"FAMILY='(\^android-\(v\|experimental\$\))'", s).group(1)
-        assert not re.search(dev, "android-tested-v0.7.0-experimental.rc.189")
-        assert re.search(dev, "android-v0.7.0-experimental.rc.191-untested")
+        # ALL android releases are candidates for deletion, not one family.
+        assert "grep -E '^android'" in s
+        # The per-family selector that kept the tested build is gone.
+        assert "FAMILY='" not in s
+        # Only the just-published tag survives.
+        assert 'if [ "$old" != "$TAG" ]; then' in s
+        assert "gh release delete" in s
 
-    def test_a_tested_build_removes_only_older_tested_ones(self):
-        import re
+    def test_the_delete_runs_only_after_the_create(self):
+        # Delete-after-create: deleting first could leave the page empty if
+        # the upload failed.
         s = self._src()
-        tested = re.search(r"FAMILY='(\^android-tested-v)'", s).group(1)
-        assert re.search(tested, "android-tested-v0.7.0-experimental.rc.189")
-        assert not re.search(tested, "android-v0.7.0-experimental.rc.191-untested")
-        assert 'grep -E "$FAMILY"' in s
+        assert s.index("gh release create") < s.index("removing superseded release")

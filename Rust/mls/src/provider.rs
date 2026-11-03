@@ -2,35 +2,41 @@
 // Copyright (C) 2025-2026 muc111
 //! The OpenMLS provider: OpenMLS's crypto trait on the core's primitives.
 //!
-//! Two ciphersuites, and nothing else:
+//! Two ciphersuites, and nothing else. Both hash and HKDF with SHA-512.
 //!
 //!   * **MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87** (0xF0A1,
 //!     private; every new group). KEM X448 + ML-KEM-1024 with a binding
 //!     combiner (`crate::hpke`), signature Ed448 + ML-DSA-87 composite
-//!     (below). Breaking one half of either does not break the group.
-//!   * MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87 (0x0907; the PQ-only
-//!     suite of earlier versions), kept so groups made with it keep
-//!     working. No new group uses it.
+//!     (below). Breaking one half of either does not break the group. The
+//!     code point's name keeps the historical `SHA384` token, but this
+//!     private suite is bound to SHA-512 in the vendored ciphersuite table.
+//!   * MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87 (0x0906; ML-KEM-1024
+//!     alone, no X448 combiner). A standard code point, so it is what the
+//!     reference OpenMLS provider cross-checks against (tests/interop.rs);
+//!     also hash/HKDF SHA-512.
 //!
 //! Anything outside them (another hash, AEAD, signature scheme or KEM) is
 //! refused with an error, never quietly served by something else.
 //!
 //! THE COMPOSITE SIGNATURE (0xFEA1)
 //! ================================
-//!   m'  = "OTRv4+MLS/CompositeSig/v1" || m
+//!   m'  = "OTRv4+MLS/CompositeSig/v2" || SHA-512(pk) || m
 //!   sig = Ed448(sk_ed, m') (114) || ML-DSA-87(sk_ml, m') (4627)
 //!   pk  = pk_ed (57) || pk_ml (2592);  sk = seed_ed (57) || sk_ml (4896)
 //! Verification requires BOTH to pass; a length that is not exact is
 //! refused. Pure Ed448 (RFC 8032, empty context), as the core's identity
-//! keys; ML-DSA-87 as below. The prefix keeps a composite signature from
-//! being taken apart and either half used as a plain signature on `m`.
+//! keys; ML-DSA-87 as below. The label keeps a composite signature from
+//! being taken apart and either half used as a plain signature on `m`, and
+//! SHA-512(pk) binds BOTH component public keys into what each half signs,
+//! so neither half verifies when paired with another key's half (label v2;
+//! v1 bound neither).
 //!
 //! | MLS needs            | from                                        |
 //! |----------------------|---------------------------------------------|
-//! | SHA-384, HKDF, HMAC  | sha2 / hkdf / hmac (the core's versions)    |
+//! | SHA-512, HKDF, HMAC  | sha2 / hkdf / hmac (the core's versions)    |
 //! | AES-256-GCM          | aes-gcm (the core's version)                |
-//! | ML-DSA-87            | pqcrypto-mldsa, PQClean (as the core's DAKE)|
-//! | HPKE, ML-KEM-1024    | `crate::hpke` (RFC 9180) on PQClean ML-KEM  |
+//! | ML-DSA-87            | the `ml-dsa` crate (as the core's DAKE)     |
+//! | HPKE, ML-KEM-1024    | `crate::hpke` (RFC 9180) on `ml-kem`        |
 //! | randomness           | the operating system (getrandom)            |
 //!
 //! ML-DSA-87 private keys are PQClean's 4896-byte expanded form. They are
@@ -55,9 +61,9 @@ use openmls_traits::{
     },
     OpenMlsProvider,
 };
-use pqcrypto_mldsa::mldsa87;
-use pqcrypto_traits::sign::{DetachedSignature as _, PublicKey as _, SecretKey as _};
-use sha2::{Digest, Sha384};
+use ml_dsa::{MlDsa87, VerifyingKey, Signature, EncodedVerifyingKey, ExpandedSigningKey,
+             ExpandedSigningKeyBytes, B32};
+use sha2::{Digest, Sha512};
 use tls_codec::SecretVLBytes;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -66,9 +72,13 @@ use crate::hpke::{self, Aead as HpkeAead, Kem};
 /// The ciphersuite of every new group: hybrid KEM, composite signature.
 pub const CIPHERSUITE: Ciphersuite =
     Ciphersuite::MLS_256_X448MLKEM1024_AES256GCM_SHA384_ED448MLDSA87;
-/// The PQ-only suite of earlier versions: existing groups only.
+/// The non-hybrid PQ suite: ML-KEM-1024 alone, no X448 combiner. TEST ONLY:
+/// served only with the `reference-interop` feature, because the reference
+/// OpenMLS provider (tests/interop.rs) has no private hybrid code point and
+/// this standard suite is what the independent cross-check runs on. The
+/// shipped build serves `CIPHERSUITE` alone.
 pub const LEGACY_CIPHERSUITE: Ciphersuite =
-    Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA384_MLDSA87;
+    Ciphersuite::MLS_256_MLKEM1024_AES256GCM_SHA512_MLDSA87;
 /// The composite signature scheme of `CIPHERSUITE`.
 pub const COMPOSITE: SignatureScheme = SignatureScheme::ED448_MLDSA87;
 
@@ -81,28 +91,35 @@ pub const ED448_SIGNATURE_BYTES: usize = 114;
 pub const COMPOSITE_PUBLIC_KEY_BYTES: usize = ED448_PUBLIC_KEY_BYTES + MLDSA87_PUBLIC_KEY_BYTES;
 pub const COMPOSITE_SECRET_KEY_BYTES: usize = ED448_SEED_BYTES + MLDSA87_SECRET_KEY_BYTES;
 pub const COMPOSITE_SIGNATURE_BYTES: usize = ED448_SIGNATURE_BYTES + MLDSA87_SIGNATURE_BYTES;
-const COMPOSITE_LABEL: &[u8] = b"OTRv4+MLS/CompositeSig/v1";
+const COMPOSITE_LABEL: &[u8] = b"OTRv4+MLS/CompositeSig/v2";
 
 /// Stateless: every primitive is a pure function of its inputs, randomness
 /// comes from the OS per call.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct CoreCrypto;
 
-fn sha384_only(hash_type: HashType) -> Result<(), CryptoError> {
+fn sha512_only(hash_type: HashType) -> Result<(), CryptoError> {
     match hash_type {
-        HashType::Sha2_384 => Ok(()),
+        HashType::Sha2_512 => Ok(()),
         _ => Err(CryptoError::UnsupportedHashAlgorithm),
     }
 }
 
-/// The HPKE configurations the two suites use; anything else is refused.
+/// Whether a suite is served: the hybrid one, plus the test-only non-hybrid
+/// one when built for the reference cross-check.
+fn served(ciphersuite: Ciphersuite) -> bool {
+    ciphersuite == CIPHERSUITE
+        || (cfg!(feature = "reference-interop") && ciphersuite == LEGACY_CIPHERSUITE)
+}
+
+/// The HPKE configurations the served suites use; anything else is refused.
 fn hpke_suite(config: &HpkeConfig) -> Result<(Kem, HpkeAead), CryptoError> {
     let kem = match config.0 {
         HpkeKemType::X448MlKem1024 => Kem::X448MlKem1024,
-        HpkeKemType::MlKem1024 => Kem::MlKem1024,
+        HpkeKemType::MlKem1024 if cfg!(feature = "reference-interop") => Kem::MlKem1024,
         _ => return Err(CryptoError::UnsupportedCiphersuite),
     };
-    if config.1 != HpkeKdfType::HkdfSha384 {
+    if config.1 != HpkeKdfType::HkdfSha512 {
         return Err(CryptoError::UnsupportedKdf);
     }
     match config.2 {
@@ -122,25 +139,102 @@ fn aes256(alg: AeadType, key: &[u8], nonce: &[u8]) -> Result<Aes256Gcm, CryptoEr
     Aes256Gcm::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)
 }
 
-/// ML-DSA-87 detached signature (FIPS 204, empty context).
+/// A fresh ML-DSA-87 keypair as `(pk 2592, expanded sk 4896)`.
+#[allow(deprecated)] // `to_expanded` gives the 4896-byte PQClean-compatible form
+fn mldsa87_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
+    let mut seed = Zeroizing::new(B32::default());
+    getrandom::getrandom(seed.as_mut_slice()).expect("OS CSPRNG for ML-DSA key generation");
+    let esk = ExpandedSigningKey::<MlDsa87>::from_seed(&seed);
+    let pk = esk.verifying_key().encode().as_slice().to_vec();
+    let expanded = Zeroizing::new(esk.to_expanded());
+    (pk, Zeroizing::new(expanded.as_slice().to_vec()))
+}
+
+/// ML-DSA-87 detached signature: FIPS 204 ML-DSA.Sign (Algorithm 2),
+/// hedged, pure, empty context, i.e. Sign_internal over `M' = 0 || 0 || M`
+/// with 32 fresh bytes of OS randomness. (`sign_internal` takes M' as given.)
+/// `secret` is the 4896-byte expanded signing key.
+#[allow(deprecated)] // `from_expanded` consumes the 4896-byte PQClean-compatible sk
 pub(crate) fn mldsa87_sign(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    let sk = mldsa87::SecretKey::from_bytes(secret).map_err(|_| CryptoError::InvalidLength)?;
-    Ok(mldsa87::detached_sign(data, &sk).as_bytes().to_vec())
+    let enc: Zeroizing<ExpandedSigningKeyBytes<MlDsa87>> =
+        Zeroizing::new(secret.try_into().map_err(|_| CryptoError::InvalidLength)?);
+    let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&enc);
+    let mut rnd = Zeroizing::new(B32::default());
+    getrandom::getrandom(rnd.as_mut_slice()).map_err(|_| CryptoError::InsufficientRandomness)?;
+    let sig = esk.sign_internal(&[&[0u8], &[0u8], data], &rnd);
+    Ok(sig.encode().as_slice().to_vec())
 }
 
 fn mldsa87_verify(pk: &[u8], data: &[u8], signature: &[u8]) -> Result<(), CryptoError> {
-    let pk = mldsa87::PublicKey::from_bytes(pk).map_err(|_| CryptoError::InvalidLength)?;
-    let sig = mldsa87::DetachedSignature::from_bytes(signature)
-        .map_err(|_| CryptoError::InvalidLength)?;
-    mldsa87::verify_detached_signature(&sig, data, &pk)
-        .map_err(|_| CryptoError::InvalidSignature)
+    let vk_enc: EncodedVerifyingKey<MlDsa87> =
+        pk.try_into().map_err(|_| CryptoError::InvalidLength)?;
+    let vk = VerifyingKey::<MlDsa87>::decode(&vk_enc);
+    let sig = Signature::<MlDsa87>::try_from(signature).map_err(|_| CryptoError::InvalidLength)?;
+    if vk.verify_with_context(data, b"", &sig) {
+        Ok(())
+    } else {
+        Err(CryptoError::InvalidSignature)
+    }
 }
 
-fn composite_message(data: &[u8]) -> Vec<u8> {
-    let mut m = Vec::with_capacity(COMPOSITE_LABEL.len() + data.len());
+/// m' = label || SHA-512(pk_composite) || m. The hash of the whole
+/// composite public key (pk_ed || pk_ml) binds both halves: a signature
+/// made for one (Ed448, ML-DSA-87) pair verifies under no other.
+fn composite_message(pk_composite: &[u8], data: &[u8]) -> Vec<u8> {
+    let mut m = Vec::with_capacity(COMPOSITE_LABEL.len() + 64 + data.len());
     m.extend_from_slice(COMPOSITE_LABEL);
+    m.extend_from_slice(&Sha512::digest(pk_composite));
     m.extend_from_slice(data);
     m
+}
+
+/// The composite public key `pk_ed (57) || pk_ml (2592)` that `secret`
+/// (seed_ed || expanded ml sk) signs for. Decoding our own signing key, so
+/// `from_expanded` cannot be driven by an attacker here.
+#[allow(deprecated)]
+fn composite_public_from_secret(seed: &[u8], ml_sk: &[u8]) -> Result<Vec<u8>, CryptoError> {
+    let ed_pub = ed448_key(seed)?.verifying_key().to_bytes();
+    let enc: ExpandedSigningKeyBytes<MlDsa87> =
+        ml_sk.try_into().map_err(|_| CryptoError::InvalidLength)?;
+    let ml_vk = ExpandedSigningKey::<MlDsa87>::from_expanded(&enc).verifying_key().encode();
+    let mut pk = Vec::with_capacity(COMPOSITE_PUBLIC_KEY_BYTES);
+    pk.extend_from_slice(&ed_pub[..]);
+    pk.extend_from_slice(ml_vk.as_slice());
+    Ok(pk)
+}
+
+/// Whether a 4896-byte expanded ML-DSA-87 signing key can be decoded by
+/// `ExpandedSigningKey::from_expanded` WITHOUT panicking.
+///
+/// Layout: rho 32 | K 32 | tr 64 | s1 672 | s2 768 | t0 3328. `ml-dsa`'s
+/// BitUnpack asserts every s1/s2 coefficient (eta = 2, packed in 3 bits) is
+/// <= 2*eta = 4 and panics otherwise; t0 (13-bit) cannot exceed its bound
+/// and rho/K/tr are raw bytes, so s1||s2 is the entire panic surface. The
+/// build is panic=abort and F4 key-reveal publications carry an
+/// attacker-chosen expanded key (client::revealed_fingerprints), so an
+/// undecodable one would abort the process: `from_parts` refuses it here,
+/// before it can reach `from_expanded`. The 1440 bytes of s1||s2 hold
+/// 3840 three-bit fields, LSB-first with no padding (256*(7+8)*3 bits =
+/// 1440*8), so the check is independent of the coefficient order.
+fn mldsa_expanded_decodable(sk: &[u8]) -> bool {
+    if sk.len() != MLDSA87_SECRET_KEY_BYTES {
+        return false;
+    }
+    const S1_S2: core::ops::Range<usize> = 128..128 + 672 + 768;
+    let mut acc: u32 = 0;
+    let mut bits: u32 = 0;
+    for &byte in &sk[S1_S2] {
+        acc |= (byte as u32) << bits;
+        bits += 8;
+        while bits >= 3 {
+            if acc & 0b111 > 4 {
+                return false;
+            }
+            acc >>= 3;
+            bits -= 3;
+        }
+    }
+    true
 }
 
 fn ed448_key(seed: &[u8]) -> Result<ed448_goldilocks_plus::SigningKey, CryptoError> {
@@ -153,7 +247,8 @@ pub(crate) fn composite_sign(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, Cryp
         return Err(CryptoError::InvalidLength);
     }
     let (seed, ml_sk) = secret.split_at(ED448_SEED_BYTES);
-    let m = composite_message(data);
+    let pk = composite_public_from_secret(seed, ml_sk)?;
+    let m = composite_message(&pk, data);
     let ed = ed448_key(seed)?.sign_raw(&m).to_bytes();
     let ml = mldsa87_sign(ml_sk, &m)?;
     let mut sig = Vec::with_capacity(COMPOSITE_SIGNATURE_BYTES);
@@ -169,7 +264,7 @@ pub(crate) fn composite_verify(pk: &[u8], data: &[u8], signature: &[u8]) -> Resu
     }
     let (ed_pk, ml_pk) = pk.split_at(ED448_PUBLIC_KEY_BYTES);
     let (ed_sig, ml_sig) = signature.split_at(ED448_SIGNATURE_BYTES);
-    let m = composite_message(data);
+    let m = composite_message(pk, data);
     let ed_ok = (|| {
         let pk: &[u8; 57] = ed_pk.try_into().ok()?;
         let vk = ed448_goldilocks_plus::VerifyingKey::from_bytes(pk).ok()?;
@@ -183,7 +278,7 @@ pub(crate) fn composite_verify(pk: &[u8], data: &[u8], signature: &[u8]) -> Resu
 
 impl OpenMlsCrypto for CoreCrypto {
     fn supports(&self, ciphersuite: Ciphersuite) -> Result<(), CryptoError> {
-        if ciphersuite == CIPHERSUITE || ciphersuite == LEGACY_CIPHERSUITE {
+        if served(ciphersuite) {
             Ok(())
         } else {
             Err(CryptoError::UnsupportedCiphersuite)
@@ -191,7 +286,7 @@ impl OpenMlsCrypto for CoreCrypto {
     }
 
     fn supported_ciphersuites(&self) -> Vec<Ciphersuite> {
-        vec![CIPHERSUITE, LEGACY_CIPHERSUITE]
+        [CIPHERSUITE, LEGACY_CIPHERSUITE].into_iter().filter(|c| served(*c)).collect()
     }
 
     fn hkdf_extract(
@@ -200,8 +295,8 @@ impl OpenMlsCrypto for CoreCrypto {
         salt: &[u8],
         ikm: &[u8],
     ) -> Result<SecretVLBytes, CryptoError> {
-        sha384_only(hash_type)?;
-        let (mut prk, _) = Hkdf::<Sha384>::extract(Some(salt), ikm);
+        sha512_only(hash_type)?;
+        let (mut prk, _) = Hkdf::<Sha512>::extract(Some(salt), ikm);
         let out = prk[..].into();
         prk[..].zeroize();
         Ok(out)
@@ -213,9 +308,9 @@ impl OpenMlsCrypto for CoreCrypto {
         key: &[u8],
         message: &[u8],
     ) -> Result<SecretVLBytes, CryptoError> {
-        sha384_only(hash_type)?;
+        sha512_only(hash_type)?;
         let mut mac =
-            <Hmac<Sha384> as Mac>::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)?;
+            <Hmac<Sha512> as hmac::KeyInit>::new_from_slice(key).map_err(|_| CryptoError::InvalidLength)?;
         mac.update(message);
         let mut tag = mac.finalize().into_bytes();
         let out = tag[..].into();
@@ -230,8 +325,8 @@ impl OpenMlsCrypto for CoreCrypto {
         info: &[u8],
         okm_len: usize,
     ) -> Result<SecretVLBytes, CryptoError> {
-        sha384_only(hash_type)?;
-        let hkdf = Hkdf::<Sha384>::from_prk(prk).map_err(|_| CryptoError::HkdfOutputLengthInvalid)?;
+        sha512_only(hash_type)?;
+        let hkdf = Hkdf::<Sha512>::from_prk(prk).map_err(|_| CryptoError::HkdfOutputLengthInvalid)?;
         let mut okm = Zeroizing::new(vec![0u8; okm_len]);
         hkdf.expand(info, &mut okm)
             .map_err(|_| CryptoError::HkdfOutputLengthInvalid)?;
@@ -239,8 +334,8 @@ impl OpenMlsCrypto for CoreCrypto {
     }
 
     fn hash(&self, hash_type: HashType, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        sha384_only(hash_type)?;
-        Ok(Sha384::digest(data).to_vec())
+        sha512_only(hash_type)?;
+        Ok(Sha512::digest(data).to_vec())
     }
 
     fn aead_encrypt(
@@ -252,7 +347,7 @@ impl OpenMlsCrypto for CoreCrypto {
         aad: &[u8],
     ) -> Result<Vec<u8>, CryptoError> {
         aes256(alg, key, nonce)?
-            .encrypt(nonce.into(), Payload { msg: data, aad })
+            .encrypt(nonce.try_into().map_err(|_| CryptoError::InvalidLength)?, Payload { msg: data, aad })
             .map_err(|_| CryptoError::CryptoLibraryError)
     }
 
@@ -265,7 +360,7 @@ impl OpenMlsCrypto for CoreCrypto {
         aad: &[u8],
     ) -> Result<Vec<u8>, CryptoError> {
         aes256(alg, key, nonce)?
-            .decrypt(nonce.into(), Payload { msg: ct_tag, aad })
+            .decrypt(nonce.try_into().map_err(|_| CryptoError::InvalidLength)?, Payload { msg: ct_tag, aad })
             .map_err(|_| CryptoError::AeadDecryptionError)
     }
 
@@ -479,12 +574,12 @@ impl SignatureKeyPair {
 
     /// A key for `scheme`: COMPOSITE or MLDSA87.
     pub fn generate_for(scheme: SignatureScheme) -> Result<Self, CryptoError> {
-        let (ml_pk, ml_sk) = mldsa87::keypair();
+        let (ml_pk, ml_sk) = mldsa87_keypair();
         match scheme {
             SignatureScheme::MLDSA87 => Ok(Self {
                 scheme,
-                public: ml_pk.as_bytes().to_vec(),
-                secret: Zeroizing::new(ml_sk.as_bytes().to_vec()),
+                public: ml_pk,
+                secret: ml_sk,
             }),
             COMPOSITE => {
                 let mut seed = Zeroizing::new([0u8; ED448_SEED_BYTES]);
@@ -493,10 +588,10 @@ impl SignatureKeyPair {
                 let ed_pk = ed448_key(&seed[..])?.verifying_key().to_bytes();
                 let mut public = Vec::with_capacity(COMPOSITE_PUBLIC_KEY_BYTES);
                 public.extend_from_slice(&ed_pk[..]);
-                public.extend_from_slice(ml_pk.as_bytes());
+                public.extend_from_slice(&ml_pk);
                 let mut secret = Zeroizing::new(Vec::with_capacity(COMPOSITE_SECRET_KEY_BYTES));
                 secret.extend_from_slice(&seed[..]);
-                secret.extend_from_slice(ml_sk.as_bytes());
+                secret.extend_from_slice(&ml_sk);
                 Ok(Self { scheme, public, secret })
             }
             _ => Err(CryptoError::UnsupportedSignatureScheme),
@@ -519,9 +614,14 @@ impl SignatureKeyPair {
     /// Rebuild from sealed state; the scheme follows from the lengths. A
     /// composite key's Ed448 half must match its seed.
     pub(crate) fn from_parts(public: Vec<u8>, secret: Zeroizing<Vec<u8>>) -> Option<Self> {
-        if public.len() == mldsa87::public_key_bytes()
-            && secret.len() == mldsa87::secret_key_bytes()
+        if public.len() == MLDSA87_PUBLIC_KEY_BYTES
+            && secret.len() == MLDSA87_SECRET_KEY_BYTES
         {
+            // A key reaching here may be attacker-supplied (F4 reveal); refuse
+            // an ML-DSA half that from_expanded would abort on.
+            if !mldsa_expanded_decodable(&secret) {
+                return None;
+            }
             return Some(Self { scheme: SignatureScheme::MLDSA87, public, secret });
         }
         if public.len() == COMPOSITE_PUBLIC_KEY_BYTES
@@ -529,6 +629,9 @@ impl SignatureKeyPair {
         {
             let ed_pk = ed448_key(&secret[..ED448_SEED_BYTES]).ok()?.verifying_key().to_bytes();
             if ed_pk[..] != public[..ED448_PUBLIC_KEY_BYTES] {
+                return None;
+            }
+            if !mldsa_expanded_decodable(&secret[ED448_SEED_BYTES..]) {
                 return None;
             }
             return Some(Self { scheme: COMPOSITE, public, secret });
@@ -573,6 +676,72 @@ impl Signer for SignatureKeyPair {
 #[cfg(test)]
 mod composite_tests {
     use super::*;
+
+    /// ML-DSA signing is hedged: one key, one message, two different
+    /// signatures, both valid (for the composite and for plain ML-DSA-87).
+    #[test]
+    fn signing_is_hedged_not_deterministic() {
+        let k = SignatureKeyPair::generate();
+        let (a, b) = (k.sign(b"same").unwrap(), k.sign(b"same").unwrap());
+        assert_ne!(a, b);
+        let c = CoreCrypto;
+        assert!(c.verify_signature(COMPOSITE, b"same", k.public(), &a).is_ok());
+        assert!(c.verify_signature(COMPOSITE, b"same", k.public(), &b).is_ok());
+        let m = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
+        assert_ne!(m.sign(b"same").unwrap(), m.sign(b"same").unwrap());
+    }
+
+    /// Each half is bound to the whole composite public key: neither
+    /// verifies when spliced onto a different key's matching half.
+    #[test]
+    fn a_half_cannot_be_recombined_with_another_keys_half() {
+        let (a, b) = (SignatureKeyPair::generate(), SignatureKeyPair::generate());
+        let (sa, sb) = (a.sign(b"m").unwrap(), b.sign(b"m").unwrap());
+        let ed = ED448_SIGNATURE_BYTES;
+        let edp = ED448_PUBLIC_KEY_BYTES;
+        let c = CoreCrypto;
+        // A's Ed448 half + B's ML-DSA half, under the mixed public key
+        // (A's Ed448 pk + B's ML-DSA pk). Both halves are individually
+        // valid signatures for their own key, yet the composite is refused.
+        let mut mixed_sig = sa[..ed].to_vec();
+        mixed_sig.extend_from_slice(&sb[ed..]);
+        let mut mixed_pk = a.public()[..edp].to_vec();
+        mixed_pk.extend_from_slice(&b.public()[edp..]);
+        assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &mixed_sig).is_err());
+        // And each real signature is refused under the mixed key.
+        assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &sa).is_err());
+        assert!(c.verify_signature(COMPOSITE, b"m", &mixed_pk, &sb).is_err());
+    }
+
+    /// A published "retired key" (F4) carries an attacker-chosen expanded
+    /// ML-DSA half. from_parts must refuse one that `from_expanded` would
+    /// abort on (panic=abort), before is_consistent/sign can reach it.
+    #[test]
+    fn from_parts_refuses_an_undecodable_mldsa_half() {
+        // Every freshly generated key is decodable.
+        for _ in 0..64 {
+            let k = SignatureKeyPair::generate();
+            assert!(mldsa_expanded_decodable(&k.secret()[ED448_SEED_BYTES..]));
+            let m = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
+            assert!(mldsa_expanded_decodable(m.secret()));
+        }
+        // A real composite key with its ML-DSA half overwritten: the Ed448
+        // half still matches its seed, so only the ML-DSA check can catch it.
+        let k = SignatureKeyPair::generate();
+        let mut bad = Zeroizing::new(k.secret().to_vec());
+        for b in &mut bad[ED448_SEED_BYTES..] { *b = 0xff; }
+        assert!(!mldsa_expanded_decodable(&bad[ED448_SEED_BYTES..]));
+        assert!(SignatureKeyPair::from_parts(k.public().to_vec(), bad).is_none(),
+                "an undecodable ML-DSA half must be refused");
+        // The genuine key still round-trips through from_parts.
+        assert!(SignatureKeyPair::from_parts(
+            k.public().to_vec(), Zeroizing::new(k.secret().to_vec())).is_some());
+        // Same for the plain MLDSA87 scheme.
+        let m = SignatureKeyPair::generate_for(SignatureScheme::MLDSA87).unwrap();
+        let mut bad = Zeroizing::new(m.secret().to_vec());
+        for b in bad.iter_mut() { *b = 0xff; }
+        assert!(SignatureKeyPair::from_parts(m.public().to_vec(), bad).is_none());
+    }
 
     #[test]
     fn both_halves_must_verify() {

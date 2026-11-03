@@ -478,15 +478,24 @@ class TestTofuDoesNotAuthoriseVoice:
 
     def test_voice_still_gates_on_smp_only(self):
         # TOFU is identity continuity. SMP is authentication. If a pin ever
-        # becomes sufficient for a call, that is a downgrade.
-        import inspect
+        # becomes sufficient for a call, that is a downgrade. Run, not read
+        # (Phase 5): the trust database fails the test if it is consulted,
+        # and a pinned, "trusted" peer without SMP is still refused.
+        import types
         voice = pytest.importorskip("otrv4plus_voice")
-        src = inspect.getsource(voice.VoiceCallManager._smp_verified)
-        for banned in ("trust_db", "is_peer_trusted", "check_or_pin",
-                       "fingerprint"):
-            assert banned not in src, (
-                "_smp_verified consults %s; voice must gate on SMP alone"
-                % banned)
+
+        class _Untouchable:
+            def __getattr__(self, name):
+                raise AssertionError("_smp_verified consulted %s" % name)
+
+        for smp, expected in ((False, False), (True, True)):
+            otr = types.SimpleNamespace(trust_db=_Untouchable(),
+                                        is_peer_trusted=lambda p: True)
+            client = types.SimpleNamespace(
+                otr=otr, _smp_query_fn=lambda o, p, _v=smp: (_v, "state"))
+            mgr = voice.VoiceCallManager.__new__(voice.VoiceCallManager)
+            mgr.client = client
+            assert mgr._smp_verified("alice@x") is expected
 
     def test_the_mismatch_block_only_ever_refuses(self):
         """Parse the guard, do not grep it -- its docstring names the very

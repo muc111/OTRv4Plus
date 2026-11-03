@@ -24,6 +24,7 @@ pub mod smp_vault;
 pub mod ratchet;
 pub mod ring_sig;
 pub mod key_handles;
+pub mod rfc7748;          // X448 (RFC 7748) on ed448-goldilocks-plus
 pub mod test_vectors;     // v10.6.17: RFC 8032 Ed448 test vectors (Phase 5.3f-narrow)
 pub mod mldsa;            // v10.6.18: ML-DSA-87 PyO3 bindings (Phase 5.3j)
 pub mod aead;             // v10.6.19: AES-256-GCM PyO3 bindings (Phase 5.3h, part B)
@@ -112,6 +113,9 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(identity::create_sealed_identity,  m)?)?;
     m.add_function(wrap_pyfunction!(identity::identity_record_version, m)?)?;
     m.add_class::<at_rest::FileDek>()?;
+    m.add_function(wrap_pyfunction!(at_rest::set_key_wrapping_key,   m)?)?;
+    m.add_function(wrap_pyfunction!(at_rest::clear_key_wrapping_key, m)?)?;
+    m.add_function(wrap_pyfunction!(at_rest::key_wrapping_active,    m)?)?;
     m.add_class::<at_rest::SmpSecretStore>()?;
     m.add_function(wrap_pyfunction!(at_rest::create_sealed_identity_under, m)?)?;
     m.add_function(wrap_pyfunction!(at_rest::unseal_identity_under,        m)?)?;

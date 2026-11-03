@@ -434,6 +434,12 @@ jobs:
           path: android/app/wheels
           merge-multiple: true
 
+      - name: Third-party Python, checked against its SHA-256 lock
+        # Every other file Chaquopy's pip installs, downloaded with
+        # --require-hashes (android/app/python-lock.txt). The build gives pip
+        # --no-index, so nothing else can reach the APK.
+        run: sh tools/fetch-apk-python.sh
+
       - uses: actions/download-artifact@v4
         with:
           pattern: i2pd-*
@@ -447,7 +453,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -l android/app/wheels || true
-          if ! ls android/app/wheels/*.whl >/dev/null 2>&1; then
+          if ! ls android/app/wheels/otrv4_core-*.whl >/dev/null 2>&1; then
             echo "::error::no otrv4_core wheels were downloaded from the rust job; the app cannot be built without the Rust core"
             exit 1
           fi
@@ -589,6 +595,12 @@ jobs:
           path: android/app/wheels
           merge-multiple: true
 
+      - name: Third-party Python, checked against its SHA-256 lock
+        # Every other file Chaquopy's pip installs, downloaded with
+        # --require-hashes (android/app/python-lock.txt). The build gives pip
+        # --no-index, so nothing else can reach the APK.
+        run: sh tools/fetch-apk-python.sh
+
       - uses: actions/download-artifact@v4
         with:
           pattern: i2pd-*
@@ -678,6 +690,12 @@ jobs:
           path: android/app/wheels
           merge-multiple: true
 
+      - name: Third-party Python, checked against its SHA-256 lock
+        # Every other file Chaquopy's pip installs, downloaded with
+        # --require-hashes (android/app/python-lock.txt). The build gives pip
+        # --no-index, so nothing else can reach the APK.
+        run: sh tools/fetch-apk-python.sh
+
       - name: The wheels must be here, or pip says something unhelpful
         # Without them the failure is "Could not find a version that satisfies
         # the requirement otrv4_core", several hundred lines into a Chaquopy
@@ -685,7 +703,7 @@ jobs:
         run: |
           set -euo pipefail
           ls -l android/app/wheels || true
-          if ! ls android/app/wheels/*.whl >/dev/null 2>&1; then
+          if ! ls android/app/wheels/otrv4_core-*.whl >/dev/null 2>&1; then
             echo "::error::no otrv4_core wheels were downloaded from the rust job; the app cannot be built without the Rust core"
             exit 1
           fi
@@ -735,6 +753,12 @@ jobs:
           pattern: otrv4_core-*
           path: android/app/wheels
           merge-multiple: true
+
+      - name: Third-party Python, checked against its SHA-256 lock
+        # Every other file Chaquopy's pip installs, downloaded with
+        # --require-hashes (android/app/python-lock.txt). The build gives pip
+        # --no-index, so nothing else can reach the APK.
+        run: sh tools/fetch-apk-python.sh
 
       - uses: gradle/actions/setup-gradle@v4
 

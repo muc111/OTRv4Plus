@@ -424,7 +424,7 @@ distribution of the app. Keep it out of `implementation` configurations.
 
 | Component | Version | Licence | Relationship | Compatible? |
 |---|---|---|---|---|
-| i2pd | 2.61.0 | **BSD-3-Clause** | separate executable in the APK (`lib/<abi>/libi2pd.so`), run as a child process | Yes |
+| i2pd | 3.0.0.1 | **BSD-3-Clause** | separate executable in the APK (`lib/<abi>/libi2pd.so`), run as a child process | Yes |
 | OpenSSL | 3.5.9 | **Apache-2.0** | statically linked into i2pd | Yes |
 | Boost (filesystem, program_options, atomic, headers) | 1.88.0 | **BSL-1.0** | statically linked into i2pd | Yes |
 | zlib | Android's own | — | system library, not bundled | — |

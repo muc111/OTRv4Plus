@@ -147,24 +147,36 @@ class TestTheBoundaryIsAnAllowlist:
         """The regression this exists for: a future bare print()."""
         assert LINE("storing key material for peer").startswith("<unlogged")
 
-    def test_no_denylist_survives_in_the_writer(self):
-        import inspect
-        src = inspect.getsource(xmpp._log_line_for_file)
-        assert "redact" in src.lower()
+    @pytest.mark.parametrize("line", [
+        "hunter2", "alice: correct horse battery staple",
+        "[newsubsystem]secret", "  [voice] indented secret"])
+    def test_anything_unmatched_falls_through_to_the_redacted_form(self, line):
         # An allowlist returns the input only on a matched shape; the final
-        # fallthrough must be the redacted form, not `clean`.
-        assert src.rstrip().endswith('return "<unlogged line: %d chars>" % len(clean)')
+        # fallthrough must be the redacted form, not the cleaned input.
+        assert LINE(line) == "<unlogged line: %d chars>" % len(line)
 
 
 class TestTheWriterUsesTheBoundary:
 
-    def test_log_to_file_delegates(self):
-        import inspect
-        src = inspect.getsource(xmpp._log_to_file)
-        assert "_log_line_for_file(msg)" in src, (
-            "the file writer bypasses the boundary")
-        assert "_ANSI_RE" not in src, (
-            "the writer is stripping and formatting on its own again")
+    @staticmethod
+    def _written(monkeypatch, msg):
+        import io
+        import otrv4plus_term as T
+        fh = io.StringIO()
+        monkeypatch.setattr(T, "_SESSION_LOG_FH", fh)
+        T._log_to_file(msg)
+        return fh.getvalue()
+
+    def test_log_to_file_delegates(self, monkeypatch):
+        out = self._written(monkeypatch, "Password for alice: hunter2")
+        assert "hunter2" not in out, "the file writer bypasses the boundary"
+        assert out.rstrip().endswith("<unlogged line: 27 chars>")
+
+    def test_the_writer_does_not_format_on_its_own(self, monkeypatch):
+        line = "[voice] rekey 3 committed"
+        out = self._written(monkeypatch, "\x1b[32m%s\x1b[0m" % line)
+        assert out.rstrip().endswith(" " + LINE("\x1b[32m%s\x1b[0m" % line))
+        assert "\x1b" not in out
 
 
 class TestStatusGlyphsDoNotChangeWhatIsWritten:

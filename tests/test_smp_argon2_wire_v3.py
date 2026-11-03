@@ -174,16 +174,41 @@ class TestTheUserIsToldTheRealCause:
         assert "NOT a wrong passphrase" in help_text
         assert "Update both devices" in help_text
 
+    @staticmethod
+    def _notified(otr, error):
+        """What the live SMP handler tells the user when Rust raises [error]."""
+        import types
+        shown = []
+
+        class _Smp:
+            def get_phase(self):
+                raise error
+
+            def abort(self):
+                pass
+
+        s = otr.EnhancedOTRSession.__new__(otr.EnhancedOTRSession)
+        s.rust_smp = _Smp()
+        s.initialize_smp = lambda: None
+        s._ping_refresh_cb = None
+        s.peer = "bob@example.org"
+        s.tracer = types.SimpleNamespace(trace=lambda *a, **k: None)
+        s._smp_progress_notify = lambda step, total, text, **kw: shown.append(text)
+        s._enh_handle_smp_tlv(types.SimpleNamespace(
+            type=otr.OTRv4TLV.SMP_MSG_1, value=b""))
+        return shown
+
     def test_the_help_text_bypasses_the_60_char_truncation(self, otr):
         """`_enh_handle_smp_tlv` is the live path (`process_smp_message` is
         explicitly disabled), and its generic branch cuts the message at 60
         characters -- before the sentence that says what to do."""
-        import inspect
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
-        assert "SMP_VERSION_MISMATCH_HELP" in src
-        assert "_is_smp_version_mismatch" in src
+        skew = ValueError("SMP version mismatch: peer sent v2, we speak v3. "
+                          "Both devices derive the SMP secret differently.")
+        assert self._notified(otr, skew) == [otr.SMP_VERSION_MISMATCH_HELP]
         # and the generic truncating branch still exists for everything else
-        assert "[:60 ]" in src or "[:60]" in src
+        other = ValueError("Ed448 signature invalid " + "x" * 200)
+        shown = self._notified(otr, other)
+        assert shown == ["\u274c SMP error: " + str(other)[:60]]
 
     def test_the_rust_message_actually_contains_the_matched_phrase(self):
         """Guards against the Rust text drifting away from the Python matcher."""

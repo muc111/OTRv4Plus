@@ -165,8 +165,19 @@ data class WipeReport(
     val filesUnlinkedOnly: Int = 0,
     /** Steps that reported a problem, e.g. "engine_off_thread". */
     val errors: List<String> = emptyList(),
+    /** The wipe looked afterwards and found nothing left on disk, and every
+     *  file was overwritten (not only unlinked). Absent from the engine's
+     *  report means not verified. */
+    val verified: Boolean = false,
+    /** Paths still present under a state root after the wipe. */
+    val survivors: Int = 0,
+    /** The desktop's key-wrapping key was deleted from the platform key
+     *  store, so no key file left on disk opens (crypto-erase). */
+    val cryptoErased: Boolean = false,
+    /** Which key store held it: "secret-service", "macos-keychain", "none". */
+    val keyStore: String = "none",
 ) {
-    val ok: Boolean get() = errors.isEmpty()
+    val ok: Boolean get() = errors.isEmpty() && verified
 
     companion object {
         /** A wipe that could not reach Python at all. */
@@ -675,6 +686,12 @@ data class RegistrationOutcome(
     val ok: Boolean,
     val code: String,
     val detail: String,
+    /**
+     * The CAPTCHA the server wants solved, present only when [code] is
+     * `captcha_required`. The account is not created yet; the UI shows the
+     * image, takes the characters and calls `submitCaptcha` on the same core.
+     */
+    val captcha: RegistrationCaptcha? = null,
 ) {
     /**
      * Whether retyping the username is the remedy, so the UI can put the
@@ -682,6 +699,14 @@ data class RegistrationOutcome(
      */
     val isAboutTheUsername: Boolean
         get() = code == "conflict" || code == "not_acceptable"
+
+    /**
+     * The server asked for a CAPTCHA the app can show and the image is here.
+     * The attempt is paused on an open stream, not finished: the UI must
+     * either answer it (`submitCaptcha`) or start over.
+     */
+    val needsCaptcha: Boolean
+        get() = code == "captcha_required" && captcha != null
 
     /**
      * Whether this server will never accept a registration, however good the
@@ -692,6 +717,20 @@ data class RegistrationOutcome(
         get() = code == "unsupported" || code == "not_allowed" ||
             code == "service_unavailable" || code == "forbidden"
 }
+
+/**
+ * A registration CAPTCHA to show the user (XEP-0158). [imageBase64] is the
+ * challenge image the server sent INLINE over the connection already open --
+ * never a URL the app fetched; an image hosted on a web page is refused in the
+ * bridge, because fetching it would reveal the user's address. The UI decodes
+ * the base64 to pixels and renders them; it does not open any network.
+ */
+data class RegistrationCaptcha(
+    val imageBase64: String,
+    val imageMime: String,
+    val instructions: String,
+    val answerVar: String,
+)
 
 /**
  * Something the server hosts, from XEP-0030 service discovery.
@@ -1171,7 +1210,7 @@ fun interface OtrEventSink {
 }
 
 /**
- * A member of a secure group. [fingerprint] is public (SHA-384 of the MLS
+ * A member of a secure group. [fingerprint] is public (SHA-512 of the MLS
  * signature key). [verified] only when that key arrived over an SMP-verified
  * OTRv4+ session with [jid]; [bound] when it arrived over any OTRv4+ session.
  */

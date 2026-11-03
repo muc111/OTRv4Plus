@@ -441,7 +441,9 @@ class TestTheManifestsParseUnderAStrictTomlParser:
         assert ed448["version"] == "0.18.1"
         assert ed448["optional"] is True
         assert ed448["default-features"] is False
-        assert ed448["features"] == ["alloc", "signing", "pkcs8"]
+        # "kex" since 2026-11-02: its RFC 7748 X448 replaced x448 0.6
+        # (src/rfc7748.rs).
+        assert ed448["features"] == ["alloc", "signing", "pkcs8", "kex"]
 
     def test_the_wheel_metadata_still_carries_the_licence(self):
         """The manifest edit sits beside the licence declaration; a rewrite

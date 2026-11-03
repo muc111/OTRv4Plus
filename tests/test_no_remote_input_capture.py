@@ -361,3 +361,7 @@ class TestBehaviour:
         out = capsys.readouterr()
         assert secret not in out.out, "validation error quoted the secret"
         assert c.otr.stored == []
+        # The validation failure returns early; the mask must be lifted on
+        # that path too (it replaced a source check in
+        # test_secret_never_echoes.py, Phase 5).
+        assert c._mask_input is False, "a rejected passphrase left input hidden"

@@ -70,7 +70,7 @@ impl OpusEncoder {
 
     /// Encode one frame of interleaved signed 16-bit little-endian PCM.
     fn encode<'py>(&mut self, py: Python<'py>, pcm: &[u8], frame_size: i32) -> PyResult<Bound<'py, PyBytes>> {
-        if pcm.len() % 2 != 0 {
+        if !pcm.len().is_multiple_of(2) {
             return Err(PyValueError::new_err("PCM is not whole 16-bit samples"));
         }
         let samples: Vec<i16> = pcm.as_chunks::<2>().0.iter().map(|b| i16::from_le_bytes(*b)).collect();

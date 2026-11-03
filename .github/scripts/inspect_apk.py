@@ -39,7 +39,7 @@ REQUIRED_APP_MODULES = ("otrv4_.py", "otrv4plus_xmpp.py", "otrv4plus_voice.py",
 #: Never in the APK: terminal-only programs, test scaffolding, the retired
 #: pre-Rust engine, and anything that would be a second implementation.
 FORBIDDEN_APP = re.compile(
-    r"(^|/)(otrv4plus_tui|otrv4plus_irc|weechat_otrv4plus|smp_engine_compat|otrv4_testlib|"
+    r"(^|/)(otrv4plus_tui|otrv4plus_irc(_[a-z]+)?|weechat_otrv4plus|smp_engine_compat|otrv4_testlib|"
     r"conftest|test_[^/]*|otrv4plus-1)\.pyc?$|(^|/)tests/|(^|/)\.attic/")
 
 #: Python distributions the APK must carry, and ones it must not.
@@ -65,7 +65,8 @@ PRIVATE_KEY = re.compile(rb"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 #: The ABIs the APK ships, and the i2pd release it carries for each
 #: (.github/scripts/build-i2pd-android.sh pins the source).
 ABIS = ("arm64-v8a", "x86_64")
-I2PD_VERSION = b"2.61.0"
+#: 3.0.0.1 reports "3.0.0": i2pd's version string has no fourth part.
+I2PD_VERSION = b"3.0.0"
 
 #: PyO3 names that exist only when the core is built with a test/legacy
 #: feature. Their presence in the shipped .so means a gated API shipped.

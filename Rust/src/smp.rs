@@ -74,7 +74,9 @@ use pyo3::types::{PyBytes, PyByteArray};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 use sha3::{Sha3_512, Digest};
 use sha3::digest::Update;
-use hmac::{Hmac, Mac};
+// SimpleHmac: hmac 0.13's Hmac needs a block-level core sha3 0.12 no longer
+// exposes; SimpleHmac is the same HMAC (RFC 2104) over any Digest.
+use hmac::{KeyInit, Mac, SimpleHmac as Hmac};
 use rand::rngs::OsRng;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -85,18 +87,6 @@ use std::time::{Duration, Instant};
 // (mod_exp_matches_reference_* below).
 use crypto_bigint::{U3072, Odd};
 use crypto_bigint::modular::{FixedMontyForm, FixedMontyParams};
-
-use pqcrypto_traits::kem::{
-    PublicKey  as KemPublicKey,
-    SecretKey  as KemSecretKey,
-    Ciphertext as KemCiphertext,
-    SharedSecret as KemSharedSecret,
-};
-use pqcrypto_traits::sign::{
-    PublicKey          as SignPublicKey,
-    SecretKey          as SignSecretKey,
-    DetachedSignature  as SignDetachedSignature,
-};
 
 use crate::error::{OtrError, Result, SafeSlice, check_wire_length};
 use crate::kdf::{self, usage};
@@ -441,47 +431,35 @@ impl PqBundle {
 
 // ─── ML-KEM-1024 helpers ──────────────────────────────────────────────────────
 
-fn mlkem_keygen() -> Result<(Vec<u8>, Vec<u8>)> {
-    let (pk, sk) = pqcrypto_mlkem::mlkem1024::keypair();
-    Ok((pk.as_bytes().to_vec(), sk.as_bytes().to_vec()))
+fn mlkem_keygen() -> Result<(Vec<u8>, zeroize::Zeroizing<Vec<u8>>)> {
+    // FIPS 203 ML-KEM-1024, the pure-Rust `ml-kem` crate (crate::mlkem).
+    // Returns (ek 1568, expanded dk 3168).
+    Ok(crate::mlkem::raw_keypair())
 }
 
 fn mlkem_encapsulate(ek: &[u8]) -> Result<(Vec<u8>, SecretVec)> {
     if ek.len() != MLKEM_EK_SIZE {
         return Err(OtrError::TooShort { need: MLKEM_EK_SIZE, got: ek.len() });
     }
-    let pk = pqcrypto_mlkem::mlkem1024::PublicKey::from_bytes(ek)
-        .map_err(|_| OtrError::MlKem)?;
-    // pqcrypto_mlkem returns (SharedSecret, Ciphertext)
-    let (ss, ct) = pqcrypto_mlkem::mlkem1024::encapsulate(&pk);
-    let mut ss_bytes = ss.as_bytes().to_vec();
-    let ct_bytes = ct.as_bytes().to_vec();
-    let secret = SecretVec::from_slice(&ss_bytes);
-    ss_bytes.zeroize();
-    Ok((ct_bytes, secret))
+    // Returns (ciphertext, shared secret).
+    let (ct_bytes, ss_bytes) = crate::mlkem::raw_encapsulate(ek).ok_or(OtrError::MlKem)?;
+    Ok((ct_bytes, SecretVec::from_slice(&ss_bytes)))  // ss_bytes is wiped on drop
 }
 
 fn mlkem_decapsulate(sk_bytes: &[u8], ct_bytes: &[u8]) -> Result<SecretVec> {
     if ct_bytes.len() != MLKEM_CT_SIZE {
         return Err(OtrError::TooShort { need: MLKEM_CT_SIZE, got: ct_bytes.len() });
     }
-    let sk = pqcrypto_mlkem::mlkem1024::SecretKey::from_bytes(sk_bytes)
-        .map_err(|_| OtrError::MlKem)?;
-    let ct = pqcrypto_mlkem::mlkem1024::Ciphertext::from_bytes(ct_bytes)
-        .map_err(|_| OtrError::MlKem)?;
-    let mut ss_bytes = pqcrypto_mlkem::mlkem1024::decapsulate(&ct, &sk)
-        .as_bytes().to_vec();
-    let secret = SecretVec::from_slice(&ss_bytes);
-    ss_bytes.zeroize();
-    Ok(secret)
+    let ss_bytes = crate::mlkem::raw_decapsulate(sk_bytes, ct_bytes).ok_or(OtrError::MlKem)?;
+    Ok(SecretVec::from_slice(&ss_bytes))  // ss_bytes is wiped on drop
 }
 
 // ─── ML-DSA-87 helpers ────────────────────────────────────────────────────────
 
 fn mldsa_keygen() -> Result<(Vec<u8>, SecretBytes<MLDSA_PRV_SIZE>)> {
-    let (pk, sk) = pqcrypto_mldsa::mldsa87::keypair();
-    let pk_bytes = pk.as_bytes().to_vec();
-    let mut sk_raw = sk.as_bytes().to_vec();
+    // FIPS 204 ML-DSA-87, the pure-Rust `ml-dsa` crate (crate::mldsa).
+    // Returns (pk 2592, expanded sk 4896).
+    let (pk_bytes, mut sk_raw) = crate::mldsa::raw_keypair();
     let mut arr = [0u8; MLDSA_PRV_SIZE];
     if sk_raw.len() != MLDSA_PRV_SIZE {
         sk_raw.zeroize();
@@ -489,7 +467,9 @@ fn mldsa_keygen() -> Result<(Vec<u8>, SecretBytes<MLDSA_PRV_SIZE>)> {
     }
     arr.copy_from_slice(&sk_raw);
     sk_raw.zeroize();
-    Ok((pk_bytes, SecretBytes::new(arr)))
+    let sk = SecretBytes::new(arr);
+    arr.zeroize(); // `arr` is Copy: the move above left this copy behind
+    Ok((pk_bytes, sk))
 }
 
 /// Sign with ML-DSA-87, binding pq_binding_key into the signed message.
@@ -497,9 +477,9 @@ fn mldsa_keygen() -> Result<(Vec<u8>, SecretBytes<MLDSA_PRV_SIZE>)> {
 /// ML-DSA, empty FIPS 204 context), so signatures produced under different
 /// binding keys cannot be confused. This is domain separation in the
 /// message, NOT the FIPS 204 context: that is encoded as
-/// `0 || len(ctx) || ctx || M`, and pqcrypto-mldsa 0.1.2 does offer it
-/// (`detached_sign_ctx`). Changing to it would change the wire (audit
-/// 2026-10-26; docs/CRYPTOGRAPHER_QUESTIONS.md Q7).
+/// `0 || len(ctx) || ctx || M`, and the ml-dsa crate does offer it
+/// (as the M' prefix of `sign_internal`). Changing to it would change the wire
+/// (audit 2026-10-26; docs/CRYPTOGRAPHER_QUESTIONS.md Q7).
 fn mldsa_sign_with_context(
     sk_bytes: &[u8],
     message:  &[u8],
@@ -508,21 +488,20 @@ fn mldsa_sign_with_context(
     if sk_bytes.len() != MLDSA_PRV_SIZE {
         return Err(OtrError::MlDsa);
     }
-    let sk = pqcrypto_mldsa::mldsa87::SecretKey::from_bytes(sk_bytes)
-        .map_err(|_| OtrError::MlDsa)?;
 
     // Construct the input that will be signed: context_len (4 bytes BE)
     // || context || message.  Both sides must use the same construction.
+    // This is the domain separation in the MESSAGE; the FIPS 204 context is
+    // empty (crate::mldsa::raw_sign), as before.
     let ctx_len = (context.len() as u32).to_be_bytes();
     let mut input = Vec::with_capacity(4 + context.len() + message.len());
     input.extend_from_slice(&ctx_len);
     input.extend_from_slice(context);
     input.extend_from_slice(message);
 
-    let sig = pqcrypto_mldsa::mldsa87::detached_sign(&input, &sk);
-    let out = sig.as_bytes().to_vec();
+    let out = crate::mldsa::raw_sign(sk_bytes, &input).ok_or(OtrError::MlDsa);
     input.zeroize();
-    Ok(out)
+    out
 }
 
 /// Verify with ML-DSA-87 using the same context construction.
@@ -538,10 +517,6 @@ fn mldsa_verify_with_context(
     if sig_bytes.len() != MLDSA_SIG_SIZE {
         return Err(OtrError::TooShort { need: MLDSA_SIG_SIZE, got: sig_bytes.len() });
     }
-    let pk = pqcrypto_mldsa::mldsa87::PublicKey::from_bytes(pk_bytes)
-        .map_err(|_| OtrError::MlDsa)?;
-    let sig = pqcrypto_mldsa::mldsa87::DetachedSignature::from_bytes(sig_bytes)
-        .map_err(|_| OtrError::MlDsa)?;
 
     let ctx_len = (context.len() as u32).to_be_bytes();
     let mut input = Vec::with_capacity(4 + context.len() + message.len());
@@ -549,9 +524,9 @@ fn mldsa_verify_with_context(
     input.extend_from_slice(context);
     input.extend_from_slice(message);
 
-    let result = pqcrypto_mldsa::mldsa87::verify_detached_signature(&sig, &input, &pk);
+    let ok = crate::mldsa::raw_verify(pk_bytes, &input, sig_bytes);
     input.zeroize();
-    result.map_err(|_| OtrError::SignatureInvalid)
+    if ok { Ok(()) } else { Err(OtrError::SignatureInvalid) }
 }
 
 // ─── core SMP state ───────────────────────────────────────────────────────────
@@ -903,7 +878,7 @@ impl SmpState {
     // candidate against a captured transcript costs one hash.  That is what
     // 0x03 fixes.
     fn stretch_shake_legacy(raw_secret: &[u8]) -> [u8; 64] {
-        use sha3::Shake256;
+        use shake::Shake256;
         use sha3::digest::{ExtendableOutput, XofReader};
 
         let mut state = {
