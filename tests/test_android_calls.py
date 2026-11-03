@@ -508,6 +508,118 @@ class TestTheVoiceStackIsNotLoadedAtImport:
             % (out.stdout + out.stderr)[:400])
 
 
+class TestTheAudioSetupReachesTheReport:
+    """Owner report: "audio has high pitch and echo", sent with a diagnostic
+    that showed chat and room events but nothing about the call. A pitch fault
+    is a sample-rate mismatch between the device and the codec, and echo is the
+    playback routing -- both are in the voice engine's verbose setup lines,
+    which go to logcat no report includes, and which a handset APK could not
+    even turn on. These now carry their NUMBERS into the trace ring, so the
+    shared report answers the question it was sent to answer."""
+
+    def test_the_setup_lines_keep_their_parameters(self):
+        from android_bridge.voice import call_stage
+        code, severity, reason = call_stage(
+            "[voice] audio: aaudio capture 48000 Hz / 1 ch, playback aaudio "
+            "— PCM_16BIT, resampling to 24000 Hz")
+        assert code == "audio_setup"
+        # The rates are the whole point: a report that said only "audio_setup"
+        # could not tell a 48k->24k resample from a 24k device playing 48k data.
+        assert "48000" in reason and "24000" in reason
+
+    def test_the_codec_and_playout_rates_are_kept(self):
+        from android_bridge.voice import call_stage
+        assert call_stage("[voice] codec: Opus 24000 Hz mono, 60 ms frames, "
+                          "24 kbit/s CBR")[0] == "audio_codec"
+        playout = call_stage(
+            "[voice] playout: 48000 Hz / 2 ch (resampling), burst 240 frames, "
+            "capacity 3840 frames (80 ms) vs 60 ms per packet")
+        assert playout[0] == "audio_playout" and "48000" in playout[2]
+
+    def test_the_echo_route_is_named(self):
+        from android_bridge.voice import call_stage
+        code, _severity, reason = call_stage(
+            "[voice] playback is declared as VOICE_COMMUNICATION, which some "
+            "phones route to the EARPIECE rather than the speaker.")
+        assert code == "audio_earpiece_route"
+        assert "VOICE_COMMUNICATION" in reason
+
+    def test_the_underrun_line_is_not_swallowed_by_the_setup_needles(self):
+        """"playout: the device buffer" must still be its own warning, not be
+        captured by the setup "burst"/"playout" matching."""
+        from android_bridge.voice import call_stage
+        assert call_stage("[voice] playout: the device buffer is running "
+                          "dry")[0] == "playout_underrun"
+
+    def test_a_verbose_line_is_recorded_once_with_its_detail(self):
+        """The whole chain: the traced print wrapper records the setup line's
+        numbers into the ring, under a code, with no peer."""
+        from android_bridge.voice import traced_call_print
+        from android_bridge.trace import TRACE
+        TRACE.clear()
+        sink = []
+        printer = traced_call_print(lambda *a: sink.append(
+            " ".join(str(x) for x in a)))
+        printer("[voice] audio: aaudio capture 48000 Hz / 1 ch, playback "
+                "aaudio — PCM_16BIT, resampling to 24000 Hz")
+        events = [e for e in TRACE.events()
+                  if e["component"] == "call" and e["event"] == "audio_setup"]
+        assert len(events) == 1, events
+        assert "48000" in events[0]["fields"]["reason"]
+        assert sink, "the original printer was not called"
+        TRACE.clear()
+
+
+class TestDebugLoggingIsReachableFromTheApk:
+    """A handset APK has no shell to set OTRV4PLUS_VOICE_VERBOSE, so the voice
+    engine's setup detail was unreachable on a device -- exactly where the
+    audio bug lives. The debug build turns it on through the bridge."""
+
+    def test_the_debug_build_wires_it_on(self):
+        import io
+        core = io.open(os.path.join(ANDROID, "bridge", "ChaquopyOtrCore.kt"),
+                       encoding="utf-8").read()
+        assert '"set_debug_logging", BuildConfig.DEBUG' in core, (
+            "the debug build does not turn on verbose voice logging")
+
+    def test_the_bridge_method_exists_and_flips_the_flag(self):
+        assert callable(getattr(OtrApp, "set_debug_logging", None))
+        import otrv4plus_voice as voice
+        before = voice.VOICE_VERBOSE
+        try:
+            app = OtrApp(_manager(), Wire(), Sink())
+            assert app.set_debug_logging(True) is True
+            assert voice.VOICE_VERBOSE is True, (
+                "an already-loaded voice module was not switched on")
+            app.set_debug_logging(False)
+            assert voice.VOICE_VERBOSE is False
+        finally:
+            voice.set_voice_verbose(before)
+            os.environ.pop("OTRV4PLUS_VOICE_VERBOSE", None)
+
+    def test_turning_it_on_does_not_drag_in_the_voice_stack(self):
+        """set_debug_logging must not import otrv4plus_voice itself -- that is
+        the start-up import the lazy design avoids. It sets the env var the
+        module reads when a call first loads it, and flips the flag only if it
+        is ALREADY loaded."""
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = ("import sys; sys.path.insert(0, %r)\n"
+                "import os\n"
+                "os.environ['OTRV4PLUS_ALLOW_RAW_KEY_TEST_API'] = '1'\n"
+                "import otrv4_, android_bridge.app as m\n"
+                "a = m.OtrApp(otrv4_.EnhancedSessionManager("
+                "otrv4_.OTRConfig(test_mode=True)), None, None)\n"
+                "a.set_debug_logging(True)\n"
+                "print('loaded' if 'otrv4plus_voice' in sys.modules else 'lazy')\n"
+                % root)
+        out = subprocess.run([sys.executable, "-c", code],
+                             capture_output=True, text=True, timeout=120)
+        assert out.stdout.strip().endswith("lazy"), (
+            "set_debug_logging imported the voice stack: %s"
+            % (out.stdout + out.stderr)[-400:])
+
+
 # -- helpers -----------------------------------------------------------------
 
 

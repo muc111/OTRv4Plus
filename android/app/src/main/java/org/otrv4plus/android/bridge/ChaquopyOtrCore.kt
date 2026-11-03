@@ -141,6 +141,14 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                         "for_android", trust, trust is KeystoreVault))
             }
 
+            // Debug builds turn on the voice engine's verbose setup log, so a
+            // bad call's capture/playout rates, codec rate and echo-route reach
+            // both logcat and the shareable diagnostic report. A no-op in
+            // release (BuildConfig.DEBUG is a compile-time constant), and it
+            // does not force the voice stack to load -- it only sets the flag
+            // the module reads when the first call imports it.
+            runCatching { app?.callAttr("set_debug_logging", BuildConfig.DEBUG) }
+
             InitResult(
                 ok = report.callAttr("get", "ok").toBoolean(),
                 pythonVersion = section(report, "python", "version"),

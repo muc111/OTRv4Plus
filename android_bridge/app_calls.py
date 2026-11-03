@@ -236,6 +236,37 @@ class CallsMixin:
             return "wiped"
         return self.calls.unavailable_reason()
 
+    def set_debug_logging(self, on: bool) -> bool:
+        """Turn the voice engine's verbose setup log on or off.
+
+        The debug APK calls this once at start-up with BuildConfig.DEBUG, so a
+        bad call's capture/playout rates, codec rate and echo-route -- the
+        facts a "high pitch / echo" report turns on -- reach both logcat and
+        the shareable diagnostic report (android_bridge.voice.DETAIL_CODES).
+        Release builds pass False and nothing changes.
+
+        Deliberately does NOT import `otrv4plus_voice`: that would drag the
+        terminal client in at start-up, which the lazy-import design exists to
+        avoid. Instead it sets the env var the module reads when it IS first
+        imported (on the first call), and flips the flag directly only if the
+        module is already loaded. No peer, no content.
+        """
+        import os
+        import sys
+        on = bool(on)
+        if on:
+            os.environ["OTRV4PLUS_VOICE_VERBOSE"] = "1"
+        else:
+            os.environ.pop("OTRV4PLUS_VOICE_VERBOSE", None)
+        module = sys.modules.get("otrv4plus_voice")
+        if module is not None:
+            try:
+                module.set_voice_verbose(on)
+            except Exception:
+                pass
+        _TRACE.record("diag", "debug_logging", "info", on=on)
+        return True
+
     def poll_calls(self) -> None:
         """Emit an event for any call whose state moved.
 

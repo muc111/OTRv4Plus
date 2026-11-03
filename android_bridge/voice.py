@@ -679,6 +679,18 @@ CALL_PREFIX_FALLBACK = "?OTRv4-CALL:"
 
 #: (text in the line, code, severity). First match wins; order matters.
 CALL_STAGES = (
+    # Audio SETUP lines. Verbose-only (OTRV4PLUS_VOICE_VERBOSE, which the debug
+    # APK turns on via OtrApp.set_debug_logging), printed once as a call goes
+    # live. These are the lines a "high pitch / echo" report needs: a pitch
+    # fault is a sample-rate mismatch between the device and the codec, and
+    # echo is the playback routing -- both named here and nowhere else. Their
+    # numbers are kept in the trace (see DETAIL_CODES) so a shared report
+    # carries them, not only logcat. Needles chosen to match ONLY the setup
+    # line and placed first so a broader needle below cannot shadow them.
+    ("codec: Opus", "audio_codec", "info"),
+    ("audio: ", "audio_setup", "info"),
+    ("burst", "audio_playout", "info"),
+    ("declared as VOICE_COMMUNICATION", "audio_earpiece_route", "info"),
     ("building I2P tunnel", "tunnels_building", "info"),
     ("waiting for an answer", "ringing_out", "info"),
     ("Answer? [y/n]", "ringing_in", "info"),
@@ -728,6 +740,15 @@ CALL_STAGES = (
 )
 
 
+#: Codes whose numbers matter even though the line is "info": the audio
+#: setup lines. For these the whole detail after "[voice] " is kept, so the
+#: shared report carries the capture/playout rates and the routing -- the
+#: facts a "high pitch / echo" report is about. The redactor still aliases
+#: any identity by shape; these lines carry only rates, channels and names.
+DETAIL_CODES = frozenset({"audio_codec", "audio_setup", "audio_playout",
+                          "audio_earpiece_route"})
+
+
 def call_stage(line: str):
     """(code, severity, reason) for one `[voice]` line, or None."""
     text = str(line or "")
@@ -736,7 +757,9 @@ def call_stage(line: str):
     for needle, code, severity in CALL_STAGES:
         if needle in text:
             reason = ""
-            if severity != "info" and ": " in text:
+            if code in DETAIL_CODES:
+                reason = text.split("[voice]", 1)[1].strip()[:160]
+            elif severity != "info" and ": " in text:
                 reason = text.rsplit(": ", 1)[1].strip()[:120]
             return code, severity, reason
     return "other", "info", ""
