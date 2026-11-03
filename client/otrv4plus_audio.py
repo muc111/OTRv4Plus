@@ -347,6 +347,13 @@ AAUDIO_PERFORMANCE_MODE_LOW_LATENCY = 12
 AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION = 7
 AAUDIO_INPUT_PRESET_GENERIC = 1
 
+#: Readable names for the diagnostic report, so a log says whether the
+#: platform echo canceller was actually engaged rather than leaving it to be
+#: inferred. GENERIC means the VOICE_COMMUNICATION open failed and the stream
+#: fell back without AEC/AGC/NS -- the first thing to check for echo.
+_INPUT_PRESET_NAMES = {AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION: "voice_communication",
+                       AAUDIO_INPUT_PRESET_GENERIC: "generic"}
+
 # Output attributes.  Android 9+ (API 28); absent setters are skipped.
 #
 # The capture stream asks for AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION, which
@@ -372,6 +379,12 @@ AAUDIO_INPUT_PRESET_GENERIC = 1
 AAUDIO_USAGE_MEDIA = 1
 AAUDIO_USAGE_VOICE_COMMUNICATION = 2
 AAUDIO_CONTENT_TYPE_SPEECH = 3
+
+#: Readable names for the diagnostic report. MEDIA on the playback stream
+#: means it is NOT the echo canceller's reference, so echo is expected: the
+#: canceller has nothing to subtract.
+_USAGE_NAMES = {AAUDIO_USAGE_VOICE_COMMUNICATION: "voice_communication",
+                AAUDIO_USAGE_MEDIA: "media"}
 AAUDIO_STREAM_STATE_STARTED = 5
 
 AAUDIO_ERROR_DISCONNECTED = -899       # the AAudio analogue of ERROR_DEAD_OBJECT
@@ -700,6 +713,12 @@ class AAudioStreamBase(AudioStream):
             "requested_channels": CHANNELS,
             "device_channels": getattr(self, "device_channels", None),
             "encoding": "PCM_16BIT",
+            # Echo-cancellation provenance: the capture preset (input) and the
+            # playback usage (output). Named so a report says plainly whether
+            # the platform AEC was engaged -- a capture that fell back to
+            # `generic`, or a playback left on `media`, means no echo canceller.
+            "input_preset": _INPUT_PRESET_NAMES.get(getattr(self, "input_preset", None)),
+            "usage": _USAGE_NAMES.get(getattr(self, "usage", None)),
             "buffer_capacity_frames": getattr(self, "buffer_capacity", None),
             "buffer_size_frames": getattr(self, "buffer_size", None),
             "frames_per_burst": getattr(self, "frames_per_burst", None),

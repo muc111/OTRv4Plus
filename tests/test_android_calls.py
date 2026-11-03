@@ -536,6 +536,22 @@ class TestTheAudioSetupReachesTheReport:
             "capacity 3840 frames (80 ms) vs 60 ms per packet")
         assert playout[0] == "audio_playout" and "48000" in playout[2]
 
+    def test_the_echo_canceller_state_is_named(self):
+        """Echo's first suspect is the platform AEC not running: the capture
+        preset fell back to generic, or the playback is on media (so it is not
+        the canceller's reference). Both were invisible in a report. The line
+        now carries both, verbatim, whichever way it went."""
+        from android_bridge.voice import call_stage
+        off = call_stage(
+            "[voice] echo control: capture preset generic, playback usage "
+            "media — the platform echo canceller is NOT engaged; expect echo.")
+        assert off[0] == "audio_echo"
+        assert "generic" in off[2] and "NOT engaged" in off[2]
+        on = call_stage(
+            "[voice] echo control: capture preset voice_communication, playback "
+            "usage voice_communication — platform AEC engaged")
+        assert on[0] == "audio_echo" and "engaged" in on[2]
+
     def test_the_echo_route_is_named(self):
         from android_bridge.voice import call_stage
         code, _severity, reason = call_stage(

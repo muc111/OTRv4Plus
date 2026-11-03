@@ -1242,6 +1242,32 @@ class VoiceCallSession:
         except Exception:
             pass
 
+        # Echo cancellation, stated rather than inferred. Echo on a call is
+        # almost always the platform AEC not running: the capture stream fell
+        # back from VOICE_COMMUNICATION to GENERIC, or the playback stream is on
+        # MEDIA and so is not the canceller's reference. Both are invisible
+        # unless named, which left "there is echo" undiagnosable from a report
+        # (device test, 2026-11). A warning, not a quiet debug line, when either
+        # side is not set for AEC.
+        try:
+            cap_preset = cap.get("input_preset")
+            play_usage = self._playback.diagnostics().get("usage")
+            if cap_preset is not None or play_usage is not None:
+                aec_ok = (cap_preset == "voice_communication"
+                          and play_usage in ("voice_communication", None))
+                if aec_ok:
+                    _vprint("[voice] echo control: capture preset %s, playback "
+                            "usage %s — platform AEC engaged"
+                            % (cap_preset, play_usage or "n/a"))
+                else:
+                    _print("[voice] ⚠ echo control: capture preset %s, playback "
+                           "usage %s — the platform echo canceller is NOT "
+                           "engaged (needs capture voice_communication and a "
+                           "voice_communication playback reference); expect echo."
+                           % (cap_preset, play_usage))
+        except Exception:
+            pass
+
         # Loudness, spelled out, because "it is too quiet" has one digital
         # answer and two Android ones and they are not interchangeable. The
         # compressor is already worth about +7 dB of RMS and leaves only a few
