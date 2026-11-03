@@ -420,6 +420,36 @@ def test_a_group_signal_from_a_changed_key_says_so_not_unencrypted():
     m.close()
 
 
+def test_a_gone_room_is_forgotten_everywhere_not_retried_forever():
+    """Device test, 2026-11-03: an admin (not the creator) deleted the room on
+    the server; it went from the server and the admin's client, but the
+    creator kept the group and kept sending -- room_message_rejected x11,
+    condition=gone. A gone/item-not-found room was destroyed, so the group must
+    end on this client too (a delete reaches everyone), not be retried like a
+    rate-limit bounce."""
+    import types
+    m = SecureGroups(send_room=lambda *a: None, send_private=lambda *a: None,
+                     emit=lambda e: None,
+                     peer_security=lambda p: SecurityState.PLAINTEXT,
+                     state_dir=tempfile.mkdtemp())
+    m.open("alice@x.i2p")
+    seen = {"destroyed": 0, "paced": 0}
+    m.is_secure = lambda room: True
+    m.on_room_destroyed = lambda room: seen.__setitem__("destroyed", seen["destroyed"] + 1) or True
+    m._pacer = types.SimpleNamespace(
+        rejected=lambda r: seen.__setitem__("paced", seen["paced"] + 1),
+        in_flight=lambda r: True)
+
+    for gone in ("gone", "item-not-found", "GONE"):
+        m.on_room_rejected("room@conference.x.i2p", gone)
+    assert seen == {"destroyed": 3, "paced": 0}, "a gone room is forgotten, never paced"
+
+    # A real rate-limit bounce is still paced and retried, not deleted.
+    m.on_room_rejected("room@conference.x.i2p", "policy-violation")
+    m.on_room_rejected("room@conference.x.i2p", "")       # unknown: treat as transient
+    assert seen["destroyed"] == 3 and seen["paced"] == 2
+
+
 def test_a_second_client_for_the_same_account_is_refused():
     root = tempfile.mkdtemp()
     w = World()

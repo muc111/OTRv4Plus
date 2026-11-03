@@ -1798,9 +1798,25 @@ class SecureGroups:
         self._post(room, commit)
         return True
 
-    def on_room_rejected(self, room: str) -> None:
-        """The server bounced a message to `room` (e.g. mod_muc_limits)."""
+    #: Error conditions that mean the room no longer exists, so a message to it
+    #: will never be accepted however often it is retried: the room's owner or
+    #: a server admin destroyed it. `gone` and `item-not-found` are both
+    #: unambiguous for a MUC; a network condition (remote-server-not-found) is
+    #: deliberately NOT here, so a tunnel blip never deletes a live group.
+    _ROOM_GONE_CONDITIONS = frozenset({"gone", "item-not-found"})
+
+    def on_room_rejected(self, room: str, condition: str = "") -> None:
+        """The server bounced a message to `room` (e.g. mod_muc_limits), or the
+        room is gone. A gone room is forgotten here -- so a delete reaches every
+        client, including the creator, even when the <destroy> presence was
+        missed (an admin destroyed it, or we were offline for it). Anything else
+        is a transient bounce: slow the room down and send again."""
         if not self.is_secure(room):
+            return
+        if str(condition or "").strip().lower() in self._ROOM_GONE_CONDITIONS:
+            # The room was destroyed: stop retrying and end the group here.
+            _TRACE.record("groups", "room_gone", "info", condition=str(condition)[:40])
+            self.on_room_destroyed(room)
             return
         self._emit(ErrorOccurred(peer=room, code="room_message_rejected"))
         # Slow this room down and send again what it has not echoed. That

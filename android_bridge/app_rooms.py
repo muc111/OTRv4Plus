@@ -155,7 +155,8 @@ class RoomChatMixin:
         room = self.canonical_peer(room)
         groups = getattr(self, "_groups", None)
         if groups is not None and room in self._rooms:
-            threading.Thread(target=self._quietly, args=(groups.on_room_rejected, room),
+            threading.Thread(target=self._quietly,
+                             args=(groups.on_room_rejected, room, condition),
                              name="group-rejected", daemon=True).start()
 
     @staticmethod
