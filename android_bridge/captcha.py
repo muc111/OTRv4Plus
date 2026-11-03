@@ -76,13 +76,22 @@ class Challenge:
     `hidden` are the fields the submission must echo back verbatim;
     `answer_var` is the field the user's text goes in. `image_bytes` and
     `image_mime` are the inline challenge image. `instructions` is the
-    server's prompt, if any (safe to show; it is the server's own text)."""
+    server's prompt, if any (safe to show; it is the server's own text).
+
+    `fields` maps every field the form declared to its XEP-0004 type
+    (`text-single`, `text-private`, `hidden`, ...), and `required` is the set
+    of vars the form marked `<required/>`. They let the submission be built
+    from the server's own form -- filling username/password where the server
+    put them as form fields, not assuming one server's layout -- so the same
+    code works whatever the server software is."""
     answer_var: str
     hidden: Dict[str, List[str]]
     image_bytes: bytes
     image_mime: str
     instructions: str = ""
     sid: str = ""
+    fields: Dict[str, str] = _dc_field(default_factory=dict)
+    required: frozenset = frozenset()
 
     def image_base64(self) -> str:
         return base64.b64encode(self.image_bytes).decode("ascii")
@@ -254,14 +263,21 @@ def extract_challenge(query) -> Challenge:
                            "The server's CAPTCHA image was too large to show.")
 
     hidden: Dict[str, List[str]] = {}
+    fields: Dict[str, str] = {}
+    required = set()
     instructions = ""
     sid = ""
     for f in form:
         if _local(f.tag) != "field":
             continue
         var = f.get("var")
-        ftype = f.get("type") or ""
-        if var and ftype == "hidden":
+        if not var:
+            continue
+        ftype = f.get("type") or "text-single"
+        fields[var] = ftype
+        if any(_local(c.tag) == "required" for c in f):
+            required.add(var)
+        if ftype == "hidden":
             hidden[var] = _field_values(f)
             if var == "sid":
                 vals = _field_values(f)
@@ -281,14 +297,46 @@ def extract_challenge(query) -> Challenge:
                 instructions = (child.text or "").strip() or instructions
     return Challenge(answer_var=field.get("var"), hidden=hidden,
                      image_bytes=data, image_mime=mime,
-                     instructions=instructions, sid=sid)
+                     instructions=instructions, sid=sid,
+                     fields=fields, required=frozenset(required))
 
 
-def submission_fields(challenge: Challenge, answer: str) -> Dict[str, List[str]]:
+#: Fields the submission fills itself. Anything else the form REQUIRES (an
+#: e-mail address, a real name, ...) cannot be answered from the Register
+#: screen, so such a form is treated as "more than a username and password".
+_FILLABLE = frozenset({"username", "password"})
+
+
+def missing_required(challenge: Challenge) -> List[str]:
+    """Required fields the app cannot fill: not hidden (those are echoed), not
+    the answer field, not username/password. A non-empty list means the form
+    asks for more than the app can provide, so the caller should refuse with
+    `registration_fields_required` rather than submit an incomplete form (which
+    a server answers with an error the user cannot act on)."""
+    out = []
+    for var in challenge.required:
+        if (var in challenge.hidden or var == challenge.answer_var
+                or var in _FILLABLE):
+            continue
+        out.append(var)
+    return out
+
+
+def submission_fields(challenge: Challenge, answer: str,
+                      username: Optional[str] = None,
+                      password: Optional[str] = None) -> Dict[str, List[str]]:
     """The var -> values map a CAPTCHA submission must carry: every hidden
-    field echoed back verbatim, plus the user's answer in the answer field.
-    The FORM_TYPE is preserved; `username`/`password` are added by the
-    caller (they are not part of the CAPTCHA form)."""
+    field echoed back verbatim, the user's answer in the answer field, and --
+    only where the server's own form declared them as fields -- the username
+    and password. A server that reads the credentials from the data form
+    (ejabberd's mod_register does) then finds them; one that reads the
+    `<username>`/`<password>` sub-elements (which the caller also sends) is
+    unaffected. The format therefore follows the server's form rather than
+    assuming a particular server's layout."""
     fields: Dict[str, List[str]] = {k: list(v) for k, v in challenge.hidden.items()}
     fields[challenge.answer_var] = [answer]
+    if username is not None and "username" in challenge.fields:
+        fields["username"] = [username]
+    if password is not None and "password" in challenge.fields:
+        fields["password"] = [password]
     return fields

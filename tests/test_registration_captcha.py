@@ -75,6 +75,69 @@ def test_submission_echoes_hidden_and_injects_answer():
     assert fields["ocr"] != ["ocr-val"]
 
 
+def _creds_form(*, with_email=False):
+    """A CAPTCHA form that (ejabberd-style) declares username and password as
+    data-form fields, not register sub-elements -- optionally with an extra
+    required email field the Register screen cannot fill."""
+    email = ("<field var='email' type='text-single'><required/></field>"
+             if with_email else "")
+    field = (
+        "<field var='username' type='text-single'><required/></field>"
+        "<field var='password' type='text-private'><required/></field>"
+        + email + _ocr_field())
+    return _form(field)
+
+
+def test_form_fields_and_required_are_recorded():
+    ch = captcha.extract_challenge(_creds_form())
+    # Every declared field is in `fields`, by its XEP-0004 type.
+    assert ch.fields["username"] == "text-single"
+    assert ch.fields["password"] == "text-private"
+    assert ch.fields["ocr"] == "text-single"
+    assert ch.fields["FORM_TYPE"] == "hidden"
+    # The server marked these <required/>.
+    assert "username" in ch.required
+    assert "password" in ch.required
+    assert "ocr" in ch.required
+
+
+def test_submission_fills_username_and_password_when_the_form_declares_them():
+    ch = captcha.extract_challenge(_creds_form())
+    fields = captcha.submission_fields(ch, "WXYZ", username="alice",
+                                       password="hunter2")
+    # The ejabberd-style server reads these out of the form; they must be there.
+    assert fields["username"] == ["alice"]
+    assert fields["password"] == ["hunter2"]
+    assert fields["ocr"] == ["WXYZ"]
+    assert fields["FORM_TYPE"] == ["urn:xmpp:captcha"]
+
+
+def test_submission_does_not_add_credentials_the_form_did_not_ask_for():
+    # A Prosody-style form with no username/password FIELDS (it reads the
+    # register sub-elements): our form must not invent them, or a strict
+    # server rejects an unexpected field.
+    ch = captcha.extract_challenge(_form(_ocr_field()))
+    fields = captcha.submission_fields(ch, "WXYZ", username="alice",
+                                       password="hunter2")
+    assert "username" not in fields
+    assert "password" not in fields
+
+
+def test_missing_required_names_a_field_we_cannot_fill():
+    ch = captcha.extract_challenge(_creds_form(with_email=True))
+    # username/password are fillable and ocr is the answer, so only email is
+    # "missing" -- the form asks for more than the Register screen can give.
+    assert captcha.missing_required(ch) == ["email"]
+
+
+def test_missing_required_is_empty_for_a_username_password_captcha():
+    ch = captcha.extract_challenge(_creds_form())
+    assert captcha.missing_required(ch) == []
+    # And for a bare OCR-only form.
+    assert captcha.missing_required(captcha.extract_challenge(
+        _form(_ocr_field()))) == []
+
+
 def test_external_url_image_is_refused_not_fetched():
     for scheme in ("http://evil.example/c.png", "https://x.example/c.png",
                    "ftp://f.example/c.png"):

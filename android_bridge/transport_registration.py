@@ -567,6 +567,18 @@ class RegistrationMixin:
                     "registration_protocol_error"))
             return
 
+        missing = _captcha.missing_required(challenge)
+        if missing:
+            # The form asks for a field the Register screen cannot provide (an
+            # e-mail address, a real name, ...). Do not prompt for a CAPTCHA we
+            # could never complete; say so and send nothing.
+            _TRACE.record("registration", "captcha_extra_fields", "info",
+                          fields=",".join(sorted(missing))[:64])
+            if not done.done():
+                done.set_exception(_registration.RegistrationFailed(
+                    "registration_fields_required"))
+            return
+
         if self._route.verify_certificate and not _tls_in_place(client):
             # The submission will carry the new password; refuse to send it in
             # the clear. (The GET that brought the form is harmless; the SET is
@@ -603,16 +615,24 @@ class RegistrationMixin:
                 done.set_exception(_registration.RegistrationFailed("cancelled"))
             return
 
+        localpart = _localpart(self._profile.jid)
         try:
             submit = client["xep_0004"].make_form(ftype="submit")
-            for var, vals in _captcha.submission_fields(challenge, answer).items():
-                ftype = ("text-single" if var == challenge.answer_var
-                         else "hidden")
+            # Reply to the server's OWN form: echo the hidden fields, put the
+            # answer in the answer field, and fill username/password wherever
+            # the form declared them (ejabberd puts them in the form; others
+            # read the sub-elements set below). Each field keeps the type the
+            # server gave it, so this is not tied to any one server's layout.
+            built = _captcha.submission_fields(
+                challenge, answer, username=localpart, password=self._password)
+            for var, vals in built.items():
+                ftype = challenge.fields.get(var) or (
+                    "text-single" if var == challenge.answer_var else "hidden")
                 value = vals[0] if len(vals) == 1 else list(vals)
                 submit.add_field(var=var, ftype=ftype, value=value)
             iq = client.Iq()
             iq["type"] = "set"
-            iq["register"]["username"] = _localpart(self._profile.jid)
+            iq["register"]["username"] = localpart
             iq["register"]["password"] = self._password
             iq["register"].append(submit.xml)
             _TRACE.record("registration", "captcha_submitted", "info")

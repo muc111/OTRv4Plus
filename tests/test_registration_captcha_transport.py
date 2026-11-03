@@ -51,6 +51,29 @@ def _query(answer_uri="cid:" + CID, bob=True):
         "</x>%s</query>" % (answer_uri, bob_xml))
 
 
+def _query_form_creds(*, with_email=False):
+    """An ejabberd-style CAPTCHA whose form ALSO declares username and password
+    as data-form fields (not register sub-elements). with_email adds a required
+    field the Register screen cannot fill."""
+    bob_xml = ("<data xmlns='urn:xmpp:bob' cid='%s' type='image/png'>%s</data>"
+               % (CID, base64.b64encode(PNG).decode()))
+    email = ("<field var='email' type='text-single'><required/></field>"
+             if with_email else "")
+    return (
+        "<query xmlns='jabber:iq:register'>"
+        "<x xmlns='jabber:x:data' type='form'>"
+        "<field var='FORM_TYPE' type='hidden'><value>urn:xmpp:captcha</value></field>"
+        "<field var='challenge' type='hidden'><value>chal-123</value></field>"
+        "<field var='sid' type='hidden'><value>sid-456</value></field>"
+        "<field var='username' type='text-single'><required/></field>"
+        "<field var='password' type='text-private'><required/></field>"
+        + email +
+        "<field var='ocr' label='Type the text' type='text-single'><required/>"
+        "<media xmlns='urn:xmpp:media-element'>"
+        "<uri type='image/png'>cid:%s</uri></media></field>"
+        "</x>%s</query>" % (CID, bob_xml))
+
+
 # -- slixmpp stand-ins ------------------------------------------------------
 
 class _FakeForm:
@@ -220,6 +243,44 @@ def test_showable_challenge_parks_then_submits_one_set():
     # And that form was attached to the register query.
     assert iq.register.appended, "data form was not attached to the query"
     assert done.result() is True
+
+
+def test_form_credentials_are_filled_into_the_data_form():
+    # ejabberd reads username/password out of the CAPTCHA data form, not the
+    # register sub-elements. The submit must carry them as form fields with the
+    # types the server declared, or the server refuses -- the clearnet failure.
+    inst = _instance()
+    client = _FakeClient()
+    done = _run(inst, client, _query_form_creds(), answer="AB12")
+
+    assert len(client.sent) == 1
+    form = client._x4.last_form
+    assert form.fields["username"]["value"] == "alice"
+    assert form.fields["username"]["ftype"] == "text-single"
+    assert form.fields["password"]["value"] == "correct horse battery"
+    assert form.fields["password"]["ftype"] == "text-private"
+    assert form.fields["ocr"]["value"] == "AB12"
+    # The register sub-elements are still set, for servers that read those.
+    iq = client.sent[0]
+    assert iq.register.values["username"] == "alice"
+    assert iq.register.values["password"] == "correct horse battery"
+    assert done.result() is True
+
+
+def test_a_form_requiring_a_field_we_cannot_fill_is_refused_before_submit():
+    # The form wants an email as well. The Register screen has no email, so the
+    # attempt is refused up front with a code the UI can explain -- nothing
+    # (no password) is put on the wire, and the user is not shown a CAPTCHA
+    # that could never complete.
+    inst = _instance()
+    client = _FakeClient()
+    done = _run(inst, client, _query_form_creds(with_email=True),
+                feed_answer=False)
+    assert client.sent == []
+    assert not inst._reg_stage1.done()
+    with pytest.raises(_registration.RegistrationFailed) as e:
+        done.result()
+    assert e.value.code == "registration_fields_required"
 
 
 def test_external_image_is_refused_before_anything_is_sent():

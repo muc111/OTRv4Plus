@@ -257,6 +257,31 @@ class TestStagesAreDistinguished:
             t.close()
         assert server.captcha_ocr_received == "not-the-answer"
 
+    @pytest.mark.parametrize("server", ["captcha_form_creds"], indirect=True)
+    def test_an_ejabberd_style_form_gets_the_credentials_in_the_form(self, pki, server):
+        # The server reads username/password out of the CAPTCHA data form, not
+        # the register sub-elements. Our submit must fill them into the form or
+        # the server refuses -- the clearnet-registration failure this fixes.
+        t = transport(pki, server, Net(server))
+        try:
+            assert t.register_account()[0] == "captcha_required"
+            code, _ = t.submit_captcha_answer(server.captcha_answer)
+            assert code == REG.OK
+        finally:
+            t.close()
+        assert server.form_username_received == "alice"
+        assert server.form_password_received       # present, value not asserted
+        assert server.registered_user == "alice"
+
+    @pytest.mark.parametrize("server", ["captcha_needs_email"], indirect=True)
+    def test_a_form_needing_an_email_is_refused_before_the_password_is_sent(self, pki, server):
+        # The CAPTCHA form also requires an email the Register screen cannot
+        # supply: refuse up front, show no CAPTCHA, send nothing.
+        code, _ = register(pki, server, Net(server))
+        assert code == "registration_fields_required"
+        assert "register_set" not in server.log
+        assert server.password_received is False
+
     def test_yax_im_style_form_registers(self, pki, server):
         """<username/><password/>, no data form, no CAPTCHA."""
         code, _ = register(pki, server, Net(server, srv=True))
