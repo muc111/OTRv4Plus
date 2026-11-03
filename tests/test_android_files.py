@@ -940,3 +940,55 @@ class TestTheMetadataDialogOffersThreeChoices:
         assert "MetadataChoice.STRIP" in confirm
         assert "MetadataChoice.KEEP" in dialog and "MetadataChoice.CANCEL" in dialog
         assert "onDismissRequest = { model.cancelMetadata() }" in dialog
+
+
+def test_a_blocked_incoming_file_tells_the_receiver_why():
+    """Device test, 2026-11-03: the sender's key had changed, so the engine
+    refused the OFFER and made no transfer -- the receiver saw nothing, the
+    "sent but never arrived". Now a refused offer from a changed key says so,
+    once, so the user knows to verify them or reset trust. Voice notes ride the
+    same OFFER, so this covers them too."""
+    from android_bridge.files import FileBridge, FILE_PREFIX_FALLBACK
+    from android_bridge.events import ErrorOccurred
+
+    class _NoopManager:
+        def handle_control(self, peer, body):
+            return None                      # the engine refuses it silently
+
+    class _App:
+        def __init__(self, level):
+            self._level = level
+            self.events = []
+
+        def security_state(self, _peer):
+            return self._level
+
+        def _emit(self, event):
+            self.events.append(event)
+
+    def _codes(app):
+        return [e.code for e in app.events if isinstance(e, ErrorOccurred)]
+
+    offer = FILE_PREFIX_FALLBACK + "OFFER:deadbeef|secret.pdf|1024"
+    chunk = FILE_PREFIX_FALLBACK + "DATA:deadbeef|00"
+
+    app = _App(SecurityState.FINGERPRINT_MISMATCH)
+    fb = FileBridge(app)
+    fb._ensure_manager = lambda: _NoopManager()
+
+    fb.handle_signal("bob@x.i2p", offer)
+    assert _codes(app) == ["file_blocked_key_changed"]
+
+    # A following chunk (not an OFFER) does not warn again, and a second OFFER
+    # inside the window does not stack an identical warning.
+    app.events.clear()
+    fb.handle_signal("bob@x.i2p", chunk)
+    fb.handle_signal("bob@x.i2p", offer)
+    assert _codes(app) == []
+
+    # A verified contact's offer is not warned about at all.
+    ok = _App(SecurityState.SMP_VERIFIED)
+    fb_ok = FileBridge(ok)
+    fb_ok._ensure_manager = lambda: _NoopManager()
+    fb_ok.handle_signal("bob@x.i2p", offer)
+    assert _codes(ok) == []

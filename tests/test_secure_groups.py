@@ -395,6 +395,31 @@ def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     assert b3.groups.is_secure(ROOM)
 
 
+def test_a_group_signal_from_a_changed_key_says_so_not_unencrypted():
+    """Device test, 2026-11-03: after the identity-key format change the
+    contact's pin mismatched, so the group setup signal was refused -- but the
+    banner said "arrived unencrypted", which sent the user looking in the wrong
+    place. A mismatch has its own code now; a genuinely unencrypted peer keeps
+    the old one."""
+    level = {"v": SecurityState.FINGERPRINT_MISMATCH}
+    events = []
+    m = SecureGroups(send_room=lambda *a: None, send_private=lambda *a: None,
+                     emit=events.append, peer_security=lambda p: level["v"],
+                     state_dir=tempfile.mkdtemp())
+    m.open("alice@x.i2p")
+    body = SIGNAL_PREFIX + "INVITE:room@conference.x.i2p|" + "a" * 64
+    m.on_signal("bob@x.i2p", body)
+    assert [e.code for e in events if isinstance(e, ErrorOccurred)] == \
+        ["group_signal_key_changed"]
+    # A peer with no encrypted session at all still gets the plain refusal.
+    events.clear()
+    level["v"] = SecurityState.PLAINTEXT
+    m.on_signal("bob@x.i2p", body)
+    assert [e.code for e in events if isinstance(e, ErrorOccurred)] == \
+        ["group_signal_unencrypted"]
+    m.close()
+
+
 def test_a_second_client_for_the_same_account_is_refused():
     root = tempfile.mkdtemp()
     w = World()

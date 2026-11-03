@@ -73,6 +73,8 @@ object FailureText {
         "dake_generate_failed" to "A new encrypted session could not be started. Open the chat to try again.",
         "group_welcome_send_failed" to "An invitation could not be delivered. Invite them again.",
         "group_signal_unencrypted" to "A group control message arrived unencrypted and was refused.",
+        "group_signal_key_changed" to "A group message was refused because this contact's key changed. Verify them again or reset trust to continue.",
+        "file_blocked_key_changed" to "A file from this contact was refused because their key changed. Verify them again or reset trust to receive it.",
         "room_plaintext_refused" to "An unencrypted message in this encrypted group was refused.",
         "room_message_rejected" to "The server rejected a message in this room.",
         "call_full" to "The group call is full.",

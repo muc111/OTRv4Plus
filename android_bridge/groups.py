@@ -1265,6 +1265,14 @@ class SecureGroups:
         """The setup channel must be an encrypted OTRv4+ session. Returns
         whether it is SMP-verified."""
         level = self._peer_security(peer)
+        if level is SecurityState.FINGERPRINT_MISMATCH:
+            # The session IS encrypted, but the contact's key changed from its
+            # pin (P1), so group setup is refused like calls and files are --
+            # until the user verifies them or resets trust. Its own code so the
+            # UI can say that, not the misleading "arrived unencrypted".
+            raise GroupError(
+                "otr_key_changed",
+                "this contact's key changed; verify them or reset trust to continue")
         if level not in (SecurityState.ENCRYPTED, SecurityState.FINGERPRINT,
                          SecurityState.SMP_VERIFIED):
             raise GroupError("otr_required",
@@ -1374,8 +1382,10 @@ class SecureGroups:
         is encrypted anyway, so nothing unauthenticated can drive a join."""
         try:
             verified = self._require_otr(peer)
-        except GroupError:
-            self._emit(ErrorOccurred(peer=peer, code="group_signal_unencrypted"))
+        except GroupError as exc:
+            code = ("group_signal_key_changed"
+                    if exc.code == "otr_key_changed" else "group_signal_unencrypted")
+            self._emit(ErrorOccurred(peer=peer, code=code))
             return
         rest = body[len(SIGNAL_PREFIX):]
         kind, _, arg = rest.partition(":")
