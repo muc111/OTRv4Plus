@@ -618,6 +618,32 @@ class TestRoomPacer:
         clock.advance(100)
         assert sent == ["1", "2", "3"]
 
+    def test_drop_stops_one_room_and_leaves_the_others(self):
+        """A gone room must receive nothing more, yet the pacer's own timers
+        would keep draining its queue for minutes (device report: ~32 'gone'
+        rejections over ~107 s after a group call). drop() clears the room so
+        every scheduled fire/expire finds no state -- while another room,
+        still live, keeps pacing normally."""
+        p, clock, sent, _e = self._pacer(burst=3, interval=2.0)
+        p.post("gone", ["g1", "g2", "g3", "g4", "g5"])
+        p.post("live", ["v1", "v2", "v3", "v4", "v5"])
+        assert sent == ["g1", "g2", "g3", "v1", "v2", "v3"]
+        p.drop("gone")
+        clock.advance(100)
+        # The gone room never sends g4/g5 again; the live room drains in full
+        # (pieces may repeat: unconfirmed ones resend on the echo timeout, which
+        # is normal pacer behaviour and not what this test is about).
+        assert [s for s in sent if s.startswith("g")] == ["g1", "g2", "g3"], (
+            "a dropped room kept sending (or resending) pieces: %r" % sent)
+        assert {s for s in sent if s.startswith("v")} == \
+            {"v1", "v2", "v3", "v4", "v5"}
+        assert p.pending("gone") == 0 and p.in_flight("gone") == 0
+
+    def test_drop_is_harmless_on_an_unknown_room(self):
+        p, _clock, _sent, _e = self._pacer()
+        p.drop("never-seen")      # no raise, no state created
+        assert p.pending("never-seen") == 0
+
     def test_an_echo_confirms_a_piece(self):
         p, clock, sent, _e = self._pacer(echo_timeout=20)
         p.post("r", ["1", "2"])
@@ -1201,6 +1227,19 @@ def test_a_deleted_group_ends_for_every_member():
     assert not b.groups.is_secure(ROOM) and "deleted" in b.changes()
     assert b.groups.on_room_destroyed(ROOM) is False      # once
     assert b.groups.on_room_destroyed("other@conference.x.i2p") is False
+
+
+def test_destroying_a_group_stops_its_pacer():
+    """The pacer keeps its own timers; forgetting the group does not touch
+    them. Left alone they drained a gone room's queue for minutes (device
+    report: ~32 'gone' rejections over ~107 s after a group call). Destroying
+    the group must drop the room from the pacer so nothing more is sent."""
+    w, (a, b, c) = _group(3)
+    dropped = []
+    real_drop = b.groups._pacer.drop
+    b.groups._pacer.drop = lambda room: dropped.append(room) or real_drop(room)
+    assert b.groups.on_room_destroyed(ROOM) is True
+    assert ROOM in dropped, "the room was forgotten but its pacer was not"
 
 
 def test_the_app_ends_a_group_whose_room_was_gone_on_rejoin(monkeypatch):

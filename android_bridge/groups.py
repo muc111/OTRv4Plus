@@ -355,6 +355,14 @@ class RoomPacer:
             self._requeue(room, state, list(state.inflight))
         self._pump(room)
 
+    def drop(self, room: str) -> None:
+        """Forget everything queued or in flight for `room`: it is gone, so
+        nothing more may be sent to it. Any timer already scheduled for the
+        room (`_fire`, `_expire`, `_pump`) finds no state and returns, so the
+        pacer stops draining it at once. Harmless on a room it does not know."""
+        with self._lock:
+            self._rooms.pop(room, None)
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -2340,6 +2348,14 @@ class SecureGroups:
         """The group's room was deleted (by its owner, XEP-0045 destroy; or
         found gone when we came back). The group ends here: its keys are
         forgotten, as on leaving. False if `room` is no secure group of ours."""
+        # Stop the pacer FIRST, before anything else is decided. A gone room
+        # must receive nothing more, yet the pacer keeps its own timers: left
+        # alone they drain this room's queued and in-flight pieces for minutes
+        # after the group is forgotten (device report: a group call left ~32
+        # 'gone' rejections over ~107 s, one every few seconds, because the
+        # group was forgotten but its pacer was not). Harmless on an unknown
+        # room, and safe to repeat on a second 'gone' for the same room.
+        self._pacer.drop(room)
         with self._lock:
             client = self._client
             if client is None or self._wiped or not client.has_group(room.encode()):
