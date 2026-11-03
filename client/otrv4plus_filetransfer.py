@@ -1195,10 +1195,11 @@ class FileTransferManager:
         self._state(transfer, False, TransferState.OFFERED)
         if self._quick_answer:
             self._notify(
-                "\n[file] %s wants to send %s (%s). Accept? [y/n]\n"
-                "       (later: /transfer accept %s  or  /transfer decline %s)"
+                "\n[file] %s wants to send %s (%s).\n"
+                "       Press  y  to accept   or   n  to decline."
+                "   (or later: /transfer accept %s)"
                 % (peer, sanitise_filename(offer.filename), offer.human_size(),
-                   key[:8], key[:8]))
+                   key[:8]))
         else:
             self._notify(
                 "\n[file] %s wants to send %s (%s)\n"

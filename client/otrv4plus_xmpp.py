@@ -83,6 +83,7 @@ COMMANDS:
     /msg <jid> <text>     send plaintext (no OTR)
     /status               show session + trust + SMP state for --peer
     /roster               list all roster contacts
+    /people  (or /who)    who is in the Welcome room now — add, message, invite
     /add <jid>            add a contact and send subscription request
     /remove <jid>         remove a contact from roster
     /pending              show pending subscription requests
@@ -823,9 +824,10 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                 import secrets as _secrets
                 nick = "%s-%s" % (nick, _secrets.token_hex(2))
                 await muc.join_muc_wait(room, nick, timeout=90)
+            self._welcome_room = str(room)
             print("[welcome] in the OTRv4Plus Welcome room: the apps show you as "
                   "online, and everyone in it sees your address (--no-welcome "
-                  "to stay out)")
+                  "to stay out). Type /people to see who else is here.")
         except Exception as exc:
             print("[welcome] could not join the Welcome room (%s); the apps show "
                   "you as online only to your contacts" % type(exc).__name__)
@@ -2645,6 +2647,61 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         except Exception as e:
             print(f"[roster] error: {e}")
 
+    def people_list(self):
+        """Who is in the OTRv4Plus Welcome room right now -- the easy way to
+        find someone to add, message or invite to a group.
+
+        Every app and terminal shows itself online by joining this room, so
+        its occupant list is the shared directory. The room is non-anonymous,
+        so each occupant's address is readable here; this reads them straight
+        from slixmpp's room roster (the same source the apps' People view uses
+        on Android, `transport_welcome`) and says what you can do with each.
+        """
+        room = getattr(self, "_welcome_room", "")
+        try:
+            muc = self.plugin["xep_0045"]
+        except Exception:
+            muc = None
+        if not room or muc is None:
+            print("[people] not in the Welcome room (started with --no-welcome, "
+                  "or it is still joining). /roster lists your own contacts.")
+            return
+        try:
+            roster = self.client_roster
+        except Exception:
+            roster = {}
+        me = self._own_bare or str(self.boundjid.bare)
+        seen, rows = set(), []
+        try:
+            nicks = list(muc.get_roster(room) or [])
+        except Exception:
+            nicks = []
+        for nick in nicks:
+            try:
+                real = str(muc.get_jid_property(room, nick, "jid") or "")
+            except Exception:
+                real = ""
+            bare = real.split("/", 1)[0].strip()
+            if not bare or bare == me or bare in seen:
+                continue
+            seen.add(bare)
+            try:
+                is_contact = bare in roster
+            except Exception:
+                is_contact = False
+            rows.append((str(nick), bare, is_contact))
+        if not rows:
+            print("[people] nobody else is in the Welcome room yet. When an app "
+                  "or terminal signs in, they show here.")
+            return
+        print("[people] in the OTRv4Plus Welcome room (%d):" % len(rows))
+        for nick, bare, is_contact in sorted(rows, key=lambda r: r[1]):
+            mark = "contact" if is_contact else "not a contact — /add %s" % bare
+            print("[people]   %s  (%s) — %s"
+                  % (_sanitise(nick, 64), _sanitise(bare, 128), mark))
+        print("[people] /add <jid> to add a contact; then /to <name> to message, "
+              "or /group invite <room> <jid> to invite into a group.")
+
     def roster_add(self, jid):
         """Add a JID to the roster and send a subscription request."""
         jid = jid.strip()
@@ -2795,6 +2852,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             "  /msg <jid> <text>    send plaintext message\n"
             "  /status              show session state\n"
             "  /roster              list roster contacts\n"
+            "  /people  /who        who is in the Welcome room now\n"
             "  /add <jid>           add contact + send subscription\n"
             "  /remove <jid>        remove contact from roster\n"
             "  /pending             show pending subscription requests\n"
@@ -3227,6 +3285,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         # --- Roster ---
         if lstrip in ("/roster", "/roster list"):
             self.roster_list()
+        elif lstrip in ("/people", "/who"):
+            self.people_list()
         elif lstrip.startswith("/add "):
             self.roster_add(lstrip[5:].strip())
         elif lstrip.startswith("/remove "):
