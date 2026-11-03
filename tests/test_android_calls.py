@@ -552,6 +552,21 @@ class TestTheAudioSetupReachesTheReport:
             "usage voice_communication — platform AEC engaged")
         assert on[0] == "audio_echo" and "engaged" in on[2]
 
+    def test_the_pulse_echo_state_is_named_too(self):
+        """The laptop leg (PulseAudio/PipeWire) has no system AEC unless
+        module-echo-cancel is loaded -- the real cause of a call that echoes
+        while the phone's own canceller is confirmed on. It gets the same line,
+        so the desktop is no longer the blind spot the phone used to be."""
+        from android_bridge.voice import call_stage
+        off = call_stage(
+            "[voice] ⚠ echo control: no echo cancellation on this device "
+            "— on speakers the far end hears their own voice. Use a "
+            "headset, or load module-echo-cancel:")
+        assert off[0] == "audio_echo" and "no echo cancellation" in off[2]
+        on = call_stage("[voice] echo control: PulseAudio echo cancellation "
+                        "active (module-echo-cancel)")
+        assert on[0] == "audio_echo" and "active" in on[2]
+
     def test_the_echo_route_is_named(self):
         from android_bridge.voice import call_stage
         code, _severity, reason = call_stage(

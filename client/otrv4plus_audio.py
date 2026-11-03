@@ -1705,6 +1705,9 @@ class PulseCapture(AudioStream):
         return {"backend": "pulseaudio", "direction": "input",
                 "device_rate": SAMPLE_RATE, "device_channels": CHANNELS,
                 "encoding": "PCM_16BIT", "resampling": False,
+                # Linux has no system echo cancellation for a plain parec, so a
+                # report has to say whether module-echo-cancel was in the path.
+                "echo_cancelled": bool(self.echo_cancelled),
                 "alive": self._proc.poll() is None}
 
 
@@ -1764,6 +1767,7 @@ class PulsePlayback(AudioStream):
         return {"backend": "pulseaudio", "direction": "output",
                 "device_rate": SAMPLE_RATE, "device_channels": CHANNELS,
                 "encoding": "PCM_16BIT", "resampling": False,
+                "echo_cancelled": "echo-cancel" in self.device,
                 "alive": self._proc.poll() is None}
 
 

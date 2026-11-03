@@ -1250,9 +1250,13 @@ class VoiceCallSession:
         # (device test, 2026-11). A warning, not a quiet debug line, when either
         # side is not set for AEC.
         try:
+            play_diag = self._playback.diagnostics()
             cap_preset = cap.get("input_preset")
-            play_usage = self._playback.diagnostics().get("usage")
+            play_usage = play_diag.get("usage")
             if cap_preset is not None or play_usage is not None:
+                # Android AAudio: the platform canceller, on when the capture
+                # preset is voice_communication and the playback is its voice
+                # reference.
                 aec_ok = (cap_preset == "voice_communication"
                           and play_usage in ("voice_communication", None))
                 if aec_ok:
@@ -1265,6 +1269,22 @@ class VoiceCallSession:
                            "engaged (needs capture voice_communication and a "
                            "voice_communication playback reference); expect echo."
                            % (cap_preset, play_usage))
+            elif "echo_cancelled" in cap or "echo_cancelled" in play_diag:
+                # PulseAudio/PipeWire (desktop, termux): no SYSTEM echo
+                # cancellation for a plain parec/pacat. It is on only when
+                # module-echo-cancel is loaded and both ends route through it.
+                # A laptop on speakers without it sends the far end's own voice
+                # back -- the echo a phone (whose own AEC is on) still hears.
+                on = bool(cap.get("echo_cancelled")) and bool(
+                    play_diag.get("echo_cancelled"))
+                if on:
+                    _vprint("[voice] echo control: PulseAudio echo cancellation "
+                            "active (module-echo-cancel)")
+                else:
+                    _print("[voice] ⚠ echo control: no echo cancellation on this "
+                           "device — on speakers the far end hears their own "
+                           "voice. Use a headset, or load module-echo-cancel:")
+                    _print("    " + _audio.ECHO_CANCEL_COMMAND)
         except Exception:
             pass
 
