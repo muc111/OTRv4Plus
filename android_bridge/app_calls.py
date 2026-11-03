@@ -29,6 +29,15 @@ class CallsMixin:
         """
         peer = self.canonical_peer(peer)
         state = call_state_from_engine(engine_state)
+        # Record each TRANSITION (not every poll) into the diagnostics ring, so
+        # a shared report shows the call's story -- ringing, active, ended and
+        # how long it ran -- instead of only chat/room events. The voice
+        # engine's fine-grained telemetry (latency, resample, jitter) still
+        # goes to the verbose log the debug APK writes to logcat; this is the
+        # lifecycle a pasted diagnostic report can carry. No peer address.
+        if self._call_states.get(peer) is not state:
+            _TRACE.record("call", "state", "info", state=getattr(state, "name", str(state)),
+                          seconds=int(duration_seconds or 0))
         self._call_states[peer] = state
         self._emit(CallStateChanged(peer=peer, state=state,
                                     duration_seconds=duration_seconds, muted=muted))

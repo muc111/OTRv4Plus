@@ -459,6 +459,29 @@ class TestEvents:
             CallState.RINGING, CallState.CONNECTING, CallState.ACTIVE, CallState.ENDED]
         assert a.call_state("bob") is CallState.ENDED
 
+    def test_each_call_transition_is_recorded_in_the_trace(self, app):
+        """A shared diagnostic report showed chat and room events but never a
+        call, so "the audio is broken" arrived with nothing about the call in
+        the log. Each state CHANGE is now recorded in the ring -- ringing,
+        active, ended and how long it ran -- so a pasted report carries the
+        call's story. No peer address, no duration past the integer seconds."""
+        a, _, _, _ = app
+        from android_bridge.trace import TRACE
+        TRACE.clear()
+        for s in ("RINGING", "ACTIVE", "ACTIVE", "ACTIVE", "ENDED"):
+            a.note_call_state("bob", s, duration_seconds=42)
+        calls = [e for e in TRACE.events()
+                 if e["component"] == "call" and e["event"] == "state"]
+        # One per TRANSITION, not one per poll: the three ACTIVEs collapse.
+        assert [e["fields"]["state"] for e in calls] == \
+            ["RINGING", "ACTIVE", "ENDED"], (
+            "call transitions were not recorded once each: %r" % calls)
+        assert calls[1]["fields"]["seconds"] == "42"
+        rendered = TRACE.render()
+        assert "bob" not in rendered, (
+            "the call trace leaked the peer address: %r" % rendered)
+        TRACE.clear()
+
     def test_smp_progress_event_carries_step_and_state(self, app):
         a, engine, _, _ = app
         engine.progress = (2, 4)
