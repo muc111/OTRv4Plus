@@ -1607,14 +1607,6 @@ class AAudioPlayback(AAudioStreamBase):
 # the bootstrap installs the package, so removing it would break paths the
 # brief says to leave alone.  It is simply no longer the default for calls.
 
-#: The command that turns echo cancellation on for PulseAudio or PipeWire
-#: (webrtc AEC, the same family as a phone's). The call now loads this itself
-#: when nothing is cancelling echo yet (see ensure_echo_cancel) and unloads it
-#: on teardown; /audiotest still prints it for a user who wants it by hand or
-#: has turned the automatic one off with OTRV4PLUS_NO_AUTO_ECHO_CANCEL.
-ECHO_CANCEL_COMMAND = ("pactl load-module module-echo-cancel aec_method=webrtc "
-                       "source_name=echo-cancel-source sink_name=echo-cancel-sink")
-
 #: The source/sink names ensure_echo_cancel creates, matched by pulse_device.
 ECHO_CANCEL_SOURCE = "echo-cancel-source"
 ECHO_CANCEL_SINK = "echo-cancel-sink"
@@ -1622,6 +1614,45 @@ ECHO_CANCEL_SINK = "echo-cancel-sink"
 
 def _env_true(name: str) -> bool:
     return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Echo-cancellation algorithm. Both run ENTIRELY LOCALLY as a PulseAudio/
+# PipeWire filter -- PCM in, PCM out -- and NEITHER touches the network:
+#
+#   * "webrtc" is module-echo-cancel's libwebrtc-audio-processing backend: the
+#     AEC/AGC/NS *digital signal processing* lifted out of WebRTC. It is NOT
+#     the WebRTC that leaks addresses. The IP leak is RTCPeerConnection/ICE/
+#     STUN -- the peer-to-peer *networking* stack a browser uses to find a
+#     route around a proxy. That code is not in this library and is never
+#     invoked here: module-echo-cancel opens no socket, gathers no ICE
+#     candidate, sends no STUN. Our call media still leaves only through the
+#     I2P SAM transport, exactly as before. Best quality; a large C++ blob.
+#
+#   * "speex" is speexdsp's canceller: smaller, older, a much smaller trust
+#     surface, no WebRTC code in the process at all. Lower quality on hard
+#     echo, but a defensible choice for minimising the audio dependency.
+#
+# Default "webrtc" for quality; OTRV4PLUS_AEC_METHOD=speex selects the other.
+_AEC_METHODS = ("webrtc", "speex")
+
+
+def aec_method() -> str:
+    chosen = (os.environ.get("OTRV4PLUS_AEC_METHOD") or "").strip().lower()
+    return chosen if chosen in _AEC_METHODS else "webrtc"
+
+
+def echo_cancel_command() -> str:
+    """The pactl command that loads the canceller, with the chosen method.
+    Printed by /audiotest for a user loading it by hand or after opting the
+    automatic one out (OTRV4PLUS_NO_AUTO_ECHO_CANCEL)."""
+    return ("pactl load-module module-echo-cancel aec_method=%s "
+            "source_name=%s sink_name=%s"
+            % (aec_method(), ECHO_CANCEL_SOURCE, ECHO_CANCEL_SINK))
+
+
+#: Back-compat alias: the command string with the current method. Kept because
+#: /audiotest and termux setup reference it by name.
+ECHO_CANCEL_COMMAND = echo_cancel_command()
 
 
 def pulse_device(kind: str, which=None, env=None, runner=None) -> str:
@@ -1697,7 +1728,8 @@ def ensure_echo_cancel(which=None, env=None, runner=None):
     if pulse_device("source", which, env, runner=runner):
         return None                              # already cancelling; leave it
     try:
-        args = [pactl, "load-module", "module-echo-cancel", "aec_method=webrtc",
+        args = [pactl, "load-module", "module-echo-cancel",
+                "aec_method=" + aec_method(),
                 "source_name=" + ECHO_CANCEL_SOURCE,
                 "sink_name=" + ECHO_CANCEL_SINK]
         if runner is None:

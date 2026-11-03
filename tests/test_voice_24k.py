@@ -226,6 +226,7 @@ class _FakePulse:
         self.loaded = preloaded
         self.load_calls = 0
         self.unloaded = []
+        self.last_load_argv = None
 
     def which(self, binary):
         return "/usr/bin/" + binary
@@ -234,6 +235,7 @@ class _FakePulse:
         if "load-module" in argv:
             self.load_calls += 1
             self.loaded = True
+            self.last_load_argv = list(argv)
             return "42"
         if "unload-module" in argv:
             self.unloaded.append(argv[-1])
@@ -255,7 +257,7 @@ class TestAutoEchoCancel:
 
     def _clear_env(self, monkeypatch):
         for name in ("OTRV4PLUS_NO_AUTO_ECHO_CANCEL", "OTRV4PLUS_PULSE_SOURCE",
-                     "OTRV4PLUS_PULSE_SINK"):
+                     "OTRV4PLUS_PULSE_SINK", "OTRV4PLUS_AEC_METHOD"):
             monkeypatch.delenv(name, raising=False)
 
     def test_it_loads_when_nothing_is_cancelling(self, monkeypatch):
@@ -315,3 +317,28 @@ class TestAutoEchoCancel:
 
     def test_unload_of_nothing_is_harmless(self):
         A.unload_module(None)                     # no raise, no pactl needed
+
+    def test_webrtc_is_the_default_method(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.delenv("OTRV4PLUS_AEC_METHOD", raising=False)
+        assert A.aec_method() == "webrtc"
+        fake = _FakePulse(preloaded=False)
+        A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        assert "aec_method=webrtc" in fake.last_load_argv
+
+    def test_speex_is_the_non_webrtc_alternative(self, monkeypatch):
+        """OTRV4PLUS_AEC_METHOD=speex loads the speexdsp canceller instead, so
+        a user who wants no WebRTC code in the process can have none -- both
+        methods are local DSP and neither touches the network."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_AEC_METHOD", "speex")
+        assert A.aec_method() == "speex"
+        assert "aec_method=speex" in A.echo_cancel_command()
+        fake = _FakePulse(preloaded=False)
+        A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        assert "aec_method=speex" in fake.last_load_argv
+
+    def test_an_unknown_method_falls_back_to_webrtc(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_AEC_METHOD", "nonsense")
+        assert A.aec_method() == "webrtc"
