@@ -280,6 +280,12 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         #: to that connection, until `submit_captcha` finishes or cancels it.
         #: None whenever no CAPTCHA is waiting.
         self._captcha_transport: Any = None
+        #: The same transport while `submit_captcha` is blocked waiting for the
+        #: server's verdict. Held here, NOT in `_transport`, so `cancel()` and
+        #: `wipe()` can still reach it -- without this a stuck CAPTCHA submit
+        #: could not be cancelled (the worker sits in a blocking call) and the
+        #: screen spun until the timeout.
+        self._captcha_submit_transport: Any = None
 
         # Installed here rather than at connect time: a DAKE frame can arrive
         # in the same breath as session_start, and an event emitted before the
@@ -782,6 +788,8 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
                         "detail": "Something else is already running."}
             self._connecting = True
             self._captcha_transport = None
+            # Reachable by cancel()/wipe() for the whole blocking submit.
+            self._captcha_submit_transport = transport
         try:
             _TRACE.record("registration", "captcha_submitting", "info")
             try:
@@ -789,6 +797,8 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             except Exception as exc:
                 code, detail = _registration.classify(exc)
             finally:
+                with self._connect_lock:
+                    self._captcha_submit_transport = None
                 try:
                     transport.close()
                 except Exception:
@@ -1012,13 +1022,28 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
 
         Returns immediately. The blocked `connect` call on the other thread is
         what actually unwinds, and it reports `cancelled` when it does.
+
+        Reaches a registration in progress too: a CAPTCHA whose answer is being
+        submitted (`_captcha_submit_transport`) or one still waiting to be
+        answered (`_captcha_transport`) lives apart from `_transport`, and
+        without this a stuck CAPTCHA submit could not be stopped.
         """
-        transport = self._transport
+        transport = (self._transport or self._captcha_submit_transport
+                     or self._captcha_transport)
         if transport is None:
             return {"ok": True, "code": "not_connecting",
                     "detail": "Nothing to cancel."}
+        # A waiting (un-submitted) CAPTCHA has no blocking caller to unwind;
+        # drop the held stream so nothing is left open.
+        if transport is self._captcha_transport:
+            self._captcha_transport = None
         try:
             transport.cancel()
+            if transport is not self._transport:
+                try:
+                    transport.close()
+                except Exception:
+                    pass
         except Exception as exc:
             return {"ok": False, "code": "cancel_failed",
                     "detail": type(exc).__name__}
@@ -1061,6 +1086,20 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         """
         with self._connect_lock:
             self._wiped = True
+        # A registration/CAPTCHA in progress lives apart from `_transport`;
+        # stop and close it too, or Wipe & Exit would wait behind it.
+        for held in (self._captcha_submit_transport, self._captcha_transport):
+            if held is not None:
+                try:
+                    held.cancel()
+                except Exception:
+                    pass
+                try:
+                    held.close()
+                except Exception:
+                    pass
+        self._captcha_submit_transport = None
+        self._captcha_transport = None
         transport = self._transport
         if transport is not None:
             try:

@@ -106,7 +106,7 @@ class _FakeIq:
             return self.register
         raise KeyError(key)
 
-    async def send(self):
+    async def send(self, timeout=None, **kwargs):
         if self._client.send_exc is not None:
             raise self._client.send_exc
         self._client.sent.append(self)

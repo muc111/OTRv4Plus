@@ -30,6 +30,14 @@ from .transport_stream import _StreamWatch, _stream_failure_text, _tls_in_place
 #: a socket (and a SAM tunnel) open indefinitely.
 CAPTCHA_ANSWER_TIMEOUT = 180.0
 
+#: How long submit_captcha_answer() waits for the server's verdict after the
+#: answer is sent. The stream is already up (it was held open across the user's
+#: typing), so the server either accepts or rejects the register-set promptly;
+#: it does NOT need the full cold-tunnel CONNECT_TIMEOUT (300 s). A tighter
+#: bound means a server that stalls on the submit fails in about a minute --
+#: and the screen stops spinning -- instead of appearing hung for five.
+CAPTCHA_SUBMIT_TIMEOUT = 60.0
+
 
 #: What a transport-level failure means to somebody trying to create an account.
 #:
@@ -330,7 +338,17 @@ class RegistrationMixin:
         loop.call_soon_threadsafe(_resolve)
         _TRACE.record("registration", "captcha_answered", "info")
         try:
-            code, detail = final.result(timeout=CONNECT_TIMEOUT)
+            code, detail = final.result(timeout=CAPTCHA_SUBMIT_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            # The server did not answer the submit in time. Tear the held
+            # stream down so nothing is left spinning, and report a timeout
+            # rather than blocking the caller (and the UI) any longer.
+            _TRACE.record("registration", "captcha_submit_timeout", "warn")
+            try:
+                self.cancel()
+            except Exception:
+                pass
+            code, detail = "timeout", _registration.describe("timeout")
         except BaseException as exc:                 # noqa: BLE001
             code, detail = _registration.classify(exc)
             _TRACE.record("registration", "failed", "warn", code=code)
@@ -598,7 +616,11 @@ class RegistrationMixin:
             iq["register"]["password"] = self._password
             iq["register"].append(submit.xml)
             _TRACE.record("registration", "captcha_submitted", "info")
-            await iq.send()
+            # Bounded: a server that takes the submit but never answers must
+            # not hang the coroutine (and the blocked caller) indefinitely.
+            # slixmpp raises IqTimeout past this, which `classify` reads as
+            # "timeout" -- the same outcome as the caller-side bound.
+            await iq.send(timeout=CAPTCHA_SUBMIT_TIMEOUT)
         except Exception as exc:
             _TRACE.record("registration", "captcha_rejected", "info",
                           condition=_safe_condition(exc))
