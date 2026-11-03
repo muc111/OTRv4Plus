@@ -1194,6 +1194,12 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                 spawn=self._start_file_pump,
                 on_state=self._on_file_state,
                 quick_answer=True,
+                # A received file rests ENCRYPTED (an .otrv container), as on
+                # Android and the desktop -- never plaintext on disk. /open and
+                # /play decrypt to a transient copy that is swept on the next
+                # open and by Wipe & Exit; /export is the one deliberate way to
+                # write plaintext where the user chooses.
+                seal_at_rest=True,
             )
         if self._trade_manager is None:
             # Same three dependencies the transfer engine takes, plus the
@@ -2880,9 +2886,11 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             "                       /voice again to stop, then play|send|cancel\n"
             "  /transfer            show file transfer state (group files too)\n"
             "  /files               list files received this session\n"
-            "  /open [id]           view a received file (image, PDF, …) in\n"
-            "                       the system viewer; newest if no id\n"
+            "  /open [id]           view a received file (sealed at rest;\n"
+            "                       decrypted to a copy the viewer reads, then\n"
+            "                       cleared on next open and by Wipe & Exit)\n"
             "  /play [id]           play a received voice note; newest if no id\n"
+            "  /export <id> <path>  write a decrypted copy where you choose\n"
             + self.TS_HELP +
             "  /sound on|off        message and group-call sounds (y/n answers\n"
             "                       a ringing call or an offered file)\n"
@@ -3353,6 +3361,8 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             self._cmd_open(lstrip[5:].strip())
         elif lstrip == "/play" or lstrip.startswith("/play "):
             self._cmd_play(lstrip[5:].strip())
+        elif lstrip == "/export" or lstrip.startswith("/export "):
+            self._cmd_export(lstrip[7:].strip())
 
         # --- Trade courier (XMPP only, same as file transfer) ---
         elif lstrip == "/trade" or lstrip.startswith("/trade "):

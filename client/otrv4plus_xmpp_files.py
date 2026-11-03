@@ -559,6 +559,55 @@ class FilesMixin:
             pass
         return False, ""
 
+    def _views_dir(self) -> str:
+        """Where a received file is decrypted to, transiently, for a viewer or
+        player that can only read from disk. Under the received directory, so
+        Wipe & Exit (which destroys state_dir) takes it too; swept on each
+        open so at most the current one lingers. Plaintext never lands in the
+        persistent received directory itself."""
+        d = os.path.join(_filetransfer.state_dir(), ".views")
+        os.makedirs(d, mode=0o700, exist_ok=True)
+        return d
+
+    def _sweep_views(self, keep: str = "") -> None:
+        """Shred decrypted copies from earlier opens (best effort)."""
+        d = os.path.join(_filetransfer.state_dir(), ".views")
+        try:
+            names = os.listdir(d)
+        except OSError:
+            return
+        for name in names:
+            p = os.path.join(d, name)
+            if p == keep:
+                continue
+            try:
+                _filetransfer._shred(p)
+            except Exception:
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+
+    def _materialise(self, row) -> "tuple[str | None, bool]":
+        """A path a viewer can read for this received file, and whether it is a
+        transient copy to leave for Wipe/sweep. A sealed .otrv is decrypted to
+        a transient view in memory-then-disk; a plaintext file (an older build,
+        or a core without sealing) is used in place. None if it is gone."""
+        path = row["path"]
+        if not path or not os.path.exists(path):
+            return None, False
+        if not path.endswith(_filetransfer.CONTAINER_SUFFIX):
+            return path, False                      # already plaintext
+        self._sweep_views()                          # clear earlier views first
+        try:
+            base = os.path.basename(path)[:-len(_filetransfer.CONTAINER_SUFFIX)] or "file"
+            dst = os.path.join(self._views_dir(), base)
+            _filetransfer._core.otrv_open_file(
+                _filetransfer.at_rest_dek(), path, dst)
+            return dst, True
+        except Exception:
+            return None, False
+
     def _show_metadata(self, path: str) -> None:
         """What the desktop viewer's Metadata tab shows for an image: whether
         it still carries EXIF/location data. Best-effort and never fatal."""
@@ -580,38 +629,73 @@ class FilesMixin:
         row = self._pick_received(arg)
         if row is None:
             if not self._received_files():
-                print("[file] no files received yet. They save under %s"
-                      % _filetransfer.state_dir())
+                print("[file] no files received yet.")
             else:
                 print("[file] nothing matches %r; /files lists what arrived."
                       % _sanitise(arg, 64))
             return
-        if not os.path.exists(row["path"]):
-            print("[file] %s is no longer on disk (wiped or moved)."
+        view, transient = self._materialise(row)
+        if view is None:
+            print("[file] %s is no longer available (wiped)."
                   % _sanitise(row["name"], 80))
             return
-        self._show_metadata(row["path"])
-        ok, how = self._hand_to_os(row["path"], audio=row["voice"])
+        self._show_metadata(view)
+        ok, how = self._hand_to_os(view, audio=row["voice"])
         if ok:
-            print("[file] opening %s with %s…" % (_sanitise(row["name"], 80), how))
+            print("[file] opening %s with %s… (a decrypted copy, cleared on the "
+                  "next open and by Wipe & Exit)" % (_sanitise(row["name"], 80), how))
         else:
-            print("[file] no viewer here; %s is saved at %s"
-                  % (_sanitise(row["name"], 80), row["path"]))
+            if transient:
+                self._sweep_views()                  # nothing opened it
+            print("[file] no viewer here. /export %s <path> writes a copy you "
+                  "choose." % row["id"])
 
     def _cmd_play(self, arg: str) -> None:
         row = self._pick_received(arg, voice_only=True) or self._pick_received(arg)
         if row is None:
             print("[voice] no voice note received yet (/files lists files).")
             return
-        if not os.path.exists(row["path"]):
-            print("[voice] %s is no longer on disk." % _sanitise(row["name"], 80))
+        view, transient = self._materialise(row)
+        if view is None:
+            print("[voice] %s is no longer available." % _sanitise(row["name"], 80))
             return
-        ok, how = self._hand_to_os(row["path"], audio=True)
+        ok, how = self._hand_to_os(view, audio=True)
         if ok:
             print("[voice] playing %s with %s…" % (_sanitise(row["name"], 80), how))
         else:
-            print("[voice] no player here; %s is saved at %s"
-                  % (_sanitise(row["name"], 80), row["path"]))
+            if transient:
+                self._sweep_views()
+            print("[voice] no player here. /export %s <path> writes a copy you "
+                  "choose." % row["id"])
+
+    def _cmd_export(self, rest: str) -> None:
+        """The one deliberate way plaintext leaves the app: decrypt a received
+        file to a path the user chooses. Everything else stays sealed."""
+        parts = (rest or "").split(None, 1)
+        ident = parts[0] if parts else ""
+        dest = parts[1].strip() if len(parts) > 1 else ""
+        if not dest:
+            print("usage: /export <id> <destination-path>   (/files lists ids)")
+            return
+        row = self._pick_received(ident)
+        if row is None:
+            print("[file] no received file matches %r (/files lists ids)."
+                  % _sanitise(ident, 64))
+            return
+        src = row["path"]
+        dest = os.path.expanduser(dest)
+        try:
+            if src.endswith(_filetransfer.CONTAINER_SUFFIX):
+                _filetransfer._core.otrv_open_file(
+                    _filetransfer.at_rest_dek(), src, dest)
+            else:
+                import shutil
+                shutil.copyfile(src, dest)
+        except Exception as exc:
+            print("[file] export failed: %s" % type(exc).__name__)
+            return
+        print("[file] exported %s to %s (plaintext — Wipe & Exit does not reach "
+              "it there)" % (_sanitise(row["name"], 80), dest))
 
     def _cmd_files(self) -> None:
         rows = self._received_files()
