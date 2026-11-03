@@ -20,6 +20,13 @@ from otrv4plus_term import print, _sanitise  # noqa: A004 (the client's print)
 FILE_PREFIX = _filetransfer.FILE_PREFIX
 TransferError = _filetransfer.TransferError
 
+
+def _is_voice_note_name(name: str) -> bool:
+    """A received file that is one of our voice notes (otrv4plus_voicenote
+    names them voice-note-*.ogg / .wav), so /play offers to play it."""
+    n = (name or "").lower()
+    return n.startswith("voice-note-") and (n.endswith(".ogg") or n.endswith(".wav"))
+
 #: Outbound pacing for file chunks, in fragments per second.
 #:
 #: Kept well under `_RATE_MAX_BULK / _RATE_WINDOW` (24/s, otrv4plus_xmpp.py)
@@ -443,8 +450,13 @@ class FilesMixin:
             groups._prompt = None
 
     def _on_file_state(self, transfer, outgoing: bool) -> None:
-        """An incoming 1:1 offer becomes the question a bare y/n answers."""
-        if outgoing or getattr(transfer, "state", "") != _filetransfer.TransferState.OFFERED:
+        """An incoming 1:1 offer becomes the question a bare y/n answers; a
+        completed one is remembered so /open and /play can reach it."""
+        state = getattr(transfer, "state", "")
+        if not outgoing and state == _filetransfer.TransferState.RECEIVED:
+            self._remember_received(transfer)
+            return
+        if outgoing or state != _filetransfer.TransferState.OFFERED:
             return
         key = transfer.offer.transfer_id.hex()[:8]
         mgr = self._file_manager
@@ -473,6 +485,147 @@ class FilesMixin:
                             asyncio.ensure_future(vm.answer_call(peer))),
             on_no=lambda: asyncio.ensure_future(vm.reject_call(peer)),
             still_open=still_open)
+
+    # -- viewing and playing received files -----------------------------------
+    #
+    # The desktop app has an in-window viewer; a terminal cannot draw an image
+    # or play audio itself, so it hands the saved file to the OS the way each
+    # platform does: Android's default app on Termux (termux-open, or
+    # termux-media-player for a voice note), xdg-open on Linux, open on macOS.
+    # The file is already decrypted and verified on disk; these commands only
+    # choose what shows it.
+
+    def _received_files(self) -> list:
+        """Received files this session, newest first; in memory only (the
+        files themselves are on disk). Lazily created so a partial client
+        (tests) needs no __init__ change."""
+        return self.__dict__.setdefault("_received_store", [])
+
+    def _remember_received(self, transfer) -> None:
+        """A completed incoming transfer, kept so /open and /play can reach it
+        by a short id, a name fragment, or just 'the last one'."""
+        path = getattr(transfer, "final_path", "") or ""
+        if not path:
+            return
+        name = _filetransfer.sanitise_filename(getattr(transfer.offer, "filename", ""))
+        voice = _is_voice_note_name(name)
+        store = self._received_files()
+        key = transfer.offer.transfer_id.hex()[:8]
+        store[:] = [r for r in store if r["id"] != key]
+        store.insert(0, {"id": key, "path": path, "name": name,
+                         "peer": str(getattr(transfer, "peer", "")), "voice": voice})
+        del store[24:]
+        if voice:
+            print("[voice] %s received — type /play to listen (or /play %s)"
+                  % (_sanitise(name, 80), key))
+        else:
+            print("[file] %s — type /open to view (or /open %s)"
+                  % (_sanitise(name, 80), key))
+
+    def _pick_received(self, arg: str, *, voice_only: bool = False):
+        """The received file /open or /play names: an id prefix, a filename
+        fragment, or -- with no argument -- the most recent. None if none fit."""
+        rows = [r for r in self._received_files() if r["voice"]] if voice_only \
+            else list(self._received_files())
+        arg = (arg or "").strip().lower()
+        if not arg:
+            return rows[0] if rows else None
+        for r in rows:
+            if r["id"].startswith(arg):
+                return r
+        for r in rows:
+            if arg in r["name"].lower():
+                return r
+        return None
+
+    def _hand_to_os(self, path: str, *, audio: bool) -> "tuple[bool, str]":
+        """Open a saved file with the OS. argv only, never a shell, and the
+        path is our own file under the transfer directory, so this cannot
+        become command injection. Returns (opened, how)."""
+        import sys
+        try:
+            if _host.IS_TERMUX:
+                if audio and _which("termux-media-player"):
+                    _run(["termux-media-player", "play", path], timeout=15)
+                    return True, "termux-media-player"
+                if _which("termux-open"):
+                    _run(["termux-open", path], timeout=15, detach=True)
+                    return True, "the Android app chooser (termux-open)"
+            opener = "open" if sys.platform == "darwin" else "xdg-open"
+            if _which(opener):
+                _run([opener, path], timeout=15, detach=True)
+                return True, opener
+        except Exception:
+            pass
+        return False, ""
+
+    def _show_metadata(self, path: str) -> None:
+        """What the desktop viewer's Metadata tab shows for an image: whether
+        it still carries EXIF/location data. Best-effort and never fatal."""
+        try:
+            from android_bridge import metadata as _metadata
+            finding = _metadata.examine_file(path)
+        except Exception:
+            return
+        if not finding.can_scrub:
+            return
+        if finding.carries_metadata:
+            print("[file] metadata: %s image with %d bytes of embedded data "
+                  "(EXIF/location may be present)."
+                  % (finding.kind, finding.metadata_bytes))
+        else:
+            print("[file] metadata: %s image, no embedded metadata." % finding.kind)
+
+    def _cmd_open(self, arg: str) -> None:
+        row = self._pick_received(arg)
+        if row is None:
+            if not self._received_files():
+                print("[file] no files received yet. They save under %s"
+                      % _filetransfer.state_dir())
+            else:
+                print("[file] nothing matches %r; /files lists what arrived."
+                      % _sanitise(arg, 64))
+            return
+        if not os.path.exists(row["path"]):
+            print("[file] %s is no longer on disk (wiped or moved)."
+                  % _sanitise(row["name"], 80))
+            return
+        self._show_metadata(row["path"])
+        ok, how = self._hand_to_os(row["path"], audio=row["voice"])
+        if ok:
+            print("[file] opening %s with %s…" % (_sanitise(row["name"], 80), how))
+        else:
+            print("[file] no viewer here; %s is saved at %s"
+                  % (_sanitise(row["name"], 80), row["path"]))
+
+    def _cmd_play(self, arg: str) -> None:
+        row = self._pick_received(arg, voice_only=True) or self._pick_received(arg)
+        if row is None:
+            print("[voice] no voice note received yet (/files lists files).")
+            return
+        if not os.path.exists(row["path"]):
+            print("[voice] %s is no longer on disk." % _sanitise(row["name"], 80))
+            return
+        ok, how = self._hand_to_os(row["path"], audio=True)
+        if ok:
+            print("[voice] playing %s with %s…" % (_sanitise(row["name"], 80), how))
+        else:
+            print("[voice] no player here; %s is saved at %s"
+                  % (_sanitise(row["name"], 80), row["path"]))
+
+    def _cmd_files(self) -> None:
+        rows = self._received_files()
+        if not rows:
+            print("[file] no files received yet.")
+            return
+        print("[file] received this session (newest first):")
+        for r in rows:
+            kind = "voice note" if r["voice"] else "file"
+            gone = "" if os.path.exists(r["path"]) else "  (gone)"
+            print("[file]   %s  %s  (%s, from %s)%s"
+                  % (r["id"], _sanitise(r["name"], 80), kind,
+                     _sanitise(r["peer"], 128), gone))
+        print("[file] /open <id> to view a file, /play <id> to hear a voice note.")
 
     def _cmd_transfer(self, rest: str) -> None:
         parts = rest.split(None, 1)

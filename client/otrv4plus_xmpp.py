@@ -2879,6 +2879,10 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             "                       own voice);\n"
             "                       /voice again to stop, then play|send|cancel\n"
             "  /transfer            show file transfer state (group files too)\n"
+            "  /files               list files received this session\n"
+            "  /open [id]           view a received file (image, PDF, …) in\n"
+            "                       the system viewer; newest if no id\n"
+            "  /play [id]           play a received voice note; newest if no id\n"
             + self.TS_HELP +
             "  /sound on|off        message and group-call sounds (y/n answers\n"
             "                       a ringing call or an offered file)\n"
@@ -3343,6 +3347,12 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             self._cmd_voice(peer, lstrip[6:].strip())
         elif lstrip == "/transfer" or lstrip.startswith("/transfer "):
             self._cmd_transfer(lstrip[9:].strip())
+        elif lstrip == "/files":
+            self._cmd_files()
+        elif lstrip == "/open" or lstrip.startswith("/open "):
+            self._cmd_open(lstrip[5:].strip())
+        elif lstrip == "/play" or lstrip.startswith("/play "):
+            self._cmd_play(lstrip[5:].strip())
 
         # --- Trade courier (XMPP only, same as file transfer) ---
         elif lstrip == "/trade" or lstrip.startswith("/trade "):
