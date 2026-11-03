@@ -1,5 +1,3 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial -->
-<!-- Copyright (C) 2025-2026 muc111 -->
 # The Python test suite — how to run it green
 
 The authoritative configuration is **`.github/workflows/python.yml`**. That is
