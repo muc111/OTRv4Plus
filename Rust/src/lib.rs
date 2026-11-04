@@ -45,6 +45,9 @@ use pyo3::wrap_pyfunction;
 
 #[pymodule]
 fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
+    // The crate's own version, so a diagnostic report can say which core it
+    // ran on (it showed `rust_core_version -` with the core loaded).
+    m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     // DAKE
     m.add_class::<dake::PyDake>()?;
     // SMP

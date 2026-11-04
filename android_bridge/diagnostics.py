@@ -108,6 +108,10 @@ def _rust_core_info() -> Dict[str, Any]:
         return info
 
     info["loaded"] = True
+    # Exported by the crate (CARGO_PKG_VERSION) from 0.13.2 on; a core built
+    # before that says so instead of reporting nothing.
+    info["version"] = str(getattr(otrv4_core, "__version__", "") or
+                          "unknown (core predates its version export)")
     info["module_file"] = _guard(lambda: os.path.basename(getattr(otrv4_core, "__file__", "") or "builtin"))
 
     required = [

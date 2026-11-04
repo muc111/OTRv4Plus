@@ -467,16 +467,33 @@ class TestEvents:
         call's story. No peer address, no duration past the integer seconds."""
         a, _, _, _ = app
         from android_bridge.trace import TRACE
+
+        # Driven through CallBridge.poll -- the path a device actually takes.
+        # The first version recorded in OtrApp.note_call_state, which nothing
+        # on a device calls, and two device reports had no call state at all.
+        class Session:
+            def __init__(self, state):
+                self.state = state
+
+        class Manager:
+            def __init__(self):
+                self._calls = {}
+
+        bridge = a.calls
+        manager = Manager()
+        bridge._manager = manager
         TRACE.clear()
         for s in ("RINGING", "ACTIVE", "ACTIVE", "ACTIVE", "ENDED"):
-            a.note_call_state("bob", s, duration_seconds=42)
+            manager._calls["bob"] = Session(s)
+            bridge.poll()
+        manager._calls.clear()                 # the session is gone
+        bridge.poll()
         calls = [e for e in TRACE.events()
                  if e["component"] == "call" and e["event"] == "state"]
         # One per TRANSITION, not one per poll: the three ACTIVEs collapse.
         assert [e["fields"]["state"] for e in calls] == \
-            ["RINGING", "ACTIVE", "ENDED"], (
+            ["RINGING", "ACTIVE", "ENDED", "IDLE"], (
             "call transitions were not recorded once each: %r" % calls)
-        assert calls[1]["fields"]["seconds"] == "42"
         rendered = TRACE.render()
         assert "bob" not in rendered, (
             "the call trace leaked the peer address: %r" % rendered)

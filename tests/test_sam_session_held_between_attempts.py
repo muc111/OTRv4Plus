@@ -173,3 +173,94 @@ def test_the_android_transport_asks_for_it():
     src = transport_source()
     assert 'if _accepts(forward, "hold"):' in src
     assert 'extra["hold"] = True' in src
+
+
+class SlowSam(FlakySam):
+    """STREAM CONNECT that never answers the first `stalls` times -- a server
+    whose tunnel the router cannot reach yet. Then it answers OK."""
+
+    def __init__(self, stalls):
+        self.stalls = stalls
+        super().__init__(failures=0)
+
+    def _client(self, conn):
+        buf, session = b"", False
+        try:
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    return
+                buf += data
+                while b"\n" in buf:
+                    raw, buf = buf.split(b"\n", 1)
+                    line = raw.decode().strip()
+                    self.commands.append(line.split()[0] + " " + line.split()[1])
+                    if line.startswith("HELLO"):
+                        out = "HELLO REPLY RESULT=OK VERSION=3.1"
+                    elif line.startswith("NAMING LOOKUP"):
+                        out = "NAMING REPLY RESULT=OK NAME=%s VALUE=%s" % (NAME, DEST)
+                    elif line.startswith("SESSION CREATE"):
+                        session = True
+                        self.open_sessions += 1
+                        out = "SESSION STATUS RESULT=OK DESTINATION=" + "C" * 600
+                    elif line.startswith("STREAM CONNECT"):
+                        if self.stalls > 0:
+                            self.stalls -= 1
+                            while conn.recv(4096):      # never answers
+                                pass
+                            return
+                        conn.sendall(b"STREAM STATUS RESULT=OK\n")
+                        while conn.recv(4096):
+                            pass
+                        return
+                    else:
+                        out = "UNKNOWN"
+                    conn.sendall((out + "\n").encode())
+        except OSError:
+            pass
+        finally:
+            if session:
+                self.open_sessions -= 1
+            conn.close()
+
+
+@pytest.fixture
+def slow_sam(monkeypatch):
+    monkeypatch.setattr(otr.I2PSAMConnection, "reply_timeout", 1)
+    s = SlowSam(stalls=1)
+    X.HELD_SAM.drop()
+    yield s
+    X.HELD_SAM.drop()
+    s.close()
+
+
+def test_a_stream_connect_that_times_out_is_a_stream_failure(slow_sam):
+    """Device report (2026-11-04): a server blip became an 18-minute, six-
+    attempt reconnect, and the error said the SAM bridge was unreachable
+    although it answered. A STREAM CONNECT that times out was classified as a
+    BRIDGE failure, so its session was thrown away and every retry built
+    tunnels from cold with a new destination. It is a stream failure: the
+    session is held, the retry reuses it, and the code is not sam_unavailable."""
+    with pytest.raises(Exception) as caught:
+        _attempt(slow_sam.port, hold=True)
+    assert getattr(caught.value, "stage", "") == "stream", caught.value
+    assert getattr(caught.value, "result", "") == "TIMEOUT"
+    assert X.HELD_SAM.holding, "the built session was thrown away"
+    _attempt(slow_sam.port, hold=True)        # the retry works, on the same session
+    assert slow_sam.sessions_created() == 1, slow_sam.commands
+
+
+def test_timeouts_are_reported_by_the_stage_that_stalled():
+    from android_bridge.transport import _sam_failure
+    stream = otr.SamError("stream", "x did not answer", "TIMEOUT")
+    session = otr.SamError("session", "tunnels not built", "TIMEOUT")
+    assert _sam_failure(stream, "s.i2p").code == "i2p_destination_unreachable"
+    assert _sam_failure(session, "s.i2p").code == "i2p_session_failed"
+
+
+def test_a_bridge_failure_says_which_kind_without_the_reply():
+    from android_bridge.transport import _sam_failure
+    err = _sam_failure(otr.SamError("bridge", "SAM bridge closed connection"), "s.i2p")
+    assert err.code == "sam_unavailable" and "(closed)" in str(err)
+    err = _sam_failure(otr.SamError("bridge", "SAM handshake failed: HELLO REPLY RESULT=NOVERSION"), "s.i2p")
+    assert "(handshake)" in str(err) and "NOVERSION" not in str(err)

@@ -1149,7 +1149,7 @@ class I2PSAMConnection:
             deadline = time.time() + self.reply_timeout
             while b"\n" not in buf:
                 if time.time() > deadline:
-                    raise SamError("bridge", "SAM bridge timeout")
+                    raise SamError("bridge", "SAM bridge timeout", "TIMEOUT")
                 if len(buf) > SAM_MAX_REPLY:
                     raise SamError("bridge", "SAM reply too long")
                 chunk = sock.recv(4096)
@@ -1159,7 +1159,7 @@ class I2PSAMConnection:
         except SamError:
             raise
         except socket.timeout:
-            raise SamError("bridge", "SAM bridge timeout") from None
+            raise SamError("bridge", "SAM bridge timeout", "TIMEOUT") from None
         except OSError as exc:
             raise SamError("bridge", "SAM bridge I/O error (%s)"
                            % type(exc).__name__) from None
@@ -1476,11 +1476,24 @@ class I2PSAMConnection:
             if self._abandoned:
                 self.close()
                 raise SamError("cancelled", "the SAM connection was abandoned")
-            reply = self._send_cmd(
-                self._control_sock,
-                f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
-                f"DESTINATION=TRANSIENT SIGNATURE_TYPE=7",
-            )
+            try:
+                reply = self._send_cmd(
+                    self._control_sock,
+                    f"SESSION CREATE STYLE=STREAM ID={self ._session_id } "
+                    f"DESTINATION=TRANSIENT SIGNATURE_TYPE=7",
+                )
+            except SamError as exc:
+                if exc.result != "TIMEOUT":
+                    raise
+                # The bridge answered HELLO on this socket; what never came is
+                # the router finishing this session's tunnels. That is the
+                # SESSION stage, not an unreachable bridge -- reported as one,
+                # a cold router was blamed on a SAM bridge that was working.
+                self.close()
+                raise SamError(
+                    "session", "SESSION CREATE did not finish within %ds: the "
+                    "router has not built this session's tunnels yet"
+                    % self.reply_timeout, "TIMEOUT") from None
             parsed = self._parse_reply(reply, "SESSION STATUS ")
             if parsed.get("RESULT") != "OK":
                 self.close()
@@ -1495,6 +1508,21 @@ class I2PSAMConnection:
                 stream_sock,
                 f"STREAM CONNECT ID={self ._session_id } " f"DESTINATION={dest_b64 } SILENT=false",
             )
+        except SamError as exc:
+            if exc.result != "TIMEOUT" or self._abandoned:
+                raise
+            # The session is up (SESSION STATUS OK) and the bridge answered
+            # HELLO on this socket: what timed out is reaching the SERVER. The
+            # STREAM stage -- so a sign-in retry keeps this session and its
+            # built tunnels (keep_session / HeldSamSession) instead of starting
+            # cold with a new destination every time, which turned one server
+            # blip into an 18-minute reconnect (device report, 2026-11-04).
+            stream_sock.close()
+            if not keep_session:
+                self.close()
+            raise SamError(
+                "stream", "%s did not answer within %ds over I2P"
+                % (target_host, self.reply_timeout), "TIMEOUT") from None
         finally:
             self._pending_stream = None
         if self._abandoned:

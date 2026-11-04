@@ -210,7 +210,21 @@ def _sam_failure(exc: BaseException, server: str) -> "TransportError":
     return TransportError(
         "sam_unavailable",
         "could not reach the I2P router's SAM bridge (%s). Is the router "
-        "running and is its SAM bridge enabled?" % type(exc).__name__)
+        "running and is its SAM bridge enabled?" % _bridge_reason(exc))
+
+
+def _bridge_reason(exc: BaseException) -> str:
+    """A short, FIXED word for why the bridge failed, from this repository's
+    own SamError messages -- never the reply text. A cold-start report showed
+    attempts failing milliseconds after sam_opening with only "SamError" to go
+    on; refused / closed / timeout / handshake tell those apart."""
+    text = str(exc).lower()
+    for needle, word in (("no sam bridge", "refused"), ("closed", "closed"),
+                         ("timeout", "timeout"), ("handshake", "handshake"),
+                         ("i/o error", "io_error"), ("unexpected", "unexpected_reply")):
+        if needle in text:
+            return word
+    return type(exc).__name__
 
 
 def _accepts(fn: Any, name: str) -> bool:
@@ -1664,8 +1678,15 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             self._caps.disco_result(full_jid, features)
         except Exception:
             self._caps.disco_failed(full_jid)
-        _TRACE.record("otr", "capability_checked", "info", jid=bare,
-                      state=self._caps.state(bare))
+        state = self._caps.state(bare)
+        # Once per change of answer, not once per resource or per presence:
+        # a burst of presences asked 3-5 times and logged each identical
+        # answer (device report, 2026-11-04). The handler still runs each time.
+        seen = self.__dict__.setdefault("_caps_traced", {})
+        if seen.get(bare) != state:
+            seen[bare] = state
+            _TRACE.record("otr", "capability_checked", "info", jid=bare,
+                          state=state)
         self._notify_capability(bare)
 
     async def _send(self, peer: str, payload: str, message_id: str = "") -> None:

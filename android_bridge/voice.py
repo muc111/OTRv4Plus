@@ -443,6 +443,7 @@ class CallBridge:
             if self._announced.get(peer) is state:
                 continue
             self._announced[peer] = state
+            _trace_state(state, self.duration_seconds(peer))
             self._app._emit(CallStateChanged(
                 peer=peer, state=state,
                 duration_seconds=self.duration_seconds(peer)))
@@ -453,6 +454,7 @@ class CallBridge:
             self._active_since.pop(peer, None)
             if self._announced[peer] is not CallState.IDLE:
                 self._announced[peer] = CallState.IDLE
+                _trace_state(CallState.IDLE, 0)
                 self._app._emit(CallStateChanged(peer=peer,
                                                  state=CallState.IDLE))
 
@@ -700,6 +702,9 @@ CALL_STAGES = (
     # dropped" is unique to this line (the "call signal dropped" error carries
     # its own full phrase), so it cannot shadow or be shadowed.
     (", dropped", "call_stats", "info"),
+    # Where the mouth-to-ear delay went (network / jitter buffer / playout),
+    # printed under the hang-up summary. No identity in it.
+    ("ms network (", "call_latency_budget", "info"),
     ("building I2P tunnel", "tunnels_building", "info"),
     ("waiting for an answer", "ringing_out", "info"),
     ("Answer? [y/n]", "ringing_in", "info"),
@@ -755,7 +760,17 @@ CALL_STAGES = (
 #: facts a "high pitch / echo" report is about. The redactor still aliases
 #: any identity by shape; these lines carry only rates, channels and names.
 DETAIL_CODES = frozenset({"audio_codec", "audio_setup", "audio_playout",
-                          "audio_earpiece_route", "audio_echo", "call_stats"})
+                          "audio_earpiece_route", "audio_echo", "call_stats",
+                          # The hang-up summary: duration, mouth-to-ear delay,
+                          # frames played / concealed / missing / shed. The
+                          # numbers a "how good was that call" report needs --
+                          # recorded as a bare "ended" until now. No identity:
+                          # the peer is named only by "ended the call", which
+                          # is peer_ended and keeps no detail.
+                          "ended", "call_latency_budget"})
+
+#: Terminal colour codes, which a summary carries when printed to a tty.
+_ANSI = __import__("re").compile(r"\x1b\[[0-9;]*m")
 
 
 def call_stage(line: str):
@@ -767,11 +782,26 @@ def call_stage(line: str):
         if needle in text:
             reason = ""
             if code in DETAIL_CODES:
-                reason = text.split("[voice]", 1)[1].strip()[:160]
+                reason = _ANSI.sub("", text.split("[voice]", 1)[1]).strip()[:200]
             elif severity != "info" and ": " in text:
                 reason = text.rsplit(": ", 1)[1].strip()[:120]
             return code, severity, reason
     return "other", "info", ""
+
+
+def _trace_state(state, seconds) -> None:
+    """One call state TRANSITION into the diagnostics ring -- on BOTH ends,
+    caller and callee, so setup can be timed from either report. Recorded
+    where the transitions are actually seen (CallBridge.poll); the earlier
+    hook in OtrApp.note_call_state was not on the live path, so a device
+    report never had a single one. State name and whole seconds; no peer."""
+    try:
+        from .trace import TRACE
+        TRACE.record("call", "state", "info",
+                     state=getattr(state, "name", str(state)),
+                     seconds=int(seconds or 0))
+    except Exception:
+        pass
 
 
 def traced_call_print(original):

@@ -305,3 +305,40 @@ class TestTheFakeMatchesTheRealTransport:
         real = inspect.signature(getattr(XmppTransport, name)).parameters
         mine = inspect.signature(getattr(FakeTransport, name)).parameters
         assert list(real) == list(mine), name
+
+
+class TestPolledRoomCallsAreQuietWhileDisconnected:
+    """Device reports: owned_rooms / server_admin / other_sessions warned every
+    10 s for minutes while the router started or tunnels built, burying the
+    sign-in in the report. With no stream they are not asked, and a repeated
+    answer -- good or bad -- is recorded once."""
+
+    def _muc(self):
+        from android_bridge.trace import TRACE
+        return [e for e in TRACE.events() if e["component"] == "muc"]
+
+    def test_a_stream_that_is_down_is_not_asked_and_logs_once(self):
+        from android_bridge.trace import TRACE
+        ctl, made = build()
+        transport = made["transport"]
+        transport.is_connected = False
+        asked = []
+        transport._room = lambda name, *a: asked.append(name) or ("ok", "", [])
+        TRACE.clear()
+        for _ in range(6):
+            got = ctl.owned_rooms()
+        assert got["ok"] is False and asked == [], "polled a stream that is down"
+        assert len(self._muc()) == 1, self._muc()
+
+    def test_a_repeated_failure_is_recorded_once_per_change(self):
+        from android_bridge.trace import TRACE
+        ctl, made = build()
+        transport = made["transport"]
+        transport.is_connected = True
+        answers = iter([("network", "", None)] * 4 + [("ok", "", True)] * 3)
+        transport._room = lambda name, *a: next(answers)
+        TRACE.clear()
+        for _ in range(7):
+            ctl.server_admin()
+        codes = [e["fields"].get("code") for e in self._muc()]
+        assert codes == ["network", "ok"], codes
