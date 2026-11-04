@@ -263,9 +263,28 @@ class GroupCalls:
     def ringing(self) -> List[Dict[str, str]]:
         with self._lock:
             now = self._clock()
-            return [{"room": c.room, "from": c.starter, "call": c.call_id}
-                    for c in self._calls.values()
-                    if not c.joined and now - c.rang_at < RING_SECONDS]
+            fresh = [c for c in self._calls.values()
+                     if not c.joined and now - c.rang_at < RING_SECONDS]
+        # A ring from a group that is no longer on this device (deleted while
+        # it rang) is not offered -- answering it could only fail. Checked
+        # outside our lock: the group's own lock is taken by is_secure, and the
+        # groups call into us (set_call_handler) while holding theirs.
+        gone = [c for c in fresh if not self._group_alive(c.room)]
+        if gone:
+            with self._lock:
+                for c in gone:
+                    if self._calls.get(c.room) is c and not c.joined:
+                        self._calls.pop(c.room, None)
+        return [{"room": c.room, "from": c.starter, "call": c.call_id}
+                for c in fresh if c not in gone]
+
+    def _group_alive(self, room: str) -> bool:
+        """Whether [room] is still a secure group on this device. A check that
+        fails counts as alive: a transient error must not end a live call."""
+        try:
+            return bool(self._groups.is_secure(room))
+        except Exception:
+            return True
 
     # -- media ------------------------------------------------------------------
 
@@ -308,8 +327,21 @@ class GroupCalls:
     # -- time -------------------------------------------------------------------
 
     def tick(self) -> None:
-        """Call about once a second: drops a previous epoch after the grace
-        period, and has the starter force a rekey every REKEY_SECONDS."""
+        """Call about once a second: ends a call whose group is gone, drops a
+        previous epoch after the grace period, and has the starter force a
+        rekey every REKEY_SECONDS."""
+        with self._lock:
+            room = self._active
+        # The group is no longer on this device -- deleted (by its owner or a
+        # server admin), left, removed, or the app wiped. Its call cannot go
+        # on: the keys it derives from are gone, and a call left up kept the
+        # microphone live with nobody listening (device report: peers=0 while
+        # capture ran on) and refused every later call as call_in_progress.
+        # The front-ends close the microphone and speaker when active() goes
+        # to None under them.
+        if room is not None and not self._group_alive(room):
+            self.hangup(room)
+            return
         with self._lock:
             room = self._active
             call = self._calls.get(room) if room else None

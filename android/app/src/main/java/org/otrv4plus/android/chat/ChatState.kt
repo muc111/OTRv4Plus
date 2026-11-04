@@ -906,6 +906,13 @@ class ChatState(
     fun groupCallState(room: String): org.otrv4plus.android.bridge.GroupCallState =
         groupCalls[bare(room)] ?: org.otrv4plus.android.bridge.GroupCallState()
 
+    /** A group that ended here: its last-read verification and call state go
+     *  with it, so one made again under the same name does not briefly show
+     *  the old group's call as live. */
+    private fun forgetGroupState(room: String) {
+        groupVerify.remove(bare(room)); groupCalls.remove(bare(room))
+    }
+
     /** True when what was read differs from what is held (redraw then). */
     fun noteGroupState(room: String,
                        verify: org.otrv4plus.android.bridge.GroupVerifyState,
@@ -1006,12 +1013,14 @@ class ChatState(
             "synced" -> { secureRooms.add(room); syncingRooms.remove(room) }
             "left", "removed_us" -> {
                 secureRooms.remove(room); syncingRooms.remove(room); joiningRooms.remove(room)
+                forgetGroupState(room)
             }
             // The room was destroyed by its owner (device report: members
             // were left in it). Gone from the list, its history and draft
             // deleted, an invitation to it dropped, and closed if open.
             "deleted", "room_deleted" -> {
                 secureRooms.remove(room); syncingRooms.remove(room); joiningRooms.remove(room)
+                forgetGroupState(room)
                 forgetRoom(room)
                 clearGroupInvite(room)
                 deleteConversation(room)

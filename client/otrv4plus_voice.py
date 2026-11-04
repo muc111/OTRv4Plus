@@ -1281,10 +1281,13 @@ class VoiceCallSession:
                     _vprint("[voice] echo control: PulseAudio echo cancellation "
                             "active (module-echo-cancel)")
                 else:
+                    why = ("it could not be loaded here"
+                           if _audio.auto_echo_cancel_enabled()
+                           else "automatic echo cancellation is turned off")
                     _print("[voice] ⚠ echo control: no echo cancellation on this "
-                           "device — on speakers the far end hears their own "
-                           "voice. Use a headset, or load module-echo-cancel:")
-                    _print("    " + _audio.ECHO_CANCEL_COMMAND)
+                           "device (%s) — on speakers the far end hears their "
+                           "own voice. Use a headset, or load it by hand:" % why)
+                    _print("    " + _audio.echo_cancel_command())
         except Exception:
             pass
 

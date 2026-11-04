@@ -594,6 +594,20 @@ class TestTheAudioSetupReachesTheReport:
         assert call_stage("[voice] playout: the device buffer is running "
                           "dry")[0] == "playout_underrun"
 
+    def test_a_line_no_stage_names_is_not_recorded(self):
+        """Verbose setup lines that name no stage ("levels:", "transport:")
+        were each a bare "call other" row with no detail -- noise that buried
+        the rows that matter in a shared report. Still printed, not traced."""
+        from android_bridge.voice import traced_call_print
+        from android_bridge.trace import TRACE
+        TRACE.clear()
+        printed = []
+        printer = traced_call_print(lambda *a: printed.append(a))
+        printer("[voice] levels: mic gain 1.00, speaker gain 1.00")
+        assert printed, "the line no longer reaches the log"
+        assert not [e for e in TRACE.events() if e["component"] == "call"]
+        TRACE.clear()
+
     def test_a_verbose_line_is_recorded_once_with_its_detail(self):
         """The whole chain: the traced print wrapper records the setup line's
         numbers into the ring, under a code, with no peer."""

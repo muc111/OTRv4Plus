@@ -801,10 +801,18 @@ class TermuxGroups:
         self._call_tick = None
         if self._calls is None:
             return
+        was = self._calls.active()
         try:
             self._calls.tick()
         except Exception:
             pass
+        if was is not None and self._calls.active() is None:
+            # Ended underneath us: the group is no longer on this device
+            # (GroupCalls.tick). Microphone and speaker go with it.
+            self._print("[group call] the call ended: %s is no longer on this "
+                        "device (deleted, left or removed)." % was[:64])
+            self._hangup()
+            return
         if self._media is not None:
             self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
 
@@ -879,7 +887,17 @@ class TermuxGroups:
     def _hangup(self) -> None:
         calls = self._calls
         if calls is not None:
-            for room in self.groups.rooms():
+            # The active call's room too: a group deleted mid-call is no
+            # longer in rooms(), and leaving its call up kept its keys and
+            # refused every later call as call_in_progress.
+            try:
+                rooms = set(self.groups.rooms())
+            except Exception:
+                rooms = set()
+            active = calls.active()
+            if active is not None:
+                rooms.add(active)
+            for room in rooms:
                 calls.hangup(room)
         if self._media is not None:
             self._media.close()

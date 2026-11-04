@@ -273,6 +273,75 @@ class TestHangUp:
         assert "bob@x.i2p" not in a.calls.participants(ROOM)
         assert a.calls.send_audio(b"\x00\x00") == 0
 
+    def test_a_call_ends_when_its_group_is_deleted(self):
+        """Device report: a group deleted by a server admin mid-call left the
+        call up -- peers=0 while the microphone kept capturing, and every later
+        call refused as call_in_progress. The next tick ends it and destroys
+        its keys, whatever took the group away."""
+        w, (a, b), net, now, heard = _calling(2)
+        _pair_all(w, [a, b])
+        a.calls.start(ROOM)
+        b.calls.join(ROOM)
+        voice = b.calls._calls[ROOM].voice
+        assert b.groups.on_room_destroyed(ROOM) is True      # the room is gone
+        b.calls.tick()
+        assert b.calls.active() is None
+        assert voice.zeroized, "the dead call's keys were left in memory"
+        assert "call_ended" in [e.change for e in b.events
+                                if isinstance(e, GroupChanged)]
+        assert b.calls.send_audio(b"\x00\x00") == 0
+
+    def test_a_live_group_keeps_its_call(self):
+        """The other direction: tick must not end a call whose group is fine,
+        nor one whose liveness check merely failed."""
+        w, (a, b), net, now, heard = _calling(2)
+        _pair_all(w, [a, b])
+        a.calls.start(ROOM)
+        b.calls.join(ROOM)
+        b.calls.tick()
+        assert b.calls.active() == ROOM
+        broken = b.calls._groups
+
+        class Flaky:
+            def __getattr__(self, name):
+                return getattr(broken, name)
+
+            def is_secure(self, room):
+                raise RuntimeError("transient")
+
+        b.calls._groups = Flaky()
+        b.calls.tick()
+        assert b.calls.active() == ROOM, "a failed check ended a live call"
+
+    def test_a_ring_from_a_deleted_group_is_not_offered(self):
+        w, (a, b), net, now, heard = _calling(2)
+        _pair_all(w, [a, b])
+        a.calls.start(ROOM)
+        assert b.calls.ringing()
+        b.groups.on_room_destroyed(ROOM)
+        assert b.calls.ringing() == []
+
+    def test_the_bridge_closes_media_when_the_call_ends_under_it(self):
+        """Android/desktop: GroupCallBridge's tick must close the microphone
+        and speaker when the call ended underneath it, not only on a hang-up
+        the user pressed."""
+        import inspect
+        from android_bridge.group_call_bridge import GroupCallBridge
+        body = inspect.getsource(GroupCallBridge._schedule_tick)
+        assert "was is not None and self.calls.active() is None" in body
+        assert "target=self.hangup" in body
+
+    def test_the_terminal_hangup_ends_a_call_whose_group_is_gone(self):
+        """Terminal: /hangup walked groups.rooms(), which no longer holds a
+        deleted group, so its call was never ended."""
+        import inspect
+        import otrv4plus_groups as tg
+        hangup = inspect.getsource(tg.TermuxGroups._hangup)
+        assert "calls.active()" in hangup and "rooms.add(active)" in hangup
+        tick = inspect.getsource(tg.TermuxGroups._tick_calls)
+        assert "self._hangup()" in tick, (
+            "the terminal leaves mic and speaker open when a call ends under it")
+
     def test_mixing_clips(self):
         loud = (30000).to_bytes(2, "little", signed=True)
         assert mix([loud, loud]) == (32767).to_bytes(2, "little", signed=True)

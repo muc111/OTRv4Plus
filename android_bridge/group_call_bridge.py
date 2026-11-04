@@ -342,10 +342,19 @@ class GroupCallBridge:
         def tick():
             with self._lock:
                 self._tick = None
+            was = self.calls.active()
             try:
                 self.calls.tick()
             except Exception:
                 pass
+            if was is not None and self.calls.active() is None:
+                # The call ended underneath us (its group is gone from this
+                # device: GroupCalls.tick). Close the microphone and speaker
+                # too -- off this loop, because closing joins the audio
+                # threads. hangup() is idempotent with a user's own.
+                threading.Thread(target=self.hangup, daemon=True,
+                                 name="group-call-ended").start()
+                return
             media = self._media
             if media is not None:
                 self._trace_media(media)

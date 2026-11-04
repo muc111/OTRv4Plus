@@ -779,7 +779,11 @@ def traced_call_print(original):
     def traced(*args, **kwargs):
         try:
             stage = call_stage(" ".join(str(a) for a in args))
-            if stage is not None:
+            # "other" is a [voice] line no stage names: it carries no code and
+            # no detail, and with the debug build's verbose voice log on it was
+            # a dozen bare "call other" rows per call in a shared report. The
+            # line itself still reaches logcat through `original`.
+            if stage is not None and stage[0] != "other":
                 from .trace import TRACE
                 code, severity, reason = stage
                 fields = {"reason": reason} if reason else {}
