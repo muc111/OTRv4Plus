@@ -301,6 +301,27 @@ class OtrConnectionService : Service() {
             getSystemService(android.net.ConnectivityManager::class.java)
                 ?.registerDefaultNetworkCallback(networkWake)
         }
+        // The app lock (security/AppLock): a lock closes the connection
+        // here first, and a call in progress holds the automatic lock off.
+        org.otrv4plus.android.security.AppLock.serviceLock = { restart -> lockApp(restart) }
+        org.otrv4plus.android.security.AppLock.callActive = { runCatching { chat.anyCall() }.getOrDefault(false) }
+    }
+
+    /**
+     * Lock the app: sign out (the engine closes its sessions and tunnels),
+     * then Rust zeroizes the data key and the process ends
+     * (AppLock.finishLock). Bounded: a teardown that hangs on I2P does not
+     * keep the app unlocked.
+     */
+    private fun lockApp(restartUi: Boolean) {
+        runCatching { core.note("service", "app_lock", "info", "locking: signing out first") }
+        stopConnection(explicit = true, stopRouter = true)
+        teardown.launch {
+            kotlinx.coroutines.withTimeoutOrNull(LOCK_TEARDOWN_MS) { pendingTeardown?.join() }
+            runCatching { ServiceCompat.stopForeground(this@OtrConnectionService,
+                                                      ServiceCompat.STOP_FOREGROUND_REMOVE) }
+            org.otrv4plus.android.security.AppLock.finishLock(applicationContext, restartUi)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -495,6 +516,8 @@ class OtrConnectionService : Service() {
         stopConnection(explicit = true, stopRouter = true)
         drainer?.cancel()
         drainer = null
+        org.otrv4plus.android.security.AppLock.serviceLock = null
+        org.otrv4plus.android.security.AppLock.callActive = { false }
         runCatching { unregisterReceiver(wakeReceiver) }
         runCatching {
             getSystemService(android.net.ConnectivityManager::class.java)
@@ -570,7 +593,7 @@ class OtrConnectionService : Service() {
                 // The in-memory fallback vault has no key to delete; clearing
                 // it is the whole of its erasure.
                 runCatching { vault.clear() }
-                if (!KeystoreVault.destroy(context) && vault.inner is KeystoreVault) {
+                if (!KeystoreVault.destroy(context) && KeystoreVault.isKeystore(vault)) {
                     error("the vault key could not be confirmed deleted")
                 }
             },
@@ -1718,6 +1741,9 @@ class OtrConnectionService : Service() {
          *  for (connectLoop). In the companion: it outlives the instance. */
         @Volatile
         private var pendingTeardown: Job? = null
+
+        /** How long a lock waits for the sign-out before ending anyway. */
+        private const val LOCK_TEARDOWN_MS = 10_000L
 
         private const val CHANNEL_ID = "otrv4plus.connection"
         private const val NOTIFICATION_ID = 1

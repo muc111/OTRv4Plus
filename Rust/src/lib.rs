@@ -37,6 +37,7 @@ pub mod opus_codec;
 pub mod mls_group;        // OTRv4Plus group chat (MLS); see otrv4-mls       // libopus for the APK only; Termux uses opuslib
 pub mod container;         // .otrv: files encrypted at rest and for export
 pub mod at_rest;          // Rust-owned at-rest secrets (SMP auto-respond store, identity DEK)
+pub mod app_lock;         // the app lock: a passphrase-wrapped data key (docs/APP_LOCK_PASSPHRASE.md)
 pub mod filetransfer;     // v10.14.0: Rust-owned /sendfile keys and chunk AEAD
 pub mod voice_mask;       // voice notes: a synthetic voice, random per note
 
@@ -120,6 +121,7 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(at_rest::clear_key_wrapping_key, m)?)?;
     m.add_function(wrap_pyfunction!(at_rest::key_wrapping_active,    m)?)?;
     m.add_class::<at_rest::SmpSecretStore>()?;
+    app_lock::register(m)?;
     m.add_function(wrap_pyfunction!(at_rest::create_sealed_identity_under, m)?)?;
     m.add_function(wrap_pyfunction!(at_rest::unseal_identity_under,        m)?)?;
     container::register(m)?;

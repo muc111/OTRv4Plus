@@ -138,7 +138,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
                 val trust = KeystoreVault.open(appContext, KeystoreVault.TRUST)
                 app?.callAttr("use_trust_store",
                     py.getModule("android_bridge.account_trust").callAttr(
-                        "for_android", trust, trust is KeystoreVault))
+                        "for_android", trust, KeystoreVault.isKeystore(trust)))
             }
 
             // Debug builds turn on the voice engine's verbose setup log, so a

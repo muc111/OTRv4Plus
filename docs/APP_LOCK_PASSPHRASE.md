@@ -1,6 +1,8 @@
 # App lock with a passphrase: audit and design
 
-Status: **audit and design only (2026-11-06). Nothing here is built yet.**
+Status: **Android built (2026-11-09); desktop and terminal not yet.**
+§7 says what was built and where it differs from this design. Sections 1-6
+are the audit and design as written on 2026-11-06.
 
 The request: a Molly-style app passphrase. Local data under a 256-bit key that
 the passphrase unlocks. The passphrase flushed from memory once it has been
@@ -229,3 +231,75 @@ makes.
    - On the desktop, the passphrase wraps the KEK instead of, or on top of,
      the keyring.
    - The terminal gains its first protection beyond 0600 files.
+
+## 7. What was built (Android, 2026-11-09)
+
+| Piece | Where |
+|---|---|
+| Data key, KEK derivation, record, vault layer | `Rust/src/app_lock.rs` (tests in the file) |
+| Python surface for Kotlin | `android_bridge/app_lock.py`, `tests/test_app_lock.py` |
+| Hardware HMAC (StrongBox, else TEE) | `AppLockKeystore` in `security/KeystoreVault.kt` |
+| Vault layer | `security/LockLayerVault.kt` (`LockLayerVaultTest`) |
+| Set-up, unlock, change, off, lock, auto-lock | `security/AppLock.kt` |
+| Screens | `ui/AppLockScreens.kt`: unlock screen, own profile → App lock |
+
+**As designed:**
+- KEK = HKDF-SHA-512(Argon2id(passphrase) ‖ H), where H = HMAC-SHA-256(salt)
+  inside the Keystore. The passphrase key is `setUnlockedDeviceRequired`
+  where the phone allows it.
+- The 256-bit DEK is made and held in Rust. Subkeys of it are:
+  - the key-wrapping key for every key file;
+  - the key for an inner AES-256-GCM layer on every vault record (default,
+    identity and trust sections), bound to the record's name.
+- The record is 113 bytes: header, nonce, and the wrapped DEK. The AEAD tag
+  is the only verifier. A wrong passphrase and a damaged record fail the same
+  way. The Argon2id cost is stored in the record and bounded when read.
+- The passphrase field is an `EditText` read into a `CharArray`. It never
+  builds a `String`, autofill is off, and the keyboard is told not to learn
+  it. Kotlin, Python and Rust each zero their copy. Python and Rust accept
+  only a `bytearray`.
+- **Locking signs out, then the process ends.** The connection is closed,
+  Rust zeroizes the DEK, and no JVM or Python heap survives.
+- A locked vault **throws**; it never answers "nothing stored". This is what
+  stops a new identity being made over a sealed one.
+- Turning the lock off re-wraps the DEK under a second Keystore key alone,
+  with no unlocked-device requirement. That is the protection the app had
+  before the lock. The data is not re-encrypted.
+- Change passphrase re-wraps the 32-byte DEK only.
+- Wrong guesses go through `AttemptThrottle`. The counter is persistent and
+  survives a restart.
+- Wipe & Exit deletes both Keystore keys and the record.
+
+**Different from the design, and why:**
+- **No `mlock` (F5 stays open).** The crate is `#![forbid(unsafe_code)]`;
+  `smp_vault` dropped its `mlock` for the same reason. Ending the process on
+  lock is the mitigation.
+- **Set-up is two steps.** `enrol` makes the key and returns the record.
+  `commit` starts using the key only after the record is synced to disk. A
+  crash in between loses nothing.
+- **Existing records are sealed at set-up** (`sealAllSections`). Any record
+  missed is sealed the next time it is read.
+- **Key files are wrapped on their next read** (`at_rest` re-wraps a plain
+  key file in place once a KEK is installed), not all at once. Until a key
+  file is next used it keeps its old protection: the sandbox and Android's
+  file encryption.
+- **No "Immediately" auto-lock.** Leaving the app for a file picker, the
+  camera or a permission prompt would lock it. The shortest choice is 30 s.
+  An auto-lock never ends a call in progress; it waits for the call to end.
+- **The auto-lock timer may fire late under Doze.** The check made when the
+  app returns uses a clock that counts sleep, and locks before anything is
+  shown. That check is what the lock relies on.
+- **The Phase 2 contracts are not all used.** `AttemptThrottle`, `LockState`'s
+  rule (late callbacks cannot unlock) and `SecurityLevel` are used. The DEK
+  lives in Rust, so `DataKeyHandle` / `KeystoreManager` / `AppLockManager`,
+  which assumed a Kotlin-held handle, are replaced by `AppLockCrypto` and
+  `AppLock`.
+- **The passphrase is not Unicode-normalised.** Normalising would need a
+  `String`. The same keyboard gives the same bytes; a different keyboard
+  might not.
+
+**Still open:**
+- F4: Argon2id is t=3, 64 MiB, p=4, not yet measured on a low-end phone.
+- The XMPP password fields still use `String` (F3).
+- No "erase after N failed attempts" option.
+- Desktop and terminal.

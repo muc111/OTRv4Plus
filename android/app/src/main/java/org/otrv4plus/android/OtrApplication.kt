@@ -20,6 +20,9 @@ class OtrApplication : Application() {
         if (!Python.isStarted()) {
             Python.start(AndroidPlatform(this))
         }
+        // The app lock turned off after use opens by itself, as before the
+        // lock; with a passphrase, MainActivity shows the unlock screen.
+        org.otrv4plus.android.security.AppLock.startUp(this)
     }
 
     companion object {

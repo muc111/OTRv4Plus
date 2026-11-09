@@ -16,6 +16,11 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -47,7 +52,10 @@ import org.otrv4plus.android.ui.ProfileScreen
 import org.otrv4plus.android.ui.RoomsScreen
 import org.otrv4plus.android.ui.FingerprintAlertDialog
 import org.otrv4plus.android.ui.IncomingFileDialog
+import org.otrv4plus.android.security.AppLock
 import org.otrv4plus.android.security.WipeAndExit
+import org.otrv4plus.android.ui.AppLockSection
+import org.otrv4plus.android.ui.UnlockScreen
 
 /**
  * Single Activity, Compose, unidirectional data flow.
@@ -177,13 +185,45 @@ class MainActivity : ComponentActivity() {
         if (intent.action == ACTION_OPEN_ARRIVAL) arrivalTaps++
     }
 
+    /**
+     * True while the app lock's screen is all there is (AppLock). Nothing
+     * else may start meanwhile: not the connection, whose service reads the
+     * sealed vault, and not the ViewModels.
+     */
+    private var lockScreen = false
+
     override fun onStart() {
         super.onStart()
+        if (lockScreen) return
+        // Away longer than the auto-lock allows: cover the screen, then lock
+        // (the process ends and the unlock screen comes back).
+        if (AppLock.lockDueOnReturn(this)) {
+            lockNow()
+            return
+        }
         connection.setUiVisible(true)
     }
 
+    /**
+     * Lock the app: nothing of the signed-in screens stays visible while the
+     * sign-out runs (up to ~10 s over I2P), then AppLock ends the process and
+     * the unlock screen comes back.
+     */
+    fun lockNow() {
+        lockScreen = true
+        setContent {
+            OtrTheme(ThemeStore.load(this)) {
+                Surface { Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { Text("Locking…") } }
+            }
+        }
+        AppLock.lockNow(this, restartUi = true)
+    }
+
     override fun onStop() {
-        connection.setUiVisible(false)
+        if (!lockScreen) {
+            connection.setUiVisible(false)
+            AppLock.onBackgrounded(this)
+        }
         super.onStop()
     }
 
@@ -240,6 +280,21 @@ class MainActivity : ComponentActivity() {
         // a second tap.
         if (savedInstanceState == null && intent?.action == ACTION_OPEN_ARRIVAL) arrivalTaps++
 
+        if (AppLock.mustUnlock(this)) {
+            lockScreen = true
+            setContent {
+                OtrTheme(ThemeStore.load(this)) {
+                    Surface {
+                        UnlockScreen(onUnlocked = {
+                            lockScreen = false
+                            connection.setUiVisible(true)
+                            setContent { AppRoot() }
+                        })
+                    }
+                }
+            }
+            return
+        }
         setContent {
             AppRoot()
         }
@@ -462,7 +517,7 @@ class MainActivity : ComponentActivity() {
                     jid = "",
                     onBack = { selectTab(MainTab.CHATS) },
                     showBack = false,
-                    account = { ChangePasswordSection(connection) },
+                    account = { ChangePasswordSection(connection); AppLockSection(onLockNow = ::lockNow) },
                 )
             }
         } else {

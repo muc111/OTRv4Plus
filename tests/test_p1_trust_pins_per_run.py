@@ -414,7 +414,7 @@ def test_android_passes_its_own_trust_vault_and_whether_it_keeps_records():
                             "bridge/ChaquopyOtrCore.kt"), encoding="utf-8").read()
     call = src[src.index("KeystoreVault.open(appContext, KeystoreVault.TRUST)"):]
     call = call[:call.index("\n            }")]
-    assert '"use_trust_store"' in call and '"for_android", trust, trust is KeystoreVault' in call
+    assert '"use_trust_store"' in call and '"for_android", trust, KeystoreVault.isKeystore(trust)' in call
 
 
 def test_the_desktop_host_keeps_trust(home, monkeypatch):
