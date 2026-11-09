@@ -152,7 +152,20 @@ class GroupCallBridge:
             "paused": bool(self.calls.paused) if active == room else False,
             "participants": self.calls.participants(room),
             "ringing_from": ringing[0]["from"] if ringing else "",
+            "mic_silent": active == room and self._mic_silent(),
         }
+
+    def _mic_silent(self) -> bool:
+        """Our microphone is sending only silence (muted outside the app?)
+        while we are not paused: the screens say so (MIC_SILENT_WARN)."""
+        media = self._media
+        if media is None or self.calls.paused:
+            return False
+        try:
+            import otrv4plus_groupcall as _gc
+            return media.mic_silent_seconds() >= _gc.MIC_SILENT_WARN
+        except Exception:
+            return False
 
     def shutdown(self) -> None:
         self.hangup()
@@ -201,6 +214,7 @@ class GroupCallBridge:
     # -- the receive watchdog -------------------------------------------------
 
     def _reset_watch(self) -> None:
+        self._mic_traced = False
         self._seen = {}
         self._reopens = 0
         self._reopened_at = 0.0
@@ -227,7 +241,13 @@ class GroupCallBridge:
 
     def _watch(self, media: Any) -> None:
         room = self.calls.active()
-        if room is None or self._reopening:
+        if room is None:
+            return
+        if not getattr(self, "_mic_traced", False) and self._mic_silent():
+            # Once a call: the report then says why the others heard nothing.
+            self._mic_traced = True
+            _TRACE.record("group_call", "mic_silent", "warning")
+        if self._reopening:
             return
         now = time.monotonic()
         silent = self.silent_participants(room, media, now)

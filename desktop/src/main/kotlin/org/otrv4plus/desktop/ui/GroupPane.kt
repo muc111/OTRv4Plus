@@ -68,7 +68,8 @@ fun GroupBar(model: AppModel, room: String) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                verticalArrangement = Arrangement.spacedBy(6.dp)) {
             when {
-                call.inCall -> Row(verticalAlignment = Alignment.CenterVertically) {
+                call.inCall -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(if (call.paused) Icons.Filled.MicOff else Icons.Filled.Call, null)
                     Spacer(Modifier.width(10.dp))
                     Text(if (call.paused) "In the group call (paused: nobody hears you)"
@@ -86,6 +87,12 @@ fun GroupBar(model: AppModel, room: String) {
                         Icon(Icons.Filled.CallEnd, null, Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp)); Text("Hang up")
                     }
+                  }
+                  if (call.micSilent && !call.paused) {
+                      Text(org.otrv4plus.android.bridge.MIC_SILENT_TEXT,
+                           color = MaterialTheme.colorScheme.error,
+                           style = MaterialTheme.typography.bodySmall)
+                  }
                 }
                 call.ringingFrom.isNotEmpty() -> Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Filled.Call, null)

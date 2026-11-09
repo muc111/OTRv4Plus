@@ -472,6 +472,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
             inCall = v["in_call"].flag(), paused = v["paused"].flag(),
             participants = (v["participants"] as? JsonArray).orEmpty().map { it.asStr() },
             ringingFrom = v.str("ringing_from"),
+            micSilent = v["mic_silent"].flag(),
         )
     }
 

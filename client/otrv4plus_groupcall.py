@@ -29,15 +29,40 @@ Nothing here touches a key. Keys, nonces and the replay window are in
 from __future__ import annotations
 
 import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
+import array
 import asyncio
 import collections
 import secrets
 import socket
+import sys
 import threading
 import time
 from typing import Any, Callable, Deque, Dict, Optional
 
 import otrv4plus_voice as _voice
+
+#: A captured frame whose loudest sample is at or below this (about
+#: -66 dBFS) carries nothing. A live microphone in a quiet room is well above
+#: it; a muted one -- the laptop's mic key, the system mixer, Android's
+#: microphone privacy toggle -- delivers zeros, which the call still encodes
+#: and sends, so nothing else notices (owner, 2026-11-09: "mic was off on
+#: laptop, had to test a second time").
+MIC_SILENT_PEAK = 16
+#: Seconds of nothing but such frames before the user is told.
+MIC_SILENT_WARN = 5.0
+
+
+def frame_peak(raw: bytes) -> int:
+    """The largest absolute 16-bit sample in little-endian PCM [raw]."""
+    samples = array.array("h")
+    samples.frombytes(bytes(raw[: len(raw) // 2 * 2]))
+    if samples.itemsize != 2:                                # pragma: no cover
+        return 0
+    if sys.byteorder == "big":                               # pragma: no cover
+        samples.byteswap()
+    if not samples:
+        return 0
+    return max(max(samples), -min(samples))
 import otrv4plus_audio as _audio
 import otrv4plus_mediapath as _mediapath
 from android_bridge.group_call import mix
@@ -221,6 +246,9 @@ class GroupCallMedia:
         #: member -> monotonic time their last frame arrived (the watchdog's
         #: evidence that a leg of the call is alive; see GroupCallBridge).
         self._heard_at: Dict[str, float] = {}
+        #: When the microphone last gave a frame with any sound in it
+        #: (monotonic), 0 if never: see mic_silent_seconds.
+        self._mic_live_at = 0.0
 
     def describe(self) -> Dict[str, Any]:
         """Counters and the audio devices, for diagnostics (no addresses)."""
@@ -234,7 +262,20 @@ class GroupCallMedia:
         out["playback"] = getattr(self._playback, "name", "") or ""
         out["capture"] = getattr(self._capture, "name", "") or ""
         out["usage"] = getattr(self._playback, "usage", "")
+        out["mic_silent_s"] = int(self.mic_silent_seconds())
         return out
+
+    def mic_silent_seconds(self, now: Optional[float] = None) -> float:
+        """How long the microphone has given only silence (MIC_SILENT_PEAK),
+        counted from the start of capture when it never gave sound; 0 while
+        not capturing."""
+        if not self._running:
+            return 0.0
+        started = getattr(self, "_started", 0.0)
+        since = self._mic_live_at or started
+        if not since:
+            return 0.0
+        return max(0.0, (time.monotonic() if now is None else now) - since)
 
     @property
     def destination(self) -> str:
@@ -400,6 +441,11 @@ class GroupCallMedia:
             if not raw or self._calls is None:
                 continue
             self.stats["captured"] += 1
+            try:
+                if frame_peak(raw) > MIC_SILENT_PEAK:
+                    self._mic_live_at = time.monotonic()
+            except Exception:
+                self._mic_live_at = time.monotonic()      # unknown: never warn
             # Levelled before Opus, as in a 1:1 call: the encoder spends its
             # bits on what it is given, so a quiet microphone amplified at
             # the far end amplifies the coding noise with it.

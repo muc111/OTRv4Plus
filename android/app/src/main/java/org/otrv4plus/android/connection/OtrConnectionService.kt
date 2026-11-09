@@ -316,7 +316,9 @@ class OtrConnectionService : Service() {
     private fun lockApp(restartUi: Boolean) {
         runCatching { core.note("service", "app_lock", "info", "locking: signing out first") }
         stopConnection(explicit = true, stopRouter = true)
-        teardown.launch {
+        // On the service's own scope: `teardown` carries teardown and nothing
+        // else, and the process ends at the bottom of this anyway.
+        scope.launch {
             kotlinx.coroutines.withTimeoutOrNull(LOCK_TEARDOWN_MS) { pendingTeardown?.join() }
             runCatching { ServiceCompat.stopForeground(this@OtrConnectionService,
                                                       ServiceCompat.STOP_FOREGROUND_REMOVE) }

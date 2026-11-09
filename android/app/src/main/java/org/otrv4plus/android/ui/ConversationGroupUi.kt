@@ -480,6 +480,11 @@ internal fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                         }
                         Button(onClick = { model.hangupGroupCall(jid) }) { Text("Hang up") }
                     }
+                    if (callState.micSilent && !callState.paused) {
+                        Text(org.otrv4plus.android.bridge.MIC_SILENT_TEXT,
+                             style = MaterialTheme.typography.bodySmall,
+                             color = MaterialTheme.colorScheme.error)
+                    }
                 }
                 callState.ringingFrom.isNotEmpty() -> {
                     Text("${callState.ringingFrom} is calling the group",

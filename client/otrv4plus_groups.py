@@ -813,8 +813,28 @@ class TermuxGroups:
                         "device (deleted, left or removed)." % was[:64])
             self._hangup()
             return
+        self._warn_mic_silent()
         if self._media is not None:
             self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
+
+    def _warn_mic_silent(self) -> None:
+        """Say once per call that our microphone sends only silence (muted
+        outside the client), unless we paused it ourselves."""
+        media = self._media
+        if media is None or getattr(self._calls, "paused", False):
+            return
+        try:
+            import otrv4plus_groupcall as _gc
+            silent = media.mic_silent_seconds() >= _gc.MIC_SILENT_WARN
+        except Exception:
+            return
+        if silent and not getattr(self, "_mic_warned", False):
+            self._mic_warned = True
+            self._print("[group call] your microphone is sending silence, so nobody "
+                        "hears you. Is it muted? (pactl set-source-mute "
+                        "@DEFAULT_SOURCE@ 0, or the laptop's mic key)")
+        elif not silent:
+            self._mic_warned = False
 
     # -- verification progress ------------------------------------------------
 

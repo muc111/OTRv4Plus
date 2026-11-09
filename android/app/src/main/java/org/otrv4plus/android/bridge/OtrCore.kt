@@ -958,7 +958,15 @@ data class GroupCallState(
     val participants: List<String> = emptyList(),
     /** Who is ringing the group, or "". */
     val ringingFrom: String = "",
+    /** In the call, not paused, and our microphone has sent only silence
+     *  for a few seconds: muted outside the app (otrv4plus_groupcall). */
+    val micSilent: Boolean = false,
 )
+
+/** What the call screens say when [GroupCallState.micSilent]. */
+const val MIC_SILENT_TEXT = "Your microphone is sending silence, so nobody hears you. It may " +
+    "be muted in the sound settings, by a microphone mute key or switch, or by the phone's " +
+    "microphone access toggle."
 
 data class RoomOutcome(
     val ok: Boolean,

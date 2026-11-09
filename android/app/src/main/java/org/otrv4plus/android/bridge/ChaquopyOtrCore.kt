@@ -684,6 +684,7 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             paused = flag(value, "paused"),
             participants = people,
             ringingFrom = entry(value, "ringing_from"),
+            micSilent = flag(value, "mic_silent"),
         )
     }
 
