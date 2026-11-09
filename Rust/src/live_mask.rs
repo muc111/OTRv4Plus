@@ -265,11 +265,11 @@ impl Core {
                 }
             }
             fft(&mut sre, &mut sim, true);
-            for k in 0..N {
-                // fft's inverse divides by N, so N puts it back; Hann
-                // analysis and synthesis at 75 % overlap sum to 1.5.
-                self.accum[k] += 2.0 * self.window[k] * sre[k] * N as f64
-                    / ((N / 2) as f64 * OSAMP as f64 * 1.5);
+            // fft's inverse divides by N, so N puts it back; Hann analysis
+            // and synthesis at 75 % overlap sum to 1.5.
+            let scale = 2.0 * N as f64 / ((N / 2) as f64 * OSAMP as f64 * 1.5);
+            for ((acc, w), v) in self.accum.iter_mut().zip(&self.window).zip(&sre) {
+                *acc += w * v * scale;
             }
         }
 
@@ -414,12 +414,13 @@ impl LiveVoiceMask {
 
     /// Mask little-endian 16-bit mono PCM at 24 kHz.
     fn process<'py>(&mut self, py: Python<'py>, pcm: &[u8]) -> PyResult<Bound<'py, PyBytes>> {
-        if pcm.len() % 2 != 0 {
+        if !pcm.len().is_multiple_of(2) {
             return Err(PyValueError::new_err("PCM must be whole 16-bit samples"));
         }
-        let mut input: Vec<f64> = pcm
-            .chunks_exact(2)
-            .map(|b| i16::from_le_bytes([b[0], b[1]]) as f64 / 32768.0)
+        let (samples, _) = pcm.as_chunks::<2>();
+        let mut input: Vec<f64> = samples
+            .iter()
+            .map(|b| i16::from_le_bytes(*b) as f64 / 32768.0)
             .collect();
         let core = &mut self.core;
         let mut output = py.detach(|| core.process(&input));
@@ -501,8 +502,7 @@ mod tests {
         let ac = |lag: usize| tail.iter().zip(&tail[lag..]).map(|(a, b)| a * b).sum::<f64>();
         let peak = (lo..=hi).map(ac).fold(f64::MIN, f64::max);
         let best = (lo..=hi)
-            .filter(|&l| ac(l) >= 0.9 * peak && ac(l) >= ac(l - 1) && ac(l) >= ac(l + 1))
-            .next()
+            .find(|&l| ac(l) >= 0.9 * peak && ac(l) >= ac(l - 1) && ac(l) >= ac(l + 1))
             .unwrap();
         RATE / best as f64
     }
@@ -512,7 +512,8 @@ mod tests {
     fn envelope_of(x: &[f64]) -> Vec<f64> {
         let mut magn = vec![0.0; BINS];
         let tail = &x[x.len() - 12_000..];
-        for start in (0..=tail.len() - N).step_by(HOP) {
+        let mut start = 0;
+        while start + N <= tail.len() {
             let mut re: Vec<f64> = tail[start..start + N].iter().enumerate()
                 .map(|(k, v)| v * (0.5 - 0.5 * (2.0 * PI * k as f64 / N as f64).cos())).collect();
             let mut im = vec![0.0; N];
@@ -520,6 +521,7 @@ mod tests {
             for k in 0..BINS {
                 magn[k] += re[k].hypot(im[k]);
             }
+            start += HOP;
         }
         log_envelope(&magn)
     }
