@@ -478,6 +478,7 @@ internal fun GroupVerifyAndCallBar(model: ChatViewModel, jid: String) {
                         OutlinedButton(onClick = { model.pauseGroupCall(jid) }) {
                             Text(if (callState.paused) "Resume" else "Pause")
                         }
+                        VoiceMaskButton(model)
                         Button(onClick = { model.hangupGroupCall(jid) }) { Text("Hang up") }
                     }
                     if (callState.micSilent && !callState.paused) {

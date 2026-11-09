@@ -322,6 +322,9 @@ private fun CallBar(model: AppModel, jid: String) {
             if (phase.canAnswer) {
                 Button(onClick = { model.answer(jid) }) { Text("Answer") }
                 Spacer(Modifier.width(8.dp))
+            } else {
+                VoiceMaskButton(model)
+                Spacer(Modifier.width(8.dp))
             }
             if (phase.canEnd) {
                 Button(onClick = { model.hangUp(jid) },
@@ -926,5 +929,19 @@ private fun DeniableButton(model: AppModel, jid: String) {
             },
             dismissButton = { TextButton(onClick = { asking = false }) { Text("Cancel") } },
         )
+    }
+}
+
+/**
+ * "Mask my voice": on, your voice in calls is disguised (a low voice
+ * raised, a high one lowered, words kept clear, a new disguise each call).
+ * Remembered; the same switch for 1:1 and group calls.
+ */
+@Composable
+internal fun VoiceMaskButton(model: AppModel) {
+    if (model.voiceMask) {
+        FilledTonalButton(onClick = { model.voiceMask = false }) { Text("\uD83C\uDFAD Voice masked") }
+    } else {
+        OutlinedButton(onClick = { model.voiceMask = true }) { Text("\uD83C\uDFAD Mask my voice") }
     }
 }

@@ -515,6 +515,12 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** "Mask my voice" in live calls, applied at once. */
+    fun setVoiceMask(on: Boolean) {
+        val core = this.core ?: return
+        viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { core.setVoiceMask(on) } } }
+    }
+
     fun pauseGroupCall(room: String) {
         groupCall("Pausing", onOk = { refreshGroupState(room) }) { it.pauseGroupCall() }
     }

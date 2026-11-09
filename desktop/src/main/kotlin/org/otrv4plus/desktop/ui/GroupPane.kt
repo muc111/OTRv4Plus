@@ -80,6 +80,8 @@ fun GroupBar(model: AppModel, room: String) {
                         Text(if (call.paused) "Resume" else "Pause")
                     }
                     Spacer(Modifier.width(8.dp))
+                    VoiceMaskButton(model)
+                    Spacer(Modifier.width(8.dp))
                     Button(onClick = { model.hangupGroupCall() },
                            colors = ButtonDefaults.buttonColors(
                                containerColor = MaterialTheme.colorScheme.error,

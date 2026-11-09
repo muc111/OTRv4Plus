@@ -232,6 +232,9 @@ class GroupCallMedia:
         # and gain on the mix before the speaker.
         self._mic_comp = _audio.make_mic_compressor()
         self._mic_gain = _audio.make_mic_gain()
+        #: "Mask my voice" (otrv4plus_audio.LiveMasker): after levelling,
+        #: before Opus, so the real voice never leaves this device.
+        self._masker = _audio.LiveMasker()
         self._clarity = _audio.make_speech_clarity()
         self._speaker_comp = _audio.make_speaker_compressor()
         self._speaker_gain = _audio.make_speaker_gain()
@@ -453,6 +456,7 @@ class GroupCallMedia:
                 pcm = self._mic_gain.process(self._mic_comp.process(raw))
             except Exception:
                 pcm = raw
+            pcm = self._masker.process(pcm)
             try:
                 encoded = self._encoder.encode(bytes(pcm), _voice.VOICE_FRAME_SAMPLES)
             except Exception:

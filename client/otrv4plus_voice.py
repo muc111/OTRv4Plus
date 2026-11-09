@@ -457,6 +457,10 @@ class VoiceCallSession:
         # a quiet, thin call regardless of the codec settings.
         self._mic_gain = _audio.make_mic_gain()
         self._speaker_gain = _audio.make_speaker_gain()
+        #: "Mask my voice" (otrv4plus_audio.LiveMasker): after levelling,
+        #: before Opus, so the real voice never leaves this device. One per
+        #: call: each call draws its own mask.
+        self._masker = _audio.LiveMasker()
         # Compression before gain. Peak gain cannot make a call loud: speech
         # has a 12-18 dB crest factor, so playback measured 24422 of 32767 --
         # 2.5 dB from full scale -- and was still described as barely
@@ -1476,6 +1480,7 @@ class VoiceCallSession:
             # at the far end amplifies the coding noise with it.
             _t_stage = time.monotonic()
             pcm = self._mic_gain.process(self._mic_comp.process(raw))
+            pcm = self._masker.process(pcm)
             opus_frame = None
             try:
                 opus_frame = bytearray(

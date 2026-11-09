@@ -126,6 +126,8 @@ class AppModel(
                 screen = Screen.FAILED
                 return@launch
             }
+            // "Mask my voice", as the user left it.
+            withContext(Dispatchers.IO) { runCatching { core.setVoiceMask(voiceMask) } }
             // U1: no fingerprint before a login succeeds -- the engine would
             // not give one, and none is asked for.
             fingerprint = ""
@@ -1325,6 +1327,23 @@ class AppModel(
                 .putBoolean(SOUNDS_KEY, value) }
         }
 
+    /**
+     * "Mask my voice" in calls (1:1 and group): a low voice raised, a high
+     * one lowered, a new disguise each call. One boolean in the user's Java
+     * preferences.
+     */
+    private var voiceMaskState by mutableStateOf(
+        runCatching { java.util.prefs.Preferences.userNodeForPackage(AppModel::class.java)
+            .getBoolean(VOICE_MASK_KEY, false) }.getOrDefault(false))
+    var voiceMask: Boolean
+        get() = voiceMaskState
+        set(value) {
+            voiceMaskState = value
+            runCatching { java.util.prefs.Preferences.userNodeForPackage(AppModel::class.java)
+                .putBoolean(VOICE_MASK_KEY, value) }
+            ui.launch(Dispatchers.IO) { runCatching { core.setVoiceMask(value) } }
+        }
+
     fun allowGroupAutoJoin(allowed: Boolean) {
         groupAutoJoin = allowed
         ui.launch { withContext(Dispatchers.IO) { core.setGroupCallAutoJoin(allowed) } }
@@ -1540,6 +1559,7 @@ class AppModel(
         const val TICK_MS = 500L
         const val AUTO_RETRY_MS = 45_000L
         const val SOUNDS_KEY = "sounds"
+        const val VOICE_MASK_KEY = "voice_mask"
     }
 }
 

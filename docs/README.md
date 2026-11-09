@@ -16,6 +16,7 @@ records: they describe the code as it was when they were written.
 - [TRANSPORT_POLICY.md](TRANSPORT_POLICY.md): which networks carry what
 - [VOICE_MEDIA_PATH.md](VOICE_MEDIA_PATH.md), [VOICE_LATENCY_BUDGET.md](VOICE_LATENCY_BUDGET.md): calls over I2P
 - [VOICE_NOTES.md](VOICE_NOTES.md): voice notes and the synthetic voice
+- [VOICE_MASK_CALLS.md](VOICE_MASK_CALLS.md): the "Mask my voice" button in calls
 - [TRADE.md](TRADE.md): the Monero courier
 - [FEATURES.md](FEATURES.md), [ROADMAP.md](ROADMAP.md), [WHY.md](WHY.md)
 

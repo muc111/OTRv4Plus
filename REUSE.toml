@@ -104,6 +104,7 @@ path = [
     "docs/VOICE_LATENCY_BUDGET.md",
     "docs/VOICE_MEDIA_PATH.md",
     "docs/VOICE_NOTES.md",
+    "docs/VOICE_MASK_CALLS.md",
     "docs/VOICE_PATH_INVESTIGATION.md",
     "docs/VOICE_SOAK_TEST.md",
     "docs/WHY.md",

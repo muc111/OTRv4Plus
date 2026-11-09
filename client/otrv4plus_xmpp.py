@@ -2876,6 +2876,7 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
             "  /mute                toggle microphone mute\n"
             "  /calls               show voice call state and frame counters\n"
             "  /audiotest           test the speaker (a tone) and the microphone\n"
+            "  /mask [on|off]       disguise your voice in calls (toggles)\n"
             "  /audioprobe          test each audio backend on this device\n"
             "  /sendfile [path]     send a file (encrypted, verified peer; in a\n"
             "                       group, to the group). Asks y/n to remove\n"
@@ -3468,6 +3469,20 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
                              daemon=True).start()
         elif lstrip == "/audiotest":
             asyncio.ensure_future(_termux._audio_selftest_async(voice_available))
+        elif lstrip in ("/mask", "/mask on", "/mask off"):
+            # "Mask my voice": live calls, 1:1 and group, at once
+            # (otrv4plus_audio.LiveMasker; Rust live_mask.rs).
+            import otrv4plus_audio as _aud
+            if not _aud.live_mask_available():
+                print("[voice] voice masking is not in this build's Rust core")
+                return True
+            on = {"/mask on": True, "/mask off": False}.get(lstrip, not _aud.live_mask_on())
+            _aud.set_live_mask(on)
+            print("[voice] voice mask %s" % (
+                "ON: your voice is disguised in calls (low voices go up, high voices "
+                "go down; a new mask each call). You are silent for the first moment "
+                "of speech while it finds your pitch. It hides who you sound like, "
+                "not what you say." if on else "off: calls carry your own voice"))
         else:
             return False
         return True

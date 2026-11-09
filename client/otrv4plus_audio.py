@@ -2580,3 +2580,74 @@ class Ringer:
         if remove:
             self._spawn([remove, self._notif_id])
         self._reap_helpers()
+
+
+# ── Voice masking for live calls (Rust live_mask.rs) ────────────────────────
+#
+# Owner, 2026-11-09: "we must clearly understand the person speaking but
+# can't identify who ... keep it simple for a user to cloak voice in
+# realtime, add a button". One switch, read by every call's capture loop on
+# every frame, so the button takes effect at once. The mask itself (pitch
+# and formants moved together, a low voice up and a high one down, random
+# per call) is Rust's; nothing about it is chosen, kept or logged here.
+
+_LIVE_MASK = {"on": False}
+
+
+def set_live_mask(on: bool) -> None:
+    """The "Mask my voice" switch (apps: OtrApp.set_voice_mask; /mask)."""
+    _LIVE_MASK["on"] = bool(on)
+
+
+def live_mask_on() -> bool:
+    return _LIVE_MASK["on"]
+
+
+def live_mask_available() -> bool:
+    """Whether this build's Rust core has the live mask."""
+    try:
+        import otrv4_core
+        return hasattr(otrv4_core, "LiveVoiceMask")
+    except Exception:
+        return False
+
+
+class LiveMasker:
+    """One call's voice mask, between the microphone levelling and Opus.
+
+    Passes audio through while the switch is off. While it is on, returns
+    the masked audio -- or SILENCE when masking cannot run (a core without
+    it, an error) or is still finding which way to move the voice: a user
+    who asked to be masked is never sent their real voice. The mask is made
+    on first use in the call, so each call draws its own.
+    """
+
+    def __init__(self):
+        self._mask = None
+        self.failed = False
+
+    @property
+    def active(self) -> bool:
+        return _LIVE_MASK["on"]
+
+    @property
+    def ready(self) -> bool:
+        """Masked audio is coming out (not the start-of-call silence)."""
+        return self._mask is not None and bool(getattr(self._mask, "ready", False))
+
+    def process(self, pcm) -> bytearray:
+        if not _LIVE_MASK["on"]:
+            return pcm
+        silent = bytearray(len(pcm))
+        if self._mask is None:
+            try:
+                import otrv4_core
+                self._mask = otrv4_core.LiveVoiceMask()
+            except Exception:
+                self.failed = True
+                return silent
+        try:
+            return bytearray(self._mask.process(bytes(pcm)))
+        except Exception:
+            self.failed = True
+            return silent

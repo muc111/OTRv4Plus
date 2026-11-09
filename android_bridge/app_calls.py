@@ -260,6 +260,23 @@ class CallsMixin:
         _TRACE.record("diag", "debug_logging", "info", on=on)
         return True
 
+    def set_voice_mask(self, on: bool) -> Dict[str, Any]:
+        """The "Mask my voice" switch for live calls, 1:1 and group, taking
+        effect at once (otrv4plus_audio.LiveMasker, Rust live_mask.rs).
+        Returns voice_mask_state(). Does not import otrv4plus_voice."""
+        import otrv4plus_audio as _aud
+        _aud.set_live_mask(bool(on))
+        _TRACE.record("calls", "voice_mask", "info", on=bool(on))
+        return self.voice_mask_state()
+
+    def voice_mask_state(self) -> Dict[str, Any]:
+        """{"on": the switch, "available": this build can mask}."""
+        try:
+            import otrv4plus_audio as _aud
+            return {"on": _aud.live_mask_on(), "available": _aud.live_mask_available()}
+        except Exception:
+            return {"on": False, "available": False}
+
     def poll_calls(self) -> None:
         """Emit an event for any call whose state moved.
 

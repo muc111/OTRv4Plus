@@ -157,6 +157,8 @@ APP_OPS: Dict[str, tuple] = {
     "answer_call": ("peer",),
     "end_call": ("peer",),
     "voice_unavailable_reason": (),
+    "set_voice_mask": ("on",),
+    "voice_mask_state": (),
     "send_file": ("peer", "path", "strip_metadata"),
     "inspect_file": ("path",),
     "voice_note_modes": (),

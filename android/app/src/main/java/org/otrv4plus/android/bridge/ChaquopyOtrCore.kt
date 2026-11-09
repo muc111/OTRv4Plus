@@ -148,6 +148,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             // does not force the voice stack to load -- it only sets the flag
             // the module reads when the first call imports it.
             runCatching { app?.callAttr("set_debug_logging", BuildConfig.DEBUG) }
+            // "Mask my voice", as the user left it (VoiceMaskPref).
+            runCatching { app?.callAttr("set_voice_mask", VoiceMaskPref.on(appContext)) }
 
             InitResult(
                 ok = report.callAttr("get", "ok").toBoolean(),
@@ -1510,6 +1512,16 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             requireApp().callAttr("end_call", peer).toString()
         }.getOrDefault(CallOutcome.UNAVAILABLE)
 
+    /**
+     * "Mask my voice" for live calls, 1:1 and group, at once (Rust
+     * live_mask.rs through otrv4plus_audio). Returns whether this build can
+     * mask at all.
+     */
+    fun setVoiceMask(on: Boolean): Boolean = runCatching {
+        val state = requireApp().callAttr("set_voice_mask", on)
+        state.callAttr("get", "available")?.toBoolean() == true
+    }.getOrDefault(false)
+
     /** This peer's call state, read from the live session. */
     fun callState(peer: String): CallState =
         runCatching {
@@ -1920,5 +1932,22 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         OtrBridgeException.codeFromMessage(t.message)?.let { return it }
         val name = t.javaClass.simpleName
         return if (name.isBlank()) "bridge_error" else name
+    }
+}
+
+/**
+ * The "Mask my voice" choice, remembered between runs: one boolean in the
+ * app's private preferences, nothing about any call or contact.
+ */
+object VoiceMaskPref {
+    private const val PREFS = "voice_mask"
+    private const val KEY = "on"
+
+    fun on(context: android.content.Context): Boolean =
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE).getBoolean(KEY, false)
+
+    fun set(context: android.content.Context, on: Boolean) {
+        context.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY, on).apply()
     }
 }

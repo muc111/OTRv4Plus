@@ -451,6 +451,12 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun setGroupCallAutoJoin(allowed: Boolean) =
         controller("set_group_call_auto_join", "allowed" to allowed)
 
+    /** "Mask my voice" in live calls (Rust live_mask.rs), at once. Returns
+     *  whether this build can mask. */
+    fun setVoiceMask(on: Boolean): Boolean = runCatching {
+        (call("set_voice_mask", "on" to on) as? JsonObject)?.get("available").asBool()
+    }.getOrDefault(false)
+
     /** Who is verified in [room], and a verification someone started. */
     fun groupVerifyState(room: String): GroupVerifyState {
         val v = controller("group_verify_state", "room" to room).value as? JsonObject
