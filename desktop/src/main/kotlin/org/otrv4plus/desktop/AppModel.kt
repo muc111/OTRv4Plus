@@ -908,6 +908,32 @@ class AppModel(
         }
     }
 
+    // -- diagnostic report (owner, 2026-11-09: "I don't know how to export log
+    //    from it") -----------------------------------------------------------------
+
+    /** Where the last report went, or why it did not; null before the first. */
+    var reportStatus by mutableStateOf<String?>(null)
+        private set
+
+    /**
+     * Save the redacted diagnostic report to ~/Downloads (or the home folder
+     * when there is none) as otrv4plus-log-<time>.txt, readable by this user
+     * only. The same file and name as the phones', so the three can be read
+     * side by side.
+     */
+    fun saveDiagnosticReport() {
+        ui.launch {
+            reportStatus = "Saving…"
+            reportStatus = withContext(Dispatchers.IO) {
+                val version = AppModel::class.java.`package`?.implementationVersion ?: "dev"
+                val text = core.diagnosticReport(version)
+                runCatching { writeReport(text).absolutePath }
+                    .map { "Saved to $it" }
+                    .getOrElse { "Could not save the report (${it.javaClass.simpleName})." }
+            }
+        }
+    }
+
     // -- change password (owner, 2026-10-16) -------------------------------------
 
     var passwordStatus by mutableStateOf<String?>(null)
@@ -1515,4 +1541,24 @@ class AppModel(
         const val AUTO_RETRY_MS = 45_000L
         const val SOUNDS_KEY = "sounds"
     }
+}
+
+/** The folder a saved report goes to: ~/Downloads when it exists, else ~. */
+internal fun reportDirectory(home: java.io.File =
+                                 java.io.File(System.getProperty("user.home") ?: ".")): java.io.File =
+    java.io.File(home, "Downloads").takeIf { it.isDirectory } ?: home
+
+/** Write [text] as otrv4plus-log-<yyyyMMdd-HHmmss>.txt, owner-only (0600). */
+internal fun writeReport(text: String, dir: java.io.File = reportDirectory()): java.io.File {
+    val stamp = java.time.LocalDateTime.now()
+        .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"))
+    val file = java.io.File(dir, "otrv4plus-log-$stamp.txt")
+    val path = file.toPath()
+    val ownerOnly = java.nio.file.attribute.PosixFilePermissions.fromString("rw-------")
+    runCatching {
+        java.nio.file.Files.createFile(path,
+            java.nio.file.attribute.PosixFilePermissions.asFileAttribute(ownerOnly))
+    }.getOrElse { if (it !is UnsupportedOperationException) throw it; file.createNewFile() }
+    file.writeText(text, Charsets.UTF_8)
+    return file
 }

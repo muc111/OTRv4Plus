@@ -216,7 +216,8 @@ class TestTheOperationsAreTheEngines:
                                 "desktop", "engine", "DesktopCore.kt")).read()
         used = set(re.findall(r'(?:call|controller)\("([a-z_]+)"', src))
         known = set(H.CONTROLLER_OPS) | set(H.APP_OPS) | {"prepare", "connect", "status",
-                                                          "wipe", "wipe_crypto"}
+                                                          "wipe", "wipe_crypto",
+                                                          "diagnostic_report"}
         assert used and used <= known, used - known
 
 

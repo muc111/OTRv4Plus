@@ -359,6 +359,20 @@ fun SettingsPane(model: AppModel, onWipe: () -> Unit) {
                 }
             }
         }
+        Section("Diagnostics") {
+            Text("Saves the error log -- connection steps, call and audio statistics, error " +
+                 "codes -- to a text file you can send. It holds no keys, passwords or messages; " +
+                 "every account, contact and address is replaced with a label such as user-A.",
+                 style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.padding(4.dp))
+            OutlinedButton(onClick = { model.saveDiagnosticReport() }) { Text("Save diagnostic report") }
+            model.reportStatus?.let {
+                SelectionContainer {
+                    Text(it, style = MaterialTheme.typography.bodySmall,
+                         color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
         Section("How this app is built") {
             Text("This window holds no keys. Every key, cipher and proof is in the Rust core " +
                  "(otrv4_core), inside a separate engine process; this window sends it commands " +

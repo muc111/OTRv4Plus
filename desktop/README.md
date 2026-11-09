@@ -140,6 +140,17 @@ settings in `~/.otrv4plus` stay. Switch branch with
 For I2P the router must be running: `sudo systemctl enable --now i2pd`.
 CI runs the same script on a clean Ubuntu 24.04 (`desktop.yml`, `install`).
 
+## Sending a diagnostic report
+
+**Settings → Diagnostics → Save diagnostic report** writes
+`~/Downloads/otrv4plus-log-<date>-<time>.txt` (or the home folder when there
+is no Downloads), readable by you only. It is the same redacted report the
+Android app's "Save error log" writes: connection steps, call and audio
+statistics, and error codes. It contains no keys, passwords or messages, and
+every account, contact and address is replaced with a label such as `user-A`.
+The event history is held in memory only, so save the report before you
+close the app.
+
 ## Build and run
 
 ```sh

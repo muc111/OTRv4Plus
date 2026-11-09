@@ -285,6 +285,8 @@ class Host:
             if op == "wipe":
                 self._stop.set()
             return result
+        if op == "diagnostic_report":
+            return self.diagnostic_report(str(args.get("app_version", "")))
         if op in CONTROLLER_OPS:
             if self.controller is None:
                 raise _Coded("not_prepared")
@@ -294,6 +296,34 @@ class Host:
             return plain(getattr(self.app, op)(
                 *[args[a] for a in APP_OPS[op] if a in args]))
         raise _Coded("unknown_op")
+
+    def diagnostic_report(self, app_version: str = "") -> str:
+        """The same redacted report the phones save (android_bridge.report).
+
+        Answered before sign-in too: a report is wanted most when connecting
+        is what failed. The device facts are the OS and versions only -- not
+        the host name, user name or any path. Never raises.
+        """
+        device = desktop_device_info(app_version)
+        ctl = self.controller
+        if ctl is not None:
+            try:
+                return str(ctl.diagnostic_report(device))
+            except Exception as exc:          # noqa: BLE001
+                return ("OTRv4+ diagnostic report\n\nThe report could not be "
+                        "built (%s).\n" % type(exc).__name__)
+        try:
+            from android_bridge import report as _report
+            from android_bridge.diagnostics import collect
+            try:
+                environment = collect(include_selftest=False)
+            except Exception:                 # noqa: BLE001
+                environment = None
+            return _report.build(status={"stage": "idle", "connected": False},
+                                 device=device, environment=environment)
+        except Exception as exc:              # noqa: BLE001
+            return ("OTRv4+ diagnostic report\n\nThe report could not be "
+                    "built (%s).\n" % type(exc).__name__)
 
     def _run(self, rid: Any, op: str, args: Dict[str, Any]) -> None:
         try:
@@ -367,6 +397,30 @@ class _Coded(RuntimeError):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+def desktop_device_info(app_version: str = "") -> Dict[str, str]:
+    """What a desktop report says about the machine: OS family and release,
+    CPU architecture, Python and core versions. Deliberately no host name,
+    user name or path -- those identify a person, not a bug."""
+    import platform
+    info = {"host": "desktop"}
+    for key, read in (("os", platform.system), ("release", platform.release),
+                      ("machine", platform.machine),
+                      ("python", platform.python_version)):
+        try:
+            info[key] = str(read())[:80]
+        except Exception:                     # noqa: BLE001
+            info[key] = "?"
+    try:
+        import otrv4_core
+        info["core_version"] = str(getattr(otrv4_core, "__version__", "?"))[:40]
+    except Exception:                         # noqa: BLE001
+        info["core_version"] = "unavailable"
+    # The GUI's own version (its jar manifest): the first question asked of
+    # a report is whether it came from the build that was meant to be tested.
+    info["app_version"] = str(app_version or "unknown")[:40]
+    return info
 
 
 def _real_app():
