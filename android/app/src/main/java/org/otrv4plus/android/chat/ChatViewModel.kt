@@ -515,8 +515,17 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    /** "Mask my voice" in live calls, applied at once. */
-    fun setVoiceMask(on: Boolean) {
+    /** "Mask my voice" once toggled here; until then the saved choice. */
+    private var voiceMaskChoice by mutableStateOf<Boolean?>(null)
+
+    /** Whether "Mask my voice" is on (VoiceMaskPref until first toggled). */
+    fun voiceMask(context: android.content.Context): Boolean =
+        voiceMaskChoice ?: org.otrv4plus.android.bridge.VoiceMaskPref.on(context)
+
+    /** Turn "Mask my voice" on or off: remembered, and applied at once. */
+    fun setVoiceMask(context: android.content.Context, on: Boolean) {
+        voiceMaskChoice = on
+        org.otrv4plus.android.bridge.VoiceMaskPref.set(context, on)
         val core = this.core ?: return
         viewModelScope.launch { withContext(Dispatchers.IO) { runCatching { core.setVoiceMask(on) } } }
     }

@@ -539,12 +539,8 @@ fun IncomingFileDialog(model: ChatViewModel) {
 @Composable
 internal fun VoiceMaskButton(model: ChatViewModel) {
     val context = LocalContext.current
-    var on by remember { mutableStateOf(org.otrv4plus.android.bridge.VoiceMaskPref.on(context)) }
-    val toggle = {
-        on = !on
-        org.otrv4plus.android.bridge.VoiceMaskPref.set(context, on)
-        model.setVoiceMask(on)
-    }
+    val on = model.voiceMask(context)
+    val toggle = { model.setVoiceMask(context, !on) }
     if (on) {
         FilledTonalButton(onClick = toggle) { Text("\uD83C\uDFAD Masked") }
     } else {
