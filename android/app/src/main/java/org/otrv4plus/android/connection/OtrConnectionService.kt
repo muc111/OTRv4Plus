@@ -97,6 +97,38 @@ class OtrConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val reconnect = ReconnectPolicy(jitter = RECONNECT_JITTER)
 
+    /** The backoff wait, cut short when the phone wakes (RetryWait). */
+    private val retryWait = RetryWait(clock = { android.os.SystemClock.elapsedRealtime() })
+
+    /**
+     * Screen on, unlock and Doze exit. While a reconnect is waiting, any of
+     * them starts the attempt now: with the screen off Doze had stretched a
+     * 60 s wait to 7 minutes (device report 2026-11-09). Local broadcasts
+     * from the system; nothing is sent anywhere.
+     */
+    private val wakeReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val reason = when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> "screen_on"
+                Intent.ACTION_USER_PRESENT -> "unlocked"
+                android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> {
+                    val pm = getSystemService(android.os.PowerManager::class.java)
+                    if (pm?.isDeviceIdleMode == true) return
+                    "doze_exit"
+                }
+                else -> return
+            }
+            retryWait.wake(reason)
+        }
+    }
+
+    /** A network (re)appeared: the same, for a phone back in coverage. */
+    private val networkWake = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            retryWait.wake("network")
+        }
+    }
+
     /** The one core. Built on first use, never rebuilt. */
     val core: ChaquopyOtrCore by lazy { ChaquopyOtrCore(applicationContext) }
 
@@ -256,6 +288,19 @@ class OtrConnectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        runCatching {
+            val filter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+            }
+            ContextCompat.registerReceiver(this, wakeReceiver, filter,
+                                           ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
+        runCatching {
+            getSystemService(android.net.ConnectivityManager::class.java)
+                ?.registerDefaultNetworkCallback(networkWake)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -450,6 +495,11 @@ class OtrConnectionService : Service() {
         stopConnection(explicit = true, stopRouter = true)
         drainer?.cancel()
         drainer = null
+        runCatching { unregisterReceiver(wakeReceiver) }
+        runCatching {
+            getSystemService(android.net.ConnectivityManager::class.java)
+                ?.unregisterNetworkCallback(networkWake)
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -1012,7 +1062,24 @@ class OtrConnectionService : Service() {
                             reconnect.settlingDelayMs()
                         else reconnect.nextDelayMs()) ?: return
             enter(LinkPhase.RECONNECTING, "backing off ${wait}ms")
-            delay(wait)
+            // Every scheduled retry, not only the first: phase_change is
+            // recorded only when the phase changes, so a retry after a failed
+            // retry (RECONNECTING -> RECONNECTING) used to leave no trace.
+            runCatching {
+                core.note("service", "retry_scheduled", "info",
+                          "in ${wait}ms after ${failure ?: "a dropped connection"}")
+            }
+            val waited = retryWait.await(wait)
+            when {
+                waited.wokenBy != null -> runCatching {
+                    core.note("service", "retry_early", "info",
+                              "woken by ${waited.wokenBy}")
+                }
+                waited.slept -> runCatching {
+                    core.note("service", "retry_late", "warning",
+                              "${waited.lateMs / 1000}s late: the phone was asleep (Android Doze)")
+                }
+            }
         }
     }
 

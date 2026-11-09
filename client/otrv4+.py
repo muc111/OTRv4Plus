@@ -1290,7 +1290,9 @@ class I2PSAMConnection:
         if target_host.endswith(".b32.i2p"):
             return (f"Cannot resolve {target_host }: {reply }\n"
                     "That is a b32 address, so this is a router or tunnel "
-                    "problem rather than a naming one.")
+                    "problem rather than a naming one: the router could not "
+                    "find that key on the network. A router that has just "
+                    "started needs a few minutes; retrying is right.")
         return (
             f"Cannot resolve {target_host }: {reply }\n"
             f"Short .i2p names are not global the way DNS is -- the router "

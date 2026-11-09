@@ -170,6 +170,19 @@ KEEPALIVE_QUIET_S = 180
 _CANCELLED = (asyncio.CancelledError, _futures.CancelledError)
 
 
+#: NAMING LOOKUP results that, for an address dialled by its key (.b32.i2p),
+#: mean "the router could not find that destination's LeaseSet" -- not an
+#: unknown name. i2pd: INVALID_KEY; Java I2P: KEY_NOT_FOUND.
+_B32_NOT_FOUND_RESULTS = ("INVALID_KEY", "KEY_NOT_FOUND")
+
+
+def _dialled_by_key(server: str) -> bool:
+    """Whether [server] is reached at a .b32.i2p (typed, or the shipped one
+    for the project's server) rather than through an address-book name."""
+    host = (server or "").strip().lower().rstrip(".")
+    return host.endswith(".b32.i2p") or bool(_address.shipped_server_address(host))
+
+
 def _sam_failure(exc: BaseException, server: str) -> "TransportError":
     """The TransportError for a failure opening the I2P stream, by layer
     (`otrv4+.py` `SamError`), so the user is not told to restart a router that
@@ -177,6 +190,8 @@ def _sam_failure(exc: BaseException, server: str) -> "TransportError":
 
       bridge  -> sam_unavailable              the local SAM bridge
       naming  -> i2p_name_not_found           the router could not resolve the name
+                 (i2p_destination_unreachable when the address is a b32: its
+                 lookup is a network search, not an address-book one)
       session -> i2p_session_failed           the router could not build our tunnels
       stream  -> i2p_destination_unreachable  resolved, but not reachable
 
@@ -191,6 +206,22 @@ def _sam_failure(exc: BaseException, server: str) -> "TransportError":
                 "i2p_name_invalid",
                 "%s is not a valid I2P address. Use a name ending in .i2p or a "
                 "52-character .b32.i2p address." % server)
+        if result in _B32_NOT_FOUND_RESULTS and _dialled_by_key(server):
+            # A .b32.i2p -- typed, or the project's server at its shipped b32
+            # -- is never looked up in an address book: the router searches
+            # the network for that key's LeaseSet. i2pd answers INVALID_KEY
+            # when the search fails (SAM.cpp, HandleNamingLookupLeaseSet-
+            # RequestComplete), at once while a just-started router has no
+            # peers to ask. Device report 2026-11-09: three such failures in
+            # the bundled router's first 35 s, each reported as "add the
+            # server to the address book", then the fourth attempt connected.
+            return TransportError(
+                "i2p_destination_unreachable",
+                "the I2P router could not find %s on the network yet (%s). The "
+                "address is right; a router that has just started needs a few "
+                "minutes to find other routers, and a server whose I2P tunnel "
+                "is down looks the same. Nothing was looked up in DNS."
+                % (server, result))
         return TransportError(
             "i2p_name_not_found",
             "the I2P router could not resolve %s (%s). Short .i2p names come "
