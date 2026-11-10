@@ -135,4 +135,4 @@ class TestTheDesktopUsesIt:
 
 
 def test_the_desktop_build_with_the_listing_is_told_apart():
-    assert 'version = "0.14.11"' in _src("desktop", "build.gradle.kts")
+    assert 'version = "0.15.0"' in _src("desktop", "build.gradle.kts")

@@ -109,10 +109,21 @@ def test_a_file_that_does_not_match_the_lock_is_refused():
     assert r.returncode != 0 and "HASH" in (r.stdout + r.stderr).upper()
 
 
+#: The build tested on phones and a laptop, the one main holds (CHANGELOG).
+TESTED_RC = 194
+
+
 def test_builds_after_the_tested_one_say_untested():
-    """Owner, 2026-10-30: main holds rc.189, tested on devices; an APK made
-    while the remaining work is done is marked untested."""
+    """Owner, 2026-10-30: main holds the build tested on devices (rc.189,
+    then rc.194 on 2026-11-10); an APK made after it is marked untested
+    until it is tested too. So: exactly the tested build without the mark,
+    or a later one with it -- never a later one without it."""
     gradle = open(GRADLE).read()
     name = re.search(r'versionName = "([^"]+)"', gradle).group(1)
     rc = int(re.search(r"experimental\.rc\.(\d+)", name).group(1))
-    assert rc > 189 and "-untested" in name
+    if "-untested" in name:
+        assert rc > TESTED_RC
+    else:
+        assert rc == TESTED_RC, "a build after the tested one must say -untested"
+    changelog = open(os.path.join(os.path.dirname(GRADLE), "..", "..", "CHANGELOG.md")).read()
+    assert "rc.%d" % TESTED_RC in changelog[:3000]

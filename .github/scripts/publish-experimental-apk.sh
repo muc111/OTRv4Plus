@@ -130,8 +130,9 @@ ${SHOTS_MD}
 Reported from a handset: two Android 15 phones (arm64-v8a, a Pixel and a
 Xiaomi) by the project owner, against the project's server
 \`otrv4plus.i2p\`, over the **built-in I2P router** (no other I2P app
-installed), and with the Termux client. Each row says what was confirmed; a
-later regression is marked in its row. Builds since are in the next table.
+installed), with the Termux client and with the Linux desktop app. Each row
+says what was confirmed; a later regression is marked in its row. The builds
+since rc.90 are confirmed in the table after this one.
 
 | Area | What was confirmed |
 |---|---|
@@ -141,16 +142,19 @@ later regression is marked in its row. Builds since are in the next table.
 | Identity check | SMP verification, app ↔ app and app ↔ Termux |
 | Files | Encrypted file transfer, hashes checked on arrival |
 | Group files | Sending files to a secure group (confirmed rc.89) |
-| 1:1 calls | Two-way voice calls between two handsets running this app, and between this app and the Termux client. **Regressed:** over the built-in router calls stopped connecting (\`call_tunnel\`); fixed in rc.162, to be re-tested (next table) |
+| 1:1 calls | Two-way voice calls between two handsets running this app, between this app and the desktop app, and between this app and the Termux client, over the built-in router (the rc.162 fix, re-tested for rc.194) |
 | Secure groups | Post-quantum MLS groups, group messages both ways — **tested with four members** (two phones, each with the app and Termux); about 100 is the measured ceiling (see Known limits) |
 | Group check | Group verification with a shared passphrase |
-| Group calls | Two-way group voice calls (re-confirmed rc.89) |
+| Group calls | Group voice calls with **three people** — two phones and the desktop app — each hearing the other two (rc.194); five, the maximum, not yet tested |
+| Mask my voice | **Mask voice** on a call: the others hear a clearly understandable but different voice, a low voice raised and a high one lowered, a new disguise each call; works in 1:1 and group calls (rc.194) |
+| App lock | Set a passphrase, lock, unlock; auto-lock after the chosen time in the background; change it and turn it off (rc.194) |
+| Desktop echo and diagnostics | No echo from the laptop's speakers into its microphone; Settings → Diagnostics → Save diagnostic report on the desktop; "Your microphone is sending silence" when the laptop's microphone is muted (rc.194) |
 | Location | Location pins from GPS only, received as a card (rc.73; since rc.80 only to verified contacts and groups — re-confirmed rc.89) |
 | Profile picture | Setting a profile picture from a phone photo; contacts receive it (rc.89 — the server log shows both the picture and its announcement stored and delivered) |
 | Moderation | Signed in as the server admin, Delete shows on every room (rc.88); an ordinary member sees Leave only (rc.83) |
 | Voice notes | Voice notes in **My voice** and **Synthetic** (rc.81: no whistle, a random voice per note; Disguised removed) |
 | Voice note ends | Record a note and press Stop straight after your last word: it takes about two seconds longer to prepare, and when played (sent and received bubbles, phone and desktop) the last word is there in full (rc.125) |
-| Calls in the report | Make or answer a call, then Diagnostics → report: the call's steps are listed (component `call`: ringing, keys_confirmed, active or the failure and its reason), with no names or addresses (rc.126) |
+| Calls in the report | Make or answer a call, then Diagnostics → report: the call's steps are listed (component \`call\`: ringing, keys_confirmed, active or the failure and its reason), with no names or addresses (rc.126) |
 | Voice note waveform | A voice-note bubble (sent and received, phone and desktop) shows the note's waveform between Play and the length; pressing Play fills the bars in from the left as it plays, the time counts up, and the bubble goes back to Play at the end (rc.127) |
 | Clean teardown | Sign in, chat with a contact so the conversation is encrypted, then Profile → Wipe & Exit (or sign out): it completes, and opening the app again shows no old session with that contact (rc.128) |
 | Group member to 1:1 | In a secure group, open ⋯ on someone else's message: **Add to contacts** (when they are not one yet) sends them a contact request; **Message privately** opens a 1:1 chat with them. Neither appears on your own messages or in an ordinary room (rc.129) |
@@ -195,14 +199,18 @@ later regression is marked in its row. Builds since are in the next table.
 | App | Bottom bar on every main screen; the 📎 and 🎤 buttons in the composer |
 | Wipe | **Wipe & Exit, including deleting the account from the server** |
 
-## NOT verified — 🧪 built, still to be tested on phones
+## Verified since rc.90 — ✅ confirmed by the owner, 2026-11-10
 
-| Area | What to test | Since |
+Each row is how it was tested, and the build it arrived in. The owner reports
+all of them working on rc.194 (two Android 15 phones and the Linux desktop),
+except the one row in the next table.
+
+| Area | What was tested | Since |
 |---|---|---|
 | Password-protected group | Create a secure group **with a room password**, invite someone: they join without typing it (it comes with the invitation, encrypted); if it does not arrive they are **asked for it** instead of an error | rc.90 |
 | Group status and call limit | A new group reads **"Encrypted Chat \| 0/1 users verified"**; the count rises only as verification succeeds (you count once a verification you took part in succeeds); a group of **6 or more has no call button** ("Text only") | rc.84–rc.90 |
 | Signed in elsewhere | Sign in with the same account on a second device: the first shows **"Your account is also signed in on another device"**; as server admin, **Sign out other devices** ends the second session (your own stays up) | rc.91 |
-| One session per account | With `mod_otrv4plus_one_session` and `max_resources = 1` (docs/SECURITY_SESSIONS.md), sign in on a second device: it gets in, and the first says **"Signed out: this account signed in on another device"** and does **not** reconnect by itself. Drop the connection (airplane mode) and reconnect: you get straight back in | rc.95 |
+| One session per account | With \`mod_otrv4plus_one_session\` and \`max_resources = 1\` (docs/SECURITY_SESSIONS.md), sign in on a second device: it gets in, and the first says **"Signed out: this account signed in on another device"** and does **not** reconnect by itself. Drop the connection (airplane mode) and reconnect: you get straight back in | rc.95 |
 | Sign out | Shows the sign-in screen at once (the teardown carries on in the background). There is no Disconnect: the app stays connected until Sign out or until it is closed | rc.95, rc.100 |
 | Built-in router stays warm | With the built-in router: Cancel a sign-in, then sign in again: it connects without the 5-10 minute warm-up | rc.100 |
 | Sound and vibration | App in the background: a message, a verification request and a group invitation each sound **and vibrate**; the notification says only "New message", "Verification requested" or "Group invitation" (no name), and nothing shows on the locked screen. App open in another chat: a tone and a buzz. Phone on vibrate: buzz only; on silent: nothing | rc.102 |
@@ -216,7 +224,7 @@ later regression is marked in its row. Builds since are in the next table.
 | Admin delete | After updating mod_otrv4plus_moderation on the server: as the admin, Delete a room someone else made (Rooms tab); it disappears for everyone | rc.120 |
 | Admin delete after reconnect | As the admin, sign in, wait for a reconnect (or toggle flight mode), then Delete a hidden room someone else made; it disappears for everyone | rc.121 |
 | Deleted rooms gone | After updating the module: as the admin, Rooms → Refresh no longer lists rooms already deleted; Delete on one that was already gone says so (not in red) and removes it from the list | rc.122 |
-| Server list clean | After updating the module: as the admin, Delete a room that `muc:list("conference.<host>")` in `prosodyctl shell` still lists after it was deleted (its tombstone): it leaves `muc:list` | rc.123 |
+| Server list clean | After updating the module: as the admin, Delete a room that \`muc:list("conference.<host>")\` in \`prosodyctl shell\` still lists after it was deleted (its tombstone): it leaves \`muc:list\` | rc.123 |
 | Voice notes | Send a voice note to a verified contact: it shows in your chat as a voice-note bubble with Play; Play replays it. On the other phone (or the desktop app) it arrives without an Accept/Decline prompt, as a bubble that plays; no "file received" line. Same in a secure group. Close and reopen the app: both bubbles are still there and still play | rc.124 |
 | Change password | Profile → **Change password…**: a wrong current password is refused without contacting the server; a good change says **"Password changed"**; then close the app and open it again: it signs in with the new password without asking; another device with the old password cannot sign in | rc.96 |
 | Pictures and profiles | Tap a contact's picture in the chat list, or at the top of their chat: their profile opens; Back returns to where you were. Tap the profile picture: it fills the screen; tap to close | rc.97 |
@@ -260,12 +268,23 @@ later regression is marked in its row. Builds since are in the next table.
 | RustCrypto hashes and AES-GCM | Nothing new to see: the hash and cipher crates were updated and their zeroize-on-drop turned on. 1:1 chat, a group message and a call still work as on the previous build | rc.192 |
 | Create account with a CAPTCHA | On a server that needs a CAPTCHA (e.g. conversations.im), Create account shows the challenge **image inline** and a text box; type the characters and the account is created and you are signed in. A server that offers the image only as a web link is **refused** with "register on the server's web page" and **no password is sent** (the app never fetches the image). On Termux the image is saved to a temp file, its path printed, then deleted after you answer; a wrong answer is rejected. Cross-check the same flow on the desktop app | rc.193 |
 
+## NOT verified — 🧪 still to be tested on devices
+
+| Area | What to test | Since |
+|---|---|---|
+| Five-person group call | A secure group of five verified members (the maximum): one starts a call, the other four join; everyone hears everyone, and each phone's report shows four participants (\`peers=4\`) | rc.84 |
+
 ## ⚠️ Known limits
 
 - **A synthetic voice is harder to recognise, not impossible.** Measured
   against a speaker-recognition network (see \`docs/VOICE_NOTES.md\`), Synthetic
   is the strongest. What you *say* — words, accent, background — can still
   identify you. Where it matters, type.
+- **A masked voice in a call is harder to recognise by ear, not
+  impossible to identify.** Mask my voice moves pitch and formants so you
+  are understood but do not sound like yourself; a determined analyst with
+  a speaker recogniser trained on masked speech can still pick up rhythm,
+  accent and intonation (see \`docs/VOICE_MASK_CALLS.md\`).
 - **I2P is slow to start.** Building tunnels takes 30–120 s; the first start
   of the built-in router 2–5 minutes.
 - **Group size: about 100 members.** Measured, not set: a new member joins
@@ -274,10 +293,11 @@ later regression is marked in its row. Builds since are in the next table.
   stop at roughly 100. Only four members have been tested on phones. Every
   group change also goes through the server room, so big groups are slow on
   a server with the default room rate limits. Server admins can measure
-  their own server with the terminal client's stress test (`docs/STRESS_TEST.md`).
+  their own server with the terminal client's stress test (\`docs/STRESS_TEST.md\`).
 - **Group calls are for groups of up to 5 members.** Each phone sends its
   audio to every other phone directly over I2P, so a larger group has no
-  call button and stays text only (rc.84).
+  call button and stays text only (rc.84). Three have been tested; five
+  not yet.
 - Secure groups made before rc.27 must be re-created to add members.
 - **Both phones need rc.159 or newer.** Since protocol v2 (post-quantum
   ratchet and authentication) an older build is refused, with a sentence

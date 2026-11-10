@@ -4,12 +4,67 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Unreleased (dev) — after the tested release, 2026-10-30
+## Android 0.7.0-experimental.rc.194 and desktop 0.15.0 — 2026-11-10 — tested release, on `main`
 
-`main` holds the build tested on phones and a laptop: **rc.189**
-(versionCode 190), **desktop 0.14.11**, commit `359dadb`. Every build after
-it is marked **untested** in its version name until it is tested too. This
-starts at **rc.190-untested** (versionCode 191).
+Tested by the owner on two Android 15 phones (a Pixel 7 and a Xiaomi) and a
+Linux laptop: everything since rc.189 below. **Not yet tested: a group call
+with all five members**; three (two phones and the desktop) were. `main`
+now holds this build; a later `dev` build says **-untested** in its version
+name again until it is tested too.
+
+- **New: Mask my voice in calls** (1:1 and group; Android, desktop, terminal
+  `/mask`). Your words stay clear; your voice does not sound like you. Pitch
+  and formants move together, a low voice up and a high one down, by random
+  amounts drawn per call on your device and never sent. Your real voice
+  never leaves the device: the call carries silence until the mask is ready,
+  and if it cannot run. It defeats recognition by ear and naive voiceprint
+  matching, not a determined analyst (`docs/VOICE_MASK_CALLS.md`).
+- **New: app lock (Android).** A passphrase, Molly-style: everything stored
+  on the phone sits under a 256-bit key that the passphrase and the phone's
+  secure hardware (StrongBox or TEE) unlock together. The passphrase is
+  never a `String` and is wiped after use. Locking signs out and ends the
+  app's process. Auto-lock after 30 s to 1 h in the background (never during
+  a call), Lock now, change passphrase, turn it off. There is no recovery
+  (`docs/APP_LOCK_PASSPHRASE.md`).
+- **New: CAPTCHA sign-up.** Creating an account on a server that asks for a
+  CAPTCHA (XEP-0158/0231) shows the image inline in the apps; a server that
+  offers only a web link is refused, and no password is sent.
+- **Group calls:**
+  - a member who joins before the others have verified them is admitted once
+    they are, instead of being left out (three verified, two in the call);
+  - a call ends when its group is deleted, left or you are removed;
+  - "Your microphone is sending silence" when your microphone is muted
+    outside the app.
+- **Echo:** the desktop and terminal load PulseAudio/PipeWire echo
+  cancellation by themselves (local DSP only, no network), and it survives
+  mute.
+- **Connection:**
+  - a dropped connection keeps its I2P session, so it reconnects faster;
+  - a retry waiting while the phone sleeps starts as soon as the phone
+    wakes (screen on, unlock, network back);
+  - a just-started router is no longer reported as "address not found".
+- **Diagnostics:**
+  - desktop: Settings → Diagnostics → Save diagnostic report, the same
+    redacted report as the phones;
+  - calls now report echo control, audio rates, sent/received/dropped
+    counts and every state change.
+- **Groups and trust:**
+  - a deleted group is forgotten on every client, not retried;
+  - a contact's changed key no longer silently blocks files, voice and
+    groups: it says so.
+- **Files:**
+  - a file arriving in the apps is never plaintext on disk, even partly;
+  - on the desktop the viewer's decrypted copy lives in RAM.
+- **Terminal:** `/open` received files, `/play` voice notes, `/people` for the
+  Welcome room.
+- **Desktop crypto-erase:** key files are wrapped by a key held in the
+  system key store, so Wipe & Exit's deletion of that key makes leftover
+  files unreadable.
+- **Post-quantum on pure Rust and the group hardening pass (F1–F7)**, below.
+  Both phones must be on rc.190 or newer for secure groups; group
+  fingerprints changed, so re-verify each group.
+
+### Earlier in this release cycle (dev notes, 2026-10-30 to 2026-11-02)
 
 - **Post-quantum crypto on pure Rust, and MLS hashing to SHA-512** (owner
   go-ahead, 2026-11-02):

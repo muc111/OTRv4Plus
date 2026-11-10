@@ -238,18 +238,25 @@ class TestNothingUnverifiedReadsAsVerified:
     def _table(notes, heading, nxt):
         return notes[notes.index(heading):notes.index(nxt)]
 
+    #: The build the owner's last device report covers (2026-11-10: two
+    #: phones and the desktop, everything except a five-person group call).
+    DEVICE_REPORT_RC = 194
+
     def test_builds_not_yet_tried_on_a_phone_are_not_listed_as_verified(self, notes):
-        """Owner: what is in the verified table up to rc.157 was confirmed on
-        phones (failures since were regressions, marked in their rows).
-        Builds from rc.158 on are not confirmed until a device report says so."""
+        """Owner: rows reach the verified tables only with a device report.
+        The report of 2026-11-10 covers up to rc.194; a later build's rows
+        stay in NOT verified until the next one."""
         verified = self._table(notes, "## Verified on a real device", "## NOT verified")
         found = [int(n) for n in re.findall(r"\(rc\.(\d+)[;)]", verified)]
-        assert found and max(found) <= 157, found
-        assert "**Regressed:**" in verified, "a known regression is marked where it is listed"
+        found += [int(n) for n in re.findall(r"\| rc\.(\d+) \|", verified)]
+        assert found and max(found) <= self.DEVICE_REPORT_RC, found
+        assert "confirmed by the owner, 2026-11-10" in verified
 
-    def test_new_rows_go_to_the_not_verified_table(self, notes):
+    def test_what_the_report_did_not_cover_stays_unverified(self, notes):
         unverified = self._table(notes, "## NOT verified", "## ⚠️ Known limits")
-        assert "| Viewer tabs |" in unverified and "| Calls over the built-in router |" in unverified
+        assert "| Five-person group call |" in unverified
+        verified = self._table(notes, "## Verified on a real device", "## NOT verified")
+        assert "| Viewer tabs |" in verified and "| Calls over the built-in router |" in verified
 
     def test_the_router_is_described_as_it_is_configured(self, notes):
         conf = _read(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
