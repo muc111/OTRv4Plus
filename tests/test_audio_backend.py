@@ -455,7 +455,10 @@ class TestSelection(BackendBase):
     def test_explicit_backend_is_honoured_exactly(self):
         self.assertEqual(A._pick_order("pulseaudio"), ("pulseaudio",))
         self.assertEqual(A._pick_order("aaudio"), ("aaudio",))
-        self.assertEqual(A._pick_order(None), A.BACKEND_ORDER)
+        # The default is the full order where AAudio can load (a phone) and
+        # PulseAudio alone where it cannot (desktop Linux, this runner).
+        expected = A.BACKEND_ORDER if A.aaudio_available() else ("pulseaudio",)
+        self.assertEqual(A._pick_order(None), expected)
 
     def test_termux_api_is_never_a_live_backend(self):
         info = A._probe_termux_api()

@@ -173,3 +173,16 @@ def test_the_terminal_has_mask():
     src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"), encoding="utf-8").read()
     assert 'lstrip in ("/mask", "/mask on", "/mask off")' in src
     assert "/mask [on|off]" in src
+
+
+def test_a_desktop_does_not_try_android_audio_first(monkeypatch):
+    """Desktop report, 2026-11-10: every call logged "unavailable: No such
+    file or directory" -- AAudio (Android only) tried and failing before
+    PulseAudio, which worked. Where AAudio cannot load it is not tried; an
+    explicit choice and a phone are unchanged."""
+    monkeypatch.delenv("OTRV4PLUS_AUDIO_BACKEND", raising=False)
+    monkeypatch.setattr(A, "aaudio_available", lambda: False)
+    assert A._pick_order(None) == (A.BACKEND_PULSE,)
+    assert A._pick_order(A.BACKEND_AAUDIO) == (A.BACKEND_AAUDIO,)
+    monkeypatch.setattr(A, "aaudio_available", lambda: True)
+    assert A._pick_order(None) == A.BACKEND_ORDER
