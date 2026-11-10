@@ -4,6 +4,27 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.195-untested — 2026-11-10 — on `dev`, not yet tested
+
+From a device report (Pixel 7): sign-up failed five times in two minutes on
+a just-started built-in router, and a connection dropped 12 minutes later.
+
+- **A just-started router is waited for, not failed on.** i2pd answers "not
+  found" for the server's address within milliseconds while it has no peers
+  to search with; sign-in and sign-up now ask again (3 s, 5 s, 8 s, ... up to
+  two minutes) instead of failing at once. A real "not found", which takes
+  seconds, still fails at once.
+- **The report says more about a drop.** The built-in router now logs
+  warnings as well as errors (its log is cut back once over 512 KB), and
+  after a dropped connection its last 15 lines go, scrubbed of addresses,
+  into the diagnostic report, with how long the stream lived and how long
+  it had been silent. A failed sign-up now records the transport's own
+  reason, not only "network".
+- **CI:** two builds publishing at once can no longer delete each other's
+  release and leave the Releases page empty.
+
+---
+
 ## Android 0.7.0-experimental.rc.194 and desktop 0.15.0 — 2026-11-10 — tested release, on `main`
 
 Tested by the owner on two Android 15 phones (a Pixel 7 and a Xiaomi) and a

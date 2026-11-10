@@ -1066,6 +1066,7 @@ class OtrConnectionService : Service() {
                 failure = null
                 enter(LinkPhase.CONNECTED, "the transport reported connected")
                 watchUntilDropped()
+                noteRouterLog()
                 // watchUntilDropped returns when the stream is gone. Fall
                 // through to the backoff rather than returning: a drop we did
                 // not ask for is exactly what reconnect exists for.
@@ -1283,6 +1284,21 @@ class OtrConnectionService : Service() {
         // Never 0 (the default, 7656): with our router down, the attempt must
         // fail, not reach whatever listens there.
         return router.samPort.takeIf { it != 0 } ?: RouterChoice.NO_SAM_PORT
+    }
+
+    /**
+     * After a dropped connection on the built-in router: its last log lines
+     * (warnings and errors, scrubbed) into the diagnostic report, so the
+     * report says whether this router gave up on the stream or its tunnels
+     * would not build. Device report 2026-11-10 could not tell.
+     */
+    private suspend fun noteRouterLog() {
+        if (routerState != RouterChoice.State.RUNNING) return
+        val lines = withContext(Dispatchers.IO) { router.recentLog() }
+        runCatching {
+            core.note("router", "log_after_drop", "info", "${lines.size} lines")
+            lines.forEach { core.note("router", "log", "info", it) }
+        }
     }
 
     private suspend fun watchUntilDropped() {

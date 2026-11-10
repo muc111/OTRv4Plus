@@ -874,6 +874,21 @@ I2P_NAME_UNKNOWN_RESULTS = ("KEY_NOT_FOUND", "INVALID_KEY")
 #: for the terminal client's callers.
 SHIPPED_SERVERS = _address.SHIPPED_SERVERS
 
+#: What a router answers NAMING LOOKUP with for a .b32.i2p whose LeaseSet it
+#: could not find (i2pd: INVALID_KEY, SAM.cpp HandleNamingLookupLeaseSet-
+#: RequestComplete; Java I2P: KEY_NOT_FOUND).
+I2P_KEY_NOT_FOUND_RESULTS = ("KEY_NOT_FOUND", "INVALID_KEY")
+#: A key lookup refused faster than this was not a search of the network:
+#: a router that has just started has no peers to ask and answers at once. A
+#: real search that finds nothing takes seconds.
+KEY_LOOKUP_INSTANT_S = 2.0
+#: How long one attempt keeps asking while the answers are instant, and the
+#: pauses between asks. Device reports 2026-11-09 and 2026-11-10: on the
+#: built-in router's first minute or two, every sign-in and sign-up failed in
+#: milliseconds (five sign-up taps in 2 minutes) until one found the server.
+KEY_LOOKUP_SETTLE_S = 120.0
+KEY_LOOKUP_PAUSES_S = (3.0, 5.0, 8.0, 12.0, 15.0)
+
 
 def remember_i2p_alias(name: str, destination: str, path: str = None,
                        learned: bool = True) -> str:
@@ -1120,6 +1135,10 @@ class I2PSAMConnection:
     #: on a cold router legitimately take 60-90 s.
     reply_timeout = 90
 
+    #: How long `lookup_key` keeps asking a router too new to search
+    #: (KEY_LOOKUP_SETTLE_S); a test of the "not found" outcome sets it to 0.
+    key_lookup_settle_s = KEY_LOOKUP_SETTLE_S
+
     def __init__(self, sam_host: str = None, sam_port: int = None):
         self.sam_host = sam_host or NetworkConstants.I2P_SAM_HOST
         self.sam_port = sam_port or NetworkConstants.I2P_SAM_PORT
@@ -1348,6 +1367,52 @@ class I2PSAMConnection:
             raise SamError("bridge", "SAM NAMING REPLY carried no valid destination")
         return value
 
+    def lookup_key(self, name: str, pause=None) -> str:
+        """`naming_lookup` for a .b32.i2p, waiting out a router that is too
+        new to search.
+
+        A "not found" that came back instantly (KEY_LOOKUP_INSTANT_S) is a
+        router with no peers yet, not an answer about the server: the lookup
+        is asked again, after KEY_LOOKUP_PAUSES_S, for up to
+        `key_lookup_settle_s`. A slow "not found" -- a real search -- and any
+        other failure are raised at once, as before. `abandon()` ends the
+        wait. Each retry is reported through `on_progress`, if set."""
+        pause = pause or self._pause
+        # Counted in pauses: only instant answers are retried, so the pauses
+        # are the time this spends.
+        waited = 0.0
+        tries = 0
+        while True:
+            asked = time.monotonic()
+            try:
+                return self.naming_lookup(name)
+            except SamError as exc:
+                instant = time.monotonic() - asked < KEY_LOOKUP_INSTANT_S
+                wait = KEY_LOOKUP_PAUSES_S[min(tries, len(KEY_LOOKUP_PAUSES_S) - 1)]
+                if (exc.stage != "naming"
+                        or exc.result not in I2P_KEY_NOT_FOUND_RESULTS
+                        or not instant or self._abandoned
+                        or waited + wait > self.key_lookup_settle_s):
+                    raise
+            tries += 1
+            waited += wait
+            progress = getattr(self, "on_progress", None)
+            if progress is not None:
+                try:
+                    progress("the router is too new to find the server yet; "
+                             "asking again (%d)" % tries)
+                except Exception:
+                    pass
+            pause(wait)
+            if self._abandoned:
+                raise SamError("cancelled", "the SAM connection was abandoned")
+
+    def _pause(self, seconds: float) -> None:
+        """Sleep, in steps, so `abandon()` cuts it short."""
+        end = time.monotonic() + seconds
+        while not self._abandoned and time.monotonic() < end:
+            time.sleep(min(0.25, max(0.0, end - time.monotonic())))
+
     def _naming_failure(self, target, exc, alias_source=None):
         if exc.stage != "naming":
             return exc
@@ -1393,7 +1458,7 @@ class I2PSAMConnection:
                 print(f"[i2p] {target } is a retired address for {moved_to }; "
                       "trying it as given.")
             try:
-                return self.naming_lookup(target)
+                return self.lookup_key(target)
             except SamError as exc:
                 raise self._naming_failure(target, exc) from None
         self.used_shipped_address = False
@@ -1402,7 +1467,7 @@ class I2PSAMConnection:
             # Reported by the caller (`used_shipped_address`), which knows
             # whether its log may name the address.
             try:
-                dest = self.naming_lookup(shipped)
+                dest = self.lookup_key(shipped)
             except SamError as exc:
                 raise self._naming_failure(shipped, exc) from None
             self.used_shipped_address = True

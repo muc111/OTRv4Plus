@@ -511,8 +511,10 @@ class TestTheProjectServerIsDialledAtItsShippedAddress:
 
     def test_an_offline_server_says_it_is_a_tunnel_problem(self, no_dns, aliases):
         fake = FakeSam()   # the router cannot find the b32's LeaseSet
+        sam = _sam(fake)
+        sam.key_lookup_settle_s = 0      # the outcome, not the wait (below)
         with pytest.raises(otr.SamError) as exc:
-            _sam(fake).connect(self.SERVER, allow_aliases=False)
+            sam.connect(self.SERVER, allow_aliases=False)
         assert exc.value.stage == "naming"
         assert "router or tunnel problem" in str(exc.value)
 
@@ -677,3 +679,98 @@ class TestTheEndOfTheI2PStreamIsDescribed:
             assert meaning in ev["fields"]["meaning"]
         else:
             assert "meaning" not in ev["fields"]
+
+    def test_how_long_the_stream_lived_and_was_silent_is_recorded(self):
+        # Device report 2026-11-10: a stream ended ~11 minutes in, after
+        # ~95 s of silence -- its first tunnels' lifetime.
+        from android_bridge import transport as T
+        from android_bridge.trace import TRACE
+        TRACE.clear()
+        t = T.XmppTransport.__new__(T.XmppTransport)
+        t._forwarder_progress("[i2p] I2P stream ended by the server: sent=9073 "
+                              "received=26498 first=xml age=725 quiet=95")
+        (ev,) = [e for e in TRACE.events(100) if e["event"] == "i2p_stream_ended"]
+        assert str(ev["fields"]["age_s"]) == "725"
+        assert str(ev["fields"]["quiet_s"]) == "95"
+
+
+class TestARouterTooNewToSearchIsAskedAgain:
+    """Device reports 2026-11-09 and 2026-11-10: on the built-in router's
+    first minute or two, i2pd answered INVALID_KEY for the server's b32 within
+    milliseconds -- it had no peers to search with -- and every sign-in and
+    sign-up failed at once (five sign-up taps in two minutes). An instant
+    "not found" for a key is now asked again within the same attempt."""
+
+    def _sam(self, fake, settle=60.0):
+        sam = _sam(fake)
+        sam.key_lookup_settle_s = settle
+        sam.waits = []
+        sam.said = []
+        sam._pause = lambda s: sam.waits.append(s)
+        sam.on_progress = sam.said.append
+        return sam
+
+    def test_an_instant_not_found_is_asked_again_until_found(self):
+        fake = FakeSam(unknown_result="INVALID_KEY")
+        sam = self._sam(fake)
+        calls = {"n": 0}
+        real = sam.naming_lookup
+
+        def lookup(name):
+            calls["n"] += 1
+            if calls["n"] == 3:
+                fake.names[name] = DEST           # the router found peers
+            return real(name)
+        sam.naming_lookup = lookup
+        assert sam.lookup_key(B32) == DEST
+        assert calls["n"] == 3
+        assert sam.waits == [otr.KEY_LOOKUP_PAUSES_S[0], otr.KEY_LOOKUP_PAUSES_S[1]]
+        assert len(sam.said) == 2 and "too new" in sam.said[0]
+        assert B32 not in " ".join(sam.said)      # never the address
+        fake.close()
+
+    def test_it_gives_up_after_the_settle_time(self):
+        fake = FakeSam(unknown_result="INVALID_KEY")
+        sam = self._sam(fake, settle=20.0)
+        with pytest.raises(otr.SamError) as exc:
+            sam.lookup_key(B32)
+        assert exc.value.stage == "naming" and exc.value.result == "INVALID_KEY"
+        assert sum(sam.waits) <= 20.0 and sam.waits
+        fake.close()
+
+    def test_a_slow_not_found_is_a_real_search_and_is_not_repeated(self, monkeypatch):
+        fake = FakeSam(unknown_result="INVALID_KEY")
+        sam = self._sam(fake)
+        clock = iter([0.0, otr.KEY_LOOKUP_INSTANT_S + 1] + [99.0] * 8)
+        monkeypatch.setattr(otr.time, "monotonic", lambda: next(clock))
+        with pytest.raises(otr.SamError):
+            sam.lookup_key(B32)
+        assert sam.waits == []
+        fake.close()
+
+    def test_other_failures_are_not_repeated(self):
+        fake = FakeSam(naming_reply="NAMING REPLY RESULT=INVALID_NAME NAME={name}")
+        sam = self._sam(fake)
+        with pytest.raises(otr.SamError):
+            sam.lookup_key(B32)
+        assert sam.waits == []
+        fake.close()
+
+    def test_abandon_ends_the_wait(self):
+        fake = FakeSam(unknown_result="INVALID_KEY")
+        sam = self._sam(fake)
+        sam._pause = lambda s: setattr(sam, "_abandoned", True)
+        with pytest.raises(otr.SamError) as exc:
+            sam.lookup_key(B32)
+        assert exc.value.stage == "cancelled"
+        fake.close()
+
+    def test_the_transport_records_each_retry_for_the_report(self):
+        from android_bridge import transport as T
+        from android_bridge.trace import TRACE
+        t = T.XmppTransport.__new__(T.XmppTransport)
+        TRACE.clear()
+        t._forwarder_progress("[i2p] the router is too new to find the server "
+                              "yet; asking again (2)")
+        ev = [e for e in TRACE.events(100) if e.get("event") == "router_too_new"]
+        assert ev and str(ev[-1]["fields"]["retry"]) == "2"

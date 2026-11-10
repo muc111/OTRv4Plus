@@ -852,6 +852,14 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             # ships for it (otrv4plus_address.SHIPPED_SERVERS). The step
             # stays sam_opening.
             _TRACE.record("connection", "shipped_address_used", "info")
+        elif "too new to find the server" in text:
+            # The router answered "not found" instantly: it has no peers to
+            # search with yet, and the lookup is asked again
+            # (I2PSAMConnection.lookup_key) rather than failing the attempt.
+            import re
+            m = re.search(r"\((\d+)\)", text)
+            _TRACE.record("connection", "router_too_new", "info",
+                          retry=int(m.group(1)) if m else 0)
         elif "established" in text:
             self._reached("sam_established")
         elif "I2P stream ended" in text:
@@ -875,7 +883,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
     def _stream_ended(self, text: str) -> None:
         import re
         m = re.search(r"ended by the (\w+): sent=(\d+) received=(\d+) "
-                      r"first=(\w+)", text)
+                      r"first=(\w+)(?: age=(\d+) quiet=(\d+))?", text)
         if not m:
             return
         by, sent, got, first = m.group(1), int(m.group(2)), int(m.group(3)), \
@@ -883,6 +891,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         verdict = ("silent" if by == "server" and got == 0
                    else first if first in ("tls", "other") else "")
         fields = dict(ended_by=by, sent=sent, received=got, first=first)
+        if m.group(5) is not None:
+            # Seconds the stream lived, and seconds of silence from the I2P
+            # side before it ended (device report 2026-11-10: ~11 minutes
+            # in, after ~95 s of silence -- the first tunnels' lifetime).
+            fields["age_s"] = int(m.group(5))
+            fields["quiet_s"] = int(m.group(6))
         if verdict:
             fields["meaning"] = self._STREAM_END_HINTS[verdict]
         _TRACE.record("connection", "i2p_stream_ended",

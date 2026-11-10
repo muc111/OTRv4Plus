@@ -397,6 +397,11 @@ class RegistrationMixin:
         try:
             host, port = await self._endpoint()
         except TransportError as exc:
+            # The transport's own code, recorded before it is folded into the
+            # Register screen's "network": a report of five sign-ups failing in
+            # milliseconds (2026-11-10) said only code=network.
+            _TRACE.record("registration", "endpoint_failed", "warn",
+                          transport_code=exc.code)
             # `_endpoint` speaks the transport's vocabulary; the Register
             # screen speaks the registration module's. Translated here, where
             # both meanings are in scope, rather than by teaching `classify`

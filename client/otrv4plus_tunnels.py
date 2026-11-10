@@ -339,6 +339,9 @@ async def start_i2p_sam_forwarder(
     reused = sam is not None
     if sam is None:
         sam = I2PSAMConnection(sam_host=sam_host, sam_port=sam_port)
+    # A router too new to search is asked again (I2PSAMConnection.lookup_key);
+    # each retry is said here. Never the destination.
+    sam.on_progress = lambda message: say("[i2p] " + message)
     extra = {"keep_session": True} if hold else {}
 
     def _do_sam():
@@ -397,7 +400,15 @@ async def start_i2p_sam_forwarder(
         # "the server never said a word" (its I2P tunnel points at nothing,
         # or at the wrong port) from "it answered in TLS" (a direct-TLS port,
         # 5223, where XMPP wants 5222) from an XMPP server that answered.
-        seen = {"sent": 0, "got": 0, "first": "", "ended_by": ""}
+        # `opened` and `last_got` (monotonic): how long the stream lived and
+        # how long the I2P side had been silent when it ended. A stream that
+        # dies ~11 minutes in, after a minute or more of silence, is its first
+        # tunnels expiring without working replacements (device report
+        # 2026-11-10). "server" means the I2P side of the SAM socket: the
+        # server, or this device's own router giving up on it.
+        now = time.monotonic()
+        seen = {"sent": 0, "got": 0, "first": "", "ended_by": "",
+                "opened": now, "last_got": now}
 
         async def pump_to_i2p(src, dst):
             try:
@@ -433,6 +444,7 @@ async def start_i2p_sam_forwarder(
                     if not seen["got"]:
                         seen["first"] = _first_byte_kind(data[0])
                     seen["got"] += len(data)
+                    seen["last_got"] = time.monotonic()
                     dst.write(data)
                     await dst.drain()
             except Exception:
@@ -447,9 +459,12 @@ async def start_i2p_sam_forwarder(
             pump_to_i2p(local_reader, sam_writer),
             pump_from_i2p(sam_reader, local_writer),
         )
+        end = time.monotonic()
         say(f"[i2p] I2P stream ended by the {seen['ended_by'] or 'client'}: "
             f"sent={seen['sent']} received={seen['got']} "
-            f"first={seen['first'] or 'none'}")
+            f"first={seen['first'] or 'none'} "
+            f"age={round(end - seen['opened'])} "
+            f"quiet={round(end - seen['last_got'])}")
 
     server = await asyncio.start_server(_handle_local, "127.0.0.1", 0)
     host, port = server.sockets[0].getsockname()[:2]

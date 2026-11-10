@@ -134,6 +134,9 @@ class BundledRouter(private val context: Context) {
             samPort = port
             File(dir, PORT).writeText(port.toString())
             File(dir, CONF).writeText(RouterChoice.config(port))
+            // i2pd appends to its log; warnings make it grow, so it is
+            // started afresh once large.
+            File(dir, LOG).let { if (it.length() > RouterChoice.LOG_CAP_BYTES) it.writeText("") }
             // An empty tunnels file, so i2pd does not go looking for one.
             File(dir, TUNNELS).writeText("")
             installCertificates()
@@ -185,6 +188,20 @@ class BundledRouter(private val context: Context) {
         process = null
         startedAt = 0L
     }
+
+    /** The router log's last lines, scrubbed ([RouterChoice.logTail]); empty if none. */
+    fun recentLog(): List<String> = runCatching {
+        val file = File(dir, LOG)
+        if (!file.isFile) return emptyList()
+        // Only the end is read: the log can be up to LOG_CAP_BYTES.
+        java.io.RandomAccessFile(file, "r").use { raf ->
+            val start = maxOf(0L, raf.length() - 16 * 1024)
+            raf.seek(start)
+            val bytes = ByteArray((raf.length() - start).toInt())
+            raf.readFully(bytes)
+            RouterChoice.logTail(String(bytes, Charsets.UTF_8).lines().drop(if (start > 0) 1 else 0))
+        }
+    }.getOrDefault(emptyList())
 
     /** The last meaningful line i2pd wrote, trimmed, or null. */
     private fun lastLine(): String? {

@@ -140,6 +140,20 @@ class RouterChoiceTest {
             "exited with code 1: bad option"))
     }
 
+    @Test
+    fun `after a drop the router's last warnings go into the report, scrubbed`() {
+        // Device report 2026-11-10: a stream ended 11 minutes in and nothing
+        // said which router gave up. The log now holds warnings too.
+        assertTrue("loglevel = warn" in RouterChoice.config(23_456).lines().map { it.trim() })
+        val log = (1..30).map { "23:10:${it}@1/warn - Streaming: packet $it was not ACKed" } +
+            listOf("", "23:10:44@1/warn - SSU2: peer 203.0.113.7:4567 terminated", "  ")
+        val tail = RouterChoice.logTail(log)
+        assertEquals(RouterChoice.LOG_TAIL_LINES, tail.size)
+        assertTrue("not ACKed" in tail.first())
+        assertTrue("terminated" in tail.last() && "203.0.113.7" !in tail.last(), tail.last())
+        assertTrue(RouterChoice.logTail(emptyList()).isEmpty())
+    }
+
     // ── a router that has lost its way is restarted, once in a while ────────
 
     private val min = 60_000L
