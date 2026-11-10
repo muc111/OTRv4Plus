@@ -2144,6 +2144,12 @@ def _pick_order(preferred):
     choice = preferred or _env_backend()
     if choice in (BACKEND_AAUDIO, BACKEND_PULSE):
         return (choice,)          # explicit choice is honoured exactly
+    # Where AAudio cannot even load -- every desktop Linux -- it is not tried.
+    # Trying it failed with "No such file or directory" before falling back
+    # to PulseAudio, and that note reached the call log as an error on every
+    # call (desktop report, 2026-11-10) although nothing was wrong.
+    if not aaudio_available():
+        return tuple(b for b in BACKEND_ORDER if b != BACKEND_AAUDIO)
     return BACKEND_ORDER
 
 
