@@ -153,6 +153,10 @@ class FileBridge:
         #: The last few transfers that ENDED, so a row can say how it ended
         #: after the engine has forgotten it. Bounded; in memory only.
         self._finished = {}
+        #: peer -> monotonic time we last told the user an incoming file was
+        #: blocked because their key changed, so a burst of offers (and the
+        #: chunks that follow) does not stack identical warnings.
+        self._blocked_warned = {}
 
     #: How many ended transfers `transfers()` keeps reporting.
     FINISHED_KEPT = 16
@@ -471,11 +475,44 @@ class FileBridge:
             # Transfers cannot run here. Still not a message: displaying it
             # would put protocol text in the conversation.
             return True
+        # P1: the engine refuses an OFFER from a contact whose key changed and
+        # creates no transfer, so without this the receiver sees nothing -- the
+        # "sent but never arrived" the sender is told nothing about either. Say
+        # so once, so the user knows to verify them or reset trust. Voice notes
+        # ride the same OFFER, so this covers them too.
+        if (self._is_offer(body)
+                and self._app.security_state(peer)
+                is SecurityState.FINGERPRINT_MISMATCH):
+            self._warn_key_changed_once(peer)
         try:
             manager.handle_control(peer, body)
         except Exception:
             self._app._emit(ErrorOccurred(peer=peer, code="file_signal_failed"))
         return True
+
+    def _is_offer(self, body: str) -> bool:
+        """Whether a file control message is the OFFER that starts a transfer
+        (not a chunk, accept or done). Parsed the way the engine builds it:
+        the prefix, then the verb up to the first colon."""
+        try:
+            import otrv4plus_filetransfer as ft
+            prefix = getattr(ft, "FILE_PREFIX", FILE_PREFIX_FALLBACK)
+        except Exception:
+            prefix = FILE_PREFIX_FALLBACK
+        if not body.startswith(prefix):
+            return False
+        return body[len(prefix):].split(":", 1)[0] == "OFFER"
+
+    def _warn_key_changed_once(self, peer: str) -> None:
+        """Tell the user an incoming file was blocked because this contact's
+        key changed -- at most once per 30 s per contact, so a burst of offers
+        does not stack identical warnings."""
+        import time as _time
+        now = _time.monotonic()
+        if now - self._blocked_warned.get(peer, 0.0) < 30.0:
+            return
+        self._blocked_warned[peer] = now
+        self._app._emit(ErrorOccurred(peer=peer, code="file_blocked_key_changed"))
 
     # -- what the UI reads ----------------------------------------------------
 

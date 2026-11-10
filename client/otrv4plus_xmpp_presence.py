@@ -27,7 +27,7 @@ class PresenceMixin:
         groups = getattr(self, "_groups", None)
         if groups is not None:
             try:
-                if groups.on_room_rejected(peer):
+                if groups.on_room_rejected(peer, str(condition or "")):
                     return
             except Exception:
                 pass

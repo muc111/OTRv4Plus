@@ -49,13 +49,26 @@ class TestArgon2IsInTheRustCore:
         # smp.rs for the 0x03 wire stretch; at_rest.rs only to read store
         # files written by the retired Python argon2-cffi code; container.rs
         # for passphrase-protected .otrv exports (added with the container,
-        # 324777a) -- see test_the_container_uses_it_only_for_passphrases.
+        # 324777a) -- see test_the_container_uses_it_only_for_passphrases;
+        # app_lock.rs for the app-lock passphrase (2026-11-09) -- see
+        # test_the_app_lock_uses_it_only_for_the_passphrase.
         users = sorted(f for f, src in _rust_sources().items()
                        if "argon2" in src.lower())
-        assert users == ["at_rest.rs", "container.rs", "smp.rs"], (
-            "argon2 should appear in smp.rs, at_rest.rs and container.rs "
-            "only; found %s" % users)
+        assert users == ["app_lock.rs", "at_rest.rs", "container.rs", "smp.rs"], (
+            "argon2 should appear in smp.rs, at_rest.rs, container.rs and "
+            "app_lock.rs only; found %s" % users)
         assert "argon2" not in _rust_sources()["smp_vault.rs"].lower()
+
+    def test_the_app_lock_uses_it_only_for_the_passphrase(self):
+        """The device-only record (lock turned off) must not run Argon2id,
+        and a record's stored cost is bounded before Argon2id sees it: the
+        record is read from disk before anything authenticates it."""
+        src = _rust_sources()["app_lock.rs"]
+        assert src.count("Argon2::new(") == 1
+        branch = src[src.index("(MODE_PASSPHRASE, Some(pass)) =>"):src.index("(MODE_DEVICE, None) => {}")]
+        assert "Argon2::new(" in branch
+        assert "fn check(self)" in src and "cost.check()?" in src
+        assert "M_MAX_KIB" in src and "T_MAX" in src and "P_MAX" in src
 
     def test_the_container_uses_it_only_for_passphrases(self):
         """A device-keyed container must not pay for, or depend on, Argon2id;

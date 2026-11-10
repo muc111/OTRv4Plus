@@ -355,6 +355,14 @@ class RoomPacer:
             self._requeue(room, state, list(state.inflight))
         self._pump(room)
 
+    def drop(self, room: str) -> None:
+        """Forget everything queued or in flight for `room`: it is gone, so
+        nothing more may be sent to it. Any timer already scheduled for the
+        room (`_fire`, `_expire`, `_pump`) finds no state and returns, so the
+        pacer stops draining it at once. Harmless on a room it does not know."""
+        with self._lock:
+            self._rooms.pop(room, None)
+
     def close(self) -> None:
         with self._lock:
             self._closed = True
@@ -1265,6 +1273,14 @@ class SecureGroups:
         """The setup channel must be an encrypted OTRv4+ session. Returns
         whether it is SMP-verified."""
         level = self._peer_security(peer)
+        if level is SecurityState.FINGERPRINT_MISMATCH:
+            # The session IS encrypted, but the contact's key changed from its
+            # pin (P1), so group setup is refused like calls and files are --
+            # until the user verifies them or resets trust. Its own code so the
+            # UI can say that, not the misleading "arrived unencrypted".
+            raise GroupError(
+                "otr_key_changed",
+                "this contact's key changed; verify them or reset trust to continue")
         if level not in (SecurityState.ENCRYPTED, SecurityState.FINGERPRINT,
                          SecurityState.SMP_VERIFIED):
             raise GroupError("otr_required",
@@ -1374,8 +1390,10 @@ class SecureGroups:
         is encrypted anyway, so nothing unauthenticated can drive a join."""
         try:
             verified = self._require_otr(peer)
-        except GroupError:
-            self._emit(ErrorOccurred(peer=peer, code="group_signal_unencrypted"))
+        except GroupError as exc:
+            code = ("group_signal_key_changed"
+                    if exc.code == "otr_key_changed" else "group_signal_unencrypted")
+            self._emit(ErrorOccurred(peer=peer, code=code))
             return
         rest = body[len(SIGNAL_PREFIX):]
         kind, _, arg = rest.partition(":")
@@ -1788,9 +1806,25 @@ class SecureGroups:
         self._post(room, commit)
         return True
 
-    def on_room_rejected(self, room: str) -> None:
-        """The server bounced a message to `room` (e.g. mod_muc_limits)."""
+    #: Error conditions that mean the room no longer exists, so a message to it
+    #: will never be accepted however often it is retried: the room's owner or
+    #: a server admin destroyed it. `gone` and `item-not-found` are both
+    #: unambiguous for a MUC; a network condition (remote-server-not-found) is
+    #: deliberately NOT here, so a tunnel blip never deletes a live group.
+    _ROOM_GONE_CONDITIONS = frozenset({"gone", "item-not-found"})
+
+    def on_room_rejected(self, room: str, condition: str = "") -> None:
+        """The server bounced a message to `room` (e.g. mod_muc_limits), or the
+        room is gone. A gone room is forgotten here -- so a delete reaches every
+        client, including the creator, even when the <destroy> presence was
+        missed (an admin destroyed it, or we were offline for it). Anything else
+        is a transient bounce: slow the room down and send again."""
         if not self.is_secure(room):
+            return
+        if str(condition or "").strip().lower() in self._ROOM_GONE_CONDITIONS:
+            # The room was destroyed: stop retrying and end the group here.
+            _TRACE.record("groups", "room_gone", "info", condition=str(condition)[:40])
+            self.on_room_destroyed(room)
             return
         self._emit(ErrorOccurred(peer=room, code="room_message_rejected"))
         # Slow this room down and send again what it has not echoed. That
@@ -2314,6 +2348,14 @@ class SecureGroups:
         """The group's room was deleted (by its owner, XEP-0045 destroy; or
         found gone when we came back). The group ends here: its keys are
         forgotten, as on leaving. False if `room` is no secure group of ours."""
+        # Stop the pacer FIRST, before anything else is decided. A gone room
+        # must receive nothing more, yet the pacer keeps its own timers: left
+        # alone they drain this room's queued and in-flight pieces for minutes
+        # after the group is forgotten (device report: a group call left ~32
+        # 'gone' rejections over ~107 s, one every few seconds, because the
+        # group was forgotten but its pacer was not). Harmless on an unknown
+        # room, and safe to repeat on a second 'gone' for the same room.
+        self._pacer.drop(room)
         with self._lock:
             client = self._client
             if client is None or self._wiped or not client.has_group(room.encode()):

@@ -7,7 +7,7 @@
 <p align="center"><strong>Private chat, groups, files and voice calls over I2P, on a server you can run yourself.<br>No phone number. Android, Linux desktop and terminal.</strong></p>
 
 <p align="center">
-<code>v10.31.0 · Rust core 0.13.2 · Android 0.7.0 (pre-release) · Desktop 0.14.11 (pre-release) · chat (X448 + ML-KEM-1024, AES-256-GCM) · group chat (MLS: X448 + ML-KEM-1024, Ed448 + ML-DSA-87, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
+<code>v10.31.0 · Rust core 0.13.2 · Android 0.7.0 rc.194 (pre-release) · Desktop 0.15.0 (pre-release) · chat (X448 + ML-KEM-1024, AES-256-GCM) · group chat (MLS: X448 + ML-KEM-1024, Ed448 + ML-DSA-87, AES-256-GCM) · hybrid PQC SMP (ML-KEM-1024 + ML-DSA-87 + ZKP) · voice (X448 + ML-KEM-1024, AES-256-GCM) · I2P SAM · AAudio · TUI</code>
 </p>
 
 OTRv4+ is an open-source, end-to-end encrypted messenger built on XMPP and the I2P network. Anyone can run the server: an ordinary Prosody XMPP server behind i2pd. The app ships pointing at a public test server (`otrv4plus.i2p`) so you can try it straight away. That is a default, not a lock-in: change one field and it talks to your own. Tor and TLS also work for chat.
@@ -21,6 +21,7 @@ Treat it as experimental. See [Security assessment and audit status](#security-a
 - **I2P built in.** The Android app carries its own I2P router, so there is nothing else to install. The server's location stays hidden, and so do the users'.
 - **Post-quantum by default.** 1:1 chat, encrypted groups (MLS), identity verification and voice all pair classic X448/Ed448 with ML-KEM-1024 and ML-DSA-87.
 - **Verify the person, not just the key.** Built-in SMP: two people confirm each other with a secret they agreed in person. Groups are verified the same way, by their creator.
+- **Mask your voice in calls, lock the app.** One button: your words stay clear, your voice does not sound like you (pitch and formants moved together, a new random disguise every call, done on your device); it stops recognition by ear, not a determined analyst ([docs/VOICE_MASK_CALLS.md](docs/VOICE_MASK_CALLS.md)). On Android a passphrase, with the phone's secure hardware, unlocks everything the app stores; locking signs you out and clears memory.
 - **Leaves as little behind as it can.** Messages can be made deniable afterwards (Publish Chat Keys), and Wipe & Exit destroys keys and checks the files are gone. On desktop, where a system key store is available, it deletes the master key there, so leftover files cannot be opened.
 - **Same protocol everywhere.** The Android app, the Linux desktop app and the terminal clients for Termux and Linux all talk to each other.
 
@@ -33,6 +34,8 @@ Treat it as experimental. See [Security assessment and audit status](#security-a
 ### Run your own server
 
 Prosody, an i2pd server tunnel in front of it, and the free [modules and limits script](prosody/): four steps in [docs/RUN_A_SERVER.md](docs/RUN_A_SERVER.md). One 2015 ThinkPad carried 1,600 users online ([stress test](docs/STRESS_TEST.md)). Then change the server on the app's sign-in screen, or pass `--server <address>.b32.i2p` to the terminal client.
+
+**Why host it yourself.** A big provider holds everyone's data in one place, is the obvious target for legal demands, and at scale may be required to monitor; a server for you and people you know holds little. It cannot read your chats, groups, files or calls (end-to-end encrypted), and over I2P it never sees an IP address; it does hold account names, contact lists, room membership and online times. Where it runs also decides which law applies: the country of the machine, of your host and of you. Switzerland, the UK and Ireland (EU) differ on data protection, surveillance orders and message scanning. Running a server does not put you outside the law: [docs/RUN_A_SERVER.md](docs/RUN_A_SERVER.md#why-host-it-yourself-and-where) (general information, not legal advice).
 
 **XMPP Guard (commercial, sold separately).** A real-time security dashboard and tripwire for the server, running entirely on the box at `127.0.0.1:7071`. It shows attacks, uptime and I2P health, hashes usernames, and alerts on file tampering, IP leaks and takeovers, with a hardening audit and sandboxing. It is not in this repository. Features: [docs/XMPP_GUARD.md](docs/XMPP_GUARD.md).
 
@@ -55,14 +58,9 @@ newest Android build is kept there, so the one you see is the one to test.
 2. Open it and allow installs when Android asks. If Android refuses an
    update, uninstall the old build first (builds use a CI signing key).
 
-**No separate I2P app is needed.** The app has an I2P router built in
-(i2pd, SAM bridge on loopback only, relaying nothing for others). It uses an
-I2P app already running on the phone when one answers, and its own router
-otherwise. The first
-start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+.
+**No separate I2P app is needed.** The app has an I2P router built in (i2pd, SAM bridge on loopback only, relaying nothing for others). It uses an I2P app already running on the phone when one answers, and its own router otherwise. The first start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+.
 
-**What has been tested on a phone:** sign-in, contacts, 1:1 chat, rooms, OTRv4+ encryption, SMP identity verification, encrypted file transfer with a Termux peer, two-way voice calls (app to app, and app to Termux; a regression over the built-in router is fixed in rc.162, to be re-tested), group voice calls, end-to-end encrypted group chat (four accounts on two phones: two in the app, two in Termux, all sending and receiving), and account creation and login on an ordinary clearnet server (yax.im, over TLS with the certificate verified).
-**Not yet tested on a phone:** the newest additions listed in [CHANGELOG.md](CHANGELOG.md). The step-by-step test list is [docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md](docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
+**Tested on phones and a laptop (rc.194, 2026-11-10):** sign-in and account creation (CAPTCHA included), contacts, 1:1 chat, rooms, OTRv4+ encryption, SMP verification, encrypted files, voice notes, 1:1 calls (app, desktop and Termux), encrypted group chat, group calls with three people (two phones and the desktop), Mask my voice, the app lock, desktop echo cancellation, and a clearnet server (yax.im over TLS, certificate verified). **Not yet tested:** a group call with all five members (the maximum). What changed in each build is in [CHANGELOG.md](CHANGELOG.md); the step-by-step test list is [docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md](docs/ANDROID_CALL_AND_FILE_DEVICE_TEST.md).
 
 ## Project status
 
@@ -72,8 +70,8 @@ start takes a few minutes (it joins I2P), later ones a minute or two. Android 8+
 | Chat over Tor | Implemented, not yet tested against a real hidden service |
 | Hybrid PQC handshake, ratchet and SMP | Working, not externally reviewed |
 | File transfer | Working (XMPP) |
-| Voice over I2P | Working between two phones, in Termux and in the app; still being tuned |
-| Android app | Chat, OTRv4+, SMP, files and calls (to the app and to Termux) tested on phones |
+| Voice over I2P | Working: 1:1 calls between phones, the desktop and Termux; group calls with three people (two phones and the desktop); optional voice masking. Five-person group calls not yet tested |
+| Android app | Chat, OTRv4+, SMP, files, calls, voice masking and the app lock tested on phones (rc.194) |
 | Encrypted group chat (MLS) | Working: four clients (two Android, two Termux) on two phones send and read each other's messages, on the hybrid post-quantum suite. Group voice calls tested on phones (rc.89). Ordinary rooms (and the Welcome room) are plain XMPP rooms that the server can read. See [Encrypted group chat](#encrypted-group-chat-mls) |
 | Security review | Extensive developer-led and AI-assisted review, fuzzing, and known-answer and cross-implementation testing; **no paid independent audit yet**. See below, [docs/CRYPTO_AUDIT_2026-09.md](docs/CRYPTO_AUDIT_2026-09.md) and [docs/SECURITY_AUDIT_2026-10-11.md](docs/SECURITY_AUDIT_2026-10-11.md) |
 

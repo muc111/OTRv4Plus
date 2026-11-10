@@ -583,7 +583,7 @@ const BINS: usize = SN / 2 + 1;
 const LIFTER: usize = 28;
 
 /// In-place complex FFT (radix 2, [re].len() a power of two).
-fn fft(re: &mut [f64], im: &mut [f64], inverse: bool) {
+pub(crate) fn fft(re: &mut [f64], im: &mut [f64], inverse: bool) {
     let n = re.len();
     let mut j = 0usize;
     for i in 1..n {

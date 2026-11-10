@@ -153,15 +153,21 @@ class DeniableMixin:
             ok = bool(confirm())
         except Exception:
             ok = False
+        removed = 0
         with self._closing_lock:
             if ok:
                 for e in sent:
                     if e in book:
                         book.remove(e)
+                        removed += 1
             left = bool(book)
             waiting_for = {e[0] for e in book}
-        if ok:
-            _TRACE.record("otr", "closing_confirmed", "info", messages=len(sent))
+        # Counted by what THIS call removed. Two callers can pick the same
+        # closings before either removes them (the lock is not held across the
+        # server round trip), and both recorded them: closing_confirmed twice
+        # for one close (device report, 2026-11-04).
+        if ok and removed:
+            _TRACE.record("otr", "closing_confirmed", "info", messages=removed)
             for peer, mark in list(self._key_marks().items()):
                 if mark[2] == "confirm" and peer not in waiting_for:
                     self._marks_done(peer)

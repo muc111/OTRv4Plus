@@ -43,6 +43,25 @@ def test_a_call_leaves_its_stages_in_the_report_and_no_names():
     assert "127.0.0.1" not in report
     failed = [e for e in _calls() if e["event"] == "sam_session_failed"][0]
     assert failed["severity"] == "error" and "refused" in failed["fields"]["reason"]
+    # The hang-up summary keeps its figures (duration, delay, delivery):
+    # recorded as a bare "ended", a report could not say how good a call was.
+    ended = [e for e in _calls() if e["event"] == "ended"][0]
+    assert "6s" in ended["fields"]["reason"]
+    assert "reason" not in [e for e in _calls()
+                            if e["event"] == "peer_ended"][0]["fields"], (
+        "the line that names the peer must not keep its text")
+
+
+def test_the_quality_summary_reaches_the_report_without_colour():
+    TRACE.clear()
+    say = traced_call_print(lambda *a, **k: None)
+    say("[voice] \U0001f7e2 call ended \u2014 good \u2014 1m54s, mouth-to-ear "
+        "~\x1b[32m640ms\x1b[0m, 1826 received, 1810 played, 16 concealed, "
+        "1900 frames sent")
+    say("[voice]   420ms network (one-way) + 180ms jitter buffer + 40ms playout")
+    by = {e["event"]: e["fields"].get("reason", "") for e in _calls()}
+    assert "16 concealed" in by["ended"] and "\x1b" not in by["ended"]
+    assert "420ms network" in by["call_latency_budget"]
 
 
 def test_lines_that_are_not_calls_are_not_recorded():

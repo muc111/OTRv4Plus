@@ -422,6 +422,31 @@ class TestAndroidFlow:
         err = T._sam_failure(otr.SamError(stage, "x", result), NEW)
         assert err.code == code
 
+    @pytest.mark.parametrize("server", [
+        "otrv4plus.i2p",                                              # shipped b32
+        "nquyxk5atgvp5yn3d4czvtb4qavysbxwjormmewhoyrdux5i4ika.b32.i2p",  # typed b32
+    ])
+    @pytest.mark.parametrize("result", ["INVALID_KEY", "KEY_NOT_FOUND"])
+    def test_a_b32_the_router_cannot_find_yet_is_not_an_address_book_problem(
+            self, server, result):
+        """Device report 2026-11-09: a just-started bundled i2pd answered
+        INVALID_KEY for the shipped b32 within 5 ms, three times, and each was
+        reported as "add the server to the address book". A b32 lookup is a
+        network search for the key's LeaseSet (i2pd SAM.cpp), so it is the
+        destination not being found yet."""
+        from android_bridge import transport as T
+        err = T._sam_failure(otr.SamError("naming", "x", result), server)
+        assert err.code == "i2p_destination_unreachable"
+        text = str(err)
+        assert "address book" not in text
+        assert "just started" in text and "DNS" in text
+
+    def test_a_short_name_the_router_does_not_know_still_says_address_book(self):
+        from android_bridge import transport as T
+        err = T._sam_failure(otr.SamError("naming", "x", "INVALID_KEY"), "friends.i2p")
+        assert err.code == "i2p_name_not_found"
+        assert "address book" in str(err)
+
 
 class TestTheProjectServerIsDialledAtItsShippedAddress:
     """otrv4plus.i2p -- the app's server list entry -- is dialled at its

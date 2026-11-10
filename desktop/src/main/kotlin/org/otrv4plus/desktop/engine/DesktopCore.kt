@@ -451,6 +451,12 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     fun setGroupCallAutoJoin(allowed: Boolean) =
         controller("set_group_call_auto_join", "allowed" to allowed)
 
+    /** "Mask my voice" in live calls (Rust live_mask.rs), at once. Returns
+     *  whether this build can mask. */
+    fun setVoiceMask(on: Boolean): Boolean = runCatching {
+        (call("set_voice_mask", "on" to on) as? JsonObject)?.get("available").asBool()
+    }.getOrDefault(false)
+
     /** Who is verified in [room], and a verification someone started. */
     fun groupVerifyState(room: String): GroupVerifyState {
         val v = controller("group_verify_state", "room" to room).value as? JsonObject
@@ -472,6 +478,7 @@ class DesktopCore(private val engine: Engine) : OtrCore {
             inCall = v["in_call"].flag(), paused = v["paused"].flag(),
             participants = (v["participants"] as? JsonArray).orEmpty().map { it.asStr() },
             ringingFrom = v.str("ringing_from"),
+            micSilent = v["mic_silent"].flag(),
         )
     }
 
@@ -545,6 +552,19 @@ class DesktopCore(private val engine: Engine) : OtrCore {
     }.getOrNull()
 
     /** Other sessions of our own account; null when unknown. */
+    /**
+     * The redacted diagnostic report, as text -- the same file the phones'
+     * "Save error log" writes, rendered by `android_bridge.report` in the
+     * engine (the one place that decides what a report may contain). Never
+     * throws: this is pressed when something is broken.
+     */
+    fun diagnosticReport(appVersion: String): String = runCatching {
+        engine.call("diagnostic_report", mapOf("app_version" to appVersion)).asStr()
+    }.getOrElse {
+        "OTRv4+ diagnostic report\n\nThe engine did not answer " +
+            "(${(it as? OtrBridgeException)?.code ?: it.javaClass.simpleName}).\n"
+    }
+
     fun otherSessions(): Int? = runCatching {
         val r = controller("other_sessions")
         if (r.ok) (r.value as? JsonArray)?.size ?: 0 else null

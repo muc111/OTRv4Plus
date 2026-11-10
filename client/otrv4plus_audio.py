@@ -347,6 +347,13 @@ AAUDIO_PERFORMANCE_MODE_LOW_LATENCY = 12
 AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION = 7
 AAUDIO_INPUT_PRESET_GENERIC = 1
 
+#: Readable names for the diagnostic report, so a log says whether the
+#: platform echo canceller was actually engaged rather than leaving it to be
+#: inferred. GENERIC means the VOICE_COMMUNICATION open failed and the stream
+#: fell back without AEC/AGC/NS -- the first thing to check for echo.
+_INPUT_PRESET_NAMES = {AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION: "voice_communication",
+                       AAUDIO_INPUT_PRESET_GENERIC: "generic"}
+
 # Output attributes.  Android 9+ (API 28); absent setters are skipped.
 #
 # The capture stream asks for AAUDIO_INPUT_PRESET_VOICE_COMMUNICATION, which
@@ -372,6 +379,12 @@ AAUDIO_INPUT_PRESET_GENERIC = 1
 AAUDIO_USAGE_MEDIA = 1
 AAUDIO_USAGE_VOICE_COMMUNICATION = 2
 AAUDIO_CONTENT_TYPE_SPEECH = 3
+
+#: Readable names for the diagnostic report. MEDIA on the playback stream
+#: means it is NOT the echo canceller's reference, so echo is expected: the
+#: canceller has nothing to subtract.
+_USAGE_NAMES = {AAUDIO_USAGE_VOICE_COMMUNICATION: "voice_communication",
+                AAUDIO_USAGE_MEDIA: "media"}
 AAUDIO_STREAM_STATE_STARTED = 5
 
 AAUDIO_ERROR_DISCONNECTED = -899       # the AAudio analogue of ERROR_DEAD_OBJECT
@@ -700,6 +713,12 @@ class AAudioStreamBase(AudioStream):
             "requested_channels": CHANNELS,
             "device_channels": getattr(self, "device_channels", None),
             "encoding": "PCM_16BIT",
+            # Echo-cancellation provenance: the capture preset (input) and the
+            # playback usage (output). Named so a report says plainly whether
+            # the platform AEC was engaged -- a capture that fell back to
+            # `generic`, or a playback left on `media`, means no echo canceller.
+            "input_preset": _INPUT_PRESET_NAMES.get(getattr(self, "input_preset", None)),
+            "usage": _USAGE_NAMES.get(getattr(self, "usage", None)),
             "buffer_capacity_frames": getattr(self, "buffer_capacity", None),
             "buffer_size_frames": getattr(self, "buffer_size", None),
             "frames_per_burst": getattr(self, "frames_per_burst", None),
@@ -1588,11 +1607,70 @@ class AAudioPlayback(AAudioStreamBase):
 # the bootstrap installs the package, so removing it would break paths the
 # brief says to leave alone.  It is simply no longer the default for calls.
 
-#: The command that turns echo cancellation on for PulseAudio or PipeWire
-#: (webrtc AEC, the same family as a phone's). Not run by us: it changes the
-#: user's audio system, so /audiotest says it and the user decides.
-ECHO_CANCEL_COMMAND = ("pactl load-module module-echo-cancel aec_method=webrtc "
-                       "source_name=echo-cancel-source sink_name=echo-cancel-sink")
+#: The source/sink names ensure_echo_cancel creates, matched by pulse_device.
+ECHO_CANCEL_SOURCE = "echo-cancel-source"
+ECHO_CANCEL_SINK = "echo-cancel-sink"
+
+
+def _env_true(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# Echo-cancellation algorithm. Both run ENTIRELY LOCALLY as a PulseAudio/
+# PipeWire filter -- PCM in, PCM out -- and NEITHER touches the network:
+#
+#   * "webrtc" is module-echo-cancel's libwebrtc-audio-processing backend: the
+#     AEC/AGC/NS *digital signal processing* lifted out of WebRTC. It is NOT
+#     the WebRTC that leaks addresses. The IP leak is RTCPeerConnection/ICE/
+#     STUN -- the peer-to-peer *networking* stack a browser uses to find a
+#     route around a proxy. That code is not in this library and is never
+#     invoked here: module-echo-cancel opens no socket, gathers no ICE
+#     candidate, sends no STUN. Our call media still leaves only through the
+#     I2P SAM transport, exactly as before. Best quality; a large C++ blob.
+#
+#   * "speex" is speexdsp's canceller: smaller, older, a much smaller trust
+#     surface, no WebRTC code in the process at all. Lower quality on hard
+#     echo. CLASSIC PULSEAUDIO ONLY: PipeWire (Ubuntu 24.04's default) ships
+#     only the webrtc canceller, so there speex does not load and the call
+#     runs without echo cancellation -- and says so. It never falls back to
+#     webrtc behind the back of someone who chose not to have it.
+#
+# Default "webrtc" for quality; OTRV4PLUS_AEC_METHOD=speex selects the other.
+_AEC_METHODS = ("webrtc", "speex")
+
+#: Extra canceller arguments, tried first and dropped if the server refuses
+#: them. Classic PulseAudio's webrtc canceller runs ANALOG gain control by
+#: default: it moves the hardware microphone volume -- undoing a level the user
+#: set, and leaving it moved after the call, which is not leaving the system as
+#: we found it. The call already levels the microphone itself (mic gain and
+#: compressor), so the canceller's gain control is switched off. PipeWire's
+#: canceller has gain control off by default and ignores these keys.
+_AEC_EXTRA_ARGS = {
+    "webrtc": ['aec_args="analog_gain_control=0 digital_gain_control=0"'],
+}
+
+
+def aec_method() -> str:
+    chosen = (os.environ.get("OTRV4PLUS_AEC_METHOD") or "").strip().lower()
+    return chosen if chosen in _AEC_METHODS else "webrtc"
+
+
+def echo_cancel_command() -> str:
+    """The pactl command that loads the canceller, with the chosen method.
+    Printed by /audiotest for a user loading it by hand or after opting the
+    automatic one out (OTRV4PLUS_NO_AUTO_ECHO_CANCEL)."""
+    method = aec_method()
+    # Single-quoted whole, so a shell passes the inner double quotes through
+    # and PulseAudio receives aec_args as one quoted value.
+    extra = "".join(" '%s'" % a for a in _AEC_EXTRA_ARGS.get(method, []))
+    return ("pactl load-module module-echo-cancel aec_method=%s "
+            "source_name=%s sink_name=%s%s"
+            % (method, ECHO_CANCEL_SOURCE, ECHO_CANCEL_SINK, extra))
+
+
+#: Back-compat alias: the command string with the current method. Kept because
+#: /audiotest and termux setup reference it by name.
+ECHO_CANCEL_COMMAND = echo_cancel_command()
 
 
 def pulse_device(kind: str, which=None, env=None, runner=None) -> str:
@@ -1630,6 +1708,178 @@ def pulse_device(kind: str, which=None, env=None, runner=None) -> str:
     return ""
 
 
+def ensure_echo_cancel(which=None, env=None, runner=None):
+    """Load module-echo-cancel if nothing is cancelling echo yet, so a laptop
+    on speakers does not loop the far end's voice back. Returns the module
+    index we loaded (to unload on teardown), or None if we loaded nothing.
+
+    WHY THIS IS NOW AUTOMATIC. The module used to be the user's job: it
+    "changes the user's audio system." But a phone's AEC is automatic, a
+    desktop call without one echoes, and "clear on the phone, echo on the
+    laptop" is not an acceptable cross-platform call. So the call loads it
+    itself -- NARROWLY and REVERSIBLY, which is what makes that safe:
+
+      * the source and sink are NAMED and NOT made default, so only our own
+        parec/pacat select them (pulse_device); every other app is untouched;
+      * we unload exactly what we loaded, on teardown, so the system is left
+        as we found it;
+      * we never load over an existing one, a pinned device
+        (OTRV4PLUS_PULSE_SOURCE/_SINK), or an opt-out
+        (OTRV4PLUS_NO_AUTO_ECHO_CANCEL=1);
+      * if the load fails or the device does not actually appear, we undo it
+        and the call proceeds on the default device exactly as before -- a
+        missing canceller is echo, but a call routed through a device that is
+        not there is silence, and silence is the worse failure.
+
+    Not used on Android: there the platform AEC rides the VOICE_COMMUNICATION
+    streams and this backend is never opened.
+    """
+    if _env_true("OTRV4PLUS_NO_AUTO_ECHO_CANCEL"):
+        return None
+    if (os.environ.get("OTRV4PLUS_PULSE_SOURCE", "").strip()
+            or os.environ.get("OTRV4PLUS_PULSE_SINK", "").strip()):
+        return None                              # the user pinned the devices
+    which = which or _default_which
+    pactl = which("pactl")
+    if pactl is None:
+        return None
+    if pulse_device("source", which, env, runner=runner):
+        return None                              # already cancelling; leave it
+    method = aec_method()
+    base = [pactl, "load-module", "module-echo-cancel", "aec_method=" + method,
+            "source_name=" + ECHO_CANCEL_SOURCE, "sink_name=" + ECHO_CANCEL_SINK]
+    extra = _AEC_EXTRA_ARGS.get(method, [])
+    index = None
+    # With the extra arguments first; a server that refuses them gets the
+    # plain load, so an unknown key can never cost the call its canceller.
+    for args in ([base + extra, base] if extra else [base]):
+        index = _load_module(args, env, runner)
+        if index is not None:
+            break
+    if index is None:
+        return None
+    # Confirm the source really appeared. A load that reports success but
+    # leaves no usable device must not route the call through nothing.
+    if not pulse_device("source", which, env, runner=runner):
+        unload_module(index, which, env, runner)
+        return None
+    return index
+
+
+def _load_module(args, env=None, runner=None):
+    """Run one `pactl load-module`; the module index, or None if refused."""
+    try:
+        if runner is None:
+            import subprocess
+            out = subprocess.run(args, capture_output=True, text=True,
+                                 timeout=5, env=env or dict(os.environ))
+            if out.returncode != 0:
+                return None
+            raw = out.stdout.strip()
+        else:
+            raw = str(runner(args)).strip()
+    except Exception:
+        return None
+    return int(raw) if raw.isdigit() else None
+
+
+def auto_echo_cancel_enabled(which=None) -> bool:
+    """Whether a call will switch echo cancellation on by itself: not opted
+    out, no device pinned, and pactl there to load it. For what /audiotest and
+    the call say to the user -- not a substitute for ensure_echo_cancel."""
+    if _env_true("OTRV4PLUS_NO_AUTO_ECHO_CANCEL"):
+        return False
+    if (os.environ.get("OTRV4PLUS_PULSE_SOURCE", "").strip()
+            or os.environ.get("OTRV4PLUS_PULSE_SINK", "").strip()):
+        return False
+    return (which or _default_which)("pactl") is not None
+
+
+def unload_module(index, which=None, env=None, runner=None) -> None:
+    """Unload a PulseAudio module we loaded. Never raises."""
+    if index is None:
+        return
+    which = which or _default_which
+    pactl = which("pactl")
+    if pactl is None:
+        return
+    args = [pactl, "unload-module", str(index)]
+    try:
+        if runner is None:
+            import subprocess
+            subprocess.run(args, capture_output=True, text=True, timeout=5,
+                           env=env or dict(os.environ))
+        else:
+            runner(args)
+    except Exception:
+        pass
+
+
+# -- one shared canceller, held by every live PulseAudio stream ----------------
+#
+# The canceller is ONE module providing both the echo-cancelled source (mic)
+# and sink (speaker). It must stay loaded while EITHER stream of a call is
+# alive: mute releases the microphone (so the OS recording indicator goes out)
+# while the speaker keeps playing, and a canceller owned by the microphone
+# alone was unloaded on mute -- taking the speaker's sink with it, so after
+# the first mute/unmute the speaker was no longer the canceller's reference
+# and the echo came back. So each stream acquires a reference and releases it
+# in stop(); the module is loaded by the first and unloaded by the last.
+
+_EC_LOCK = threading.Lock()
+_EC = {"refs": 0, "index": None, "ctx": (None, None, None)}
+
+
+def acquire_echo_cancel(which=None, env=None, runner=None) -> bool:
+    """Take a reference on the shared canceller, loading it if this is the
+    first. Returns True: the caller must release_echo_cancel() exactly once.
+
+    Held under the lock while pactl runs, on purpose: a playback stream opened
+    a moment after the capture waits for the module, so it finds the
+    echo-cancelled sink rather than racing past it to the default one."""
+    with _EC_LOCK:
+        _EC["refs"] += 1
+        if _EC["refs"] == 1:
+            # First holder: load if nothing is cancelling yet. A failed load
+            # is not retried by later holders of the same call -- each retry
+            # would add pactl's latency to a stream open for the same answer.
+            _EC["index"] = ensure_echo_cancel(which, env, runner)
+            _EC["ctx"] = (which, env, runner)
+    return True
+
+
+def release_echo_cancel() -> None:
+    """Drop a reference; the last one unloads what we loaded. Never raises,
+    and harmless if called more often than acquired."""
+    with _EC_LOCK:
+        if _EC["refs"] > 0:
+            _EC["refs"] -= 1
+        if _EC["refs"] > 0 or _EC["index"] is None:
+            return
+        index, _EC["index"] = _EC["index"], None
+        which, env, runner = _EC["ctx"]
+        # Unloaded UNDER the lock. Released first, a call opened in the gap
+        # (hang up, call again at once) saw the old canceller still listed,
+        # took it for someone else's and loaded none -- then this unload took
+        # it away, and that call ran with no echo cancellation.
+        unload_module(index, which, env, runner)
+
+
+def _release_echo_cancel_at_exit() -> None:
+    """A client that exits with a call up (crash, kill) leaves no canceller
+    behind that it loaded: the system is put back however we leave."""
+    with _EC_LOCK:
+        index, _EC["index"] = _EC["index"], None
+        _EC["refs"] = 0
+        which, env, runner = _EC["ctx"]
+        if index is not None:
+            unload_module(index, which, env, runner)
+
+
+import atexit as _atexit                                 # noqa: E402
+_atexit.register(_release_echo_cancel_at_exit)
+
+
 class PulseCapture(AudioStream):
     """parec -> pipe.  The legacy path, kept as an explicit opt-in."""
 
@@ -1644,21 +1894,32 @@ class PulseCapture(AudioStream):
             raise AudioError(AUDIO_BACKEND_UNAVAILABLE, "parec not found")
         self._read_exact = read_exact
         self._closed = False
+        # Make echo cancellation exist before choosing the source: on a laptop
+        # with nothing loaded this is what stops the far end hearing itself.
+        # A reference on the shared canceller (acquire_echo_cancel), released
+        # in stop() -- the playback stream holds its own, so mute (which stops
+        # this stream) does not take the speaker's reference sink away.
+        self._ec_held = acquire_echo_cancel(which, env)
         #: The echo-cancelled source when one is loaded (see pulse_device).
         self.device = pulse_device("source", which, env)
         self.echo_cancelled = "echo-cancel" in self.device
-        self._proc = subprocess.Popen(
-            [parec, "--client-name=otrv4plus-mic", "--channels=%d" % CHANNELS,
-             "--rate=%d" % SAMPLE_RATE, "--format=s16le",
-             "--latency-msec=%d" % FRAME_MS]
-            + (["--device=%s" % self.device] if self.device else []),
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
+        try:
+            self._proc = subprocess.Popen(
+                [parec, "--client-name=otrv4plus-mic", "--channels=%d" % CHANNELS,
+                 "--rate=%d" % SAMPLE_RATE, "--format=s16le",
+                 "--latency-msec=%d" % FRAME_MS]
+                + (["--device=%s" % self.device] if self.device else []),
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
+        except BaseException:
+            self._release_ec()           # no stream, so no reference either
+            raise
         time.sleep(0.25)
         if self._proc.poll() is not None:
             # Reap the pipes before raising. Leaving them to the GC leaked a
             # file descriptor per failed attempt, and open_capture() retries.
             _terminate(self._proc)
+            self._release_ec()
             raise AudioError(AUDIO_RECORD_INITIALIZATION_FAILED,
                              "parec exited immediately")
 
@@ -1681,11 +1942,21 @@ class PulseCapture(AudioStream):
             return
         self._closed = True
         _terminate(self._proc)
+        self._release_ec()
+
+    def _release_ec(self) -> None:
+        """Our reference on the shared canceller, exactly once."""
+        if getattr(self, "_ec_held", False):
+            self._ec_held = False
+            release_echo_cancel()
 
     def diagnostics(self) -> dict:
         return {"backend": "pulseaudio", "direction": "input",
                 "device_rate": SAMPLE_RATE, "device_channels": CHANNELS,
                 "encoding": "PCM_16BIT", "resampling": False,
+                # Linux has no system echo cancellation for a plain parec, so a
+                # report has to say whether module-echo-cancel was in the path.
+                "echo_cancelled": bool(self.echo_cancelled),
                 "alive": self._proc.poll() is None}
 
 
@@ -1695,7 +1966,7 @@ class PulsePlayback(AudioStream):
     name = "pulseaudio"
     direction = "output"
 
-    def __init__(self, which=None, write_all=None, env=None):
+    def __init__(self, which=None, write_all=None, env=None, echo_cancel=True):
         import subprocess
         which = which or _default_which
         pacat = which("pacat")
@@ -1704,18 +1975,27 @@ class PulsePlayback(AudioStream):
         self._write_all = write_all
         self._closed = False
         # Playback must go through the echo canceller's sink too, or it has
-        # nothing to subtract.
+        # nothing to subtract -- and it holds its own reference, so the sink
+        # outlives a muted (stopped) microphone. echo_cancel=False is for a
+        # sound that is not a call (the ringtone): it plays wherever the
+        # canceller already is, without loading one just to ring.
+        self._ec_held = acquire_echo_cancel(which, env) if echo_cancel else False
         self.device = pulse_device("sink", which, env)
-        self._proc = subprocess.Popen(
-            [pacat, "--playback", "--client-name=otrv4plus-spk",
-             "--channels=%d" % CHANNELS, "--rate=%d" % SAMPLE_RATE,
-             "--format=s16le", "--latency-msec=%d" % FRAME_MS]
-            + (["--device=%s" % self.device] if self.device else []),
-            stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
+        try:
+            self._proc = subprocess.Popen(
+                [pacat, "--playback", "--client-name=otrv4plus-spk",
+                 "--channels=%d" % CHANNELS, "--rate=%d" % SAMPLE_RATE,
+                 "--format=s16le", "--latency-msec=%d" % FRAME_MS]
+                + (["--device=%s" % self.device] if self.device else []),
+                stdin=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, bufsize=0, env=env or dict(os.environ))
+        except BaseException:
+            self._release_ec()           # no stream, so no reference either
+            raise
         time.sleep(0.25)
         if self._proc.poll() is not None:
             _terminate(self._proc)
+            self._release_ec()
             raise AudioError(AUDIO_PLAYBACK_INITIALIZATION_FAILED,
                              "pacat exited immediately")
 
@@ -1740,11 +2020,19 @@ class PulsePlayback(AudioStream):
         except Exception:
             pass
         _terminate(self._proc)
+        self._release_ec()
+
+    def _release_ec(self) -> None:
+        """Our reference on the shared canceller, exactly once."""
+        if getattr(self, "_ec_held", False):
+            self._ec_held = False
+            release_echo_cancel()
 
     def diagnostics(self) -> dict:
         return {"backend": "pulseaudio", "direction": "output",
                 "device_rate": SAMPLE_RATE, "device_channels": CHANNELS,
                 "encoding": "PCM_16BIT", "resampling": False,
+                "echo_cancelled": "echo-cancel" in self.device,
                 "alive": self._proc.poll() is None}
 
 
@@ -1825,7 +2113,8 @@ def open_capture(preferred=None, which=None, read_exact=None, env=None):
                                     "no capture backend available")
 
 
-def open_playback(preferred=None, which=None, write_all=None, env=None):
+def open_playback(preferred=None, which=None, write_all=None, env=None,
+                  echo_cancel=True):
     """Open a playback stream.  Returns (stream, notes).
 
     Callers that already have a capture stream should pass its backend as
@@ -1843,7 +2132,7 @@ def open_playback(preferred=None, which=None, write_all=None, env=None):
                 return AAudioPlayback(), notes
             if backend == BACKEND_PULSE:
                 return PulsePlayback(which=which, write_all=write_all,
-                                     env=env), notes
+                                     env=env, echo_cancel=echo_cancel), notes
         except AudioError as exc:
             first_error = first_error or exc
             notes.append("%s playback unavailable: %s" % (backend, exc))
@@ -2143,7 +2432,8 @@ class Ringer:
         pattern = self._build_pattern()
         try:
             self._stream, _notes = open_playback(which=which,
-                                                 write_all=write_all)
+                                                 write_all=write_all,
+                                                 echo_cancel=False)
             self.started = True
         except Exception as exc:
             # A silent ring is survivable — the call still shows on screen —
@@ -2290,3 +2580,74 @@ class Ringer:
         if remove:
             self._spawn([remove, self._notif_id])
         self._reap_helpers()
+
+
+# ── Voice masking for live calls (Rust live_mask.rs) ────────────────────────
+#
+# Owner, 2026-11-09: "we must clearly understand the person speaking but
+# can't identify who ... keep it simple for a user to cloak voice in
+# realtime, add a button". One switch, read by every call's capture loop on
+# every frame, so the button takes effect at once. The mask itself (pitch
+# and formants moved together, a low voice up and a high one down, random
+# per call) is Rust's; nothing about it is chosen, kept or logged here.
+
+_LIVE_MASK = {"on": False}
+
+
+def set_live_mask(on: bool) -> None:
+    """The "Mask my voice" switch (apps: OtrApp.set_voice_mask; /mask)."""
+    _LIVE_MASK["on"] = bool(on)
+
+
+def live_mask_on() -> bool:
+    return _LIVE_MASK["on"]
+
+
+def live_mask_available() -> bool:
+    """Whether this build's Rust core has the live mask."""
+    try:
+        import otrv4_core
+        return hasattr(otrv4_core, "LiveVoiceMask")
+    except Exception:
+        return False
+
+
+class LiveMasker:
+    """One call's voice mask, between the microphone levelling and Opus.
+
+    Passes audio through while the switch is off. While it is on, returns
+    the masked audio -- or SILENCE when masking cannot run (a core without
+    it, an error) or is still finding which way to move the voice: a user
+    who asked to be masked is never sent their real voice. The mask is made
+    on first use in the call, so each call draws its own.
+    """
+
+    def __init__(self):
+        self._mask = None
+        self.failed = False
+
+    @property
+    def active(self) -> bool:
+        return _LIVE_MASK["on"]
+
+    @property
+    def ready(self) -> bool:
+        """Masked audio is coming out (not the start-of-call silence)."""
+        return self._mask is not None and bool(getattr(self._mask, "ready", False))
+
+    def process(self, pcm) -> bytearray:
+        if not _LIVE_MASK["on"]:
+            return pcm
+        silent = bytearray(len(pcm))
+        if self._mask is None:
+            try:
+                import otrv4_core
+                self._mask = otrv4_core.LiveVoiceMask()
+            except Exception:
+                self.failed = True
+                return silent
+        try:
+            return bytearray(self._mask.process(bytes(pcm)))
+        except Exception:
+            self.failed = True
+            return silent

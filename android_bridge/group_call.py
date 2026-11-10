@@ -61,6 +61,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from .events import ErrorOccurred, GroupChanged
+from .trace import TRACE as _TRACE
 
 __all__ = ["CALL_PREFIX", "GroupCalls", "mix"]
 
@@ -96,6 +97,10 @@ class _Call:
     drop_previous_at: float = 0.0
     #: Participants who said they paused: silent on purpose, not lost.
     paused_peers: set = field(default_factory=set)
+    #: identity -> destination of members whose join/here arrived before
+    #: this device held a verified binding for them. Not in the call, and
+    #: sent nothing; admitted by `_admit_pending` once verified here.
+    pending: Dict[str, str] = field(default_factory=dict)
 
 
 def mix(frames: List[bytes]) -> bytes:
@@ -263,9 +268,28 @@ class GroupCalls:
     def ringing(self) -> List[Dict[str, str]]:
         with self._lock:
             now = self._clock()
-            return [{"room": c.room, "from": c.starter, "call": c.call_id}
-                    for c in self._calls.values()
-                    if not c.joined and now - c.rang_at < RING_SECONDS]
+            fresh = [c for c in self._calls.values()
+                     if not c.joined and now - c.rang_at < RING_SECONDS]
+        # A ring from a group that is no longer on this device (deleted while
+        # it rang) is not offered -- answering it could only fail. Checked
+        # outside our lock: the group's own lock is taken by is_secure, and the
+        # groups call into us (set_call_handler) while holding theirs.
+        gone = [c for c in fresh if not self._group_alive(c.room)]
+        if gone:
+            with self._lock:
+                for c in gone:
+                    if self._calls.get(c.room) is c and not c.joined:
+                        self._calls.pop(c.room, None)
+        return [{"room": c.room, "from": c.starter, "call": c.call_id}
+                for c in fresh if c not in gone]
+
+    def _group_alive(self, room: str) -> bool:
+        """Whether [room] is still a secure group on this device. A check that
+        fails counts as alive: a transient error must not end a live call."""
+        try:
+            return bool(self._groups.is_secure(room))
+        except Exception:
+            return True
 
     # -- media ------------------------------------------------------------------
 
@@ -308,8 +332,23 @@ class GroupCalls:
     # -- time -------------------------------------------------------------------
 
     def tick(self) -> None:
-        """Call about once a second: drops a previous epoch after the grace
-        period, and has the starter force a rekey every REKEY_SECONDS."""
+        """Call about once a second: ends a call whose group is gone, drops a
+        previous epoch after the grace period, and has the starter force a
+        rekey every REKEY_SECONDS."""
+        with self._lock:
+            room = self._active
+        # The group is no longer on this device -- deleted (by its owner or a
+        # server admin), left, removed, or the app wiped. Its call cannot go
+        # on: the keys it derives from are gone, and a call left up kept the
+        # microphone live with nobody listening (device report: peers=0 while
+        # capture ran on) and refused every later call as call_in_progress.
+        # The front-ends close the microphone and speaker when active() goes
+        # to None under them.
+        if room is not None and not self._group_alive(room):
+            self.hangup(room)
+            return
+        if room is not None:
+            self._admit_pending(room)
         with self._lock:
             room = self._active
             call = self._calls.get(room) if room else None
@@ -348,6 +387,8 @@ class GroupCalls:
             members = set(self._groups.member_identities(room))
             for who in [p for p in call.peers if p not in members]:
                 call.peers.pop(who, None)
+            for who in [p for p in call.pending if p not in members]:
+                call.pending.pop(who, None)
 
     def _on_control(self, room: str, sender: str, verified: bool, payload: str) -> None:
         if len(payload) > MAX_CONTROL_LEN:
@@ -390,19 +431,29 @@ class GroupCalls:
             if not isinstance(dest, str) or not dest or len(dest) > MAX_DEST_LEN:
                 return
             if not verified:
-                self._emit(GroupChanged(peer=room, change="call_refused_unverified",
-                                        detail=sender[:200]))
+                # Not admitted -- and REMEMBERED. Members verify each other
+                # through the creator's vouch, which can reach us after the
+                # join it vouches for (the joiner's SMP finishes on its side
+                # first). A refusal used to be final: the joiner was never
+                # looked at again and the call stayed one short (device test,
+                # 2026-11-06). `_admit_pending` lets them in once verified.
+                self._hold_pending(room, call, sender, dest)
                 return
             with self._lock:
                 if sender not in call.peers and len(call.peers) + 1 >= self.MAX_PARTICIPANTS:
                     full = True
                 else:
                     call.peers[sender] = dest
+                    call.pending.pop(sender, None)
                     full = False
                 joined = call.joined
             if full:
+                _TRACE.record("group_call", "call_full", "warning",
+                              peers=len(call.peers))
                 self._emit(ErrorOccurred(peer=room, code="call_full"))
                 return
+            _TRACE.record("group_call", "participant_added", "info",
+                          jid=sender, via="join", peers=len(call.peers))
             self._emit(GroupChanged(peer=room, change="call_participant", detail=sender[:200]))
             if joined:
                 # They may have missed our join: say it again, once per joiner.
@@ -410,10 +461,19 @@ class GroupCalls:
                                      "dest": self._local_destination()})
         elif kind == "here":
             dest = msg.get("dest")
-            if verified and isinstance(dest, str) and 0 < len(dest) <= MAX_DEST_LEN:
-                with self._lock:
-                    if sender in call.peers or len(call.peers) + 1 < self.MAX_PARTICIPANTS:
-                        call.peers[sender] = dest
+            if not (isinstance(dest, str) and 0 < len(dest) <= MAX_DEST_LEN):
+                return
+            if not verified:
+                self._hold_pending(room, call, sender, dest)
+                return
+            with self._lock:
+                added = sender not in call.peers and len(call.peers) + 1 < self.MAX_PARTICIPANTS
+                if sender in call.peers or added:
+                    call.peers[sender] = dest
+                    call.pending.pop(sender, None)
+            if added:
+                _TRACE.record("group_call", "participant_added", "info",
+                              jid=sender, via="here", peers=len(call.peers))
         elif kind == "pause":
             if verified:
                 with self._lock:
@@ -424,12 +484,65 @@ class GroupCalls:
         elif kind == "leave":
             with self._lock:
                 call.peers.pop(sender, None)
+                call.pending.pop(sender, None)
                 call.paused_peers.discard(sender)
                 # The caller hung up before we answered: stop ringing.
                 if not call.joined and sender == call.starter:
                     self._calls.pop(room, None)
             self._emit(GroupChanged(peer=room, change="call_participant_left",
                                     detail=sender[:200]))
+
+    # -- members who joined before we verified them ------------------------------
+
+    def _hold_pending(self, room: str, call: "_Call", sender: str, dest: str) -> None:
+        """Keep an unverified joiner's announcement for `_admit_pending`.
+        Bounded by the call's size; said (and traced) once per joiner."""
+        with self._lock:
+            first = sender not in call.pending
+            if first and len(call.pending) >= self.MAX_PARTICIPANTS:
+                return
+            call.pending[sender] = dest
+        if first:
+            _TRACE.record("group_call", "join_refused_unverified", "warning",
+                          jid=sender, peers=len(call.peers))
+            self._emit(GroupChanged(peer=room, change="call_refused_unverified",
+                                    detail=sender[:200]))
+
+    def _admit_pending(self, room: str) -> None:
+        """Admit pending joiners this device has since verified, and say our
+        destination again so they admit us. Verification is read the same way
+        the control messages are judged (`members()`: the binding's key is
+        the member's current key, and it is verified). Asked outside our lock:
+        the groups take their own, and call into us while holding it."""
+        with self._lock:
+            call = self._calls.get(room)
+            if call is None or not call.joined or not call.pending:
+                return
+            waiting = list(call.pending)
+        try:
+            verified = {m["jid"] for m in self._groups.members(room)
+                        if m["verified"] and not m["me"]}
+        except Exception:
+            return
+        admitted = []
+        with self._lock:
+            if self._calls.get(room) is not call:
+                return
+            for who in waiting:
+                if who not in verified or who not in call.pending:
+                    continue
+                if who not in call.peers and len(call.peers) + 1 >= self.MAX_PARTICIPANTS:
+                    break
+                call.peers[who] = call.pending.pop(who)
+                admitted.append(who)
+            call_id, peers = call.call_id, len(call.peers)
+        for who in admitted:
+            _TRACE.record("group_call", "participant_added", "info",
+                          jid=who, via="verified_later", peers=peers)
+            self._emit(GroupChanged(peer=room, change="call_participant", detail=who[:200]))
+        if admitted:
+            self._control(room, {"t": "here", "call": call_id,
+                                 "dest": self._local_destination()})
 
     # -- inside -------------------------------------------------------------------
 

@@ -24,6 +24,69 @@ If you have run Prosody before, this is the familiar setup with i2pd in front:
 
 Optional: the People list and Welcome room need [PROSODY_USER_DISCOVERY.md](PROSODY_USER_DISCOVERY.md).
 
+## Why host it yourself, and where
+
+**What a big provider has to do, and you may not.** A company running a
+messenger for the public holds many people's data in one place. That makes
+it the obvious place to serve legal demands, and at its scale it may be
+designated under surveillance or online-safety laws, with compliance teams to
+match. A server you run for yourself and people you know holds far less, and
+is a much smaller target.
+
+**What your server can and cannot see.**
+- Messages, group chats, files and calls are end-to-end encrypted: the
+  server relays them and cannot read them.
+- Over I2P it never learns anyone's IP address.
+- What it does hold:
+  - account names and contact lists;
+  - who is in which room, and when someone is online;
+  - offline messages, still encrypted, until they are delivered.
+- Keep that small: archive only what you need, and keep no logs you do not
+  read.
+
+**Running a server does not put you outside the law.** Three places' laws
+can reach it:
+- the country the machine is in;
+- the country you live in;
+- the hosting company's country. A provider can be served directly, and can
+  hand over or image the machine without asking you.
+
+I2P hides the server from its users, not from whoever hosts it. Hosting at
+home, or with a provider in a country you chose on purpose, is a real
+decision.
+
+**Some differences between countries.** This is general information that
+changes over time, **not legal advice**; check the current law for your
+case.
+- **Personal use is treated differently.** Data-protection law (the GDPR in
+  the EU and similar laws elsewhere) generally does not apply to purely
+  personal or household use. Hosting accounts for other people, or for the
+  public, usually brings duties: security, deletion on request, and
+  breach handling.
+- **Switzerland.**
+  - Data protection: the revised Federal Act on Data Protection (2023).
+  - Surveillance law (BÜPF/LSCPT) puts its heaviest duties on telecom
+    providers, and lighter ones on providers of "derived communication
+    services".
+  - A 2025 government proposal to extend those duties to more online
+    services drew public objections from privacy services; check where it
+    stands.
+- **United Kingdom.**
+  - The Investigatory Powers Act 2016 (amended 2024) allows notices that
+    require a provider to help with interception and, in some cases, to
+    change its service, with secrecy obligations.
+  - The Online Safety Act 2023 gives Ofcom powers over user-to-user
+    services.
+- **Ireland (EU).**
+  - The GDPR applies to personal data you handle for others.
+  - Irish data-retention law (amended in 2022 after EU court rulings)
+    targets providers of electronic communications services.
+  - EU proposals to require scanning of private messages have been debated
+    for several years.
+
+Whatever the country, end-to-end encryption means what is not on the
+server cannot be handed over: no message, call or file can be read from it.
+
 ## Capacity
 
 On one 2015 ThinkPad T450 running Prosody, measured with the built-in stress

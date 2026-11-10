@@ -188,7 +188,7 @@ def test_bounces_and_rejoins_reach_the_groups_off_the_calling_thread(pair):
     a = A[0]
     seen = []
     caller = threading.current_thread()
-    a.groups.on_room_rejected = lambda room: seen.append(
+    a.groups.on_room_rejected = lambda room, condition="": seen.append(
         ("rejected", room, threading.current_thread() is caller))
     a.groups.on_room_rejoined = lambda room: seen.append(
         ("rejoined", room, threading.current_thread() is caller))

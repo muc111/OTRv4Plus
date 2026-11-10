@@ -1406,8 +1406,18 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         one fewer thing depending on that.
         """
         transport = self._transport
-        if transport is None:
-            _TRACE.record("muc", name, "warning", result="not_connected")
+        quiet = name in self._QUIET_POLLS
+        if transport is None or (
+                quiet and not bool(getattr(transport, "is_connected", True))):
+            # The UI polls these every 10 s whatever the connection is doing;
+            # with no stream there is nothing to ask, and a warning per poll
+            # filled device reports while a router was starting or tunnels
+            # were building. Not asked, and recorded once per change.
+            if quiet:
+                self._quiet_record(name, "not_connected", "warning",
+                                   result="not_connected")
+            else:
+                _TRACE.record("muc", name, "warning", result="not_connected")
             return {"ok": False, "code": "network",
                     "detail": "Connect before using rooms.", "value": None}
         try:
@@ -1420,20 +1430,23 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             value = None
             _TRACE.record("muc", name, "error", code=code)
         else:
-            if name in self._QUIET_POLLS and code == "ok":
+            if quiet and code == "ok":
                 # Polled every 10 s by the UI: recorded only when the answer
                 # changes, so the diagnostic log is not filled with it. The
                 # admin answer itself is recorded -- a yes/no, nothing
                 # identifying.
                 summary = (bool(value) if name == "server_admin"
                            else len(value or ()))
-                last = self.__dict__.setdefault("_quiet_last", {})
-                if last.get(name) != summary:
-                    last[name] = summary
-                    if name == "server_admin":
-                        _TRACE.record("muc", name, "info", code=code, admin=summary)
-                    else:
-                        _TRACE.record("muc", name, "info", code=code, count=summary)
+                if name == "server_admin":
+                    self._quiet_record(name, ("ok", summary), "info",
+                                       code=code, admin=summary)
+                else:
+                    self._quiet_record(name, ("ok", summary), "info",
+                                       code=code, count=summary)
+            elif quiet:
+                # A failing poll is as repetitive as a working one: once per
+                # change of code, not once per 10 s.
+                self._quiet_record(name, code, "warning", code=code)
             else:
                 _TRACE.record("muc", name, "info" if code == "ok" else "warning",
                               code=code)
@@ -1442,6 +1455,13 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
 
     #: Room calls the UI polls; traced only when their answer changes.
     _QUIET_POLLS = frozenset({"owned_rooms", "server_admin", "other_sessions"})
+
+    def _quiet_record(self, name: str, key: Any, severity: str, **fields) -> None:
+        """Trace a polled answer only when it differs from the last one."""
+        last = self.__dict__.setdefault("_quiet_last", {})
+        if last.get(name) != key:
+            last[name] = key
+            _TRACE.record("muc", name, severity, **fields)
 
     def _roster_call(self, name: str, *args) -> Dict[str, Any]:
         # Every roster operation is traced, because "Add Contact did nothing"

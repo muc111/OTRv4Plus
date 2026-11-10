@@ -43,13 +43,22 @@ class _Disco:
 
 
 class _Muc:
-    def __init__(self, taken=()):
+    def __init__(self, taken=(), occupants=None):
         self.joined, self.taken = [], set(taken)
+        #: nick -> that occupant's real bare JID, as a non-anonymous room
+        #: exposes it. `/people` reads exactly this.
+        self._occupants = dict(occupants or {})
 
     async def join_muc_wait(self, room, nick, timeout=None, **kw):
         if nick in self.taken:
             raise RuntimeError("conflict")
         self.joined.append((room, nick))
+
+    def get_roster(self, room):
+        return list(self._occupants)
+
+    def get_jid_property(self, room, nick, prop):
+        return self._occupants.get(nick, "") if prop == "jid" else ""
 
 
 def _client(rooms, taken=()):
@@ -84,6 +93,54 @@ def test_no_room_or_an_unclear_one_is_not_joined_or_guessed(rooms, capsys):
     _run(c)
     assert c.plugin["xep_0045"].joined == []
     assert "only to your contacts" in capsys.readouterr().out
+
+
+def test_the_welcome_room_is_remembered_so_people_can_be_listed(capsys):
+    c = _client([(ROOM, W.ROOM_NAME)])
+    _run(c)
+    assert getattr(c, "_welcome_room", "") == ROOM
+    assert "/people" in capsys.readouterr().out      # the join line points at it
+
+
+def test_people_lists_welcome_room_occupants_with_add_guidance(capsys):
+    """Device test, 2026-11-03: Termux had no way to see who else is in the
+    public room, so adding each other meant knowing the exact address. /people
+    reads the room's occupants (as the apps' People view does) and says what to
+    do with each -- ourselves excluded, contacts marked, and a ready /add line
+    for anyone new."""
+    c = _client([(ROOM, W.ROOM_NAME)])
+    c._welcome_room = ROOM
+    c._own_bare = "b@otrv4plus.i2p"
+    c.boundjid = types.SimpleNamespace(domain=DOMAIN, user="b", bare="b@otrv4plus.i2p")
+    c.plugin["xep_0045"] = _Muc(occupants={
+        "b": "b@otrv4plus.i2p",            # ourselves -- excluded
+        "alice": "alice@otrv4plus.i2p",    # already a contact
+        "carol": "carol@otrv4plus.i2p",    # someone new
+    })
+    c.client_roster = {"alice@otrv4plus.i2p": {}}
+
+    c.people_list()
+    out = capsys.readouterr().out
+    assert "carol@otrv4plus.i2p) — not a contact" in out
+    assert "/add carol@otrv4plus.i2p" in out
+    assert "alice@otrv4plus.i2p) — contact" in out
+    assert "b@otrv4plus.i2p" not in out, "our own address is not listed"
+    assert "/group invite" in out
+
+
+def test_people_without_the_welcome_room_points_at_roster(capsys):
+    c = _client([(ROOM, W.ROOM_NAME)])
+    c._own_bare = "b@otrv4plus.i2p"
+    c.boundjid = types.SimpleNamespace(domain=DOMAIN, user="b", bare="b@otrv4plus.i2p")
+    # No _welcome_room set (started with --no-welcome, or still joining).
+    c.people_list()
+    assert "not in the Welcome room" in capsys.readouterr().out
+
+
+def test_people_and_who_route_to_the_people_list():
+    import inspect
+    src = inspect.getsource(xmpp.OTRv4PlusXMPP._dispatch_contacts)
+    assert 'lstrip in ("/people", "/who")' in src and "self.people_list()" in src
 
 
 def test_no_welcome_keeps_the_terminal_out():

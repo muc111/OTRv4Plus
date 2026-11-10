@@ -224,9 +224,18 @@ def _connection_fields(status: Dict[str, Any]) -> Dict[str, Any]:
         "last_stage": last.get("stage", "-"),
     }
     inputs = status.get("inputs")
-    if inputs:
+    if isinstance(inputs, dict):
         # Rendered by the controller, which already reports the password as
         # present/absent rather than as a value or even a length.
+        #
+        # One field per line, not the dict on one line: the line redactor
+        # (_scrub) replaces a hinted key's value up to the END OF THE LINE --
+        # rightly, since a secret can hold commas -- so `password_present`
+        # inside a one-line dict wiped every input after it. On its own line
+        # it costs only itself, and still shows that the field was there.
+        for key in inputs:
+            fields["input." + str(key)] = inputs[key]
+    elif inputs:
         fields["inputs"] = inputs
     return fields
 

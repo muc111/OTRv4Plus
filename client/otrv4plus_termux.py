@@ -731,8 +731,14 @@ async def _audio_selftest_async(voice_available):
             ec = ""
         if "echo-cancel" in ec:
             print("[audio] echo cancellation: ON (%s)" % ec)
+        elif _aud.auto_echo_cancel_enabled(_which):
+            # The probe's stream has stopped, so the canceller it loaded is
+            # already unloaded again: what matters is that a call loads it.
+            print("[audio] echo cancellation: switched on automatically for "
+                  "every call (%s) and removed when it ends." % _aud.aec_method())
         else:
-            print("[audio] echo cancellation: OFF -- on speakers the other "
-                  "side hears themselves. Turn it on (until next login):\n"
-                  "        %s\n        then restart this client, or use "
-                  "headphones." % _aud.ECHO_CANCEL_COMMAND)
+            print("[audio] echo cancellation: OFF -- automatic echo "
+                  "cancellation is turned off (OTRV4PLUS_NO_AUTO_ECHO_CANCEL "
+                  "or a pinned OTRV4PLUS_PULSE_SOURCE/SINK), so on speakers the "
+                  "other side hears themselves. Use headphones, or load it:\n"
+                  "        %s" % _aud.echo_cancel_command())

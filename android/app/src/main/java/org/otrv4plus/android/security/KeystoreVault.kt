@@ -10,6 +10,10 @@ import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
+import android.os.Build
+import android.security.keystore.KeyInfo
+import javax.crypto.Mac
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 
 /**
@@ -104,6 +108,18 @@ class KeystoreVault private constructor(
         runCatching { directory.listFiles()?.forEach { it.delete() } }
     }
 
+    /** Every stored entry's name (decoded from the file names), for the app
+     *  lock's set-up, which seals each one. */
+    fun names(): List<String> =
+        directory.listFiles()?.mapNotNull { file ->
+            val hex = file.name
+            if (hex.endsWith(".tmp") || hex.length % 2 != 0) return@mapNotNull null
+            runCatching {
+                ByteArray(hex.length / 2) { i -> hex.substring(2 * i, 2 * i + 2).toInt(16).toByte() }
+                    .toString(Charsets.UTF_8)
+            }.getOrNull()
+        } ?: emptyList()
+
     /**
      * The file for [name].
      *
@@ -137,9 +153,30 @@ class KeystoreVault private constructor(
         fun open(context: Context, section: String = DEFAULT): Vault = try {
             require(section in SECTIONS) { "unknown vault section" }
             val directory = File(context.filesDir, section).apply { mkdirs() }
-            KeystoreVault(loadOrCreateKey(), directory)
+            // The app lock's layer (AppLock): a pass-through until the lock
+            // is set up; after that every record is also sealed by Rust
+            // under the data key, and a locked app reads nothing.
+            val app = context.applicationContext
+            LockLayerVault(KeystoreVault(loadOrCreateKey(), directory), section,
+                           enrolled = { AppLock.enrolled(app) },
+                           crypto = { AppLock.crypto })
         } catch (e: Exception) {
             InMemoryVault()
+        }
+
+        /** Whether [vault] is the real Keystore vault under any layering
+         *  (not the in-memory fallback). */
+        fun isKeystore(vault: Vault): Boolean = LockLayerVault.innermost(vault) is KeystoreVault
+
+        /** The app lock's set-up: seal every record of every section. */
+        fun sealAllSections(context: Context): Int {
+            var count = 0
+            for (section in SECTIONS) {
+                val layered = open(context, section) as? LockLayerVault ?: continue
+                val inner = layered.inner as? KeystoreVault ?: continue
+                count += layered.sealEverything(inner.names())
+            }
+            return count
         }
 
         /** The vault for chat history, credentials and settings. */
@@ -177,6 +214,8 @@ class KeystoreVault private constructor(
          * a fresh key, so a relaunch starts from an empty vault.
          */
         fun destroy(context: Context): Boolean {
+            // The app lock's key store keys and record go too.
+            runCatching { AppLock.destroy(context) }
             val keyGone = runCatching {
                 val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
                 if (store.containsAlias(ALIAS)) store.deleteEntry(ALIAS)
@@ -225,5 +264,104 @@ class KeystoreVault private constructor(
             )
             return generator.generateKey()
         }
+    }
+}
+
+// ── The app lock's hardware half ─────────────────────────────────────────────
+//
+// Here, beside the vault's own key, because this file is Kotlin's one user of
+// platform cryptography (tests/test_crypto_source_of_truth.py): the HMAC key
+// below is made in and never leaves the AndroidKeyStore, and only its output
+// for a public salt comes back.
+/**
+ * The hardware half of the app lock's key (docs/APP_LOCK_PASSPHRASE.md):
+ * H = HMAC-SHA-256(salt) under a key made inside the AndroidKeyStore --
+ * StrongBox where the phone has one, else the TEE -- that can never be
+ * exported. Every passphrase guess therefore needs this phone: a copy of
+ * the files alone faces a full 256-bit unknown.
+ *
+ * Two keys:
+ *  * [PASSPHRASE] (the lock on): also usable only while the PHONE is
+ *    unlocked (`setUnlockedDeviceRequired`, Android 9+), finding F6.
+ *  * [DEVICE] (the lock turned off after use): no such requirement, so the
+ *    app opens by itself as it did before the lock existed.
+ */
+object AppLockKeystore {
+    private const val KEYSTORE = "AndroidKeyStore"
+    const val PASSPHRASE = "otrv4plus.applock.hmac.v1"
+    const val DEVICE = "otrv4plus.applock.device.v1"
+
+    /** HMAC-SHA-256 of [salt] under [alias], made on first use. 32 bytes;
+     *  the caller zeroes it once used. */
+    fun hmac(alias: String, salt: ByteArray): ByteArray {
+        val mac = Mac.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256)
+        mac.init(loadOrCreate(alias))
+        return mac.doFinal(salt)
+    }
+
+    /** Where the passphrase key lives, for Settings. */
+    fun securityLevel(alias: String = PASSPHRASE): SecurityLevel = runCatching {
+        val key = load(alias) ?: return SecurityLevel.SOFTWARE_ONLY
+        val factory = SecretKeyFactory.getInstance(key.algorithm, KEYSTORE)
+        val info = factory.getKeySpec(key, KeyInfo::class.java) as KeyInfo
+        if (Build.VERSION.SDK_INT >= 31) {
+            when (info.securityLevel) {
+                KeyProperties.SECURITY_LEVEL_STRONGBOX -> SecurityLevel.STRONGBOX
+                KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> SecurityLevel.HARDWARE_TEE
+                else -> SecurityLevel.KEYSTORE_SOFTWARE
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            if (info.isInsideSecureHardware) SecurityLevel.HARDWARE_TEE else SecurityLevel.KEYSTORE_SOFTWARE
+        }
+    }.getOrDefault(SecurityLevel.SOFTWARE_ONLY)
+
+    /** Delete both keys (Wipe & Exit). True when both are confirmed gone. */
+    fun destroy(): Boolean = runCatching {
+        val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        for (alias in listOf(PASSPHRASE, DEVICE)) {
+            if (store.containsAlias(alias)) store.deleteEntry(alias)
+        }
+        !store.containsAlias(PASSPHRASE) && !store.containsAlias(DEVICE)
+    }.getOrDefault(false)
+
+    private fun load(alias: String): SecretKey? {
+        val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
+        return (store.getEntry(alias, null) as? KeyStore.SecretKeyEntry)?.secretKey
+    }
+
+    @Synchronized
+    private fun loadOrCreate(alias: String): SecretKey {
+        load(alias)?.let { return it }
+        // Strongest first; each fallback is a phone that cannot do the
+        // stronger form (no StrongBox; an unlocked-device requirement a
+        // phone with no screen lock refuses).
+        val attempts = buildList {
+            if (Build.VERSION.SDK_INT >= 28) add(true to true)
+            if (Build.VERSION.SDK_INT >= 28) add(false to true)
+            add(false to false)
+        }
+        var last: Throwable? = null
+        for ((strongBox, unlockedDevice) in attempts) {
+            try {
+                return generate(alias, strongBox, unlockedDevice && alias == PASSPHRASE)
+            } catch (e: Exception) {
+                last = e
+            }
+        }
+        throw IllegalStateException("no key store HMAC key", last)
+    }
+
+    private fun generate(alias: String, strongBox: Boolean, unlockedDevice: Boolean): SecretKey {
+        val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, KEYSTORE)
+        val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
+            .setKeySize(256)
+            .setUserAuthenticationRequired(false)
+        if (Build.VERSION.SDK_INT >= 28) {
+            spec.setIsStrongBoxBacked(strongBox)
+            spec.setUnlockedDeviceRequired(unlockedDevice)
+        }
+        generator.init(spec.build())
+        return generator.generateKey()
     }
 }

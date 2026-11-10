@@ -457,6 +457,10 @@ class VoiceCallSession:
         # a quiet, thin call regardless of the codec settings.
         self._mic_gain = _audio.make_mic_gain()
         self._speaker_gain = _audio.make_speaker_gain()
+        #: "Mask my voice" (otrv4plus_audio.LiveMasker): after levelling,
+        #: before Opus, so the real voice never leaves this device. One per
+        #: call: each call draws its own mask.
+        self._masker = _audio.LiveMasker()
         # Compression before gain. Peak gain cannot make a call loud: speech
         # has a 12-18 dB crest factor, so playback measured 24422 of 32767 --
         # 2.5 dB from full scale -- and was still described as barely
@@ -1242,6 +1246,55 @@ class VoiceCallSession:
         except Exception:
             pass
 
+        # Echo cancellation, stated rather than inferred. Echo on a call is
+        # almost always the platform AEC not running: the capture stream fell
+        # back from VOICE_COMMUNICATION to GENERIC, or the playback stream is on
+        # MEDIA and so is not the canceller's reference. Both are invisible
+        # unless named, which left "there is echo" undiagnosable from a report
+        # (device test, 2026-11). A warning, not a quiet debug line, when either
+        # side is not set for AEC.
+        try:
+            play_diag = self._playback.diagnostics()
+            cap_preset = cap.get("input_preset")
+            play_usage = play_diag.get("usage")
+            if cap_preset is not None or play_usage is not None:
+                # Android AAudio: the platform canceller, on when the capture
+                # preset is voice_communication and the playback is its voice
+                # reference.
+                aec_ok = (cap_preset == "voice_communication"
+                          and play_usage in ("voice_communication", None))
+                if aec_ok:
+                    _vprint("[voice] echo control: capture preset %s, playback "
+                            "usage %s — platform AEC engaged"
+                            % (cap_preset, play_usage or "n/a"))
+                else:
+                    _print("[voice] ⚠ echo control: capture preset %s, playback "
+                           "usage %s — the platform echo canceller is NOT "
+                           "engaged (needs capture voice_communication and a "
+                           "voice_communication playback reference); expect echo."
+                           % (cap_preset, play_usage))
+            elif "echo_cancelled" in cap or "echo_cancelled" in play_diag:
+                # PulseAudio/PipeWire (desktop, termux): no SYSTEM echo
+                # cancellation for a plain parec/pacat. It is on only when
+                # module-echo-cancel is loaded and both ends route through it.
+                # A laptop on speakers without it sends the far end's own voice
+                # back -- the echo a phone (whose own AEC is on) still hears.
+                on = bool(cap.get("echo_cancelled")) and bool(
+                    play_diag.get("echo_cancelled"))
+                if on:
+                    _vprint("[voice] echo control: PulseAudio echo cancellation "
+                            "active (module-echo-cancel)")
+                else:
+                    why = ("it could not be loaded here"
+                           if _audio.auto_echo_cancel_enabled()
+                           else "automatic echo cancellation is turned off")
+                    _print("[voice] ⚠ echo control: no echo cancellation on this "
+                           "device (%s) — on speakers the far end hears their "
+                           "own voice. Use a headset, or load it by hand:" % why)
+                    _print("    " + _audio.echo_cancel_command())
+        except Exception:
+            pass
+
         # Loudness, spelled out, because "it is too quiet" has one digital
         # answer and two Android ones and they are not interchangeable. The
         # compressor is already worth about +7 dB of RMS and leaves only a few
@@ -1427,6 +1480,7 @@ class VoiceCallSession:
             # at the far end amplifies the coding noise with it.
             _t_stage = time.monotonic()
             pcm = self._mic_gain.process(self._mic_comp.process(raw))
+            pcm = self._masker.process(pcm)
             opus_frame = None
             try:
                 opus_frame = bytearray(

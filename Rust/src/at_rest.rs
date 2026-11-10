@@ -143,6 +143,21 @@ pub fn clear_key_wrapping_key() -> PyResult<()> {
     Ok(())
 }
 
+/// Install [key] as the key-wrapping key from Rust (the app lock: a subkey
+/// of its data key, which never crosses into Python).
+pub(crate) fn install_kek_from_rust(key: &SecretBytes<KEY_LEN>) -> Result<(), String> {
+    let copy = SecretBytes::<KEY_LEN>::new(*key.expose());
+    *KEK.lock().map_err(|_| "key-wrapping key lock poisoned".to_string())? = Some(copy);
+    Ok(())
+}
+
+/// Forget the key-wrapping key from Rust (the app lock locking).
+pub(crate) fn clear_kek_from_rust() {
+    if let Ok(mut guard) = KEK.lock() {
+        *guard = None;
+    }
+}
+
 /// True while a key-wrapping key is installed.
 #[pyfunction]
 pub fn key_wrapping_active() -> bool {
@@ -769,11 +784,12 @@ impl SmpSecretStore {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     // The KEK is process-wide; tests that install one take this lock.
-    static KEK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // pub(crate): the app lock's tests install and clear the same KEK.
+    pub(crate) static KEK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn install(k: [u8; KEY_LEN]) {
         *KEK.lock().unwrap() = Some(SecretBytes::new(k));

@@ -215,3 +215,306 @@ class TestLinuxEchoCancellation:
     def test_the_user_can_name_one(self, monkeypatch):
         monkeypatch.setenv("OTRV4PLUS_PULSE_SOURCE", "my-mic")
         assert A.pulse_device("source", which=lambda b: None) == "my-mic"
+
+
+class _FakePulse:
+    """A pactl stand-in: no echo canceller until one is loaded, then it is
+    listed; records loads and unloads. Driven through the runner/which hooks
+    so no real PulseAudio is touched."""
+
+    def __init__(self, preloaded=False):
+        self.loaded = preloaded
+        self.load_calls = 0
+        self.unloaded = []
+        self.last_load_argv = None
+
+    def which(self, binary):
+        return "/usr/bin/" + binary
+
+    def run(self, argv):
+        if "load-module" in argv:
+            self.load_calls += 1
+            self.loaded = True
+            self.last_load_argv = list(argv)
+            return "42"
+        if "unload-module" in argv:
+            self.unloaded.append(argv[-1])
+            self.loaded = False
+            return ""
+        if "list" in argv:                       # pactl list short sources/sinks
+            if self.loaded:
+                return ("0\talsa_input.pci\tx\tRUNNING\n"
+                        "42\techo-cancel-source\tmodule-echo-cancel.c\tx\tIDLE\n")
+            return "0\talsa_input.pci\tx\tRUNNING\n"
+        return ""
+
+
+class TestAutoEchoCancel:
+    """A desktop call now loads module-echo-cancel itself when nothing is
+    cancelling echo, and unloads it on teardown -- so a laptop on speakers is
+    clear by default, like a phone, without changing the user's audio system
+    permanently."""
+
+    def _clear_env(self, monkeypatch):
+        for name in ("OTRV4PLUS_NO_AUTO_ECHO_CANCEL", "OTRV4PLUS_PULSE_SOURCE",
+                     "OTRV4PLUS_PULSE_SINK", "OTRV4PLUS_AEC_METHOD"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_it_loads_when_nothing_is_cancelling(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        fake = _FakePulse(preloaded=False)
+        index = A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        assert index == 42 and fake.load_calls == 1
+
+    def test_it_does_not_load_over_an_existing_one(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        fake = _FakePulse(preloaded=True)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) is None
+        assert fake.load_calls == 0
+
+    def test_a_pinned_device_is_left_alone(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_PULSE_SOURCE", "my-mic")
+        fake = _FakePulse(preloaded=False)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) is None
+        assert fake.load_calls == 0
+
+    def test_the_opt_out_is_honoured(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_NO_AUTO_ECHO_CANCEL", "1")
+        fake = _FakePulse(preloaded=False)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) is None
+        assert fake.load_calls == 0
+
+    def test_no_pactl_means_no_load(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        assert A.ensure_echo_cancel(which=lambda b: None,
+                                    runner=lambda argv: "") is None
+
+    def test_a_load_that_does_not_appear_is_undone(self, monkeypatch):
+        """If the module loads but no usable source shows up, the call must not
+        be routed through a device that is not there -- undo and fall back to
+        the default, which is a working (if echoing) call rather than silence."""
+        self._clear_env(monkeypatch)
+
+        class Ghost(_FakePulse):
+            def run(self, argv):
+                out = super().run(argv)
+                if "list" in argv:
+                    return "0\talsa_input.pci\tx\tRUNNING\n"   # never appears
+                return out
+
+        ghost = Ghost(preloaded=False)
+        assert A.ensure_echo_cancel(which=ghost.which, runner=ghost.run) is None
+        assert ghost.load_calls == 1 and ghost.unloaded == ["42"]
+
+    def test_unload_undoes_exactly_what_was_loaded(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        fake = _FakePulse(preloaded=False)
+        index = A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        A.unload_module(index, which=fake.which, runner=fake.run)
+        assert fake.unloaded == ["42"] and fake.loaded is False
+
+    def test_unload_of_nothing_is_harmless(self):
+        A.unload_module(None)                     # no raise, no pactl needed
+
+    def test_webrtc_is_the_default_method(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.delenv("OTRV4PLUS_AEC_METHOD", raising=False)
+        assert A.aec_method() == "webrtc"
+        fake = _FakePulse(preloaded=False)
+        A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        assert "aec_method=webrtc" in fake.last_load_argv
+
+    def test_speex_is_the_non_webrtc_alternative(self, monkeypatch):
+        """OTRV4PLUS_AEC_METHOD=speex loads the speexdsp canceller instead, so
+        a user who wants no WebRTC code in the process can have none -- both
+        methods are local DSP and neither touches the network."""
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_AEC_METHOD", "speex")
+        assert A.aec_method() == "speex"
+        assert "aec_method=speex" in A.echo_cancel_command()
+        fake = _FakePulse(preloaded=False)
+        A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        assert "aec_method=speex" in fake.last_load_argv
+
+    def test_an_unknown_method_falls_back_to_webrtc(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("OTRV4PLUS_AEC_METHOD", "nonsense")
+        assert A.aec_method() == "webrtc"
+
+
+class TestSharedEchoCancel:
+    """One canceller module provides both the mic's source and the speaker's
+    sink, so it must outlive either stream alone. Mute releases the
+    microphone while the speaker plays on: a canceller owned by the mic alone
+    was unloaded on mute, the speaker lost its reference sink, and the echo
+    came back after the first mute/unmute."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        for name in ("OTRV4PLUS_NO_AUTO_ECHO_CANCEL", "OTRV4PLUS_PULSE_SOURCE",
+                     "OTRV4PLUS_PULSE_SINK", "OTRV4PLUS_AEC_METHOD"):
+            monkeypatch.delenv(name, raising=False)
+        A._EC.update(refs=0, index=None, ctx=(None, None, None))
+        yield
+        A._EC.update(refs=0, index=None, ctx=(None, None, None))
+
+    def test_mute_and_unmute_keep_one_canceller_loaded(self):
+        fake = _FakePulse(preloaded=False)
+        A.acquire_echo_cancel(fake.which, runner=fake.run)      # call: mic
+        A.acquire_echo_cancel(fake.which, runner=fake.run)      # call: speaker
+        assert fake.load_calls == 1
+        A.release_echo_cancel()                                 # mute: mic off
+        assert fake.unloaded == [] and fake.loaded, (
+            "muting unloaded the canceller under the live speaker")
+        A.acquire_echo_cancel(fake.which, runner=fake.run)      # unmute
+        assert fake.load_calls == 1, "unmute loaded a second canceller"
+        A.release_echo_cancel()                                 # hang up: mic
+        A.release_echo_cancel()                                 #          speaker
+        assert fake.unloaded == ["42"], "the last stream did not unload it"
+
+    def test_a_failed_load_is_not_retried_by_every_stream(self):
+        """Each retry would add pactl's latency to opening a stream, for the
+        same answer: the first holder tries, the rest of that call do not."""
+        class Refuses(_FakePulse):
+            def run(self, argv):
+                if "load-module" in argv:
+                    self.load_calls += 1
+                    return "Failure: Module initialization failed"
+                return super().run(argv)
+
+        fake = Refuses(preloaded=False)
+        A.acquire_echo_cancel(fake.which, runner=fake.run)
+        first = fake.load_calls        # its own attempts (with and without args)
+        assert first >= 1
+        A.acquire_echo_cancel(fake.which, runner=fake.run)
+        assert fake.load_calls == first, "a second stream retried the load"
+        A.release_echo_cancel()
+        A.release_echo_cancel()
+        assert fake.unloaded == []
+
+    def test_one_already_loaded_by_the_user_is_never_unloaded(self):
+        fake = _FakePulse(preloaded=True)
+        A.acquire_echo_cancel(fake.which, runner=fake.run)
+        A.release_echo_cancel()
+        assert fake.load_calls == 0 and fake.unloaded == []
+
+    def test_a_call_opened_while_the_last_one_closes_keeps_a_canceller(self):
+        """Hang up and call again at once: the new call's stream must not slip
+        in between "we no longer own it" and the unload, see the old
+        canceller still listed, take it for someone else's -- and then lose
+        it. The unload now happens under the lock the new stream waits on."""
+        import threading
+        fake = _FakePulse(preloaded=False)
+        real = fake.run
+        entered, go = threading.Event(), threading.Event()
+
+        def slow(argv):
+            if "unload-module" in argv:
+                entered.set()
+                go.wait(2)                   # the unload takes its time
+            return real(argv)
+
+        A.acquire_echo_cancel(fake.which, runner=slow)
+        t = threading.Thread(target=A.release_echo_cancel)
+        t.start()
+        assert entered.wait(2)
+        opener = threading.Thread(target=A.acquire_echo_cancel,
+                                  args=(fake.which,), kwargs={"runner": slow})
+        opener.start()                       # the new call, during the unload
+        go.set()
+        t.join(2)
+        opener.join(2)
+        assert A._EC["refs"] == 1
+        assert A._EC["index"] == 42 and fake.loaded, (
+            "the new call was left without an echo canceller")
+        A.release_echo_cancel()
+
+    def test_releasing_more_than_acquired_is_harmless(self):
+        A.release_echo_cancel()
+        A.release_echo_cancel()
+        assert A._EC["refs"] == 0
+
+    def test_a_crash_with_a_call_up_still_unloads_it(self):
+        fake = _FakePulse(preloaded=False)
+        A.acquire_echo_cancel(fake.which, runner=fake.run)
+        A._release_echo_cancel_at_exit()
+        assert fake.unloaded == ["42"]
+
+    def test_each_stream_releases_exactly_once(self):
+        """stop() twice, or a failed open followed by stop(), must not drop
+        another stream's reference."""
+        fake = _FakePulse(preloaded=False)
+        A.acquire_echo_cancel(fake.which, runner=fake.run)      # speaker
+        mic = object.__new__(A.PulseCapture)
+        mic._ec_held = A.acquire_echo_cancel(fake.which, runner=fake.run)
+        mic._release_ec()
+        mic._release_ec()
+        assert A._EC["refs"] == 1 and fake.unloaded == []
+        A.release_echo_cancel()
+        assert fake.unloaded == ["42"]
+
+    def test_the_ringtone_does_not_load_a_canceller(self, monkeypatch):
+        """A ring is not a call: loading (and then unloading) the canceller
+        just to ring would churn the audio system before the call opens it."""
+        seen = {}
+
+        class Recorder:
+            def __init__(self, **kw):
+                seen.update(kw)
+
+        monkeypatch.setattr(A, "PulsePlayback", Recorder)
+        A.open_playback(preferred="pulseaudio", echo_cancel=False)
+        assert seen.get("echo_cancel") is False
+        import inspect
+        assert "echo_cancel=False" in inspect.getsource(A), (
+            "the ringer opens its playback with a canceller")
+
+
+class TestCancellerLeavesTheMicLevelAlone:
+    """Classic PulseAudio's webrtc canceller runs analog gain control by
+    default and moves the HARDWARE mic volume -- undoing a level the user set
+    (device test: the laptop's input had just been turned down) and leaving it
+    moved after the call. Its gain control is switched off; a server that
+    refuses the argument gets the plain load, so the call keeps a canceller."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh(self, monkeypatch):
+        for name in ("OTRV4PLUS_NO_AUTO_ECHO_CANCEL", "OTRV4PLUS_PULSE_SOURCE",
+                     "OTRV4PLUS_PULSE_SINK", "OTRV4PLUS_AEC_METHOD"):
+            monkeypatch.delenv(name, raising=False)
+
+    def test_webrtc_is_loaded_with_its_gain_control_off(self):
+        fake = _FakePulse(preloaded=False)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) == 42
+        assert ('aec_args="analog_gain_control=0 digital_gain_control=0"'
+                in fake.last_load_argv)
+
+    def test_a_server_refusing_the_argument_still_gets_a_canceller(self):
+        class Strict(_FakePulse):
+            def run(self, argv):
+                if "load-module" in argv and any(a.startswith("aec_args=") for a in argv):
+                    self.load_calls += 1
+                    return "Failure: Module initialization failed"
+                return super().run(argv)
+
+        fake = Strict(preloaded=False)
+        assert A.ensure_echo_cancel(which=fake.which, runner=fake.run) == 42
+        assert fake.load_calls == 2
+        assert not any(a.startswith("aec_args=") for a in fake.last_load_argv)
+
+    def test_speex_gets_no_webrtc_arguments(self, monkeypatch):
+        monkeypatch.setenv("OTRV4PLUS_AEC_METHOD", "speex")
+        fake = _FakePulse(preloaded=False)
+        A.ensure_echo_cancel(which=fake.which, runner=fake.run)
+        assert "aec_method=speex" in fake.last_load_argv
+        assert not any(a.startswith("aec_args=") for a in fake.last_load_argv)
+
+    def test_the_printed_command_is_what_the_call_runs(self):
+        """/audiotest prints the command for pasting into a shell: split the
+        way a shell splits it, it must be exactly the argv the call uses."""
+        import shlex
+        fake = _FakePulse(preloaded=False)
+        A.ensure_echo_cancel(which=lambda b: b, runner=fake.run)
+        assert shlex.split(A.echo_cancel_command()) == fake.last_load_argv

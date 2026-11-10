@@ -324,6 +324,8 @@ internal fun CallBar(model: ChatViewModel, jid: String) {
                 }
                 if (phase.canAnswer) {
                     Button(onClick = { act(answer = true) }) { Text("Answer") }
+                } else {
+                    VoiceMaskButton(model)
                 }
                 if (phase.canEnd) {
                     OutlinedButton(onClick = { model.endCall(jid) }) {
@@ -526,4 +528,22 @@ fun IncomingFileDialog(model: ChatViewModel) {
             }
         },
     )
+}
+
+/**
+ * "Mask my voice": on, your voice in calls is disguised -- a low voice
+ * raised, a high one lowered, pitch and formants together so words stay
+ * clear, a new disguise every call (Rust live_mask.rs). Remembered, and
+ * the same switch in 1:1 and group calls.
+ */
+@Composable
+internal fun VoiceMaskButton(model: ChatViewModel) {
+    val context = LocalContext.current
+    val on = model.voiceMask(context)
+    val toggle = { model.setVoiceMask(context, !on) }
+    if (on) {
+        FilledTonalButton(onClick = toggle) { Text("\uD83C\uDFAD Masked") }
+    } else {
+        OutlinedButton(onClick = toggle) { Text("\uD83C\uDFAD Mask voice") }
+    }
 }

@@ -97,6 +97,38 @@ class OtrConnectionService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val reconnect = ReconnectPolicy(jitter = RECONNECT_JITTER)
 
+    /** The backoff wait, cut short when the phone wakes (RetryWait). */
+    private val retryWait = RetryWait(clock = { android.os.SystemClock.elapsedRealtime() })
+
+    /**
+     * Screen on, unlock and Doze exit. While a reconnect is waiting, any of
+     * them starts the attempt now: with the screen off Doze had stretched a
+     * 60 s wait to 7 minutes (device report 2026-11-09). Local broadcasts
+     * from the system; nothing is sent anywhere.
+     */
+    private val wakeReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            val reason = when (intent?.action) {
+                Intent.ACTION_SCREEN_ON -> "screen_on"
+                Intent.ACTION_USER_PRESENT -> "unlocked"
+                android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED -> {
+                    val pm = getSystemService(android.os.PowerManager::class.java)
+                    if (pm?.isDeviceIdleMode == true) return
+                    "doze_exit"
+                }
+                else -> return
+            }
+            retryWait.wake(reason)
+        }
+    }
+
+    /** A network (re)appeared: the same, for a phone back in coverage. */
+    private val networkWake = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            retryWait.wake("network")
+        }
+    }
+
     /** The one core. Built on first use, never rebuilt. */
     val core: ChaquopyOtrCore by lazy { ChaquopyOtrCore(applicationContext) }
 
@@ -256,6 +288,42 @@ class OtrConnectionService : Service() {
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        runCatching {
+            val filter = android.content.IntentFilter().apply {
+                addAction(Intent.ACTION_SCREEN_ON)
+                addAction(Intent.ACTION_USER_PRESENT)
+                addAction(android.os.PowerManager.ACTION_DEVICE_IDLE_MODE_CHANGED)
+            }
+            ContextCompat.registerReceiver(this, wakeReceiver, filter,
+                                           ContextCompat.RECEIVER_NOT_EXPORTED)
+        }
+        runCatching {
+            getSystemService(android.net.ConnectivityManager::class.java)
+                ?.registerDefaultNetworkCallback(networkWake)
+        }
+        // The app lock (security/AppLock): a lock closes the connection
+        // here first, and a call in progress holds the automatic lock off.
+        org.otrv4plus.android.security.AppLock.serviceLock = { restart -> lockApp(restart) }
+        org.otrv4plus.android.security.AppLock.callActive = { runCatching { chat.anyCall() }.getOrDefault(false) }
+    }
+
+    /**
+     * Lock the app: sign out (the engine closes its sessions and tunnels),
+     * then Rust zeroizes the data key and the process ends
+     * (AppLock.finishLock). Bounded: a teardown that hangs on I2P does not
+     * keep the app unlocked.
+     */
+    private fun lockApp(restartUi: Boolean) {
+        runCatching { core.note("service", "app_lock", "info", "locking: signing out first") }
+        stopConnection(explicit = true, stopRouter = true)
+        // On the service's own scope: `teardown` carries teardown and nothing
+        // else, and the process ends at the bottom of this anyway.
+        scope.launch {
+            kotlinx.coroutines.withTimeoutOrNull(LOCK_TEARDOWN_MS) { pendingTeardown?.join() }
+            runCatching { ServiceCompat.stopForeground(this@OtrConnectionService,
+                                                      ServiceCompat.STOP_FOREGROUND_REMOVE) }
+            org.otrv4plus.android.security.AppLock.finishLock(applicationContext, restartUi)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -450,6 +518,13 @@ class OtrConnectionService : Service() {
         stopConnection(explicit = true, stopRouter = true)
         drainer?.cancel()
         drainer = null
+        org.otrv4plus.android.security.AppLock.serviceLock = null
+        org.otrv4plus.android.security.AppLock.callActive = { false }
+        runCatching { unregisterReceiver(wakeReceiver) }
+        runCatching {
+            getSystemService(android.net.ConnectivityManager::class.java)
+                ?.unregisterNetworkCallback(networkWake)
+        }
         scope.cancel()
         super.onDestroy()
     }
@@ -520,7 +595,7 @@ class OtrConnectionService : Service() {
                 // The in-memory fallback vault has no key to delete; clearing
                 // it is the whole of its erasure.
                 runCatching { vault.clear() }
-                if (!KeystoreVault.destroy(context) && vault.inner is KeystoreVault) {
+                if (!KeystoreVault.destroy(context) && KeystoreVault.isKeystore(vault)) {
                     error("the vault key could not be confirmed deleted")
                 }
             },
@@ -1012,7 +1087,24 @@ class OtrConnectionService : Service() {
                             reconnect.settlingDelayMs()
                         else reconnect.nextDelayMs()) ?: return
             enter(LinkPhase.RECONNECTING, "backing off ${wait}ms")
-            delay(wait)
+            // Every scheduled retry, not only the first: phase_change is
+            // recorded only when the phase changes, so a retry after a failed
+            // retry (RECONNECTING -> RECONNECTING) used to leave no trace.
+            runCatching {
+                core.note("service", "retry_scheduled", "info",
+                          "in ${wait}ms after ${failure ?: "a dropped connection"}")
+            }
+            val waited = retryWait.await(wait)
+            when {
+                waited.wokenBy != null -> runCatching {
+                    core.note("service", "retry_early", "info",
+                              "woken by ${waited.wokenBy}")
+                }
+                waited.slept -> runCatching {
+                    core.note("service", "retry_late", "warning",
+                              "${waited.lateMs / 1000}s late: the phone was asleep (Android Doze)")
+                }
+            }
         }
     }
 
@@ -1651,6 +1743,9 @@ class OtrConnectionService : Service() {
          *  for (connectLoop). In the companion: it outlives the instance. */
         @Volatile
         private var pendingTeardown: Job? = null
+
+        /** How long a lock waits for the sign-out before ending anyway. */
+        private const val LOCK_TEARDOWN_MS = 10_000L
 
         private const val CHANNEL_ID = "otrv4plus.connection"
         private const val NOTIFICATION_ID = 1

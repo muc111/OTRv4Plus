@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 194
+        versionCode = 195
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -91,9 +91,10 @@ android {
         //
         // core.10.14.0 was wrong for sixteen releases; the Rust core is read
         // from Rust/Cargo.toml so it cannot drift again.
-        // "untested" (owner, 2026-10-30): main holds rc.189, tested on phones
-        // and a laptop; every build after it says so until it is tested too.
-        versionName = "0.7.0-experimental.rc.193-untested+core.$rustCoreVersion"
+        // "untested" (owner, 2026-10-30): main holds the build tested on
+        // phones and a laptop -- rc.194 since 2026-11-10 -- and every build
+        // after it says "-untested" until it is tested too.
+        versionName = "0.7.0-experimental.rc.194+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //

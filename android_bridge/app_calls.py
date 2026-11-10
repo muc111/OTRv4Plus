@@ -29,6 +29,8 @@ class CallsMixin:
         """
         peer = self.canonical_peer(peer)
         state = call_state_from_engine(engine_state)
+        # The diagnostics ring records call transitions in CallBridge.poll,
+        # where the live ones are seen; this mirror is not on that path.
         self._call_states[peer] = state
         self._emit(CallStateChanged(peer=peer, state=state,
                                     duration_seconds=duration_seconds, muted=muted))
@@ -226,6 +228,54 @@ class CallsMixin:
         if self._wiped:
             return "wiped"
         return self.calls.unavailable_reason()
+
+    def set_debug_logging(self, on: bool) -> bool:
+        """Turn the voice engine's verbose setup log on or off.
+
+        The debug APK calls this once at start-up with BuildConfig.DEBUG, so a
+        bad call's capture/playout rates, codec rate and echo-route -- the
+        facts a "high pitch / echo" report turns on -- reach both logcat and
+        the shareable diagnostic report (android_bridge.voice.DETAIL_CODES).
+        Release builds pass False and nothing changes.
+
+        Deliberately does NOT import `otrv4plus_voice`: that would drag the
+        terminal client in at start-up, which the lazy-import design exists to
+        avoid. Instead it sets the env var the module reads when it IS first
+        imported (on the first call), and flips the flag directly only if the
+        module is already loaded. No peer, no content.
+        """
+        import os
+        import sys
+        on = bool(on)
+        if on:
+            os.environ["OTRV4PLUS_VOICE_VERBOSE"] = "1"
+        else:
+            os.environ.pop("OTRV4PLUS_VOICE_VERBOSE", None)
+        module = sys.modules.get("otrv4plus_voice")
+        if module is not None:
+            try:
+                module.set_voice_verbose(on)
+            except Exception:
+                pass
+        _TRACE.record("diag", "debug_logging", "info", on=on)
+        return True
+
+    def set_voice_mask(self, on: bool) -> Dict[str, Any]:
+        """The "Mask my voice" switch for live calls, 1:1 and group, taking
+        effect at once (otrv4plus_audio.LiveMasker, Rust live_mask.rs).
+        Returns voice_mask_state(). Does not import otrv4plus_voice."""
+        import otrv4plus_audio as _aud
+        _aud.set_live_mask(bool(on))
+        _TRACE.record("calls", "voice_mask", "info", on=bool(on))
+        return self.voice_mask_state()
+
+    def voice_mask_state(self) -> Dict[str, Any]:
+        """{"on": the switch, "available": this build can mask}."""
+        try:
+            import otrv4plus_audio as _aud
+            return {"on": _aud.live_mask_on(), "available": _aud.live_mask_available()}
+        except Exception:
+            return {"on": False, "available": False}
 
     def poll_calls(self) -> None:
         """Emit an event for any call whose state moved.

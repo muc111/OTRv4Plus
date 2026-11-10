@@ -204,3 +204,121 @@ def test_a_1to1_file_offer_is_answered_with_y_or_n():
     # An outgoing transfer never asks.
     c._on_file_state(transfer, True)
     assert c._quick_answer().pending() is None
+
+
+def test_received_files_can_be_opened_and_voice_notes_played():
+    """The terminal cannot draw an image or play audio itself, so /open and
+    /play hand a received file to the OS (termux-open / termux-media-player on
+    Termux, xdg-open on Linux). This pins that a completed transfer is
+    remembered and reachable by id, name or 'the newest', and that a voice
+    note goes down the audio path."""
+    import os
+    import tempfile
+    import types
+
+    import pytest
+    pytest.importorskip("slixmpp")
+    X = pytest.importorskip("otrv4plus_xmpp")
+    from xmpp_double import bare_client
+
+    c = bare_client(X.OTRv4PlusXMPP)
+    d = tempfile.mkdtemp()
+    pic = os.path.join(d, "cat.png")
+    open(pic, "wb").write(b"\x89PNG\r\n\x1a\n")
+    note = os.path.join(d, "voice-note-abc.ogg")
+    open(note, "wb").write(b"OggS----")
+
+    def received(tid_hex, name, path):
+        return types.SimpleNamespace(
+            state=X._filetransfer.TransferState.RECEIVED, peer="bob@x.i2p",
+            final_path=path,
+            offer=types.SimpleNamespace(transfer_id=bytes.fromhex(tid_hex),
+                                        filename=name, plaintext_size=8))
+
+    c._on_file_state(received("aa" * 16, "cat.png", pic), False)
+    c._on_file_state(received("bb" * 16, "voice-note-abc.ogg", note), False)
+
+    rows = c._received_files()
+    assert [r["id"] for r in rows] == ["bbbbbbbb", "aaaaaaaa"]      # newest first
+    assert rows[0]["voice"] is True and rows[1]["voice"] is False
+
+    opened = []
+    c._hand_to_os = lambda path, audio: (opened.append((path, audio)) or (True, "x"))
+
+    c._cmd_open("aa")                      # the picture, by id prefix
+    assert opened[-1] == (pic, False)
+    c._cmd_play("")                        # the newest voice note
+    assert opened[-1] == (note, True)
+    c._cmd_open("cat")                     # by filename fragment
+    assert opened[-1] == (pic, False)
+
+    # A file no longer on disk is reported, never opened.
+    os.remove(pic)
+    opened.clear()
+    c._cmd_open("cat")
+    assert opened == []
+
+
+def test_open_play_files_are_routed_in_the_media_dispatch():
+    import inspect
+    import pytest
+    X = pytest.importorskip("otrv4plus_xmpp")
+    src = inspect.getsource(X.OTRv4PlusXMPP._dispatch_media)
+    assert 'lstrip == "/files"' in src and "self._cmd_files()" in src
+    assert 'lstrip.startswith("/open ")' in src and "self._cmd_open(" in src
+    assert 'lstrip.startswith("/play ")' in src and "self._cmd_play(" in src
+
+
+def test_sealed_received_file_opens_via_a_transient_view_and_export_writes_it(
+        monkeypatch):
+    """A received file rests ENCRYPTED (an .otrv container). /open must decrypt
+    to a TRANSIENT copy a viewer can read -- never hand the sealed container to
+    a viewer, and never leave plaintext in the received directory. /export is
+    the one deliberate plaintext-out."""
+    import os
+    import tempfile
+    import types
+
+    import pytest
+    pytest.importorskip("slixmpp")
+    X = pytest.importorskip("otrv4plus_xmpp")
+    import otrv4plus_filetransfer as ft
+    from xmpp_double import bare_client
+
+    root = tempfile.mkdtemp()
+    files = os.path.join(root, "files")
+    os.makedirs(files)
+    monkeypatch.setenv("OTRV4PLUS_FILE_DIR", files)
+    container = os.path.join(files, "cat.png" + ft.CONTAINER_SUFFIX)
+    with open(container, "wb") as f:
+        f.write(b"SEALED")
+
+    def fake_open_file(_dek, src, dst):
+        with open(dst, "wb") as f:
+            f.write(b"PLAINTEXT-PNG")
+        return 13
+    monkeypatch.setattr(ft, "at_rest_dek", lambda: object())
+    monkeypatch.setattr(ft, "_core", types.SimpleNamespace(otrv_open_file=fake_open_file))
+
+    c = bare_client(X.OTRv4PlusXMPP)
+    c._on_file_state(types.SimpleNamespace(
+        state=X._filetransfer.TransferState.RECEIVED, peer="bob@x.i2p",
+        final_path=container,
+        offer=types.SimpleNamespace(transfer_id=bytes.fromhex("cc" * 16),
+                                    filename="cat.png", plaintext_size=13)), False)
+
+    opened = []
+    c._hand_to_os = lambda path, audio: (opened.append(path) or (True, "x"))
+    c._cmd_open("")
+
+    assert opened, "nothing was opened"
+    view = opened[-1]
+    assert view != container, "the sealed container was handed to the viewer"
+    assert ".views" in view and view.endswith("cat.png")
+    assert open(view, "rb").read() == b"PLAINTEXT-PNG"      # decrypted copy
+    # The persistent received directory holds only the sealed container.
+    assert open(container, "rb").read() == b"SEALED"
+
+    dest = os.path.join(root, "exported.png")
+    c._cmd_export("cc " + dest)
+    assert open(dest, "rb").read() == b"PLAINTEXT-PNG"      # the deliberate plaintext-out

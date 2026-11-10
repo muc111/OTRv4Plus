@@ -395,6 +395,61 @@ def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     assert b3.groups.is_secure(ROOM)
 
 
+def test_a_group_signal_from_a_changed_key_says_so_not_unencrypted():
+    """Device test, 2026-11-03: after the identity-key format change the
+    contact's pin mismatched, so the group setup signal was refused -- but the
+    banner said "arrived unencrypted", which sent the user looking in the wrong
+    place. A mismatch has its own code now; a genuinely unencrypted peer keeps
+    the old one."""
+    level = {"v": SecurityState.FINGERPRINT_MISMATCH}
+    events = []
+    m = SecureGroups(send_room=lambda *a: None, send_private=lambda *a: None,
+                     emit=events.append, peer_security=lambda p: level["v"],
+                     state_dir=tempfile.mkdtemp())
+    m.open("alice@x.i2p")
+    body = SIGNAL_PREFIX + "INVITE:room@conference.x.i2p|" + "a" * 64
+    m.on_signal("bob@x.i2p", body)
+    assert [e.code for e in events if isinstance(e, ErrorOccurred)] == \
+        ["group_signal_key_changed"]
+    # A peer with no encrypted session at all still gets the plain refusal.
+    events.clear()
+    level["v"] = SecurityState.PLAINTEXT
+    m.on_signal("bob@x.i2p", body)
+    assert [e.code for e in events if isinstance(e, ErrorOccurred)] == \
+        ["group_signal_unencrypted"]
+    m.close()
+
+
+def test_a_gone_room_is_forgotten_everywhere_not_retried_forever():
+    """Device test, 2026-11-03: an admin (not the creator) deleted the room on
+    the server; it went from the server and the admin's client, but the
+    creator kept the group and kept sending -- room_message_rejected x11,
+    condition=gone. A gone/item-not-found room was destroyed, so the group must
+    end on this client too (a delete reaches everyone), not be retried like a
+    rate-limit bounce."""
+    import types
+    m = SecureGroups(send_room=lambda *a: None, send_private=lambda *a: None,
+                     emit=lambda e: None,
+                     peer_security=lambda p: SecurityState.PLAINTEXT,
+                     state_dir=tempfile.mkdtemp())
+    m.open("alice@x.i2p")
+    seen = {"destroyed": 0, "paced": 0}
+    m.is_secure = lambda room: True
+    m.on_room_destroyed = lambda room: seen.__setitem__("destroyed", seen["destroyed"] + 1) or True
+    m._pacer = types.SimpleNamespace(
+        rejected=lambda r: seen.__setitem__("paced", seen["paced"] + 1),
+        in_flight=lambda r: True)
+
+    for gone in ("gone", "item-not-found", "GONE"):
+        m.on_room_rejected("room@conference.x.i2p", gone)
+    assert seen == {"destroyed": 3, "paced": 0}, "a gone room is forgotten, never paced"
+
+    # A real rate-limit bounce is still paced and retried, not deleted.
+    m.on_room_rejected("room@conference.x.i2p", "policy-violation")
+    m.on_room_rejected("room@conference.x.i2p", "")       # unknown: treat as transient
+    assert seen["destroyed"] == 3 and seen["paced"] == 2
+
+
 def test_a_second_client_for_the_same_account_is_refused():
     root = tempfile.mkdtemp()
     w = World()
@@ -562,6 +617,32 @@ class TestRoomPacer:
         p.close()
         clock.advance(100)
         assert sent == ["1", "2", "3"]
+
+    def test_drop_stops_one_room_and_leaves_the_others(self):
+        """A gone room must receive nothing more, yet the pacer's own timers
+        would keep draining its queue for minutes (device report: ~32 'gone'
+        rejections over ~107 s after a group call). drop() clears the room so
+        every scheduled fire/expire finds no state -- while another room,
+        still live, keeps pacing normally."""
+        p, clock, sent, _e = self._pacer(burst=3, interval=2.0)
+        p.post("gone", ["g1", "g2", "g3", "g4", "g5"])
+        p.post("live", ["v1", "v2", "v3", "v4", "v5"])
+        assert sent == ["g1", "g2", "g3", "v1", "v2", "v3"]
+        p.drop("gone")
+        clock.advance(100)
+        # The gone room never sends g4/g5 again; the live room drains in full
+        # (pieces may repeat: unconfirmed ones resend on the echo timeout, which
+        # is normal pacer behaviour and not what this test is about).
+        assert [s for s in sent if s.startswith("g")] == ["g1", "g2", "g3"], (
+            "a dropped room kept sending (or resending) pieces: %r" % sent)
+        assert {s for s in sent if s.startswith("v")} == \
+            {"v1", "v2", "v3", "v4", "v5"}
+        assert p.pending("gone") == 0 and p.in_flight("gone") == 0
+
+    def test_drop_is_harmless_on_an_unknown_room(self):
+        p, _clock, _sent, _e = self._pacer()
+        p.drop("never-seen")      # no raise, no state created
+        assert p.pending("never-seen") == 0
 
     def test_an_echo_confirms_a_piece(self):
         p, clock, sent, _e = self._pacer(echo_timeout=20)
@@ -1146,6 +1227,19 @@ def test_a_deleted_group_ends_for_every_member():
     assert not b.groups.is_secure(ROOM) and "deleted" in b.changes()
     assert b.groups.on_room_destroyed(ROOM) is False      # once
     assert b.groups.on_room_destroyed("other@conference.x.i2p") is False
+
+
+def test_destroying_a_group_stops_its_pacer():
+    """The pacer keeps its own timers; forgetting the group does not touch
+    them. Left alone they drained a gone room's queue for minutes (device
+    report: ~32 'gone' rejections over ~107 s after a group call). Destroying
+    the group must drop the room from the pacer so nothing more is sent."""
+    w, (a, b, c) = _group(3)
+    dropped = []
+    real_drop = b.groups._pacer.drop
+    b.groups._pacer.drop = lambda room: dropped.append(room) or real_drop(room)
+    assert b.groups.on_room_destroyed(ROOM) is True
+    assert ROOM in dropped, "the room was forgotten but its pacer was not"
 
 
 def test_the_app_ends_a_group_whose_room_was_gone_on_rejoin(monkeypatch):

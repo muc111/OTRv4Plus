@@ -801,12 +801,40 @@ class TermuxGroups:
         self._call_tick = None
         if self._calls is None:
             return
+        was = self._calls.active()
         try:
             self._calls.tick()
         except Exception:
             pass
+        if was is not None and self._calls.active() is None:
+            # Ended underneath us: the group is no longer on this device
+            # (GroupCalls.tick). Microphone and speaker go with it.
+            self._print("[group call] the call ended: %s is no longer on this "
+                        "device (deleted, left or removed)." % was[:64])
+            self._hangup()
+            return
+        self._warn_mic_silent()
         if self._media is not None:
             self._call_tick = self.host.loop.call_later(1.0, self._tick_calls)
+
+    def _warn_mic_silent(self) -> None:
+        """Say once per call that our microphone sends only silence (muted
+        outside the client), unless we paused it ourselves."""
+        media = self._media
+        if media is None or getattr(self._calls, "paused", False):
+            return
+        try:
+            import otrv4plus_groupcall as _gc
+            silent = media.mic_silent_seconds() >= _gc.MIC_SILENT_WARN
+        except Exception:
+            return
+        if silent and not getattr(self, "_mic_warned", False):
+            self._mic_warned = True
+            self._print("[group call] your microphone is sending silence, so nobody "
+                        "hears you. Is it muted? (pactl set-source-mute "
+                        "@DEFAULT_SOURCE@ 0, or the laptop's mic key)")
+        elif not silent:
+            self._mic_warned = False
 
     # -- verification progress ------------------------------------------------
 
@@ -879,7 +907,17 @@ class TermuxGroups:
     def _hangup(self) -> None:
         calls = self._calls
         if calls is not None:
-            for room in self.groups.rooms():
+            # The active call's room too: a group deleted mid-call is no
+            # longer in rooms(), and leaving its call up kept its keys and
+            # refused every later call as call_in_progress.
+            try:
+                rooms = set(self.groups.rooms())
+            except Exception:
+                rooms = set()
+            active = calls.active()
+            if active is not None:
+                rooms.add(active)
+            for room in rooms:
                 calls.hangup(room)
         if self._media is not None:
             self._media.close()
@@ -1026,23 +1064,31 @@ class TermuxGroups:
         loop.call_later(delay, lambda: asyncio.ensure_future(
             self._rejoin_one(room, attempt)))
 
-    def on_room_rejected(self, room: str) -> bool:
+    def on_room_rejected(self, room: str, condition: str = "") -> bool:
         """The server bounced our message to `room`. True when it is one of
-        our secure groups (and the caller need say nothing more)."""
+        our secure groups (and the caller need say nothing more).
+
+        A `gone`/`item-not-found` room was destroyed (its owner or an admin):
+        the group ends here too, so a delete reaches every client. Anything
+        else is a transient bounce (rate limit): said once a minute."""
         room = _canon(room)
         if not (self._opened and self.groups.is_secure(room)):
             return False
-        # A fast burst into a limited room bounces several pieces at once:
-        # say it once a minute, not once per piece.
-        now = self._clock()
-        if now - self._rejected_said.get(room, -1e18) >= 60:
-            self._rejected_said[room] = now
-            self._print("[group %s] the server refused group messages (rate "
-                        "limit); slowing down for this room and sending them "
-                        "again. If this repeats, the room's server limits are "
-                        "too low for MLS (Prosody: raise or remove muc_limits "
-                        "on the conference component)." % room[:64])
-        self.groups.on_room_rejected(room)
+        if str(condition or "").strip().lower() in ("gone", "item-not-found"):
+            self._print("[group %s] the room was deleted on the server; "
+                        "leaving it here too." % room[:64])
+        else:
+            # A fast burst into a limited room bounces several pieces at once:
+            # say it once a minute, not once per piece.
+            now = self._clock()
+            if now - self._rejected_said.get(room, -1e18) >= 60:
+                self._rejected_said[room] = now
+                self._print("[group %s] the server refused group messages (rate "
+                            "limit); slowing down for this room and sending them "
+                            "again. If this repeats, the room's server limits are "
+                            "too low for MLS (Prosody: raise or remove muc_limits "
+                            "on the conference component)." % room[:64])
+        self.groups.on_room_rejected(room, condition)
         return True
 
     async def _destroy_quietly(self, room: str) -> None:

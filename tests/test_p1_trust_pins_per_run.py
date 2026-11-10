@@ -250,6 +250,48 @@ def test_calls_and_files_are_refused_while_the_key_does_not_match(home):
     assert alice.files._verified(PEER) is True
 
 
+def test_smp_verification_accepts_the_changed_key_and_unblocks(home):
+    """Device test, 2026-11-03: after the identity-key format changed, each
+    side saw the other's key as changed, which blocks files, voice notes and
+    group setup -- while plain text still works. Verifying with SMP proves it
+    is really them, so a passing SMP now ALSO accepts the new key, the same as
+    Reset trust, without making the user find that button too."""
+    from android_bridge.events import SecurityState, SmpState
+    install = Install("android")
+    _talk(install, _Contact())                        # first contact pins bob
+    alice, _p, events, _r = _talk(install, _Contact())    # a changed key
+    assert alice.security_state(PEER) is SecurityState.FINGERPRINT_MISMATCH
+
+    class _Verified:
+        def _smp_verified(self, peer):
+            return True
+    alice.calls._ensure_manager = lambda: _Verified()
+    assert alice.files._verified(PEER) is False        # blocked before verifying
+    alice._groups = None                               # isolate: groups tested elsewhere
+    # The engine now reports the peer as SMP-verified, and the inbound frame
+    # that moved it is announced -- which must accept the key the run checked.
+    alice.smp_state = lambda _peer: SmpState.VERIFIED
+    alice._announce_smp_change(PEER, before=SmpState.IN_PROGRESS)
+
+    assert alice.security_state(PEER) is not SecurityState.FINGERPRINT_MISMATCH
+    assert alice.files._verified(PEER) is True          # unblocked by the verification
+    assert PEER not in alice._fingerprint_changed
+
+
+def test_smp_does_not_touch_a_peer_whose_key_never_changed(home):
+    """The accept-on-verify path must do nothing for an ordinary verification:
+    no key was in question, so nothing is re-pinned."""
+    from android_bridge.events import SecurityState, SmpState
+    install = Install("android")
+    alice, _p, _e, _r = _talk(install, _Contact())     # first contact, pinned
+    assert alice.security_state(PEER) is not SecurityState.FINGERPRINT_MISMATCH
+    alice._groups = None
+    before = dict(getattr(alice, "_fingerprint_changed", {}))
+    alice.smp_state = lambda _peer: SmpState.VERIFIED
+    alice._announce_smp_change(PEER, before=SmpState.IN_PROGRESS)
+    assert getattr(alice, "_fingerprint_changed", {}) == before
+
+
 def test_the_they_match_confirmation_is_kept_with_the_pin(home):
     install = Install("android")
     app = install.start()
@@ -372,7 +414,7 @@ def test_android_passes_its_own_trust_vault_and_whether_it_keeps_records():
                             "bridge/ChaquopyOtrCore.kt"), encoding="utf-8").read()
     call = src[src.index("KeystoreVault.open(appContext, KeystoreVault.TRUST)"):]
     call = call[:call.index("\n            }")]
-    assert '"use_trust_store"' in call and '"for_android", trust, trust is KeystoreVault' in call
+    assert '"use_trust_store"' in call and '"for_android", trust, KeystoreVault.isKeystore(trust)' in call
 
 
 def test_the_desktop_host_keeps_trust(home, monkeypatch):

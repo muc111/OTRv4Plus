@@ -31,13 +31,21 @@ class SmpMixin:
             return
         if after in (SmpState.VERIFIED, SmpState.FAILED, SmpState.CANCELLED):
             self._emit(SmpResult(peer=peer, state=after))
-            if after is SmpState.VERIFIED and self._groups is not None:
-                # Verified now: the groups we share with them learn it, and
-                # each side sends its group key (calls need verified members).
-                try:
-                    self._groups.on_peer_verified(peer)
-                except Exception:
-                    _log.warning("group verification update failed")
+            if after is SmpState.VERIFIED:
+                # A passing SMP authenticates the key the run went over, so a
+                # pin mismatch that was blocking calls, files and groups is
+                # cleared here: the user has already proved it is really them
+                # and should not also have to press Reset trust. Done before
+                # the group update so the group sees a verified, un-mismatched
+                # contact rather than refusing its own setup signal.
+                self._accept_key_after_smp(peer)
+                if self._groups is not None:
+                    # Verified now: the groups we share with them learn it, and
+                    # each side sends its group key (calls need verified members).
+                    try:
+                        self._groups.on_peer_verified(peer)
+                    except Exception:
+                        _log.warning("group verification update failed")
         else:
             self._emit(self.smp_progress(peer))
 
@@ -264,6 +272,33 @@ class SmpMixin:
         self._key_changed().pop(peer, None)
         return bool(self._safe(lambda: self._engine.trust_db.remove_trust(peer),
                                default=False))
+
+    def _accept_key_after_smp(self, peer: str) -> None:
+        """P1: SMP just verified this peer. If their key had changed from its
+        pin -- so calls, files, voice notes and group setup were all refused --
+        the successful SMP is the out-of-band proof the pin warning was waiting
+        for. Accept the new key here, clear the block and release whatever was
+        held behind it: the same effect as `reset_trust`, without making the
+        user find and press it after they have already verified. Nothing
+        changes for a peer whose key never moved.
+        """
+        peer = self.canonical_peer(peer)
+        if peer not in self._key_changed():
+            return
+        if self.security_state(peer) is SecurityState.PLAINTEXT:
+            return                      # no live session to pin a key from
+        fingerprint = self._safe(lambda: self._engine.get_peer_fingerprint(peer))
+        if not fingerprint:
+            return
+        try:
+            self._engine.trust_db.accept_new_key(peer, fingerprint)
+        except Exception as exc:
+            _log.warning("accept key after SMP: %s", exc.__class__.__name__)
+            return
+        self._key_changed().pop(peer, None)
+        self._safe(lambda: self._flush_outbox(peer))
+        self._emit(SessionStateChanged(peer=peer,
+                                       security=SecurityState.SMP_VERIFIED))
 
     # -- the contact's pinned key (P1) ------------------------------------------
 

@@ -96,6 +96,7 @@ CODES: Dict[str, Tuple[str, str]] = {
     "group_rekey_failed": ("group", "changing the group's keys failed"),
     "group_remove_failed": ("group", "removing a member failed"),
     "group_signal_unencrypted": ("group", "an unencrypted group signal was refused"),
+    "group_signal_key_changed": ("group", "a group signal was refused: this contact's key changed"),
     "group_welcome_send_failed": ("group", "the welcome for a new member could not be sent"),
     "group_welcome_unconfirmed": ("group", "a new member never confirmed the welcome"),
     "groups_state_too_large": ("group", "the saved group state is too large to keep"),
@@ -103,6 +104,7 @@ CODES: Dict[str, Tuple[str, str]] = {
     "epoch_listener_failed": ("group", "an internal group listener raised"),
     # -- files (files.py, group_files.py, app_files.py) ----------------------
     "file_signal_failed": ("file", "a file transfer signal could not be handled"),
+    "file_blocked_key_changed": ("file", "a file was refused: this contact's key changed"),
     "file_control_failed": ("file", "a group file control message failed"),
     "group_file_unverified": ("file", "a group file came from an unverified member"),
     "open_failed": ("file", "the received file could not be opened"),
