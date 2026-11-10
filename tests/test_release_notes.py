@@ -310,3 +310,16 @@ class TestExactlyOneAndroidRelease:
         # the upload failed.
         s = self._src()
         assert s.index("gh release create") < s.index("removing superseded release")
+
+    def test_publishes_never_run_together(self):
+        # 2026-11-10: main and dev published within seconds of each other;
+        # each deleted the other's release and the page was left empty. The
+        # publish job is serialised in one group shared by every branch.
+        import os
+        import yaml
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, ".github/workflows/android.yml")) as f:
+            wf = yaml.safe_load(f)
+        conc = wf["jobs"]["release"]["concurrency"]
+        assert conc["group"] == "android-releases-page"     # no ${{ github.ref }}
+        assert conc["cancel-in-progress"] is False

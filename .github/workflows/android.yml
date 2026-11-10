@@ -807,6 +807,14 @@ jobs:
     # `screens` too, but it is continue-on-error: its failure never blocks this.
     needs: [configure, python-deps, rust, i2pd, apk, apk-release, kotlin-tests, screens]
     if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev' || github.ref == 'refs/heads/claude/otrv4plus-android-spec-a3oq4d'
+    # ONE publish at a time, across every branch. Each publish deletes every
+    # other Android release once its own exists; two running together each
+    # deleted the other's, and the Releases page was left with no APK at all
+    # (main and dev, 2026-11-10 19:09). Queued, the last to run is the one left.
+    # Not cancel-in-progress: a publish stopped halfway could also empty the page.
+    concurrency:
+      group: android-releases-page
+      cancel-in-progress: false
     permissions:
       # Narrower than it looks: this replaces the workflow-level `contents:
       # read` for this job only. Nothing else in the run can write.
