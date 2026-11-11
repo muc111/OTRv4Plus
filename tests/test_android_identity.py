@@ -4,13 +4,14 @@
 Covers the Phase 2 identity requirements: generation, persistence, fingerprint
 stability across a simulated process restart, reload, and corrupt-record
 rejection -- plus the at-rest properties the sealed-store interface promises
-(no plaintext seed on disk, unique nonces, AAD binding, key rotation).
+(nothing stored in the clear, unique nonces, AAD binding, key rotation).
 
-The doubles below live in the test suite ON PURPOSE.  `android_bridge` ships no
-concrete DekProvider and no concrete IdentityKeyStore, because key custody is
-Phase 4 (Android Keystore/StrongBox) and the seed-custody question is an open
-security decision.  Putting the doubles here keeps them out of any production
-import path while still allowing the lifecycle to be tested end to end now.
+The identity key store is the production one, `RustSealedIdentityKeyStore`
+(decision B1). The DEK provider below is a test double ON PURPOSE:
+`android_bridge` ships no concrete DekProvider, because producing the key is
+the platform's job (Android Keystore; the Termux file provider lives in
+client/), and keeping the double here keeps it out of any production import
+path.
 """
 
 import os
@@ -23,14 +24,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 otrv4_core = pytest.importorskip("otrv4_core")
 
-# The double below rebuilds handles from a raw seed. Decision B1 (option B)
-# gated Ed448KeyHandle.from_seed_bytes out of production builds, because it lets
-# Python inject a chosen identity. These tests therefore run only on a
-# test-only-kdf wheel; tests/test_rust_identity_sealing.py covers the same
-# lifecycle against the production build, sealing inside Rust.
+# The identity is created and restored by the PRODUCTION key store,
+# `RustSealedIdentityKeyStore`: the seed is generated and sealed inside Rust
+# and never becomes a Python object. (These tests used to rebuild handles from
+# a Python-held seed with `Ed448KeyHandle.from_seed_bytes`, which decision B1
+# compiled out of every build but a test-only-kdf one -- so they never ran.)
+# The in-memory DEK below hands its key to Rust as bytes, which needs the
+# raw-key test API every test wheel has.
 pytestmark = pytest.mark.skipif(
-    not hasattr(otrv4_core.Ed448KeyHandle, "from_seed_bytes"),
-    reason="seed injection is gated out of production builds (decision B1)",
+    not hasattr(otrv4_core, "create_sealed_identity"),
+    reason="needs the test wheel (raw-key-test-api): the in-memory DEK is raw bytes",
 )
 
 from android_bridge.secure_store import (          # noqa: E402
@@ -38,12 +41,9 @@ from android_bridge.secure_store import (          # noqa: E402
     KeyRotationRequired, MAX_RECORDS_PER_KEY, RECORD_VERSION,
 )
 from android_bridge.identity import (              # noqa: E402
-    IdentityManager, IdentityKeyStore, CorruptIdentity, IdentityError,
+    IdentityManager, CorruptIdentity, IdentityError, RustSealedIdentityKeyStore,
     fingerprint_of, IDENTITY_RECORD_TYPE, IDENTITY_SCHEMA_VERSION,
 )
-
-ED448_SEED_LEN = 57
-X448_PRIV_LEN = 56
 
 
 # ── Test doubles ──────────────────────────────────────────────────────────────
@@ -75,6 +75,10 @@ class _MemoryDekHandle(DekHandle):
     def _open(self, nonce, ciphertext_and_tag, aad):
         return bytes(otrv4_core.aes256gcm_decrypt(self._key, nonce, ciphertext_and_tag, aad))
 
+    def raw_key_for_rust(self) -> bytes:
+        """The same key for the inner, Rust-side identity seal."""
+        return self._key
+
 
 class _MemoryDekProvider(DekProvider):
     """Keeps every key generation so old records stay readable after rotation."""
@@ -98,32 +102,6 @@ class _MemoryDekProvider(DekProvider):
         return self._current_id
 
 
-class _PythonSeedIdentityKeyStore(IdentityKeyStore):
-    """Resolution A: seed generated in Python, handles rebuilt via from_seed_bytes.
-
-    DEVELOPMENT/TEST ONLY.  This is the implementation whose security cost is
-    described in android_bridge/identity.py -- the seed exists as a Python object
-    at create and at every restore.  It is used here so the identity lifecycle
-    can be tested end to end; adopting it in production requires the explicit
-    decision recorded in docs/ANDROID_PHASE2_REPORT.md.
-    """
-
-    def create(self):
-        seed = os.urandom(ED448_SEED_LEN)
-        priv = os.urandom(X448_PRIV_LEN)
-        ident = otrv4_core.Ed448KeyHandle.from_seed_bytes(seed)
-        prekey = otrv4_core.X448KeyHandle.from_priv_bytes(priv)
-        return ident, prekey, seed + priv
-
-    def restore(self, serialized):
-        if len(serialized) != ED448_SEED_LEN + X448_PRIV_LEN:
-            raise CorruptIdentity("identity payload wrong length")
-        seed = serialized[:ED448_SEED_LEN]
-        priv = serialized[ED448_SEED_LEN:]
-        return (otrv4_core.Ed448KeyHandle.from_seed_bytes(seed),
-                otrv4_core.X448KeyHandle.from_priv_bytes(priv))
-
-
 class _Disk:
     """Stands in for Android app-private storage."""
 
@@ -137,7 +115,8 @@ class _Disk:
 def _manager(provider=None, key_store=None):
     provider = provider or _MemoryDekProvider()
     store = AesGcmSealedStore(provider)
-    return IdentityManager(store, key_store or _PythonSeedIdentityKeyStore()), provider
+    key_store = key_store or RustSealedIdentityKeyStore(provider)
+    return IdentityManager(store, key_store), provider
 
 
 # ── Identity generation and persistence ───────────────────────────────────────
@@ -260,11 +239,13 @@ class TestProcessDeath:
             import otrv4_core
             from android_bridge.secure_store import AesGcmSealedStore
             from android_bridge.identity import IdentityManager
-            from test_android_identity import _MemoryDekProvider, _PythonSeedIdentityKeyStore
+            from android_bridge.identity import RustSealedIdentityKeyStore
+            from test_android_identity import _MemoryDekProvider
 
             provider = _MemoryDekProvider()
             provider._keys[1] = open({str(key_path)!r}, "rb").read()
-            mgr = IdentityManager(AesGcmSealedStore(provider), _PythonSeedIdentityKeyStore())
+            mgr = IdentityManager(AesGcmSealedStore(provider),
+                                  RustSealedIdentityKeyStore(provider))
             rec = mgr.load(open({str(blob_path)!r}, "rb").read())
             print(rec.fingerprint)
         """)
@@ -333,11 +314,11 @@ class TestCorruptIdentityRejection:
         provider = _MemoryDekProvider()
         disk = _Disk()
         store = AesGcmSealedStore(provider)
-        IdentityManager(store, _PythonSeedIdentityKeyStore(), record_id="primary") \
+        IdentityManager(store, RustSealedIdentityKeyStore(provider), record_id="primary") \
             .create(disk.persist)
 
         impostor = IdentityManager(AesGcmSealedStore(provider),
-                                   _PythonSeedIdentityKeyStore(), record_id="secondary")
+                                   RustSealedIdentityKeyStore(provider), record_id="secondary")
         with pytest.raises(CorruptIdentity):
             impostor.load(disk.blob)
 
@@ -354,26 +335,28 @@ class TestCorruptIdentityRejection:
 
 class TestAtRestProperties:
 
-    def test_seed_never_appears_in_the_sealed_record(self):
-        """The strongest available check that nothing is stored in the clear."""
+    def test_the_inner_record_never_appears_in_the_sealed_record(self):
+        """Both layers really encrypt: the Rust-sealed identity handed to the
+        outer store is not on disk, verbatim or in any 8-byte run. (The seed
+        itself never reaches Python to be looked for: see
+        tests/test_rust_identity_sealing.py, test 3.)"""
         provider = _MemoryDekProvider()
         store = AesGcmSealedStore(provider)
 
         captured = {}
-        class _CapturingKeyStore(_PythonSeedIdentityKeyStore):
+        class _CapturingKeyStore(RustSealedIdentityKeyStore):
             def create(self):
                 ident, prekey, serialized = super().create()
                 captured["serialized"] = serialized
                 return ident, prekey, serialized
 
         disk = _Disk()
-        IdentityManager(store, _CapturingKeyStore()).create(disk.persist)
+        IdentityManager(store, _CapturingKeyStore(provider)).create(disk.persist)
 
-        seed = captured["serialized"]
-        assert seed not in disk.blob, "serialized private material found verbatim on disk"
-        # and no substantial run of it either
-        for start in range(0, len(seed) - 8):
-            assert seed[start:start + 8] not in disk.blob, "private material leaked into record"
+        inner = captured["serialized"]
+        assert inner not in disk.blob, "the inner record is on disk verbatim"
+        for start in range(0, len(inner) - 8):
+            assert inner[start:start + 8] not in disk.blob, "the inner record leaked into the outer"
 
     def test_record_is_versioned_and_carries_key_id(self):
         provider = _MemoryDekProvider()
@@ -482,7 +465,7 @@ class TestNoInsecureDefaults:
 
     def test_identity_manager_requires_a_store(self):
         with pytest.raises(IdentityError):
-            IdentityManager(None, _PythonSeedIdentityKeyStore())
+            IdentityManager(None, RustSealedIdentityKeyStore(_MemoryDekProvider()))
 
     def test_identity_manager_requires_a_key_store(self):
         with pytest.raises(IdentityError):

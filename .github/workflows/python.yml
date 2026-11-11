@@ -214,8 +214,32 @@ jobs:
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out ../dist-release
           pip install --force-reinstall --no-deps ../dist-release/*.whl
-          cd .. && python -m pytest -q tests/test_release_guard.py \
+          cd .. && python -m pytest -q -rs tests/test_release_guard.py \
+            tests/test_gated_build_is_uniform.py \
             tests/test_dake3_rust_authority.py tests/test_android_diagnostics.py
+
+      # The other half of every gated pair. The test-only-kdf and
+      # legacy-dake-keys surfaces (vault read-back, seed injection, the legacy
+      # DAKE getters) are compiled in here, so the internals tests that skip
+      # on the other two wheels run, and test_release_guard's opt-in guards
+      # confirm the gates really opened. Until this step existed that half
+      # ran nowhere. Never shipped: it is built, tested and discarded.
+      - name: Gates-open wheel runs the gated tests
+        working-directory: Rust
+        env:
+          OTRV4PLUS_ALLOW_TEST_GATES: "1"
+          OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS: "1"
+          OTRV4PLUS_ALLOW_RAW_KEY_TEST_API: "1"
+        run: |
+          maturin build --release \
+            --features pyo3/extension-module,android-opus,mls,raw-key-test-api,test-only-kdf,legacy-dake-keys \
+            --interpreter python${{ env.PYTHON_VERSION }} \
+            --out ../dist-gates
+          pip install --force-reinstall --no-deps ../dist-gates/*.whl
+          cd .. && python -m pytest -q -rs tests/test_release_guard.py \
+            tests/test_gated_build_is_uniform.py tests/test_rust_security.py \
+            tests/test_harness_audit.py tests/test_rust_identity_sealing.py \
+            tests/test_android_identity.py
 
       - name: Keep the report
         if: always()

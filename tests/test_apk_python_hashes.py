@@ -96,17 +96,51 @@ class TestNothingElseCanBeInstalled:
         assert "ls android/app/wheels/otrv4_core-*.whl" in text
 
 
-@pytest.mark.skipif(os.environ.get("OTR_NETWORK_TESTS") != "1",
-                    reason="downloads from PyPI; set OTR_NETWORK_TESTS=1")
 def test_a_file_that_does_not_match_the_lock_is_refused():
-    tmp = os.path.join(ROOT, "android", "app", "build", "lock-check")
-    os.makedirs(tmp, exist_ok=True)
-    bad = os.path.join(tmp, "lock.txt")
-    with open(bad, "w") as fh:
-        fh.write("pyasn1==0.6.4 --hash=sha256:" + "0" * 64 + "\n")
-    r = subprocess.run([sys.executable, "-m", "pip", "download", "--require-hashes",
-                        "--no-deps", "-r", bad, "-d", tmp], capture_output=True, text=True)
-    assert r.returncode != 0 and "HASH" in (r.stdout + r.stderr).upper()
+    """pip under --require-hashes refuses a file whose hash is not the lock's.
+
+    Offline: a local wheel stands in for the download (`--no-index
+    --find-links`), and pip applies the same hash check to it. This used to
+    fetch pyasn1 from PyPI and skipped unless OTR_NETWORK_TESTS=1, so it never
+    ran. The control -- the same file under its real hash -- proves the
+    refusal is the hash and not a broken setup.
+    """
+    import hashlib
+    import shutil
+    import tempfile
+    import zipfile
+    tmp = tempfile.mkdtemp(prefix="otr-lock-check-")
+    try:
+        index, out = os.path.join(tmp, "index"), os.path.join(tmp, "out")
+        os.makedirs(index)
+        wheel = os.path.join(index, "pyasn1-0.6.4-py3-none-any.whl")
+        with zipfile.ZipFile(wheel, "w") as z:
+            z.writestr("pyasn1/__init__.py", "")
+            z.writestr("pyasn1-0.6.4.dist-info/METADATA",
+                       "Metadata-Version: 2.1\nName: pyasn1\nVersion: 0.6.4\n")
+            z.writestr("pyasn1-0.6.4.dist-info/WHEEL",
+                       "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n"
+                       "Tag: py3-none-any\n")
+            z.writestr("pyasn1-0.6.4.dist-info/RECORD", "")
+
+        def pip_download(digest):
+            lock = os.path.join(tmp, "lock.txt")
+            with open(lock, "w") as fh:
+                fh.write("pyasn1==0.6.4 --hash=sha256:%s\n" % digest)
+            return subprocess.run(
+                [sys.executable, "-m", "pip", "download", "--require-hashes",
+                 "--no-deps", "--no-index", "--find-links", index,
+                 "-r", lock, "-d", out],
+                capture_output=True, text=True)
+
+        bad = pip_download("0" * 64)
+        assert bad.returncode != 0 and "HASH" in (bad.stdout + bad.stderr).upper()
+
+        real = hashlib.sha256(open(wheel, "rb").read()).hexdigest()
+        good = pip_download(real)
+        assert good.returncode == 0, good.stdout + good.stderr
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 #: The build tested on phones and a laptop, the one main holds (CHANGELOG).

@@ -58,25 +58,6 @@ impl RatchetHeader {
     }
 }
 
-#[cfg(feature = "test-only-kdf")]
-#[pyo3::pyfunction]
-#[pyo3(name = "encode_header")]
-pub fn encode_header_py(
-    dh_pub: &[u8],
-    prev_chain_len: u32,
-    msg_num: u32,
-) -> pyo3::PyResult<Vec<u8>> {
-    if dh_pub.len() != 56 {
-        return Err(pyo3::exceptions::PyValueError::new_err(
-            "dh_pub must be exactly 56 bytes",
-        ));
-    }
-    let mut arr = [0u8; 56];
-    arr.copy_from_slice(dh_pub);
-    let h = RatchetHeader::new(arr, prev_chain_len, msg_num);
-    Ok(h.encode().to_vec())
-}
-
 #[derive(Debug)]
 pub enum RatchetError {
     InvalidHeader(String),

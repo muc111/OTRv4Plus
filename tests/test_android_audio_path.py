@@ -103,12 +103,26 @@ class TestFailureBehaviourIsSafe:
         with pytest.raises(audio.AudioError):
             audio.open_capture(which=lambda _binary: None)
 
-    def test_a_present_backend_is_not_silently_replaced(self, ):
-        """The Android-side counterpart: when AAudio IS available, asking for
-        it must give it, not a fallback that would transmit silence."""
-        if not audio.aaudio_available():
-            pytest.skip("AAudio not present on this host")
+    def test_a_present_backend_is_not_silently_replaced(self):
+        """The Android-side counterpart: asking for AAudio must give AAudio,
+        not a fallback that would transmit silence. `_pick_order` honours an
+        explicit choice whatever is loadable, so this holds -- and runs -- on
+        every host. (It used to skip wherever AAudio could not load, which is
+        every host the suite runs on.)"""
         assert audio._pick_order(audio.BACKEND_AAUDIO) == (audio.BACKEND_AAUDIO,)
+
+    def test_where_aaudio_loads_it_is_tried_first(self, monkeypatch):
+        """With no explicit choice, a device whose AAudio loads tries it
+        before anything else; a host where it cannot load never tries it.
+        Only the loader's answer is substituted -- the order is the code's.
+        Opening a real AAudio stream stays a handset check
+        (ANDROID_XMPP_MILESTONE.md section 7, item 10)."""
+        monkeypatch.setattr(audio, "_env_backend", lambda: None)
+        monkeypatch.setattr(audio, "aaudio_available", lambda: True)
+        order = audio._pick_order(None)
+        assert order == audio.BACKEND_ORDER and order[0] == audio.BACKEND_AAUDIO
+        monkeypatch.setattr(audio, "aaudio_available", lambda: False)
+        assert audio.BACKEND_AAUDIO not in audio._pick_order(None)
 
 
 class TestVoiceLayerHostSeam:

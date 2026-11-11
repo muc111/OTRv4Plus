@@ -29,11 +29,12 @@ otrv4_core = pytest.importorskip("otrv4_core")
 
 # Every Python-reachable name that `test-only-kdf` adds.
 #
-# Measured, not assumed: kdf.rs::kdf_1_py and header.rs::encode_header_py are
-# also behind the feature, but lib.rs never registers them with the module, so
-# they are unreachable from Python even when the feature is on.  The reachable
-# surface is the two PySMPVault methods, which #[pymethods] registers
-# automatically.
+# Measured, not assumed: the reachable surface is the two PySMPVault methods,
+# which #[pymethods] registers automatically, and the key-injection
+# constructors below. (kdf.rs::kdf_1_py and header.rs::encode_header_py were
+# also behind the feature but never registered with the module; they were
+# deleted. GATED_MODULE_FUNCTIONS stays, as names no build may export natively:
+# tests/test_gated_build_is_uniform.py checks that on every build.)
 GATED_VAULT_METHODS = ("load", "load_by_handle")
 
 # M3 (decision 2): the legacy DAKE surface that returns session key material to
