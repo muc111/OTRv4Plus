@@ -1678,15 +1678,15 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         }
 
     @staticmethod
-    def _router_wait() -> Optional[Dict[str, int]]:
+    def _router_wait() -> Dict[str, int]:
         """While an attempt waits for a router too new to find the server:
         how long so far and the most it will wait (the Connect screen's
-        countdown). None otherwise."""
+        countdown). Empty otherwise -- status() is plain data, never None."""
         try:
             from .transport import ROUTER_WAIT
-            return ROUTER_WAIT.state()
+            return ROUTER_WAIT.state() or {}
         except Exception:
-            return None
+            return {}
 
     def _tls_mode(self) -> str:
         """What the transport actually settled on, or what it would settle on.

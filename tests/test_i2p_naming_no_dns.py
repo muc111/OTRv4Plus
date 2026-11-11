@@ -815,7 +815,7 @@ class TestARouterTooNewToSearchIsAskedAgain:
         T.ROUTER_WAIT._clock = lambda: now["t"]
         try:
             t = T.XmppTransport.__new__(T.XmppTransport)
-            assert ConnectionController._router_wait() is None
+            assert ConnectionController._router_wait() == {}
             t._forwarder_progress("[i2p] the router is too new to find the "
                                   "server yet; asking again (1) limit=150")
             now["t"] += 5
@@ -825,7 +825,7 @@ class TestARouterTooNewToSearchIsAskedAgain:
             assert ConnectionController._router_wait() == {"waited_s": 42,
                                                            "limit_s": 150}
             t._forwarder_progress("[i2p] SAM stream established.")
-            assert ConnectionController._router_wait() is None
+            assert ConnectionController._router_wait() == {}
         finally:
             T.ROUTER_WAIT._clock = T.time.monotonic
             T.ROUTER_WAIT.clear()
