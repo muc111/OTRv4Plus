@@ -343,7 +343,9 @@ chaquopy {
             install("otrv4_core")
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
             install("PySocks==1.7.1")
-            // slixmpp: the XMPP transport. Pure Python, built from an sdist.
+            // slixmpp: the XMPP transport. Pure Python: a py3-none-any wheel that
+            // tools/fetch-apk-python.sh builds from the hash-checked sdist
+            // (Chaquopy 17's pip takes binary wheels only).
             install("slixmpp==1.17.0")
 
             // -- required by the above, and now named because of --no-deps ---

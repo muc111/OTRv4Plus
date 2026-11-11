@@ -5,7 +5,8 @@
 # tools/fetch-apk-python.sh downloads them with pip --require-hashes into
 # android/app/wheels, and build.gradle.kts gives Chaquopy's pip --no-index,
 # so a file that is not exactly one of these cannot reach the APK.
-# The first four ship; the rest only build slixmpp from its sdist.
+# The first four ship; the rest only build slixmpp's wheel from its sdist
+# (tools/fetch-apk-python.sh, offline, before Gradle).
 # Versions are at least two weeks old when pinned, unless the newer one fixes
 # a published advisory (CVE, GHSA, RUSTSEC) or replaces a yanked release.
 # Changing one is a diff.
