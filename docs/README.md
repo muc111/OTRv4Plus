@@ -18,6 +18,7 @@ records: they describe the code as it was when they were written.
 - [VOICE_NOTES.md](VOICE_NOTES.md): voice notes and the synthetic voice
 - [VOICE_MASK_CALLS.md](VOICE_MASK_CALLS.md): the "Mask my voice" button in calls
 - [TRADE.md](TRADE.md): the Monero courier
+- [MARKETPLACE_FEASIBILITY.md](MARKETPLACE_FEASIBILITY.md): local shops in group chats (study, not built)
 - [FEATURES.md](FEATURES.md), [ROADMAP.md](ROADMAP.md), [WHY.md](WHY.md)
 
 ## Android

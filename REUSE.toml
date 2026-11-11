@@ -95,6 +95,7 @@ path = [
     "docs/XMPP_GUARD.md",
     "docs/SECURITY_SESSIONS.md",
     "docs/SERVER_HARDENING.md",
+    "docs/MARKETPLACE_FEASIBILITY.md",
     "docs/TRADE.md",
     "docs/TRANSPORT_AUDIT.md",
     "docs/TRANSPORT_POLICY.md",
