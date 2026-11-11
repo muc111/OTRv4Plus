@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 198
+        versionCode = 199
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -94,7 +94,7 @@ android {
         // "untested" (owner, 2026-10-30): main holds the build tested on
         // phones and a laptop -- rc.194 since 2026-11-10 -- and every build
         // after it says "-untested" until it is tested too.
-        versionName = "0.7.0-experimental.rc.197-untested+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.198-untested+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -517,6 +517,11 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_identity.py",
             "otrv4plus_log.py",
             "otrv4plus_smpflow.py",
+            // Split out of otrv4+.py (2026-11-11), imported by it at module
+            // scope: its states, its TLV record and the session's SMP.
+            "otrv4plus_states.py",
+            "otrv4plus_tlv.py",
+            "otrv4plus_session_smp.py",
             "otrv4plus_tip.py",
             "otrv4plus_trade.py",
             "otrv4plus_voice.py",

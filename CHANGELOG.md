@@ -4,7 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.197-untested — 2026-11-11 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.198-untested — 2026-11-11 — on `dev`, not yet tested
+
+- **Engine tidy-up for auditors (no change in behaviour).** The session's
+  SMP code moved out of `otrv4+.py` into `client/otrv4plus_session_smp.py`,
+  and the 386-line handler for incoming SMP messages is now one short method
+  per message (SMP1 -- with the race tie-break and the held-SMP1 path in
+  their own methods -- SMP2, SMP3, SMP4, abort, error). The engine's state
+  enums and constants (`otrv4plus_states.py`) and its TLV record
+  (`otrv4plus_tlv.py`) are their own modules too. An unused Python
+  `SHA3_512.hmac` was removed: every MAC is computed in Rust.
+
+## Android 0.7.0-experimental.rc.197-untested — 2026-11-11 — on `dev`
 
 - **The Connect screen counts down while the router gets ready** (owner,
   2026-11-11). While sign-in or sign-up waits for a just-started built-in
