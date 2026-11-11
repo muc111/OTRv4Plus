@@ -2484,6 +2484,13 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         if _fragment.is_fragment(body):
             body = self._reassembler.feed(peer, body)
             if body is None:
+                # The first part of a multi-part frame (a DAKE2 is ~11.7 KB)
+                # is in the report, counts only: a set that never completes
+                # shows as this line with no "_received" after it.
+                held = self._reassembler.progress(peer)
+                if held is not None and held[0] == 1:
+                    _TRACE.record("otr", "fragments_arriving", "info",
+                                  jid=peer, parts=held[1])
                 return
 
         try:
