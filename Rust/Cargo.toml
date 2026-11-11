@@ -10,9 +10,7 @@ description = "Post-quantum OTRv4 cryptographic core (Rust/PyO3)"
 # LicenseRef; LICENSE-COMMERCIAL.md holds the terms.
 license     = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 # The 1.80 in the source comments is the *language* floor (std::sync::LazyLock
-# in smp.rs).  The real floor is the dependency tree, and it is 1.85:
-#   * pqcrypto-mlkem / pqcrypto-mldsa build scripts emit
-#     `cargo::rustc-check-cfg=...`, which needs cargo >= 1.77;
+# in smp.rs).  The real floor is the dependency tree:
 #   * base64ct 1.8, zeroize 1.9, getrandom 0.3 and wasip2 are edition2024,
 #     which needs cargo >= 1.85.
 # Measured, not guessed: cargo 1.75 cannot even resolve the graph.  Declaring
@@ -178,15 +176,15 @@ num-traits    = { version = "0.2",   optional = true }
 # side-channel in the SMP ZKPs. 0.7.8 since 2026-10-25: RUSTSEC-2026-0387
 # found secret-dependent branches in 0.5's subtraction, division and
 # Montgomery multiplication. Same values (smp::tests::mod_exp_matches_*).
-crypto-bigint = { version = "0.7.8", optional = true }
+crypto-bigint = { version = "0.7.11", optional = true, features = ["zeroize"] }
 getrandom     = { version = "0.2",   optional = true }
 
 # v10.32: the unmaintained PQClean C bindings (pqcrypto-mlkem / pqcrypto-mldsa)
 # replaced by the pure-Rust RustCrypto crates. Byte formats are identical
 # (expanded dk 3168, ek 1568, ct 1568; expanded sk 4896, vk 2592, sig 4627),
 # cross-checked in Rust/audit. No FFI, so #![forbid(unsafe_code)] is kept.
-ml-kem = { version = "0.3.2", optional = true, default-features = false, features = ["alloc", "zeroize"] }
-ml-dsa = { version = "0.1.1", optional = true, default-features = false, features = ["alloc", "zeroize"] }
+ml-kem = { version = "0.3.4", optional = true, default-features = false, features = ["alloc", "zeroize"] }
+ml-dsa = { version = "0.1.2", optional = true, default-features = false, features = ["alloc", "zeroize"] }
 
 # v10.13.0: Argon2id for the SMP passphrase stretch (SMP wire version 0x03).
 # default-features = false drops the `password-hash`/`rand` surface -- we only

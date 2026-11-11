@@ -134,6 +134,24 @@ impl KemItem {
 }
 
 /// The send step's outcome, computed before anything is committed.
+/// Message keys derived for skipped messages before the message that
+/// carried them has authenticated. Sized once (the count is bounded by
+/// `max_skip`), read by reference, and wiped when dropped, so no path out of
+/// a decrypt, `?` included, frees a buffer still holding keys.
+struct PendingSkipped(Vec<(u32, [u8; 32])>);
+
+impl PendingSkipped {
+    fn with_capacity(n: u32) -> Self { Self(Vec::with_capacity(n as usize)) }
+    fn push(&mut self, n: u32, key: [u8; 32]) { self.0.push((n, key)); }
+    fn iter(&self) -> impl Iterator<Item = &(u32, [u8; 32])> { self.0.iter() }
+}
+
+impl Drop for PendingSkipped {
+    fn drop(&mut self) {
+        for (_, k) in self.0.iter_mut() { k.zeroize(); }
+    }
+}
+
 struct SendPlan {
     brace: [u8; 32],
     item: KemItem,
@@ -282,7 +300,13 @@ pub struct DoubleRatchet {
 }
 
 impl Drop for DoubleRatchet {
-    fn drop(&mut self) {
+    fn drop(&mut self) { self.wipe_keys(); }
+}
+
+impl DoubleRatchet {
+    /// Every secret this ratchet holds, zeroized in place. Run on drop, and by
+    /// `wipe` while the object is still reachable.
+    fn wipe_keys(&mut self) {
         self.root_key.zeroize();
         self.chain_key_send.zeroize();
         self.chain_key_recv.zeroize();
@@ -297,7 +321,27 @@ impl Drop for DoubleRatchet {
         self.skipped.clear();
         if let Some(ref mut kp) = self.kem_kp { kp.zeroize_key(); }
         self.kem_kp = None;
+        if let Some(ref mut ek) = self.kem_peer_ek { ek.zeroize(); }
+        self.kem_peer_ek = None;
+        self.seen.clear();
     }
+
+    /// Wipe the ratchet AND close it for good: every key is zeroized in
+    /// place and every later encrypt or decrypt is refused (`closed`).
+    ///
+    /// Review F1 (2026-11-11): the Python-facing `zeroize` used to replace
+    /// the ratchet with a new one built from fixed, public keys, because
+    /// `mem::replace` needs a value to put back. That object was fully
+    /// working -- not closing, not closed -- so anything still holding the
+    /// handle after a wipe could encrypt under keys anyone can compute.
+    pub fn wipe(&mut self) {
+        self.wipe_keys();
+        self.closing = true;
+        self.closed = true;
+    }
+
+    /// Whether `wipe` has run (or the session closed for revelation).
+    pub fn is_closed(&self) -> bool { self.closed }
 }
 
 impl DoubleRatchet {
@@ -365,8 +409,11 @@ impl DoubleRatchet {
     pub fn pq(&self) -> bool { self.pq }
 
     /// The root step's input: `dh || brace` in v2 (SPEC §5.2), `dh` in v1.
-    fn fold_input(&self, dh_secret: &[u8], brace: &[u8; 32]) -> Vec<u8> {
-        let mut input = dh_secret.to_vec();
+    fn fold_input(&self, dh_secret: &[u8], brace: &[u8; 32]) -> zeroize::Zeroizing<Vec<u8>> {
+        // Sized up front: a growing Vec would leave an unwiped copy of the
+        // DH secret behind when it reallocated.
+        let mut input = zeroize::Zeroizing::new(Vec::with_capacity(dh_secret.len() + 32));
+        input.extend_from_slice(dh_secret);
         if self.pq {
             input.extend_from_slice(brace);
         }
@@ -614,13 +661,14 @@ impl DoubleRatchet {
         }
 
         let mut scratch_ck = self.chain_key_recv;
-        let mut pending_skipped: Vec<(u32, [u8; 32])> = Vec::new();
+        let mut pending_skipped = PendingSkipped::with_capacity(skip_count);
         for n in self.msg_num_recv..header.msg_num {
-            let (mut next_ck, enc_key, _) = kdf_chain(&scratch_ck);
+            let (mut next_ck, mut enc_key, _) = kdf_chain(&scratch_ck);
             scratch_ck.zeroize();
             scratch_ck = next_ck;
             next_ck.zeroize();
-            pending_skipped.push((n, enc_key));
+            pending_skipped.push(n, enc_key);
+            enc_key.zeroize();
         }
 
         let (mut next_ck, mut enc_key, _) = kdf_chain(&scratch_ck);
@@ -634,7 +682,7 @@ impl DoubleRatchet {
                 // ratchet exactly as it was.
                 enc_key.zeroize();
                 next_ck.zeroize();
-                for (_, mut k) in pending_skipped { k.zeroize(); }
+                drop(pending_skipped);   // wipes every skipped key
                 let mut dead = recv_enc_key; dead.zeroize();
                 return Err(e);
             }
@@ -643,14 +691,15 @@ impl DoubleRatchet {
         let mut recv_enc_key = recv_enc_key;
 
         // ── Authenticated: commit ───────────────────────────────────────
-        for (n, enc_key) in pending_skipped {
+        for (n, enc_key) in pending_skipped.iter() {
             // Audit C2: the peer will reveal the MKmac of the message this
             // key belongs to whether or not that message ever reaches us, so
             // fingerprint it now while MKenc is in hand.
-            self.note_derived_mac(&kdf_mkmac(&enc_key));
-            let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: n };
-            self.skipped.insert(skip_id, SkippedKey { enc_key });
+            self.note_derived_mac(&kdf_mkmac(enc_key));
+            let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: *n };
+            self.skipped.insert(skip_id, SkippedKey { enc_key: *enc_key });
         }
+        drop(pending_skipped);
         self.prune_skipped();
 
         self.chain_key_recv.zeroize();
@@ -825,7 +874,8 @@ impl DoubleRatchet {
         // v2: the receive step folds what this chain carries. A Ct is
         // decapsulated with our pending key pair WITHOUT spending it; the
         // pair is spent only if the message authenticates.
-        let mut recv_brace = self.brace_key;
+        // Zeroizing: the `?` exits below must not leave this copy behind.
+        let mut recv_brace = zeroize::Zeroizing::new(self.brace_key);
         if self.pq {
             match item {
                 KemItem::Ct(ct) => {
@@ -833,7 +883,7 @@ impl DoubleRatchet {
                         "an ML-KEM ciphertext arrived with no key of ours outstanding".into()))?;
                     let ss = kp.decapsulate_keep(ct)
                         .map_err(|e| RatchetError::Protocol(format!("ML-KEM decapsulation: {e}")))?;
-                    recv_brace = kdf_brace_rotate(&self.brace_key, ss.expose_slice());
+                    *recv_brace = kdf_brace_rotate(&self.brace_key, ss.expose_slice());
                 }
                 KemItem::Ek(ek) if ek.len() != crate::mlkem::MLKEM_EK_SIZE => {
                     return Err(RatchetError::Protocol("ML-KEM key has the wrong length".into()));
@@ -842,17 +892,21 @@ impl DoubleRatchet {
             }
         }
         let mut recv_input = self.fold_input(dh_secret_recv, &recv_brace);
-        let (new_root_recv, new_recv_chain) = kdf_root(&self.root_key, &recv_input);
+        let (new_root_recv, mut new_recv_chain) = kdf_root(&self.root_key, &recv_input);
         recv_input.zeroize();
+        // Wiped on every exit; committed to self.root_key only on success.
+        let new_root_recv = zeroize::Zeroizing::new(new_root_recv);
 
         let mut scratch_ck = new_recv_chain;
-        let mut pending_skipped: Vec<(u32, [u8; 32])> = Vec::new();
+        new_recv_chain.zeroize();
+        let mut pending_skipped = PendingSkipped::with_capacity(header.msg_num);
         for n in 0..header.msg_num {
-            let (mut next, mk, _) = kdf_chain(&scratch_ck);
+            let (mut next, mut mk, _) = kdf_chain(&scratch_ck);
             scratch_ck.zeroize();
             scratch_ck = next;
             next.zeroize();
-            pending_skipped.push((n, mk));
+            pending_skipped.push(n, mk);
+            mk.zeroize();
         }
         let (mut next_recv_ck, mut enc_key, _) = kdf_chain(&scratch_ck);
         scratch_ck.zeroize();
@@ -864,9 +918,7 @@ impl DoubleRatchet {
                 enc_key.zeroize();
                 recv_enc_key.zeroize();
                 next_recv_ck.zeroize();
-                recv_brace.zeroize();
-                let mut r = new_root_recv;  r.zeroize();
-                for (_, mut k) in pending_skipped { k.zeroize(); }
+                // recv_brace, new_root_recv and pending_skipped wipe on drop.
                 return Err(e);
             }
         };
@@ -886,9 +938,7 @@ impl DoubleRatchet {
                 Err(e) => {
                     recv_enc_key.zeroize();
                     next_recv_ck.zeroize();
-                    recv_brace.zeroize();
-                    let mut r = new_root_recv;  r.zeroize();
-                    for (_, mut k) in pending_skipped { k.zeroize(); }
+                    // recv_brace, new_root_recv and pending_skipped wipe on drop.
                     return Err(e);
                 }
             }
@@ -897,18 +947,20 @@ impl DoubleRatchet {
         };
 
         // ── Authenticated: commit the ratchet step ──────────────────────
-        for (n, mk) in pending_skipped {
+        for (n, mk) in pending_skipped.iter() {
             // Audit L2: retain the skipped keys of the NEW receiving chain so
             // out-of-order messages arriving after this step still decrypt.
             // Audit C2: fingerprint the matching MKmac at the same time.
-            self.note_derived_mac(&kdf_mkmac(&mk));
-            let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: n };
-            self.skipped.insert(skip_id, SkippedKey { enc_key: mk });
+            self.note_derived_mac(&kdf_mkmac(mk));
+            let skip_id = SkipId { dh_pub: header.dh_pub, msg_num: *n };
+            self.skipped.insert(skip_id, SkippedKey { enc_key: *mk });
         }
+        drop(pending_skipped);
         self.prune_skipped();
 
         self.root_key.zeroize();
-        self.root_key = new_root_recv;
+        self.root_key = *new_root_recv;
+        drop(new_root_recv);
         self.chain_key_recv.zeroize();
         self.chain_key_recv = next_recv_ck;
         next_recv_ck.zeroize();
@@ -921,7 +973,7 @@ impl DoubleRatchet {
         // v2 commit: the receive step's KEM effect, then the reply step's.
         if self.pq {
             self.brace_key.zeroize();
-            self.brace_key = recv_brace;
+            self.brace_key = *recv_brace;
             match item {
                 KemItem::Ct(_) => {
                     if let Some(ref mut kp) = self.kem_kp { kp.zeroize_key(); }
@@ -1135,9 +1187,22 @@ pub struct RustDoubleRatchet {
     /// `None` for a ratchet built by `new()` -- the test and legacy path,
     /// which has no DAKE behind it and therefore no such key.
     extra_sym_key: Option<crate::secure_mem::SecretBytes<32>>,
+    /// Set by `zeroize`: every key is gone and every key-using method
+    /// refuses (review F1).
+    wiped: bool,
 }
 
 impl RustDoubleRatchet {
+    /// Refuse use after `zeroize`, with an error rather than a result made
+    /// from wiped state.
+    fn live(&self) -> PyResult<()> {
+        if self.wiped {
+            return Err(pyo3::exceptions::PyRuntimeError::new_err(
+                "this ratchet was zeroized; nothing more is encrypted or decrypted"));
+        }
+        Ok(())
+    }
+
     /// One outgoing message for Python. `reveal_field` is the encoded
     /// `revealed_mac_keys` wire field (L1): the retired keys cross only as
     /// the bytes that go on the wire, never as a list of keys.
@@ -1184,7 +1249,7 @@ impl RustDoubleRatchet {
         // No DAKE behind this constructor, so no extra symmetric key: a file
         // transfer over such a session fails closed rather than keying from
         // something weaker.
-        Ok(Self { inner, extra_sym_key: None })
+        Ok(Self { inner, extra_sym_key: None, wiped: false })
     }
 
     /// SECURITY (audit C2 partial - Patch-1, hardened in Patch-2): consume a
@@ -1318,7 +1383,7 @@ impl RustDoubleRatchet {
         // Legacy Dakeresult path: the extra symmetric key was never carried
         // on that object, so it is not available here.  File transfer refuses
         // rather than substituting a different secret.
-        Ok(Self { inner, extra_sym_key: None })
+        Ok(Self { inner, extra_sym_key: None, wiped: false })
     }
 
     /// Begin sending a file over this session.  v10.14.0.
@@ -1334,6 +1399,7 @@ impl RustDoubleRatchet {
     fn file_sender(&self, transfer_id: &[u8])
         -> PyResult<crate::filetransfer::PyFileSender>
     {
+        self.live()?;
         let key = self.extra_sym_key.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(
                 "this session has no extra symmetric key, so a file transfer \
@@ -1351,6 +1417,7 @@ impl RustDoubleRatchet {
     fn file_receiver(&self, transfer_id: &[u8], envelope: &[u8])
         -> PyResult<crate::filetransfer::PyFileReceiver>
     {
+        self.live()?;
         let key = self.extra_sym_key.as_ref().ok_or_else(|| {
             pyo3::exceptions::PyRuntimeError::new_err(
                 "this session has no extra symmetric key, so a file transfer \
@@ -1377,6 +1444,7 @@ impl RustDoubleRatchet {
     // (DoubleRatchet::brace_key) for use by Rust code only.
 
     fn encrypt<'py>(&mut self, py: Python<'py>, plaintext: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+        self.live()?;
         let result = self.inner.encrypt(plaintext)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Self::encrypt_dict(py, &result)
@@ -1391,6 +1459,7 @@ impl RustDoubleRatchet {
     /// L1: the one message after `retire_all`, whose `reveal_field` carries
     /// every retired MAC key. The ratchet encrypts nothing after it.
     fn encrypt_final<'py>(&mut self, py: Python<'py>, plaintext: &[u8]) -> PyResult<Bound<'py, PyDict>> {
+        self.live()?;
         let result = self.inner.encrypt_final(plaintext)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         Self::encrypt_dict(py, &result)
@@ -1415,6 +1484,7 @@ impl RustDoubleRatchet {
     /// Switch to the v2 post-quantum ratchet (SPEC §5.2). Both peers, before
     /// the first message: the DAKE negotiates it from the two profiles.
     fn enable_pq_ratchet(&mut self) -> PyResult<()> {
+        self.live()?;
         self.inner.enable_pq()
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
@@ -1427,6 +1497,7 @@ impl RustDoubleRatchet {
     fn decrypt_same_dh<'py>(&mut self, py: Python<'py>,
         header: &[u8], ciphertext: &[u8], nonce: &[u8], tag: &[u8],
         kem_ek: Option<&[u8]>, kem_ct: Option<&[u8]>) -> PyResult<Bound<'py, PyDict>> {
+        self.live()?;
         let item = KemItem::from_parts(kem_ek, kem_ct)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let nonce_arr: &[u8; 12] = nonce.try_into()
@@ -1461,6 +1532,7 @@ impl RustDoubleRatchet {
         new_local: PyRef<'py, crate::key_handles::X448KeyHandle>,
         kem_ek: Option<&[u8]>, kem_ct: Option<&[u8]>,
     ) -> PyResult<Bound<'py, PyDict>> {
+        self.live()?;
         let item = KemItem::from_parts(kem_ek, kem_ct)
             .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
         let nonce_arr: &[u8; 12] = nonce.try_into()
@@ -1489,6 +1561,7 @@ impl RustDoubleRatchet {
         new_local: PyRef<'_, crate::key_handles::X448KeyHandle>,
         remote_pub: &[u8],
     ) -> PyResult<()> {
+        self.live()?;
         let secret = new_local.dh_internal(remote_pub)?;
         let new_local_pub = *new_local.public_array();
         self.inner.send_ratchet(secret.expose_slice(), &new_local_pub)
@@ -1501,6 +1574,7 @@ impl RustDoubleRatchet {
     fn brace_encapsulate<'py>(&mut self, py: Python<'py>, peer_ek: &[u8])
         -> PyResult<Bound<'py, PyBytes>>
     {
+        self.live()?;
         self.refuse_in_v2()?;
         let (ct, ss) = crate::mlkem::encapsulate_internal(peer_ek)?;
         self.inner.rotate_brace_key(ss.expose_slice());
@@ -1513,6 +1587,7 @@ impl RustDoubleRatchet {
         mut keypair: PyRefMut<'_, crate::mlkem::MlKemKeypair>,
         ct: &[u8],
     ) -> PyResult<()> {
+        self.live()?;
         self.refuse_in_v2()?;
         let ss = keypair.decapsulate_consume(ct)?;
         self.inner.rotate_brace_key(ss.expose_slice());
@@ -1527,6 +1602,7 @@ impl RustDoubleRatchet {
     /// agree?", which is what the test suite asks of a ratchet, without the
     /// suite -- or anything else in Python -- holding key material.
     fn state_tags<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        self.live()?;
         let d = PyDict::new(py);
         let (root, cks, ckr, brace) = self.inner.key_refs();
         d.set_item("root", PyBytes::new(py, &state_tag(b"root", root)))?;
@@ -1566,15 +1642,20 @@ impl RustDoubleRatchet {
         DoubleRatchet::header_dh_pub(header_bytes).map(|pk: [u8; 56]| PyBytes::new(py, &pk))
     }
 
+    /// Destroy every key and close the ratchet for good (review F1): keys
+    /// are zeroized in place, the file-transfer key is dropped (it wipes
+    /// itself), and every later encrypt, decrypt, ratchet step or file
+    /// transfer is refused. Nothing usable is left behind for a handle that
+    /// outlives the wipe.
     fn zeroize(&mut self) {
-        // Audit I1: infallible (fixed non-zero keys never trip the zero-key
-        // guard); use expect to satisfy #![deny(clippy::unwrap_used)].
-        let dummy = DoubleRatchet::new(
-            &[1u8; 32], &[2u8; 32], &[3u8; 32], &[4u8; 32], &[5u8; 56], false
-        ).expect("dummy ratchet uses fixed non-zero keys");
-        let old = std::mem::replace(&mut self.inner, dummy);
-        drop(old);
+        self.inner.wipe();
+        self.extra_sym_key = None;
+        self.wiped = true;
     }
+
+    /// Whether `zeroize` has run.
+    #[getter]
+    fn wiped(&self) -> bool { self.wiped }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1643,7 +1724,7 @@ impl RustDoubleRatchet {
         drop(keys);
         let _ = (root_key, chain_key_send, chain_key_recv, brace_key);
 
-        Ok(Self { inner, extra_sym_key: Some(extra_sym_key) })
+        Ok(Self { inner, extra_sym_key: Some(extra_sym_key), wiped: false })
     }
 }
 // ── Tests ───────────────────────────────────────────────────────────
@@ -1700,6 +1781,27 @@ mod tests {
     }
 
     /// The keys a message published, read from its wire field as anyone can.
+    /// Review F1 (2026-11-11): a wiped ratchet is closed for good, holds no
+    /// key, and refuses to encrypt or decrypt -- it used to be replaced by a
+    /// working ratchet built from fixed, public keys.
+    #[test]
+    fn a_wiped_ratchet_refuses_everything_and_holds_no_key() {
+        let (mut a, mut b) = pair();
+        let m = a.encrypt(b"before the wipe").expect("encrypt");
+        deliver(&mut b, &m).expect("delivered");
+        b.wipe();
+        assert!(b.is_closed() && b.is_closing());
+        assert_eq!(b.root_key, [0u8; 32]);
+        assert_eq!(b.chain_key_send, [0u8; 32]);
+        assert_eq!(b.chain_key_recv, [0u8; 32]);
+        assert_eq!(b.brace_key, [0u8; 32]);
+        assert_eq!(b.skipped_count(), 0);
+        assert!(b.encrypt(b"after").is_err(), "a wiped ratchet encrypted");
+        assert!(b.encrypt_final(b"after").is_err(), "a wiped ratchet encrypted its final message");
+        let m2 = a.encrypt(b"to a wiped peer").expect("encrypt");
+        assert!(deliver(&mut b, &m2).is_err(), "a wiped ratchet decrypted");
+    }
+
     fn revealed(m: &EncryptResult) -> Vec<Vec<u8>> {
         let f = &m.reveal_field;
         let n = u32::from_be_bytes([f[0], f[1], f[2], f[3]]) as usize;

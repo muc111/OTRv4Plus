@@ -21,7 +21,7 @@ never enabled is not in the shipped artifact and is not attributed here.
 
 
 ----------------------------------------------------------------------------
-1. Rust crates compiled into otrv4_core (116)
+1. Rust crates compiled into otrv4_core (115)
 ----------------------------------------------------------------------------
 
 aead 0.6.1
@@ -33,7 +33,7 @@ aead 0.6.1
     Copyright (c) 2019-2026 The RustCrypto Project Developers
     Copyright (c) 2019 MobileCoin, LLC
 
-aes 0.9.3
+aes 0.9.4
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/RustCrypto/block-ciphers
@@ -148,7 +148,7 @@ cmov 0.5.4
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2022-2026 The RustCrypto Project Developers
 
-const-oid 0.10.2
+const-oid 0.10.3
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/formats
@@ -204,7 +204,7 @@ crossbeam-utils 0.8.23
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2019 The Crossbeam Project Developers
 
-crypto-bigint 0.7.9
+crypto-bigint 0.7.11
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/crypto-bigint
@@ -237,7 +237,7 @@ ctr 0.10.1
     Copyright (c) 2018-2022 RustCrypto Developers
     Copyright (c) 2018 Artyom Pavlov
 
-ctutils 0.4.5
+ctutils 0.4.8
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/utils
@@ -250,7 +250,7 @@ dashmap 6.2.1
     Source:  https://github.com/xacrimon/dashmap
     Copyright (c) 2019 Acrimon
 
-der 0.8.2
+der 0.8.3
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/formats
@@ -288,7 +288,7 @@ either 1.19.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2015
 
-elliptic-curve 0.14.2
+elliptic-curve 0.14.3
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/traits
@@ -403,7 +403,7 @@ hybrid-array 0.4.15
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2022-2026 The RustCrypto Project Developers
 
-inout 0.2.4
+inout 0.2.6
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/RustCrypto/utils
@@ -443,7 +443,7 @@ lock_api 0.4.14
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2016 The Rust Project Developers
 
-log 0.4.34
+log 0.4.35
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-lang/log
@@ -451,7 +451,7 @@ log 0.4.34
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2014 The Rust Project Developers
 
-ml-dsa 0.1.1
+ml-dsa 0.1.2
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/signatures
@@ -460,7 +460,7 @@ ml-dsa 0.1.1
     Copyright 2024 Trail of Bits
     Copyright (c) 2024-2026 RustCrypto Developers
 
-ml-kem 0.3.2
+ml-kem 0.3.4
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/KEMs
@@ -468,7 +468,7 @@ ml-kem 0.3.2
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2024-2026 RustCrypto Developers
 
-module-lattice 0.2.3
+module-lattice 0.2.4
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/KEMs
@@ -745,18 +745,6 @@ sha2 0.11.1
     Copyright (c) 2009-2013 Mozilla Foundation
     Copyright (c) 2006-2009 Graydon Hoare
 
-sha3 0.11.0
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/RustCrypto/hashes
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2020-2026 The RustCrypto Project Developers
-    Copyright (c) 2016-2023 Artyom Pavlov, Marek Kotewicz
-    Copyright (c) 2014 Sébastien Martini
-    Copyright (c) 2009-2013 Mozilla Foundation
-    Copyright (c) 2006-2009 Graydon Hoare
-
 sha3 0.12.0
     Offered: MIT OR Apache-2.0
     Taken:   MIT
@@ -785,7 +773,7 @@ signature 3.0.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2026 RustCrypto Developers
 
-smallvec 1.16.3
+smallvec 1.16.5
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/servo/rust-smallvec
@@ -822,7 +810,7 @@ syn 2.0.119
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
 
-syn 3.0.9
+syn 3.0.10
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/dtolnay/syn

@@ -79,8 +79,11 @@ def ratchets():
     dake1, _ = alice_mgr.handle_outgoing_message(b_id, "")
     _relay(dake1, alice_mgr, bob_mgr, a_id, b_id)
     assert alice_mgr.has_encrypted_session(b_id)
-    return (alice_mgr.get_session(b_id).ratchet._rust,
-            bob_mgr.get_session(a_id).ratchet._rust)
+    # The managers must outlive the module: dropping one zeroizes its
+    # sessions' ratchets, and a zeroized ratchet refuses every call.
+    yield (alice_mgr.get_session(b_id).ratchet._rust,
+           bob_mgr.get_session(a_id).ratchet._rust)
+    del alice_mgr, bob_mgr
 
 
 @pytest.fixture

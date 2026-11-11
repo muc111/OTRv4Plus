@@ -4481,8 +4481,8 @@ class RustBackedDoubleRatchet:
         EXPLICIT, not left to reference counting. `self._rust = None` frees
         the Rust ratchet only if nothing else holds it -- a traceback frame, a
         test, a debugger -- and a wipe must not depend on that. So the Rust
-        objects are told to zeroize themselves first: the ratchet replaces its
-        keys (ZeroizeOnDrop runs on the old ones), the X448 handle zeroes its
+        objects are told to zeroize themselves first: the ratchet wipes its keys
+        in place and refuses every later call, the X448 handle zeroes its
         scalar in place, the pending ML-KEM keypair drops its decapsulation
         key. Releasing the Python references afterwards is only tidying.
         """
