@@ -522,6 +522,7 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_states.py",
             "otrv4plus_tlv.py",
             "otrv4plus_session_smp.py",
+            "otrv4plus_manager_dake.py",
             "otrv4plus_tip.py",
             "otrv4plus_trade.py",
             "otrv4plus_voice.py",

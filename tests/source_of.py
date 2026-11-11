@@ -33,9 +33,10 @@ def client_source() -> str:
 
 
 #: The modules split out of the engine (otrv4+.py), which re-exports them:
-#: its states and constants, the TLV record, and the session's SMP mixin.
+#: its states and constants, the TLV record, the SMP mixins and the
+#: manager's DAKE mixin.
 ENGINE_PARTS = ["otrv4plus_states.py", "otrv4plus_tlv.py",
-                "otrv4plus_session_smp.py"]
+                "otrv4plus_session_smp.py", "otrv4plus_manager_dake.py"]
 
 
 def engine_source() -> str:

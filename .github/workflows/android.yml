@@ -100,6 +100,7 @@ on:
       - "client/otrv4plus_states.py"
       - "client/otrv4plus_tlv.py"
       - "client/otrv4plus_session_smp.py"
+      - "client/otrv4plus_manager_dake.py"
       - "client/otrv4plus_tip.py"
       - "client/otrv4plus_trade.py"
       - "client/otrv4plus_voice.py"

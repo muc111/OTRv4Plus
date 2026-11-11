@@ -1004,3 +1004,162 @@ class SessionSmpMixin:
             return phase in ("IDLE", "FAILED")
         finally:
             self._release_lock()
+
+
+class ManagerSmpMixin:
+    """The session manager's SMP entry points: each finds the peer's session
+    and hands the call to its SessionSmpMixin. Mixed into
+    EnhancedSessionManager."""
+
+    def get_smp_progress(self, peer: str):
+        """Return (step, total) SMP progress tuple."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+            if not sess:
+                return (0, 4)
+            try:
+                return sess.get_smp_progress()
+            except Exception:
+                return (0, 4)
+
+    def get_smp_status(self, peer: str) -> dict:
+        """Return SMP status dict."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+            if not sess:
+                return {"state": "no_session", "verified": False, "failed": False}
+            try:
+                return sess.get_smp_status()
+            except Exception:
+                return {"state": "unknown", "verified": False, "failed": False}
+
+    def start_smp(self, peer: str, secret: str, question: str = "") -> Optional[str]:
+        """Start SMP verification on the session."""
+        with self.lock:
+            self._refuse_if_wiped()
+            sess = self.sessions.get(peer)
+            if not sess:
+                raise RuntimeError(f"start_smp: no session for {peer }")
+
+            return sess.start_smp(secret, question if question else None)
+
+    def process_smp_message(self, peer: str, data: bytes) -> Optional[str]:
+        """DEAD CODE - do not call.
+
+        SMP ingress runs exclusively through decrypt_message() → sess.decrypt_message()
+        → _enh_route_tlvs() → _enh_handle_smp_tlv().  Calling this method
+        directly would double-advance the Rust SMP state machine and cause
+        guaranteed ZKP verification failures.
+        """
+        raise RuntimeError(
+            "process_smp_message is disabled.  SMP messages are processed "
+            "automatically inside decrypt_message via _enh_handle_smp_tlv."
+        )
+
+    def smp_secret_required(self, peer: str) -> bool:
+        with self.lock:
+            sess = self.sessions.get(peer)
+        return bool(sess is not None and sess.smp_secret_required())
+
+    def abort_smp(self, peer: str) -> Optional[str]:
+        """Cancel *peer*'s SMP run. Returns the SMP_ABORT message to send.
+
+        The Android bridge's Cancel called this for a year of tests against a
+        fake engine that had it; the real one did not, so Cancel raised
+        `smp_abort_unsupported` on a device.
+        """
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return None
+        return sess.abort_smp()
+
+    def resume_held_smp1(self, peer: str) -> Optional[str]:
+        """Answer a parked SMP1 for *peer*.  Returns the SMP2 to send."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            raise RuntimeError(f"resume_held_smp1: no session for {peer}")
+        return sess.resume_held_smp1()
+
+    def decline_held_smp1(self, peer: str, reason: bytes = b"") -> Optional[str]:
+        """Drop a parked SMP1 for *peer*.  Returns the abort to send, if any."""
+        with self.lock:
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return None
+        return sess.decline_held_smp1(reason)
+
+    def set_smp_secret(self, peer: str, secret: str) -> bool:
+        """Store SMP secret for peer in persistent storage AND bind it into
+        the active Rust SMP engine so the responder can answer SMP1 correctly.
+
+        Two-layer write:
+          1. smp_storage (file-backed) - survives restarts, read back on every
+             incoming DATA message by decrypt_message's pre-load guard.
+          2. session.set_smp_secret - pushes secret into RustSMP immediately
+             so any SMP1 that arrives before the next DATA message is handled.
+
+        The manager RLock is released before the Rust key-stretch (SHAKE-256
+        × 10k) to avoid blocking recv_loop or any concurrent session op for
+        the several hundred milliseconds the stretch can take.
+        """
+
+        try:
+            self.smp_storage.set_secret(peer, secret)
+        except Exception as _se:
+            self.logger.debug("set_smp_secret: storage write FAILED")
+
+        with self.lock:
+            sess = self.sessions.get(peer)
+
+        if sess is not None and hasattr(sess, "set_smp_secret"):
+            try:
+                sess.set_smp_secret(secret)
+            except Exception as _se:
+                self.logger.debug("set_smp_secret: session bind FAILED")
+        return True
+
+    def has_stored_smp_secret(self, peer: str) -> bool:
+        """Whether an auto-respond passphrase is stored for *peer*."""
+        return self.smp_storage.has_secret(peer)
+
+    def bind_stored_smp_secret(self, peer: str) -> bool:
+        """Bind *peer*'s stored auto-respond passphrase into its live session.
+
+        Store -> vault -> SMP inside Rust; the passphrase is never returned
+        to Python. False when none is stored or there is no session.
+        """
+        with self.lock:
+            self._refuse_if_wiped()
+            sess = self.sessions.get(peer)
+        if sess is None:
+            return False
+        return self.smp_storage.bind_into(peer, sess)
+
+    def start_smp_with_stored_secret(self, peer: str, question: str = "") -> Optional[str]:
+        """Start SMP using the stored passphrase. None when none is stored."""
+        if not self.bind_stored_smp_secret(peer):
+            return None
+        return self.start_smp(peer, "", question)
+
+    def bind_smp_secret(self, peer: str, secret: str) -> None:
+        """Bind an SMP secret to *peer*'s live session, and nothing else.
+
+        `set_smp_secret` is the terminal clients' AUTO-RESPOND setter: it also
+        writes the secret to `smp_storage` (a file, and a Python dict for the
+        life of the process), and the DATA/SMP handlers re-bind that stored
+        secret into every later session -- so a later SMP1 from the peer is
+        answered without anybody being asked. That is the feature on a
+        terminal. It is not acceptable for a one-off answer typed into a
+        dialog: the Android bridge used `set_smp_secret`, so answering one
+        challenge silently persisted the passphrase and pre-answered every
+        future one. This goes to the Rust vault only, and raises rather than
+        swallowing a failure.
+        """
+        with self.lock:
+            self._refuse_if_wiped()
+            sess = self.sessions.get(peer)
+        if sess is None:
+            raise RuntimeError("bind_smp_secret: no session for this peer")
+        sess.set_smp_secret(secret)

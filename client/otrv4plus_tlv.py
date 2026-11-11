@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
 """The OTRv4 TLV record (type, length, value) carried inside encrypted
-data messages.
+data messages, and the base64 decoding every OTRv4 frame body goes through.
 
 Moved out of otrv4+.py unchanged (2026-11-11). The engine re-exports it as
 `OTRv4TLV`.
 """
+import base64
 import os
 import secrets
 import struct
@@ -134,3 +135,66 @@ class OTRv4TLV:
         }
         name = _NAMES.get(self.type, f"UNKNOWN(0x{self .type :04x})")
         return f"OTRv4TLV({name }, {len (self .value )} bytes)"
+
+
+def _safe_b64decode(data: str) -> bytes:
+    """Safely decode base64 with padding.
+
+    v10.7 (Phase 5.3h-D): rescued to module scope from the deleted
+    pure-Python OTRv4DAKE class.  Every caller now uses the bare
+    _safe_b64decode(...) function name.
+    """
+    try:
+        data = str(data).strip()
+        if not data:
+            raise ValueError("Empty base64 data")
+
+        data = "".join(data.split())
+
+        if "[" in data and "]" in data:
+            end_bracket = data.rfind("]")
+            if end_bracket != -1:
+                data = data[end_bracket + 1 :].strip()
+
+        # OTRv4 DATA frames are terminated with a trailing '.' (the encode path
+        # emits  "?OTRv4 <b64url>." ).  DAKE frames have no terminator.  Strip
+        # any trailing dots here so every caller can pass the raw frame body
+        # without having to know whether this particular message type is dotted.
+        data = data.rstrip(".")
+
+        # A url-safe base64 body stripped of '=' padding can only be 0, 2 or 3
+        # (mod 4) characters long.  A length of 1 (mod 4) is impossible for any
+        # valid encoding and is the fingerprint of a body that was decoded with
+        # the STANDARD alphabet (which silently discards '-' and '_').  Fail
+        # loudly instead of letting the b64decode fallback swallow real chars.
+        if len(data) % 4 == 1:
+            raise ValueError(
+                f"corrupt base64: {len (data )} chars is 1 (mod 4); "
+                "url-safe '-'/'_' were likely dropped by a standard-alphabet decode"
+            )
+
+        try:
+            padding_needed = -len(data) % 4
+            if padding_needed:
+                data = data + "=" * padding_needed
+            return base64.urlsafe_b64decode(data)
+        except Exception:
+            data = data.replace("-", "+").replace("_", "/")
+            padding_needed = -len(data) % 4
+            if padding_needed:
+                data = data + "=" * padding_needed
+            return base64.b64decode(data)
+    except Exception as e:
+        try:
+            import re as _re
+
+            # Normalise url-safe alphabet to standard BEFORE stripping, so that
+            # '-'/'_' become '+'/'/' rather than being discarded by b64decode.
+            data = data.replace("-", "+").replace("_", "/")
+            data = _re.sub(r"[^A-Za-z0-9+/=]", "", data)
+            padding_needed = -len(data) % 4
+            if padding_needed:
+                data = data + "=" * padding_needed
+            return base64.b64decode(data)
+        except Exception as e2:
+            raise ValueError(f"Base64 decode failed: {e }, also: {e2 }")
