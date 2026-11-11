@@ -4,6 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.199-untested — 2026-11-11 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`.
+
+- **Security updates before the next device test.**
+  - The Python runtime inside the APK moves to Chaquopy 17.2.0: CPython
+    3.12.7 -> 3.12.15, and its OpenSSL (which slixmpp's TLS uses) from
+    3.0.15, a series past its support, to 3.5.9 LTS.
+  - pyasn1 0.6.4 -> 0.6.5 (four CVEs; it parses data from the network for
+    slixmpp) and setuptools 84.0.0 -> 84.1.0 (one advisory; it only builds
+    slixmpp).
+  - The Rust core's hardening (review findings F1-F5): a wiped chat refuses
+    to encrypt or decrypt instead of running on placeholder keys; SMP's
+    zero-knowledge responses are computed in constant time; handshake and
+    ratchet secrets are wiped on every exit path. Dependencies updated to
+    their newest compatible releases (ml-kem 0.3.4, ml-dsa 0.1.2,
+    crypto-bigint 0.7.11, ...). Nothing changes on the wire: old and new
+    builds complete a handshake and exchange messages both ways.
+- **The diagnostic report shows each handshake step.** Which handshake
+  message arrived from a contact, whether it was refused or failed (by error
+  type, never content), when a session came up and how long it took.
+
 ## Android 0.7.0-experimental.rc.198-untested — 2026-11-11 — on `dev`, not yet tested
 
 - **Engine tidy-up for auditors (no change in behaviour).** The session's
