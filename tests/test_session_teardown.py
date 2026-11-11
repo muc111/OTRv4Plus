@@ -235,28 +235,55 @@ class TestTheResetCleansUpEvenIfTheEngineFails:
 
 
 class TestEverySiteThatCallsItStillCan:
-    """Three callers, all of which were silently failing."""
+    """Three callers, all of which were silently failing. Run, not read
+    (Phase 5, 2026-11-11): start_otr is driven above; the other two here."""
 
-    @pytest.mark.parametrize("method", ["start_otr", "_forget_otr"])
-    def test_the_named_callers_exist_and_call_it(self, method):
-        fn = getattr(xmpp.OTRv4PlusXMPP, method, None)
-        assert fn is not None, "%s is gone; this test needs rereading" % method
-        assert "end_session" in inspect.getsource(fn)
-
-    def test_forgetting_a_peer_really_ends_the_session(self):
+    def test_forgetting_a_peer_really_ends_the_session(self, capsys):
         """`_forget_otr` drops a peer whose session should not survive --
         an offline peer, a reset. It cleared the CLIENT's view and, because
         end_session raised, left the engine's session in place."""
-        assert "end_session" in inspect.getsource(xmpp.OTRv4PlusXMPP._forget_otr)
+        import otrv4plus_smpflow as smpflow
+        from xmpp_double import bare_client
+        ended = []
+        c = bare_client(xmpp.OTRv4PlusXMPP)
+        c.otr = type("E", (), {"end_session": lambda self, peer: ended.append(peer)})()
+        c._encrypted = {"bob"}
+        c._last_dake1 = {"bob": "?OTRv4 old"}
+        c._secret_request = None
+        c._smp_flows = smpflow.SmpFlowRegistry()
+        c._smp_reported = set()
+        c._forget_otr("bob", "offline")
+        assert ended == ["bob"], "the engine's session was left in place"
+        assert "bob" not in c._encrypted and "bob" not in c._last_dake1
 
     def test_the_glare_path_drops_our_handshake(self):
         """Yielding the initiator role means dropping our own handshake.
 
         Glare moved into the engine so both clients apply one rule (see
-        tests/test_dake_recovery.py, which runs it). The yield branch must
-        still tear our half-finished run down, zeroizing its engine."""
+        tests/test_dake_recovery.py, which runs it). What the yield calls,
+        `_reset_handshake`, must tear our half-finished run down: its engine
+        zeroized and gone, the session back to PLAINTEXT."""
+        mgr = _manager()
+        zeroized = []
+        engine = type("D", (), {"zeroize": lambda self: zeroized.append(True)})()
+        mgr.dake_engines["bob"] = engine
+        mgr._answering_dake1["bob"] = True
+        mgr._sent_dake1["bob"] = b"dake1"
+        session = type("S", (), {})()
+        session.session_state = otr.SessionState.DAKE_IN_PROGRESS
+        session.dake_state = otr.DAKEState.SENT_DAKE1
+        session.dake_engine = engine
+        mgr._reset_handshake("bob", session)
+        assert zeroized == [True]
+        assert "bob" not in mgr.dake_engines and "bob" not in mgr._sent_dake1
+        assert session.session_state == otr.SessionState.PLAINTEXT
+        assert session.dake_state == otr.DAKEState.IDLE
+        assert session.dake_engine is None
+
+    def test_the_glare_yield_calls_the_reset(self):
+        """And the yield branch reaches it: a structural link kept on
+        purpose, because driving glare to the yield needs two real DAKEs
+        (test_dake_recovery does that end to end)."""
         src = inspect.getsource(otr.EnhancedSessionManager._handle_dake1)
         window = src[src.index("GLARE_YIELD"):]
         assert "_reset_handshake" in window[:600]
-        reset = inspect.getsource(otr.EnhancedSessionManager._reset_handshake)
-        assert "zeroize" in reset
