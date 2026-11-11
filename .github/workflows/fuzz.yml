@@ -1,0 +1,71 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# The cargo-fuzz harnesses in Rust/fuzz.
+#
+# `compile` runs on every change to the core: the harnesses call the core's
+# API directly, and with nothing building them they silently stopped
+# compiling when the v2 ratchet added its KemItem argument. `--cfg fuzzing`
+# is what cargo-fuzz sets, so the fuzz-only SMP helper is compiled too.
+#
+# `run` (weekly and on demand) fuzzes every target for a short, fixed time on
+# nightly with the sanitizer cargo-fuzz enables by default. A crash fails the
+# job and the reproducer is kept as an artifact.
+name: Fuzz
+
+on:
+  push:
+    branches: [main, dev, "claude/**"]
+    paths:
+      - "Rust/src/**"
+      - "Rust/Cargo.toml"
+      - "Rust/Cargo.lock"
+      - "Rust/fuzz/**"
+      - ".github/workflows/fuzz.yml"
+  pull_request:
+    paths:
+      - "Rust/src/**"
+      - "Rust/fuzz/**"
+  schedule:
+    - cron: "41 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: Fuzz harnesses compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo check (as cargo-fuzz builds them)
+        working-directory: Rust/fuzz
+        env:
+          RUSTFLAGS: "--cfg fuzzing"
+        run: cargo check --locked --bins
+
+  run:
+    name: Fuzz every target (60 s each)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - name: Install cargo-fuzz 0.13.2
+        run: cargo install cargo-fuzz --locked --version 0.13.2
+      - name: Run
+        working-directory: Rust/fuzz
+        run: |
+          for t in $(cargo +nightly fuzz list); do
+            echo "== $t"
+            cargo +nightly fuzz run "$t" -- -max_total_time=60 -rss_limit_mb=4096
+          done
+      - name: Keep any reproducer
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: Rust/fuzz/artifacts/

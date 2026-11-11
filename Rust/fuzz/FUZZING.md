@@ -17,6 +17,11 @@ cargo +nightly fuzz run <target> fuzz/artifacts/<target>/<file>
 fixed in `src/`, and the input becomes a named `#[test]` beside the fix. The
 crash input is not committed as a file.
 
+CI (`.github/workflows/fuzz.yml`) checks that every harness compiles on each
+change to the core (`RUSTFLAGS="--cfg fuzzing" cargo check --bins` here), and
+runs every target for 60 seconds weekly and on demand. The harnesses once
+stopped compiling unnoticed, because nothing built them.
+
 | Target | Input | Invariant beyond "no panic" |
 |---|---|---|
 | `ratchet_header` | `RatchetHeader::decode` | accepted bytes re-encode identically |
