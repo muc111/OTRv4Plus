@@ -203,3 +203,79 @@ def test_the_detector_never_raises_on_odd_input():
     assert d.kind(b"") == J.FRAME_KIND_SILENCE
     assert d.kind(b"\x01\x02\x03") in (J.FRAME_KIND_SPEECH, J.FRAME_KIND_SILENCE)
     assert d.kind(object()) == J.FRAME_KIND_UNKNOWN
+
+
+# -- rc.201: the cap chooses like the shedder, and every frame counts once --
+
+def test_an_overflowing_burst_gives_up_a_pause_before_a_word():
+    S, Q = J.FRAME_KIND_SPEECH, J.FRAME_KIND_SILENCE
+    jb = J.JitterBuffer(adaptive=False, prefill=2, maxlen=6)
+    kinds = [S, S, Q, S, S, S, S]               # one more than the cap
+    for n, kind in enumerate(kinds):
+        jb.push(0, n, bytearray(b"%d" % n), kind)
+    assert jb.stats["overflow"] == 1
+    assert jb.stats["shed_silence"] == 1 and jb.stats["shed_speech"] == 0
+    played = [bytes(p) for p, _gap in iter(jb.pop, None)]
+    assert b"2" not in played and all(b"%d" % n in played for n in (0, 1, 3, 4, 5, 6))
+
+
+def test_an_overflowed_frame_is_not_also_a_hole():
+    """Device report 2026-11-11 (rc.200): 10106 played + 1899 missing + 1426
+    shed was 1,000 more than the 12370 frames the laptop sent, because a
+    frame dropped at the cap was later counted as missing too."""
+    jb = J.JitterBuffer(adaptive=False, prefill=1, maxlen=4, drift_high=50,
+                        shed_margin=40)
+    jb.push(0, 0, bytearray(b"x"), J.FRAME_KIND_SPEECH)
+    jb.pop()
+    for n in range(1, 8):                       # a burst of 7 into a cap of 4
+        jb.push(0, n, bytearray(b"x"), J.FRAME_KIND_SPEECH)
+    while jb.pop() is not None:
+        pass
+    s = jb.stats
+    assert s["overflow"] == 3 and s["gaps"] == 0
+    assert s["played"] + s["gaps"] + s["overflow"] + s["drift"] == 8
+
+
+def test_played_missing_and_shed_add_up_to_what_was_sent():
+    import random
+    rnd = random.Random(7)
+    jb = J.JitterBuffer(adaptive=False, prefill=2, maxlen=8, drift_high=4,
+                        shed_margin=1, drain_ms=120)
+    sent, n = 0, 0
+    for _round in range(300):
+        for _ in range(rnd.choice((0, 0, 1, 1, 1, 2, 6))):
+            if rnd.random() > 0.05:             # 5% never arrive
+                jb.push(0, n, bytearray(b"x"),
+                        rnd.choice((J.FRAME_KIND_SPEECH, J.FRAME_KIND_SILENCE)))
+            n += 1
+        jb.pop()
+    sent = n
+    while jb.pop() is not None:
+        pass
+    s = jb.stats
+    accounted = s["played"] + s["gaps"] + s["drift"] + s["overflow"]
+    # Anything after the last frame played is unknown, not missing.
+    tail = sent - 1 - jb._last_played
+    assert accounted + tail == sent, s
+
+
+def test_the_repair_line_reaches_the_report_with_its_counts():
+    from android_bridge.voice import call_stage
+    line = ("[voice] audio repair: 12 frames repaired by FEC; holes 1-frame 9, "
+            "2-3 frames 4, longer 2; pauses shortened 300 frames, speech dropped 7; "
+            "FEC at 15%; peer missed 3.1% of ours; ran dry 14 times, burst "
+            "overflow 120 frames; audio route changed 1 times")
+    code, _sev, reason = call_stage(line)
+    assert code == "call_audio_repair"
+    assert reason.startswith("audio repair: 12 frames") and reason.endswith("1 times")
+    code, _sev, reason = call_stage("[voice] audio route changed — capture reopened")
+    assert code == "audio_rerouted" and "capture" in reason
+
+
+def test_the_repair_line_says_when_the_buffer_ran_dry_and_overflowed():
+    s = object.__new__(V.VoiceCallSession)
+    s.stats = V.new_media_stats()
+    s.jitter = types.SimpleNamespace(stats={"gaps": 5, "drift": 0, "gap1": 5,
+                                            "underrun": 3, "overflow": 40})
+    line = V.VoiceCallManager._repair_line(s)
+    assert "ran dry 3 times, burst overflow 40 frames" in line

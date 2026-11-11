@@ -94,6 +94,7 @@ class ChatState(
         smpStates.clear()
         smpSteps.clear()
         sessionStates.clear()
+        verifiedAt.clear()
         capabilities.clear()
         chatStates.clear()
         discovery = null
@@ -409,12 +410,25 @@ class ChatState(
             // A poll is a read of the engine, but it may have been taken
             // before an event this side already applied. So it may END a
             // session (PLAINTEXT, a changed key) -- the fail-safe direction --
-            // but may not pull a verified session back to merely ENCRYPTED;
-            // that downgrade arrives as its own event when it is real.
+            // and may pull a verified session back to merely ENCRYPTED once
+            // the verification is older than VERIFIED_POLL_GRACE_MS.
+            //
+            // Not never. Device report 2026-11-11: after "Publish Chat Keys"
+            // and the new session that followed, the Chats list still said
+            // Verified while the conversation (which asks the engine) said
+            // to verify again. A downgrade that did not arrive as an event
+            // was refused from every poll after it, so "Verified" stayed for
+            // as long as the app ran -- the one claim this app must not make.
             val known = sessionStates[jid]
             val lagging = known == SecurityState.SMP_VERIFIED &&
-                contact.security == SecurityState.ENCRYPTED
-            if (!lagging) sessionStates[jid] = contact.security
+                contact.security == SecurityState.ENCRYPTED &&
+                (verifiedAt[jid]?.let { now() - it < VERIFIED_POLL_GRACE_MS } ?: false)
+            if (!lagging) {
+                sessionStates[jid] = contact.security
+                // Only a downgrade ends a run's VERIFIED: a run that has just
+                // finished may be recorded before its level's event arrives.
+                if (known == SecurityState.SMP_VERIFIED) invalidateStaleVerification(jid)
+            }
             if (contact.security == SecurityState.PLAINTEXT ||
                 contact.security == SecurityState.FINGERPRINT_MISMATCH) {
                 smpStates.remove(jid)
@@ -481,6 +495,7 @@ class ChatState(
             is OtrEvent.SessionChanged -> {
                 val peer = bare(event.peer)
                 sessionStates[peer] = event.security
+                if (event.security == SecurityState.SMP_VERIFIED) verifiedAt[peer] = now()
                 invalidateStaleVerification(peer)
                 false
             }
@@ -502,6 +517,7 @@ class ChatState(
             }
             is OtrEvent.SmpFinished -> {
                 smpStates[bare(event.peer)] = event.state
+                if (event.state == SmpState.VERIFIED) verifiedAt[bare(event.peer)] = now()
                 smpSteps.remove(bare(event.peer))
                 false
             }
@@ -734,6 +750,10 @@ class ChatState(
      * enum per JID and nothing else.
      */
     private val sessionStates = mutableMapOf<String, SecurityState>()
+
+    /** When each peer's verification last arrived as an EVENT (wall clock,
+     *  ms). Only to tell a poll taken just before it from a later one. */
+    private val verifiedAt = mutableMapOf<String, Long>()
 
     /** OTRv4Plus capability per bare JID, from the transport's events. */
     private val capabilities = mutableMapOf<String, String>()
@@ -1587,6 +1607,11 @@ class ChatState(
     companion object {
         /** Most "asks to join" banners held at once. */
         const val MAX_ENTRY_REQUESTS = 20
+
+        /** How long after a verification event a roster poll reading
+         *  ENCRYPTED is taken as one read before it. A poll is applied before
+         *  the events of the same tick, so a few seconds covers it. */
+        const val VERIFIED_POLL_GRACE_MS = 15_000L
 
         /**
          * The bare JID, case-folded. One contact, one key.

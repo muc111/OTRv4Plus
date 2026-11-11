@@ -4787,6 +4787,13 @@ class VoiceCallManager:
             peer = getattr(getattr(session, "latency", None), "peer_loss_permille", None)
             if peer is not None:
                 parts.append("peer missed %.1f%% of ours" % (peer / 10.0))
+            # Stalls, which a jitter buffer can only ride out: the buffer
+            # ran dry (the tunnel went quiet) and then a burst overflowed it.
+            # Dry with no overflow is the network; overflow with no dry spell
+            # would be this device's playout falling behind.
+            dry, over = int(js.get("underrun", 0)), int(js.get("overflow", 0))
+            if dry or over:
+                parts.append("ran dry %d times, burst overflow %d frames" % (dry, over))
             if int(st.get("audio_rerouted", 0)):
                 parts.append("audio route changed %d times" % int(st["audio_rerouted"]))
             return "[voice] audio repair: " + "; ".join(parts)

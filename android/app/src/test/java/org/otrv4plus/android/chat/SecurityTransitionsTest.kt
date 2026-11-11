@@ -145,6 +145,38 @@ class SecurityTransitionsTest {
     }
 
     @Test
+    fun `a new session after the verified one is not shown as verified`() {
+        // Device report 2026-11-11: "Publish Chat Keys" ended the verified
+        // session and a new one started. The downgrade never arrived as an
+        // event, and the list kept saying Verified while the conversation,
+        // which asks the engine, said to verify again.
+        var clock = 1_000_000L
+        val s = state().apply { now = { clock } }
+        session(s, SecurityState.SMP_VERIFIED); smp(s, SmpState.VERIFIED)
+        fun poll(level: SecurityState) = s.applyRoster(listOf(Contact(termux, "T",
+            PeerPresence.ONLINE, level, SmpState.NOT_VERIFIED, false)))
+        clock += ChatState.VERIFIED_POLL_GRACE_MS + 1
+        poll(SecurityState.ENCRYPTED)
+        assertEquals(SecurityState.ENCRYPTED, view(s).security,
+            "a stale Verified outlived the session it was about")
+        assertEquals(SmpState.NOT_VERIFIED, view(s).smp)
+        assertEquals(Gate.NOT_VERIFIED, gate(s))
+        val row = s.conversations().single { it.jid == termux }
+        assertEquals(SecurityState.ENCRYPTED, row.security, "the list and the chat disagree")
+    }
+
+    @Test
+    fun `a verification read only from polls is downgraded by the next poll`() {
+        val s = state()
+        fun poll(level: SecurityState, smp: SmpState) = s.applyRoster(listOf(Contact(termux,
+            "T", PeerPresence.ONLINE, level, smp, false)))
+        poll(SecurityState.SMP_VERIFIED, SmpState.VERIFIED)
+        poll(SecurityState.ENCRYPTED, SmpState.NOT_VERIFIED)
+        assertEquals(SecurityState.ENCRYPTED, view(s).security)
+        assertEquals(SmpState.NOT_VERIFIED, view(s).smp)
+    }
+
+    @Test
     fun `every gate has a deterministic control and only AVAILABLE is enabled`() {
         for (g in Gate.entries) {
             val c = CallUi.control(g, "why")

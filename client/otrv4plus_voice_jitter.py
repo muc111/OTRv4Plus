@@ -41,9 +41,10 @@ FRAME_KIND_SILENCE = 2
 
 #: Excess frames above the shed line before SPEECH is shed. Below it, the
 #: buffer waits for a pause and shortens that instead (see JitterBuffer.pop).
-#: 8 frames is 480 ms: the most a burst can add to the delay before words
-#: are given up to get it back.
-SPEECH_SHED_EXCESS = 8
+#: 20 frames is 1.2 s: the most a burst can add to the delay before words
+#: are given up to get it back. 8 (480 ms) in rc.200; the simulation in
+#: VOICE_JITTER_MAX_MS's note lost a fifth more speech at 8.
+SPEECH_SHED_EXCESS = 20
 
 
 class JitterBuffer:
@@ -290,16 +291,6 @@ class JitterBuffer:
             if seq in self._seqs or seq in self._shed_seqs:
                 self.stats["duplicate"] += 1
                 return False
-            if len(self._heap) >= self._maxlen:
-                # Playout is behind.  Drop the OLDEST rather than the newest:
-                # stale audio is worthless and keeping it only grows latency.
-                try:
-                    stale_seq, stale_pcm, _t, _k = self._heapq.heappop(self._heap)
-                    self._seqs.discard(stale_seq)
-                    _wipe(stale_pcm)
-                except Exception:
-                    pass
-                self.stats["overflow"] += 1
             # Arrival time rides with the frame so dwell is measured per
             # frame rather than inferred from depth. Depth times frame
             # duration assumes playout is running exactly on time, and the
@@ -312,6 +303,14 @@ class JitterBuffer:
                 self.stats["reordered"] += 1
             else:
                 self._highest = seq
+            if len(self._heap) > self._maxlen:
+                # Playout is behind: the burst after a tunnel stall. One frame
+                # goes, chosen as the shedder chooses -- a pause before a word
+                # -- and accounted the same way, so it is counted once (as
+                # overflow), never again as a hole when playout reaches it.
+                # Device report 2026-11-11: the oldest frame went whatever it
+                # held, and was then counted twice, ~1,000 frames in a call.
+                self._drop(self._victims(1, overflow=True), "overflow")
             return True
 
     def pop(self):
@@ -383,17 +382,7 @@ class JitterBuffer:
             # convenient: the counter restarted, so how many frames were lost
             # in the changeover is genuinely unknown, and zero is off by at
             # most a handful where the old value was off by 4.6e18.
-            if (self._last_played >= 0
-                    and self.epoch_of(seq) == self.epoch_of(self._last_played)):
-                gap = max(0, seq - self._last_played - 1)
-                if gap and self._shed_seqs:
-                    # A pause shortened on purpose is not a hole.
-                    gap -= sum(1 for s in self._shed_seqs
-                               if self._last_played < s < seq)
-                if gap:
-                    self.stats["gaps"] += gap
-                    self.stats["gap1" if gap == 1 else
-                               "gap2_3" if gap <= 3 else "gap4"] += 1
+            gap = self._count_hole(self._last_played, seq)
             if self._shed_seqs:
                 self._shed_seqs = {s for s in self._shed_seqs if s > seq}
             self._last_played = seq
@@ -424,6 +413,18 @@ class JitterBuffer:
         the middle are remembered in _shed_seqs so pop() does not count or
         conceal their hole either.
         """
+        chosen = self._victims(count, overflow=False, excess=excess)
+        if chosen:
+            self._drop(chosen, "drift")
+            if len(chosen) > 1:
+                self.stats["burst_drain"] += 1
+
+    def _victims(self, count: int, overflow: bool, excess: int = 0) -> list:
+        """Which [count] queued frames to give up. Lock held.
+
+        Silence first (never the newest frame), then frames of unknown kind
+        oldest first, then speech oldest first -- for the shedder only past
+        SPEECH_SHED_EXCESS, for overflow always, because the cap is hard."""
         ordered = sorted(self._heap)
         newest = ordered[-1][0] if ordered else None
         chosen = [e for e in ordered if e[3] == FRAME_KIND_SILENCE
@@ -431,33 +432,53 @@ class JitterBuffer:
         if len(chosen) < count:
             chosen += [e for e in ordered if e[3] == FRAME_KIND_UNKNOWN
                        and e[0] != newest][:count - len(chosen)]
-        if len(chosen) < count and excess > SPEECH_SHED_EXCESS:
+        if len(chosen) < count and (overflow or excess > SPEECH_SHED_EXCESS):
             chosen += [e for e in ordered if e[3] == FRAME_KIND_SPEECH
                        and e[0] != newest][:count - len(chosen)]
-        if not chosen:
-            return
+        return chosen
+
+    def _drop(self, chosen: list, reason: str) -> None:
+        """Remove [chosen] from the queue and account for each once. Lock held.
+
+        A frame older than everything still queued is consumed: the playout
+        marker moves past it, so a late copy is refused as late. Any hole the
+        marker steps over on the way was audio that never arrived, and is
+        counted as a gap here because playout will never see it. A frame
+        from the middle is remembered in _shed_seqs, so pop() steps over it
+        without counting or concealing it."""
         gone = {e[0] for e in chosen}
         self._heap = [e for e in self._heap if e[0] not in gone]
         self._heapq.heapify(self._heap)
         front = min(e[0] for e in self._heap) if self._heap else None
-        for seq, pcm, _t, kind in chosen:
+        for seq, pcm, _t, kind in sorted(chosen):
             self._seqs.discard(seq)
             _wipe(pcm)
-            self.stats["drift"] += 1
+            self.stats[reason] += 1
             if kind == FRAME_KIND_SILENCE:
                 self.stats["shed_silence"] += 1
             elif kind == FRAME_KIND_SPEECH:
                 self.stats["shed_speech"] += 1
-            # Older than everything still queued: consumed, so the marker
-            # moves (and a late copy of it is refused as late). Otherwise it
-            # is a hole in the middle that pop() must step over silently.
             if front is None or seq < front:
                 if seq > self._last_played:
+                    self._count_hole(self._last_played, seq)
                     self._last_played = seq
             else:
                 self._shed_seqs.add(seq)
-        if len(chosen) > 1:
-            self.stats["burst_drain"] += 1
+
+    def _count_hole(self, before: int, after: int) -> int:
+        """Count the frames missing strictly between two sequence keys (same
+        epoch only: a rekey restarts the counter). Lock held. Returns it."""
+        if before < 0 or self.epoch_of(before) != self.epoch_of(after):
+            return 0
+        gap = max(0, after - before - 1)
+        if gap and self._shed_seqs:
+            # A pause shortened on purpose is not a hole.
+            gap -= sum(1 for s in self._shed_seqs if before < s < after)
+        if gap > 0:
+            self.stats["gaps"] += gap
+            self.stats["gap1" if gap == 1 else
+                       "gap2_3" if gap <= 3 else "gap4"] += 1
+        return max(0, gap)
 
     def depth(self) -> int:
         with self._lock:

@@ -530,10 +530,15 @@ VOICE_JITTER_DRIFT_HIGH_MS = _env_ms("OTRV4PLUS_JITTER_TARGET_MS", 480,
 #: threshold decide steady state -- but the point past which a burst is
 #: discarded outright rather than queued.
 #:
-#: 2000 ms before. A burst that filled it parked two seconds of stale audio
-#: on top of the path's own delay, which for conversation is worse than
-#: having lost it: nothing in a two-second-old frame is worth hearing.
-VOICE_JITTER_MAX_MS = _env_ms("OTRV4PLUS_JITTER_MAX_MS", 1000, 240, 4000)
+#: 2000 ms, then 1000 ms, now 2000 ms again. It was halved when the only way
+#: down from a full buffer was dropping the OLDEST frames one per pop, so a
+#: burst parked two seconds of stale audio on the call. Since rc.200 the
+#: buffer sheds the pauses between words first and comes down within one
+#: (see SPEECH_SHED_EXCESS), and at 1000 ms the cap itself was what threw
+#: words away: the burst after an I2P tunnel stall overflowed it. Simulated
+#: on a path that stalls 0.8-3 s every ~12 s (rc.201): speech lost 9.2% at
+#: 1000 ms, 5.4% at 2000 ms, for +20 ms median delay.
+VOICE_JITTER_MAX_MS = _env_ms("OTRV4PLUS_JITTER_MAX_MS", 2000, 240, 4000)
 
 #: How fast the buffer returns to target after a burst.
 #:

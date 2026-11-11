@@ -4,9 +4,37 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.200-untested — 2026-11-11 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.201-untested — 2026-11-11 — on `dev`, not yet tested
 
-The last build tested on devices is rc.194, on `main`.
+The last build tested on devices is rc.194, on `main`. From the rc.200
+reports of a 12-minute call, phone and laptop:
+
+- **The phone heard much less of the laptop than the laptop heard of the
+  phone.** Laptop to phone, ~4% of frames never arrived, and the I2P tunnels
+  stalled often enough that the bursts after a stall overflowed the
+  1-second jitter buffer. Phone to laptop was "good" (2.4% missing).
+- **An overflowing burst no longer throws words away first.** The cap
+  dropped the oldest frame whatever it held; it now gives up a pause first,
+  as the shedder does. The cap is 2 s again (it was halved when the only
+  way down was dropping the oldest frames), and speech is shed only past
+  1.2 s of backlog. Simulated on a path that stalls 0.8-3 s every ~12 s:
+  speech lost 11.1% (rc.200) -> 5.4%, for +20 ms median delay.
+- **The phone's summary over-counted missing audio.** A frame dropped at
+  the cap was counted as shed and again as missing (~1,000 frames in that
+  call: "1899 missing" was nearer 830). Each frame is now counted once:
+  played + missing + shed = frames the other end sent.
+- **The repair line reaches the diagnostic report.** rc.200 recorded the
+  event and dropped its numbers. It also says how often the buffer ran dry
+  and how much a burst overflowed it (network stalls versus this device's
+  playout falling behind).
+- **The Chats list no longer says "Verified" for a new session.** After
+  Publish Chat Keys the session is replaced, and verification belongs to
+  the session it ran in, so the conversation rightly asked to verify again
+  -- but the list kept "Verified" for as long as the app ran, because a
+  poll was never allowed to lower it. A poll now can, except in the first
+  15 s after a verification.
+
+## Android 0.7.0-experimental.rc.200-untested — 2026-11-11 — on `dev`, superseded by rc.201
 
 Calls over I2P lose less audio (owner, 2026-11-11: "minimise the audio
 loss"). From the rc.199 device reports: an 8-minute call missed 8-12% of

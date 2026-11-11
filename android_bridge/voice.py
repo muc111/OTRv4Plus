@@ -689,6 +689,10 @@ CALL_STAGES = (
     # numbers are kept in the trace (see DETAIL_CODES) so a shared report
     # carries them, not only logcat. Needles chosen to match ONLY the setup
     # line and placed first so a broader needle below cannot shadow them.
+    # What the call did about its losses (FEC repairs, hole lengths, pauses
+    # shortened versus speech dropped, dry spells and overflow): counts
+    # only. FIRST: its text says "burst", which is the playout needle.
+    ("audio repair:", "call_audio_repair", "info"),
     ("codec: Opus", "audio_codec", "info"),
     ("audio: ", "audio_setup", "info"),
     ("burst", "audio_playout", "info"),
@@ -705,9 +709,6 @@ CALL_STAGES = (
     # Where the mouth-to-ear delay went (network / jitter buffer / playout),
     # printed under the hang-up summary. No identity in it.
     ("ms network (", "call_latency_budget", "info"),
-    # What the call did about its losses (FEC repairs, hole lengths, pauses
-    # shortened versus speech dropped): counts only.
-    ("audio repair:", "call_audio_repair", "info"),
     ("building I2P tunnel", "tunnels_building", "info"),
     ("waiting for an answer", "ringing_out", "info"),
     ("Answer? [y/n]", "ringing_in", "info"),
@@ -773,7 +774,15 @@ DETAIL_CODES = frozenset({"audio_codec", "audio_setup", "audio_playout",
                           # recorded as a bare "ended" until now. No identity:
                           # the peer is named only by "ended the call", which
                           # is peer_ended and keeps no detail.
-                          "ended", "call_latency_budget"})
+                          "ended", "call_latency_budget",
+                          # What the call did about its losses, and how often
+                          # the route changed. Counts only. Until rc.201 the
+                          # event reached the report and its counts did not.
+                          "call_audio_repair", "audio_rerouted"})
+
+#: Longest detail kept. The repair line is the longest of them (~250 chars
+#: with every part present), and a cut one loses its last parts first.
+DETAIL_MAX = 320
 
 #: Terminal colour codes, which a summary carries when printed to a tty.
 _ANSI = __import__("re").compile(r"\x1b\[[0-9;]*m")
@@ -788,7 +797,7 @@ def call_stage(line: str):
         if needle in text:
             reason = ""
             if code in DETAIL_CODES:
-                reason = _ANSI.sub("", text.split("[voice]", 1)[1]).strip()[:200]
+                reason = _ANSI.sub("", text.split("[voice]", 1)[1]).strip()[:DETAIL_MAX]
             elif severity != "info" and ": " in text:
                 reason = text.rsplit(": ", 1)[1].strip()[:120]
             return code, severity, reason
