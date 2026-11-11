@@ -114,7 +114,9 @@ class TestTheAbortSaysWhy:
         state ever branched on it, a peer could talk its way past SMP by
         claiming a reason.
         """
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
+        # Split out of _enh_handle_smp_tlv (2026-11-11): the abort is
+        # handled by its own method.
+        src = inspect.getsource(otr.EnhancedOTRSession._smp_on_abort)
         tree = ast.parse(textwrap.dedent(src))
         target = None
         for node in ast.walk(tree):
@@ -141,7 +143,9 @@ class TestTheAbortSaysWhy:
 class TestRemoteInputCannotBecomeASecret:
 
     def test_the_no_secret_branch_never_arms_the_pending_prompt(self):
-        src = inspect.getsource(otr.EnhancedOTRSession._enh_handle_smp_tlv)
+        # Every inbound SMP handler, not only the dispatcher (split
+        # 2026-11-11): the whole mixin they live in.
+        src = inspect.getsource(otr.SessionSmpMixin)
         assert "_pending" not in src, (
             "an inbound SMP message reaches the pending-input state; a peer "
             "could make the user's next typed line a secret")

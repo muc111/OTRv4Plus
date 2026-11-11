@@ -32,6 +32,20 @@ def client_source() -> str:
     return "\n".join(open(p, encoding="utf-8").read() for p in client_files())
 
 
+#: The modules split out of the engine (otrv4+.py), which re-exports them:
+#: its states and constants, the TLV record, and the session's SMP mixin.
+ENGINE_PARTS = ["otrv4plus_states.py", "otrv4plus_tlv.py",
+                "otrv4plus_session_smp.py"]
+
+
+def engine_source() -> str:
+    """The engine: otrv4+.py and the modules split out of it."""
+    import os
+    client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
+    return "\n".join(open(os.path.join(client, name), encoding="utf-8").read()
+                     for name in ["otrv4+.py"] + ENGINE_PARTS)
+
+
 def irc_and_engine_source() -> str:
     """What otrv4+.py held before the IRC client moved out: the engine
     (otrv4+.py) and the IRC client (otrv4plus_irc.py and the
@@ -40,7 +54,7 @@ def irc_and_engine_source() -> str:
     import glob
     import os
     client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
-    names = ["otrv4+.py", "otrv4plus_irc.py"] + sorted(
+    names = ["otrv4+.py"] + ENGINE_PARTS + ["otrv4plus_irc.py"] + sorted(
         os.path.basename(p) for p in glob.glob(os.path.join(client, "otrv4plus_irc_*.py")))
     return "\n".join(open(os.path.join(client, name), encoding="utf-8").read()
                      for name in names)
