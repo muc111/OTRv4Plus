@@ -367,7 +367,7 @@ of them is copyleft.
 |---|---|---|---|---|---|
 | `PySocks` | 1.7.1 | BSD-3-Clause | direct, required | bundled in APK | Yes |
 | `slixmpp` | 1.17.0 | MIT | direct, required | bundled in APK | Yes |
-| `pyasn1` | 0.6.4 | BSD-2-Clause | transitive (slixmpp) | bundled in APK | Yes |
+| `pyasn1` | 0.6.5 | BSD-2-Clause | transitive (slixmpp) | bundled in APK | Yes |
 | `pyasn1-modules` | 0.4.2 | BSD-2-Clause | transitive (slixmpp) | bundled in APK | Yes |
 | CPython | 3.12 (Chaquopy 3.12.12-0) | PSF-2.0 | bundled by Chaquopy | bundled in APK | Yes |
 | OpenSSL | 3.x (Chaquopy's CPython) | Apache-2.0 | bundled by Chaquopy | bundled in APK | Yes |

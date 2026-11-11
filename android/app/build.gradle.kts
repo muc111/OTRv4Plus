@@ -349,7 +349,7 @@ chaquopy {
             // -- required by the above, and now named because of --no-deps ---
             //
             // slixmpp -> pyasn1, pyasn1-modules (both pure Python).
-            install("pyasn1==0.6.4")
+            install("pyasn1==0.6.5")
             install("pyasn1-modules==0.4.2")
 
             // -- deliberately absent -----------------------------------------

@@ -8,5 +8,8 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
     // Chaquopy embeds CPython. The Python requirement is 3.12+ (PEP 701
     // f-strings in otrv4+.py) -- see android_bridge/bootstrap.py.
-    id("com.chaquo.python") version "16.0.0" apply false
+    // 17.2.0 (2026-11-11): its 3.12 runtime is CPython 3.12.15 with OpenSSL
+    // 3.5.9 LTS. 16.0.0 shipped CPython 3.12.7 with OpenSSL 3.0.15 (Sep 2024,
+    // a series past its support), and slixmpp's TLS runs on that OpenSSL.
+    id("com.chaquo.python") version "17.2.0" apply false
 }

@@ -13,27 +13,17 @@
 # advisories, all in libcrux crates that are locked but never compiled
 # (below).
 #
+# Re-audited 2026-11-11 after the lockfile update: one new advisory,
+# libsqlite3-sys (below), locked and never compiled. The five PQClean / paste
+# entries were removed: the core moved to RustCrypto ml-kem / ml-dsa and none
+# of those crates is in Cargo.lock any more (the audit harness Rust/audit
+# keeps PQClean as a cross-check only; it is not shipped).
+#
 # The two pyo3 entries that used to be here (RUSTSEC-2025-0020,
 # RUSTSEC-2026-0177) were removed: neither matches the locked pyo3 0.29.2, and a
 # stale ignore would silently hide a future advisory with the same ID.
 [advisories]
 ignore = [
-  # UNMAINTAINED, not vulnerable: the upstream PQClean project is being
-  # archived, so these crates will receive no further updates. They are the
-  # ML-KEM-1024 (FIPS 203) and ML-DSA-87 (FIPS 204) implementations every PQ
-  # operation in the protocol runs on; replacing them is a change of
-  # cryptographic implementation (candidate: libcrux or RustCrypto ml-kem /
-  # ml-dsa), to be done as its own reviewed change with known-answer and
-  # cross-implementation tests (tests/test_mlkem_cross_implementation.py), not
-  # as a dependency bump. Recorded in docs/LICENSING_AUDIT.md and
-  # docs/CRYPTO_SOURCE_OF_TRUTH.md. Revisit on any new advisory against them.
-  "RUSTSEC-2026-0161",  # pqcrypto-mlkem 0.1.1
-  "RUSTSEC-2026-0162",  # pqcrypto-traits 0.3.5
-  "RUSTSEC-2026-0163",  # pqcrypto-internals 0.2.11
-  "RUSTSEC-2026-0166",  # pqcrypto-mldsa 0.1.2
-  # UNMAINTAINED proc-macro, compile time only, pulled in by pqcrypto-mldsa.
-  # Leaves with it.
-  "RUSTSEC-2024-0436",  # paste 1.0.15
   # UNMAINTAINED proc-macro, compile time only. In Cargo.lock, NOT in the
   # build: openmls 0.9's optional reference providers (openmls_rust_crypto,
   # openmls_libcrux_crypto) -> hpke-rs -> libcrux-sha3 -> hax-lib ->
@@ -69,4 +59,13 @@ ignore = [
   # mls --target all -i crypto-bigint@0.5.5` prints nothing. Remove when
   # openmls moves those providers to elliptic-curve 0.14.
   "RUSTSEC-2026-0387",  # crypto-bigint 0.5.5 (locked, not built)
+  # C SQLITE CVE-2026-119375 (medium), in code that is NOT BUILT (audited
+  # 2026-11-11). libsqlite3-sys 0.35.0 is locked only through openmls 0.9.2's
+  # optional SQLite storage (openmls_sqlite_storage 0.3 -> rusqlite ^0.37 ->
+  # libsqlite3-sys 0.35), which otrv4-mls never enables (default-features =
+  # false; storage is its own, in memory). `cargo tree -e all --all-features
+  # --target all -i libsqlite3-sys` prints nothing. The fix (>= 0.39) cannot
+  # be locked while openmls 0.9.2, the newest release, requires rusqlite
+  # 0.37. Remove when openmls moves.
+  "RUSTSEC-2026-0459",  # libsqlite3-sys 0.35.0 (locked, not built)
 ]

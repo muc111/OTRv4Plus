@@ -58,7 +58,7 @@ python3 -m pip download --quiet --disable-pip-version-check --no-deps \
     --only-binary=:all: --python-version 3.13 --implementation cp \
     --platform manylinux2014_x86_64 --platform manylinux_2_17_x86_64 --platform any \
     --dest "$OUT/wheels" \
-    "slixmpp==1.17.0" "PySocks==1.7.1" "pyasn1==0.6.4" "pyasn1-modules==0.4.2"
+    "slixmpp==1.17.0" "PySocks==1.7.1" "pyasn1==0.6.5" "pyasn1-modules==0.4.2"
 python3 -m pip download --quiet --disable-pip-version-check --no-deps \
     --no-binary=:all: --dest "$OUT/wheels" "opuslib==3.0.1"
 ( cd "$OUT/wheels" && sha256sum --strict --check "$LOCK" ) || die "a wheel does not match the lock"

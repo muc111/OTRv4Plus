@@ -937,7 +937,7 @@ each package's own distribution (third_party/python/). Nothing else
 Python is bundled: aiodns, cryptography and argon2-cffi are not in the
 APK. See docs/LICENSING_AUDIT.md §3.
 
-CPython (via Chaquopy, target 3.12.12-0) 3.12
+CPython (via Chaquopy, target 3.12.15-0) 3.12
     Licence: PSF-2.0
     Copyright (c) 2001-2026 Python Software Foundation. All Rights Reserved.
 
@@ -1120,7 +1120,7 @@ PySocks 1.7.1
     LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT
     OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMANGE.
 
-pyasn1 0.6.4
+pyasn1 0.6.5
     Licence: BSD-2-Clause
 
     Copyright (c) 2005-2020, Ilya Etingof <etingof@gmail.com>
