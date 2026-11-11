@@ -4,7 +4,17 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.195-untested — 2026-11-10 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.196-untested — 2026-11-11 — on `dev`, not yet tested
+
+- **rc.195's wait now covers the router's first searches too.** The rc.195
+  report (2026-11-11): sign-up waited through seven instant "not found"
+  answers, then the router's first real search missed after 30 s and the
+  attempt failed; the next tap found the server in under a second. A router
+  that was too new when the attempt began now gets up to two real searches
+  as well, within a 150-second wait. The same report stayed connected for
+  31 minutes, past the 11-minute point where rc.194's connection dropped.
+
+## Android 0.7.0-experimental.rc.195-untested — 2026-11-10 — on `dev`
 
 From a device report (Pixel 7): sign-up failed five times in two minutes on
 a just-started built-in router, and a connection dropped 12 minutes later.

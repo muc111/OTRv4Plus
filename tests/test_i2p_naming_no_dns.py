@@ -748,6 +748,46 @@ class TestARouterTooNewToSearchIsAskedAgain:
         assert sam.waits == []
         fake.close()
 
+    def test_a_router_that_was_too_new_gets_real_searches_too(self, monkeypatch):
+        # Device report 2026-11-11: seven instant answers, then one 30 s
+        # search that missed -- and the next attempt found the server in
+        # under a second. That next search now happens in the same attempt.
+        fake = FakeSam(unknown_result="INVALID_KEY")
+        sam = self._sam(fake, settle=otr.KEY_LOOKUP_SETTLE_S)
+        now = {"t": 0.0}
+        monkeypatch.setattr(otr.time, "monotonic", lambda: now["t"])
+        calls = {"n": 0}
+        real = sam.naming_lookup
+
+        def lookup(name):
+            calls["n"] += 1
+            if calls["n"] == 8:
+                now["t"] += 30.0                  # a real search that missed
+            if calls["n"] == 9:
+                fake.names[name] = DEST
+            return real(name)
+        sam.naming_lookup = lookup
+        assert sam.lookup_key(B32) == DEST
+        assert calls["n"] == 9
+
+    def test_real_searches_after_a_cold_start_are_limited(self, monkeypatch):
+        fake = FakeSam(unknown_result="INVALID_KEY")
+        sam = self._sam(fake, settle=1000.0)
+        now = {"t": 0.0}
+        monkeypatch.setattr(otr.time, "monotonic", lambda: now["t"])
+        calls = {"n": 0}
+        real = sam.naming_lookup
+
+        def lookup(name):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                now["t"] += 20.0                  # every search after the first is real
+            return real(name)
+        sam.naming_lookup = lookup
+        with pytest.raises(otr.SamError):
+            sam.lookup_key(B32)
+        assert calls["n"] == 2 + otr.KEY_LOOKUP_SLOW_RETRIES
+
     def test_other_failures_are_not_repeated(self):
         fake = FakeSam(naming_reply="NAMING REPLY RESULT=INVALID_NAME NAME={name}")
         sam = self._sam(fake)

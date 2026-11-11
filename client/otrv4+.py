@@ -886,8 +886,11 @@ KEY_LOOKUP_INSTANT_S = 2.0
 #: pauses between asks. Device reports 2026-11-09 and 2026-11-10: on the
 #: built-in router's first minute or two, every sign-in and sign-up failed in
 #: milliseconds (five sign-up taps in 2 minutes) until one found the server.
-KEY_LOOKUP_SETTLE_S = 120.0
+KEY_LOOKUP_SETTLE_S = 150.0
 KEY_LOOKUP_PAUSES_S = (3.0, 5.0, 8.0, 12.0, 15.0)
+#: Real (slow) searches still retried once a router has stopped answering
+#: instantly, within the same attempt: its first searches can miss.
+KEY_LOOKUP_SLOW_RETRIES = 2
 
 
 def remember_i2p_alias(name: str, destination: str, path: str = None,
@@ -1374,26 +1377,38 @@ class I2PSAMConnection:
         A "not found" that came back instantly (KEY_LOOKUP_INSTANT_S) is a
         router with no peers yet, not an answer about the server: the lookup
         is asked again, after KEY_LOOKUP_PAUSES_S, for up to
-        `key_lookup_settle_s`. A slow "not found" -- a real search -- and any
-        other failure are raised at once, as before. `abandon()` ends the
-        wait. Each retry is reported through `on_progress`, if set."""
+        `key_lookup_settle_s`. A router that was too new when this began then
+        gets up to KEY_LOOKUP_SLOW_RETRIES real searches as well: its first
+        searches, with few peers, can miss (device report 2026-11-11: seven
+        instant answers, one 30 s search that missed, and the next attempt
+        found the server in under a second). A slow "not found" on a router
+        that answered properly from the start, and any other failure, are
+        raised at once, as before. `abandon()` ends the wait. Each retry is
+        reported through `on_progress`, if set."""
         pause = pause or self._pause
-        # Counted in pauses: only instant answers are retried, so the pauses
-        # are the time this spends.
+        # The pauses, plus the time each failed search took (a search that
+        # came back at once counts as nothing).
         waited = 0.0
         tries = 0
+        slow = 0
         while True:
             asked = time.monotonic()
             try:
                 return self.naming_lookup(name)
             except SamError as exc:
-                instant = time.monotonic() - asked < KEY_LOOKUP_INSTANT_S
+                took = time.monotonic() - asked
+                instant = took < KEY_LOOKUP_INSTANT_S
+                if not instant:
+                    waited += took
                 wait = KEY_LOOKUP_PAUSES_S[min(tries, len(KEY_LOOKUP_PAUSES_S) - 1)]
+                settling = instant or (tries > 0 and slow < KEY_LOOKUP_SLOW_RETRIES)
                 if (exc.stage != "naming"
                         or exc.result not in I2P_KEY_NOT_FOUND_RESULTS
-                        or not instant or self._abandoned
+                        or not settling or self._abandoned
                         or waited + wait > self.key_lookup_settle_s):
                     raise
+                if not instant:
+                    slow += 1
             tries += 1
             waited += wait
             progress = getattr(self, "on_progress", None)

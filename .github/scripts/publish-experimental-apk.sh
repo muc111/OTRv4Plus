@@ -273,7 +273,7 @@ except the one row in the next table.
 | Area | What to test | Since |
 |---|---|---|
 | Five-person group call | A secure group of five verified members (the maximum): one starts a call, the other four join; everyone hears everyone, and each phone's report shows four participants (\`peers=4\`) | rc.84 |
-| Sign-up and sign-in on a just-started built-in router | Force-stop the app, open it and create an account (or sign in) at once: it waits while the router finds the server (*router_too_new* in the report) instead of failing in a second, with no need to tap again | rc.195 |
+| Sign-up and sign-in on a just-started built-in router | Force-stop the app, open it and create an account (or sign in) at once: it waits while the router finds the server (*router_too_new* in the report) instead of failing in a second, with no need to tap again | rc.196 |
 | Router log after a drop | When the connection drops on the built-in router, the report shows *log_after_drop* and the router's last warnings (no addresses), and *i2p_stream_ended* carries \`age_s\` and \`quiet_s\` | rc.195 |
 
 ## ⚠️ Known limits
