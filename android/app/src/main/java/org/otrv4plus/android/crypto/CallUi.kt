@@ -34,8 +34,11 @@ object CallUi {
      * The phone icon's colour: whether the next call's I2P path is built
      * (`otrv4plus_warmpath`). Owner (2026-10-15): "a phone, red, which turns
      * green when the tunnels are ready for audio calls". Amber while it is
-     * being built. A tap works in every colour -- red only means the call
-     * builds its tunnels after the tap (30-120 s) instead of before.
+     * being built, and then while it settles: green only once it has been
+     * up for a minute (owner, 2026-11-11: "turns green when the tunnel has
+     * been prepped long enough"). A tap works in every colour -- red only
+     * means the call builds its tunnels after the tap (30-120 s) instead of
+     * before, amber that the first minute may sound worse.
      */
     enum class Readiness { COLD, WARMING, READY;
         companion object {
@@ -50,7 +53,8 @@ object CallUi {
     /** What is said beside the phone: short, and never a promise. */
     fun readinessLabel(r: Readiness, secondsLeft: Int = 0): String = when (r) {
         Readiness.READY -> "Ready" + if (secondsLeft > 0) " · ${(secondsLeft + 59) / 60} min" else ""
-        Readiness.WARMING -> "Preparing the call path…"
+        Readiness.WARMING -> if (secondsLeft > 0) "Preparing the call path… ready in ${secondsLeft} s"
+            else "Preparing the call path…"
         Readiness.COLD -> "Call (the path is built when you tap, 30-120 s)"
     }
 

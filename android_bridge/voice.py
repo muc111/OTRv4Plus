@@ -705,6 +705,9 @@ CALL_STAGES = (
     # Where the mouth-to-ear delay went (network / jitter buffer / playout),
     # printed under the hang-up summary. No identity in it.
     ("ms network (", "call_latency_budget", "info"),
+    # What the call did about its losses (FEC repairs, hole lengths, pauses
+    # shortened versus speech dropped): counts only.
+    ("audio repair:", "call_audio_repair", "info"),
     ("building I2P tunnel", "tunnels_building", "info"),
     ("waiting for an answer", "ringing_out", "info"),
     ("Answer? [y/n]", "ringing_in", "info"),
@@ -712,6 +715,9 @@ CALL_STAGES = (
     ("keys confirmed, establishing media", "keys_confirmed", "info"),
     ("call active with", "active", "info"),
     ("microphone live", "microphone_live", "info"),
+    # Speaker/earpiece/Bluetooth/headset change mid-call: the stream was
+    # reopened on the new route instead of ending the call.
+    ("audio route changed", "audio_rerouted", "info"),
     ("inbound audio recovered", "audio_recovered", "info"),
     ("moved its media path", "peer_media_moved", "info"),
     ("re-announcing the media path", "media_reannounced", "warning"),

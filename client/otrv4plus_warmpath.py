@@ -19,7 +19,15 @@ next call, 1:1 or group, which then skips the build.
     it (inside OTR or MLS), used for that one call, and never reused. Taking
     it starts the next one, so a second call in the window is quick too.
   * `state()` is what the phone icon shows: "cold" (red), "warming" (amber),
-    "ready" (green).
+    "ready" (green). Green means SETTLED, not merely built (owner,
+    2026-11-11: "the call icon turns green when the tunnel has been prepped
+    long enough"): a session that has just answered SESSION STATUS has its
+    tunnels but they are untested, its lease set is barely published, and
+    the first minute is when an I2P path drops the most. So a spare is
+    "ready" only once it is READY_AGE old; until then it is "warming" and
+    `describe` says how long is left. A call can still take a young spare --
+    it is better than building one -- the colour only tells the user it may
+    sound worse for the first minute.
 
 Nothing here touches a key: it is a socket and a SAM control connection.
 """
@@ -31,7 +39,8 @@ import threading
 import time
 from typing import Any, Callable, Dict, Optional, Tuple
 
-__all__ = ["WarmPath", "Spare", "WARM", "KEEP_SECONDS", "BUILD_TIMEOUT"]
+__all__ = ["WarmPath", "Spare", "WARM", "KEEP_SECONDS", "BUILD_TIMEOUT",
+           "READY_AGE"]
 
 #: How long a spare is kept after the last request for one.
 KEEP_SECONDS = 600.0
@@ -41,6 +50,9 @@ BUILD_TIMEOUT = 240.0
 RETRY_AFTER = 30.0
 #: While held (signed in), how often the spare is checked and replaced.
 CHECK_SECONDS = 20.0
+#: How old a spare must be before the phone turns green: long enough for the
+#: router to have tested its tunnels and published the lease set.
+READY_AGE = 60.0
 
 
 def _alive(spare: "Spare") -> bool:
@@ -123,10 +135,11 @@ class WarmPath:
 
     def __init__(self, build: Callable[[str, int], Spare] = _sam_build,
                  clock: Callable[[], float] = time.monotonic,
-                 keep: float = KEEP_SECONDS):
+                 keep: float = KEEP_SECONDS, ready_age: float = READY_AGE):
         self._build = build
         self._clock = clock
         self._keep = keep
+        self._ready_age = float(ready_age)
         self._lock = threading.Lock()
         self._spare: Optional[Spare] = None
         self._building = False
@@ -212,19 +225,35 @@ class WarmPath:
         if start:
             self._start_build()
 
+    def _age(self, spare: Spare) -> float:
+        return self._clock() - spare.built_at
+
     def state(self) -> str:
-        """"ready", "warming" or "cold" (and expires a stale spare)."""
+        """"ready", "warming" or "cold" (and expires a stale spare).
+
+        A spare younger than READY_AGE is "warming": built, but not settled."""
         self._expire()
         with self._lock:
             if self._spare is not None:
-                return "ready"
+                if self._age(self._spare) >= self._ready_age:
+                    return "ready"
+                return "warming"
             return "warming" if self._building else "cold"
 
     def describe(self) -> Dict[str, Any]:
-        """For the UI and diagnostics: the state, and seconds the spare is
-        still kept for (0 when cold). No destination."""
+        """For the UI and diagnostics: the state and a number of seconds.
+
+        "ready": seconds the spare is still kept for (0 while held from sign
+        in: no countdown to show). "warming": seconds until it is ready, when
+        a spare exists and is settling; 0 while the tunnels are still being
+        built, which has no honest estimate. "cold": 0. No destination."""
         state = self.state()
         with self._lock:
+            if state == "warming":
+                spare = self._spare
+                left = (max(0.0, self._ready_age - self._age(spare))
+                        if spare is not None else 0.0)
+                return {"state": state, "seconds_left": int(left + 0.999)}
             if state == "cold" or self._held or self._wanted_until == float("inf"):
                 left = 0.0                        # held: no countdown to show
             else:
@@ -297,6 +326,8 @@ class WarmPath:
             if self._spare is not None or self._clock() >= self._wanted_until:
                 extra = spare                    # not wanted any more
             else:
+                # Age on this path's clock, from when it was handed over.
+                spare.built_at = self._clock()
                 self._spare, extra = spare, None
                 self.stats["built"] += 1
         if extra is not None:

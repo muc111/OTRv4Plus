@@ -110,8 +110,11 @@ class Playout:
         self.stats = {"queued": 0, "late": 0, "fec": 0, "concealed": 0,
                       "decoded": 0, "restarts": 0, "dropped_senders": 0}
 
-    def push(self, who: str, opus_frame: bytes, number: int) -> bool:
-        """An Opus frame from `who` (network thread). False if refused."""
+    def push(self, who: str, opus_frame: bytes, number: int,
+             kind: int = 0) -> bool:
+        """An Opus frame from `who` (network thread). False if refused.
+        [kind] is the sender's speech/silence mark (FRAME_KIND_*), so a
+        deep buffer shortens a pause rather than dropping a word."""
         with self._lock:
             st = self._senders.get(who)
             if st is not None and st.highest - number > RESTART_FRAMES:
@@ -129,7 +132,7 @@ class Playout:
                     return False
                 self._senders[who] = st
             st.highest = max(st.highest, number)
-        ok = st.jitter.push(0, number, bytes(opus_frame))
+        ok = st.jitter.push(0, number, bytes(opus_frame), kind)
         self.stats["queued" if ok else "late"] += 1
         return ok
 
@@ -235,6 +238,7 @@ class GroupCallMedia:
         #: "Mask my voice" (otrv4plus_audio.LiveMasker): after levelling,
         #: before Opus, so the real voice never leaves this device.
         self._masker = _audio.LiveMasker()
+        self._speech = _voice.SpeechDetector()
         self._clarity = _audio.make_speech_clarity()
         self._speaker_comp = _audio.make_speaker_compressor()
         self._speaker_gain = _audio.make_speaker_gain()
@@ -427,12 +431,13 @@ class GroupCallMedia:
         thread): into their jitter buffer. Decoded on the playback thread."""
         try:
             opus_frame, ts = _voice.unpad_frame(frame)
+            kind = _voice.frame_kind(frame)
         except Exception:
             return
         if not opus_frame:
             return
         self._heard_at[who] = time.monotonic()
-        self._playout.push(who, opus_frame, frame_number(ts))
+        self._playout.push(who, opus_frame, frame_number(ts), kind)
 
     def _capture_loop(self) -> None:
         while self._running:
@@ -458,11 +463,15 @@ class GroupCallMedia:
                 pcm = raw
             pcm = self._masker.process(pcm)
             try:
+                kind = self._speech.kind(pcm)
+            except Exception:
+                kind = 0
+            try:
                 encoded = self._encoder.encode(bytes(pcm), _voice.VOICE_FRAME_SAMPLES)
             except Exception:
                 continue
             seq, self._seq = self._seq, self._seq + 1
-            padded = _voice.pad_opus(encoded, seq * _voice.VOICE_FRAME_MS)
+            padded = _voice.pad_opus(encoded, seq * _voice.VOICE_FRAME_MS, kind)
             if padded is None:
                 self.stats["oversize"] = self.stats.get("oversize", 0) + 1
                 continue

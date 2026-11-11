@@ -4,6 +4,40 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.200-untested — 2026-11-11 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`.
+
+Calls over I2P lose less audio (owner, 2026-11-11: "minimise the audio
+loss"). From the rc.199 device reports: an 8-minute call missed 8-12% of
+frames at playout and its jitter buffer threw away ~500 more to keep the
+delay down.
+
+- **A burst no longer costs words.** After an I2P tunnel stall the frames
+  arrive in a clump and the buffer has to catch up. It used to drop the
+  oldest frames, speech or not; now each frame is marked speech or silence
+  by the sender (in padding it always sent, inside the encryption: the
+  packet does not change), and the buffer shortens pauses first. Speech is
+  only dropped if the backlog passes half a second. Group calls too.
+- **Error correction follows the real loss.** Opus FEC (a low-rate copy of
+  the previous frame inside each packet, same size on the wire) starts at
+  10% instead of 5%, and each end now reports how much of the other's audio
+  it is missing, so the sender sets it to match (5-30%).
+- **Changing the audio route no longer ends the call.** Speaker, earpiece,
+  Bluetooth or a headset mid-call: the microphone or speaker is reopened on
+  the new route (rc.199 lost a call 16 s in this way). A device that keeps
+  dropping still ends it after three tries.
+- **The phone icon turns green only once the call path has settled**: a
+  minute after its tunnels are built. Until then it is amber and says how
+  long is left ("ready in 42 s"); a call can still be made.
+- **The call summary says what was repaired**: frames recovered by FEC,
+  holes by length (single frames versus longer stalls), pauses shortened
+  against speech dropped, the FEC level, and route changes. Also in the
+  diagnostic report.
+
+Works with older builds: nothing new is negotiated, and an older peer's
+frames and PONGs are handled exactly as before.
+
 ## Android 0.7.0-experimental.rc.199-untested — 2026-11-11 — on `dev`, not yet tested
 
 The last build tested on devices is rc.194, on `main`.

@@ -218,7 +218,11 @@ from otrv4plus_voice_crypto import (  # noqa: F401
 )
 from otrv4plus_voice_jitter import (  # noqa: F401
     JitterBuffer, pad_opus, unpad_frame, unpad_opus, Percentiles, StageTimers,
-    LatencyTracker,
+    LatencyTracker, frame_kind, FRAME_KIND_UNKNOWN, FRAME_KIND_SPEECH,
+    FRAME_KIND_SILENCE,
+)
+from otrv4plus_voice_params import (  # noqa: F401
+    fec_pct_for_loss, VOICE_FEC_MIN_PCT, VOICE_FEC_MAX_PCT,
 )
 
 
@@ -363,11 +367,65 @@ MEDIA_STAT_KEYS = (
     # live failure produced exactly that reading and could not be classified
     # from it.
     "dgram_in", "dgram_empty", "dgram_closed",
+    # The call's repair work, for the summary's "audio repair" line: audio
+    # streams reopened after a route change, and the Opus FEC level the
+    # encoder is running at now.
+    "audio_rerouted", "fec_pct",
 )
 
 
 def new_media_stats() -> dict:
     return {name: 0 for name in MEDIA_STAT_KEYS}
+
+
+class SpeechDetector:
+    """Speech or silence, for one frame of 16-bit mono PCM.
+
+    Feeds the frame-kind byte (otrv4plus_voice_jitter.FRAME_KIND_*): the
+    receiver sheds SILENCE first when a burst leaves its buffer deep, so the
+    delay comes back by shortening pauses instead of dropping words.
+
+    Energy against a tracked noise floor, with a hangover so the tail of a
+    word is never called silence. Deliberately simple: a frame wrongly
+    called speech only means it is shed later, as before; one wrongly called
+    silence is the costly mistake, which is what the hangover and the
+    generous threshold guard against.
+    """
+
+    #: RMS below which a frame is never speech: about -49 dBFS.
+    FLOOR_MIN = 120.0
+    #: Speech is this many times the noise floor.
+    RATIO = 3.0
+    #: Frames still called speech after the energy drops: 300 ms at 60 ms.
+    HANGOVER = 5
+
+    def __init__(self):
+        self._floor = None
+        self._hang = self.HANGOVER
+
+    def kind(self, pcm) -> int:
+        try:
+            view = memoryview(pcm).cast("B")
+            usable = len(view) - (len(view) % 2)
+            samples = view[:usable].cast("h")
+        except (TypeError, ValueError):
+            return FRAME_KIND_UNKNOWN
+        n = len(samples)
+        if n == 0:
+            return FRAME_KIND_SILENCE
+        rms = (sum(x * x for x in samples) / n) ** 0.5
+        if self._floor is None or rms < self._floor:
+            self._floor = rms
+        else:
+            # Rise slowly, so speech does not drag the floor up with it.
+            self._floor += (rms - self._floor) * 0.002
+        if rms > max(self.FLOOR_MIN, self._floor * self.RATIO):
+            self._hang = self.HANGOVER
+            return FRAME_KIND_SPEECH
+        if self._hang > 0:
+            self._hang -= 1
+            return FRAME_KIND_SPEECH
+        return FRAME_KIND_SILENCE
 
 
 class VoiceCallSession:
@@ -489,6 +547,14 @@ class VoiceCallSession:
         self._opus_dec = None
         self._silence_frame = None
         self.constant_rate = False
+        # Opus FEC follows the loss the PEER reports for our packets (in its
+        # PONGs): wanted is set on the receive path, applied by the capture
+        # thread, which owns the encoder.
+        self._fec_wanted = VOICE_LOSS_PCT
+        self._fec_applied = VOICE_LOSS_PCT
+        # (gaps, played) when our last loss report was taken.
+        self._loss_mark = (0, 0)
+        self._speech = SpeechDetector()
 
         self._capture_thread = None
         self._playback_thread = None
@@ -1427,7 +1493,8 @@ class VoiceCallSession:
                 else:
                     next_frame = time.monotonic()
                 if self._silence_frame is not None:
-                    self._emit(pad_opus(self._silence_frame))
+                    self._emit(pad_opus(self._silence_frame,
+                                        kind=FRAME_KIND_SILENCE))
                 continue
 
             if capture is None:
@@ -1456,9 +1523,18 @@ class VoiceCallSession:
                 raw = capture.read_frame(timeout_ms=200)
             except _audio.AudioError as exc:
                 if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
-                    # AAudio's ERROR_DEAD_OBJECT: route change, headset
-                    # unplug, or audioserver restart.  The stream is dead and
-                    # must never be re-read; end the call rather than spin.
+                    # AAudio's ERROR_DEAD_OBJECT: route change (speaker,
+                    # earpiece, Bluetooth, a headset), or an audioserver
+                    # restart. The stream is dead and must never be re-read.
+                    # It used to end the call; a route change is something a
+                    # user does mid-call on purpose (device report
+                    # 2026-11-11: a call lost 16 s in), so the microphone is
+                    # reopened on the new route and the call goes on. Only a
+                    # device that will not reopen ends it.
+                    capture = self._reopen_stream("capture")
+                    if capture is not None:
+                        next_frame = time.monotonic()
+                        continue
                     self._signal_stream_lost("audio device disconnected")
                 else:
                     self._signal_stream_lost("microphone error: %s" % exc.code)
@@ -1482,13 +1558,18 @@ class VoiceCallSession:
             pcm = self._mic_gain.process(self._mic_comp.process(raw))
             pcm = self._masker.process(pcm)
             opus_frame = None
+            self._apply_fec()
+            try:
+                kind = self._speech.kind(pcm)
+            except Exception:
+                kind = FRAME_KIND_UNKNOWN
             try:
                 opus_frame = bytearray(
                     self._opus_enc.encode(bytes(pcm), VOICE_FRAME_SAMPLES))
                 self.stages.record_since("encode", _t_stage)
                 _wipe(pcm)
                 padded = pad_opus(bytes(opus_frame),
-                                  self.latency.call_ms(self._call_t0))
+                                  self.latency.call_ms(self._call_t0), kind)
                 _wipe(opus_frame)
                 opus_frame = None
                 if padded is None:
@@ -1500,7 +1581,8 @@ class VoiceCallSession:
                         continue
                     padded = pad_opus(
                         self._silence_frame,
-                        self.latency.call_ms(self._call_t0))
+                        self.latency.call_ms(self._call_t0),
+                        FRAME_KIND_SILENCE)
                 self._emit(padded)
             except Exception:
                 self.stats["dropped"] += 1
@@ -1514,6 +1596,65 @@ class VoiceCallSession:
             # failed to encode, or a codec hiccup would also stop latency
             # measurement.
             self._maybe_ping()
+
+    #: Reopen attempts after the OS disconnects a stream, and the pause
+    #: between them: a route change settles within a few hundred ms.
+    AUDIO_REOPEN_TRIES = 4
+    AUDIO_REOPEN_GAP_S = 0.25
+    #: At most this many reopens per stream within AUDIO_REROUTE_WINDOW_S. A
+    #: user changes route a few times in a call; a device that disconnects
+    #: again as soon as it is reopened is broken, and the call ends as it
+    #: always did rather than looping.
+    AUDIO_REROUTE_MAX = 3
+    AUDIO_REROUTE_WINDOW_S = 30.0
+
+    def _reopen_stream(self, kind: str):
+        """Reopen the "capture" or "playback" stream after the OS
+        disconnected it (AAudio ERROR_DISCONNECTED). Returns the new stream,
+        or None when the device will not reopen and the call should end.
+
+        Called only from that stream's own worker thread, which is the only
+        thread using it. Pinned to the backend the call started on, for the
+        same reason as the unmute reopen: a fallback to another backend could
+        be one that carries silence."""
+        attr = "_" + kind
+        old = getattr(self, attr, None)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        setattr(self, attr, None)
+        now = time.monotonic()
+        history = self.__dict__.setdefault("_reroutes", {}).setdefault(kind, [])
+        history[:] = [t for t in history if now - t < self.AUDIO_REROUTE_WINDOW_S]
+        if len(history) >= self.AUDIO_REROUTE_MAX:
+            return None
+        history.append(now)
+        for attempt in range(self.AUDIO_REOPEN_TRIES):
+            if not self._running:
+                return None
+            if attempt:
+                time.sleep(self.AUDIO_REOPEN_GAP_S)
+            try:
+                if kind == "capture":
+                    stream, _notes = _audio.open_capture(
+                        preferred=self.audio_backend, which=_HOST["which"],
+                        read_exact=_HOST["pipe_read_exact"],
+                        env=self._audio_env)
+                else:
+                    stream, _notes = _audio.open_playback(
+                        preferred=self.audio_backend, which=_HOST["which"],
+                        write_all=_HOST["pipe_write_all"],
+                        env=self._audio_env)
+            except Exception:
+                continue
+            setattr(self, attr, stream)
+            self.stats["audio_rerouted"] = self.stats.get("audio_rerouted", 0) + 1
+            _print("[voice] audio route changed — %s reopened"
+                   % ("microphone" if kind == "capture" else "speaker"))
+            return stream
+        return None
 
     def _playback_usage_is_voice(self) -> bool:
         """True when playback asked for the voice-communication usage."""
@@ -1547,6 +1688,41 @@ class VoiceCallSession:
             self.loop.call_soon_threadsafe(self._write_packet, packet, None)
         except Exception:
             pass
+
+    def _apply_fec(self) -> None:
+        """Set the encoder's FEC level if the peer's loss report moved it.
+        Capture thread only: Opus encoder CTLs are not safe beside encode."""
+        want = self._fec_wanted
+        if want == self._fec_applied or self._opus_enc is None:
+            return
+        try:
+            setattr(self._opus_enc, "packet_loss_perc", int(want))
+        except Exception:
+            pass
+        self._fec_applied = want
+        self.stats["fec_pct"] = int(want)
+
+    def _rx_loss_permille(self):
+        """How much of the peer's audio has been missing at playout since the
+        last report, per mille; None over too few frames to mean anything."""
+        try:
+            st = self.jitter.stats
+            gaps, played = int(st["gaps"]), int(st["played"])
+        except Exception:
+            return None
+        g0, p0 = self._loss_mark
+        dg, dp = gaps - g0, played - p0
+        if dg + dp < 20:
+            return None
+        self._loss_mark = (gaps, played)
+        return int(1000 * dg / (dg + dp))
+
+    def _note_peer_loss(self) -> None:
+        """The peer reported how much of OUR audio it misses: aim the FEC at
+        it (applied by the capture thread before its next encode)."""
+        permille = getattr(self.latency, "peer_loss_permille", None)
+        if permille is not None:
+            self._fec_wanted = fec_pct_for_loss(permille)
 
     def _maybe_ping(self) -> None:
         """Emit a latency probe if one is due."""
@@ -2156,13 +2332,15 @@ class VoiceCallSession:
                     # make us transmit.
                     try:
                         self._emit_probe(FRAME_TYPE_PONG,
-                                         self.latency.build_pong_stamped(plaintext))
+                                         self.latency.build_pong_stamped(
+                                             plaintext, self._rx_loss_permille()))
                     except Exception:
                         pass
                     continue
                 if ftype == FRAME_TYPE_PONG:
                     try:
                         self.latency.handle_pong(plaintext)
+                        self._note_peer_loss()
                     except Exception:
                         pass
                     continue
@@ -2174,7 +2352,8 @@ class VoiceCallSession:
                 _opus, _send_ms = unpad_frame(plaintext)
                 self.latency.observe_frame(_send_ms, self._call_t0)
                 opus_frame = bytearray(_opus)
-                if self.jitter.push(epoch, counter, opus_frame):
+                if self.jitter.push(epoch, counter, opus_frame,
+                                    frame_kind(plaintext)):
                     self.stats["recv"] += 1
                     opus_frame = None        # ownership passed to playback
                 else:
@@ -2303,9 +2482,12 @@ class VoiceCallSession:
                                 "write", getattr(playback, "last_device_s", 0.0))
                     except _audio.AudioError as exc:
                         if exc.code == _audio.AUDIO_DEVICE_DISCONNECTED:
-                            self._signal_stream_lost(
-                                "audio device disconnected")
-                            return
+                            # As for the microphone: a route change, so
+                            # reopen on the new route; this frame is lost.
+                            if self._reopen_stream("playback") is None:
+                                self._signal_stream_lost(
+                                    "audio device disconnected")
+                                return
                     except Exception:
                         pass
                     finally:
@@ -4572,7 +4754,44 @@ class VoiceCallManager:
         budget = self._budget_line(session, m2e)
         if budget:
             lines.append(budget)
+        repair = self._repair_line(session)
+        if repair:
+            lines.append(repair)
         return lines
+
+    @staticmethod
+    def _repair_line(session):
+        """What was done about the losses: the line that says which fix a
+        bad call needed. One-frame holes are what FEC repairs; longer ones
+        are tunnel stalls, which only a steadier path helps. Shed frames are
+        split into pauses shortened (inaudible) and speech dropped. No
+        identity, no content: counts only."""
+        try:
+            js = session.jitter.stats
+            st = session.stats
+            # A clean call has nothing to say here: no line, so the summary
+            # stays the verdict and the budget.
+            if not any(int(js.get(k, 0)) for k in ("gaps", "drift")) and not any(
+                    int(st.get(k, 0)) for k in ("fec_recovered", "audio_rerouted")):
+                return None
+            parts = ["%d frames repaired by FEC" % int(st.get("fec_recovered", 0)),
+                     "holes 1-frame %d, 2-3 frames %d, longer %d"
+                     % (int(js.get("gap1", 0)), int(js.get("gap2_3", 0)),
+                        int(js.get("gap4", 0))),
+                     "pauses shortened %d frames, speech dropped %d"
+                     % (int(js.get("shed_silence", 0)),
+                        int(js.get("shed_speech", 0)))]
+            fec = int(st.get("fec_pct", 0)) or int(getattr(session, "_fec_applied", 0))
+            if fec:
+                parts.append("FEC at %d%%" % fec)
+            peer = getattr(getattr(session, "latency", None), "peer_loss_permille", None)
+            if peer is not None:
+                parts.append("peer missed %.1f%% of ours" % (peer / 10.0))
+            if int(st.get("audio_rerouted", 0)):
+                parts.append("audio route changed %d times" % int(st["audio_rerouted"]))
+            return "[voice] audio repair: " + "; ".join(parts)
+        except Exception:
+            return None
 
     def _budget_line(self, session, m2e):
         """Where the mouth-to-ear delay went: network, buffer, playout.

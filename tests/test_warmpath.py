@@ -20,7 +20,7 @@ class _Thing:
         self.closed = True
 
 
-def _path(fail=False, gate=None):
+def _path(fail=False, gate=None, ready_age=0.0):
     now = [1000.0]
     built = []
 
@@ -33,7 +33,8 @@ def _path(fail=False, gate=None):
         built.append(s)
         return s
 
-    return W.WarmPath(build=build, clock=lambda: now[0], keep=600.0), now, built
+    return (W.WarmPath(build=build, clock=lambda: now[0], keep=600.0,
+                       ready_age=ready_age), now, built)
 
 
 def _settle(p):
@@ -175,3 +176,40 @@ def test_sign_out_stops_holding():
     p.check()
     _settle(p)
     assert p.state() == "cold" and len(built) == 1
+
+
+def test_a_new_spare_is_amber_until_it_has_settled():
+    """Owner, 2026-11-11: green only once the tunnel has been prepared long
+    enough. Built is amber with a countdown; settled is green."""
+    p, now, built = _path(ready_age=60.0)
+    p.hold("127.0.0.1", 7656, check=0)
+    _settle(p)
+    assert len(built) == 1
+    assert p.describe() == {"state": "warming", "seconds_left": 60}
+    now[0] += 45
+    assert p.describe() == {"state": "warming", "seconds_left": 15}
+    now[0] += 15
+    assert p.describe() == {"state": "ready", "seconds_left": 0}
+
+
+def test_a_settling_spare_is_still_handed_to_a_call():
+    """Amber is a warning, not a lock: a young spare beats building one."""
+    p, now, built = _path(ready_age=60.0)
+    p.hold("127.0.0.1", 7656, check=0)
+    _settle(p)
+    assert p.state() == "warming"
+    assert p.take(("127.0.0.1", 7656)) is built[0]
+
+
+def test_while_the_tunnels_build_there_is_no_countdown():
+    gate = threading.Event()
+    p, now, built = _path(gate=gate, ready_age=60.0)
+    assert p.warm("127.0.0.1", 7656) == "warming"
+    assert p.describe() == {"state": "warming", "seconds_left": 0}
+    gate.set()
+    _settle(p)
+
+
+def test_the_default_needs_a_minute():
+    assert W.READY_AGE == 60.0
+    assert W.WarmPath()._ready_age == W.READY_AGE

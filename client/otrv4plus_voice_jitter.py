@@ -31,6 +31,21 @@ from otrv4plus_voice_crypto import (  # noqa: F401
 )
 
 
+#: What the sender says a frame holds, in the last byte of the padded
+#: plaintext (inside the AEAD, so nothing on the wire changes). A sender
+#: from before this byte existed leaves it zero: UNKNOWN, handled exactly as
+#: every frame was before.
+FRAME_KIND_UNKNOWN = 0
+FRAME_KIND_SPEECH = 1
+FRAME_KIND_SILENCE = 2
+
+#: Excess frames above the shed line before SPEECH is shed. Below it, the
+#: buffer waits for a pause and shortens that instead (see JitterBuffer.pop).
+#: 8 frames is 480 ms: the most a burst can add to the delay before words
+#: are given up to get it back.
+SPEECH_SHED_EXCESS = 8
+
+
 class JitterBuffer:
     """Bounded, sequence-aware reorder buffer for decoded PCM.
 
@@ -108,7 +123,17 @@ class JitterBuffer:
         self.stats = {"queued": 0, "late": 0, "duplicate": 0,
                       "overflow": 0, "gaps": 0, "drift": 0,
                       "underrun": 0, "burst_drain": 0,
-                      "played": 0, "reordered": 0, "cleared": 0}
+                      "played": 0, "reordered": 0, "cleared": 0,
+                      # Shed, by what was in the frame: silence shed is a
+                      # pause made shorter, speech shed is words lost.
+                      "shed_silence": 0, "shed_speech": 0,
+                      # Holes at playout by length, counted once per hole:
+                      # one frame (FEC can repair it), 2-3, and longer.
+                      "gap1": 0, "gap2_3": 0, "gap4": 0}
+        #: Sequences shed from the MIDDLE of the queue (a shortened pause):
+        #: playout skips them without counting a gap or concealing them,
+        #: and a copy that arrives later is a duplicate, not a new frame.
+        self._shed_seqs = set()
         #: Highest sequence key accepted, so an in-time frame that arrived
         #: behind a later one is counted as reordered.
         self._highest = -1
@@ -245,8 +270,12 @@ class JitterBuffer:
     def jitter_ms(self) -> float:
         return self._jitter_est * 1000.0
 
-    def push(self, epoch: int, counter: int, pcm) -> bool:
-        """Offer one decoded frame.  False if it was dropped."""
+    def push(self, epoch: int, counter: int, pcm,
+             kind: int = FRAME_KIND_UNKNOWN) -> bool:
+        """Offer one frame.  False if it was dropped.
+
+        [kind] is what the sender says it holds (FRAME_KIND_*); shedding
+        prefers SILENCE, so a burst costs a shorter pause, not a word."""
         seq = self.sequence(epoch, counter)
         with self._lock:
             self._observe_arrival(seq, time.monotonic())
@@ -258,14 +287,14 @@ class JitterBuffer:
             if seq <= self._last_played:
                 self.stats["late"] += 1
                 return False
-            if seq in self._seqs:
+            if seq in self._seqs or seq in self._shed_seqs:
                 self.stats["duplicate"] += 1
                 return False
             if len(self._heap) >= self._maxlen:
                 # Playout is behind.  Drop the OLDEST rather than the newest:
                 # stale audio is worthless and keeping it only grows latency.
                 try:
-                    stale_seq, stale_pcm, _t = self._heapq.heappop(self._heap)
+                    stale_seq, stale_pcm, _t, _k = self._heapq.heappop(self._heap)
                     self._seqs.discard(stale_seq)
                     _wipe(stale_pcm)
                 except Exception:
@@ -276,7 +305,7 @@ class JitterBuffer:
             # duration assumes playout is running exactly on time, and the
             # moment that assumption breaks is precisely when the number
             # matters.
-            self._heapq.heappush(self._heap, (seq, pcm, time.monotonic()))
+            self._heapq.heappush(self._heap, (seq, pcm, time.monotonic(), int(kind)))
             self._seqs.add(seq)
             self.stats["queued"] += 1
             if seq < self._highest:
@@ -321,43 +350,13 @@ class JitterBuffer:
             if excess > 0:
                 # Proportional, not one-per-pop. One-per-pop drains at exactly
                 # the playout rate, so a 30-frame burst spent 1.5 s at high
-                # latency before recovering -- and every one of those frames
-                # was played late. Dividing the excess across _drain_pops
-                # makes recovery time independent of burst size.
-                #
-                # Discarding is correct here rather than regrettable: a frame
-                # this far back in the queue is already past the point where
-                # it could have been played in sequence, and the gap counter
-                # below hands it to concealment.
+                # latency before recovering. Dividing the excess across
+                # _drain_pops makes recovery time independent of burst size.
                 shed = max(1, -(-excess // self._drain_pops))
                 shed = min(shed, len(self._heap) - 1)
-                for _ in range(max(0, shed)):
-                    stale_seq, stale_pcm, _t = self._heapq.heappop(self._heap)
-                    self._seqs.discard(stale_seq)
-                    _wipe(stale_pcm)
-                    self.stats["drift"] += 1
-                    # Do NOT let our own shedding look like transit loss.
-                    #
-                    # `gap` below is computed from the sequence numbers, so a
-                    # shed frame left a hole and the playback worker answered
-                    # it with FEC or concealment -- writing TWO frames to the
-                    # device for one pop. Each write blocks about a frame
-                    # period, so the pop rate halved, the buffer grew, and the
-                    # shedder fired harder: measured at 13.0 pops/s against
-                    # 16.2 arriving, shedding 19.8% and synthesising
-                    # replacements for the very frames it had just discarded.
-                    #
-                    # Concealment exists for frames that never arrived. These
-                    # arrived and were dropped deliberately to cut latency, so
-                    # spending more device time reconstructing them is exactly
-                    # backwards. Advancing the marker says "consumed, not
-                    # lost".
-                    if stale_seq > self._last_played:
-                        self._last_played = stale_seq
-                if shed > 1:
-                    self.stats["burst_drain"] += 1
+                self._shed(shed, excess)
 
-            seq, pcm, arrived = self._heapq.heappop(self._heap)
+            seq, pcm, arrived, _kind = self._heapq.heappop(self._heap)
             self._seqs.discard(seq)
             self.dwell.add((time.monotonic() - arrived) * 1000.0)
             gap = 0
@@ -387,12 +386,78 @@ class JitterBuffer:
             if (self._last_played >= 0
                     and self.epoch_of(seq) == self.epoch_of(self._last_played)):
                 gap = max(0, seq - self._last_played - 1)
+                if gap and self._shed_seqs:
+                    # A pause shortened on purpose is not a hole.
+                    gap -= sum(1 for s in self._shed_seqs
+                               if self._last_played < s < seq)
                 if gap:
                     self.stats["gaps"] += gap
+                    self.stats["gap1" if gap == 1 else
+                               "gap2_3" if gap <= 3 else "gap4"] += 1
+            if self._shed_seqs:
+                self._shed_seqs = {s for s in self._shed_seqs if s > seq}
             self._last_played = seq
             self._note_clean_pop()
             self.stats["played"] += 1
             return pcm, gap
+
+    def _shed(self, count: int, excess: int) -> None:
+        """Drop [count] queued frames to bring the delay back down. Lock held.
+
+        WHAT is dropped is the point (owner, 2026-11-11: minimise the audio
+        lost). A burst after an I2P tunnel stall leaves the queue deep, and
+        the old rule dropped the OLDEST frames -- speech as often as not;
+        device report 2026-11-11 shed 492 frames in an 8-minute call. Now,
+        in order:
+
+          1. SILENCE, anywhere in the queue except the newest frame: a pause
+             between words made shorter, which nobody hears;
+          2. frames of UNKNOWN kind (a sender from before the kind byte),
+             oldest first: the previous behaviour, unchanged for them;
+          3. SPEECH, oldest first, only once the excess passes
+             SPEECH_SHED_EXCESS. Below that the buffer runs a little deep
+             and waits for the next pause, which conversation supplies
+             within seconds.
+
+        Frames taken from the front advance the playout marker (consumed,
+        not lost: no concealment is synthesised for them). Frames taken from
+        the middle are remembered in _shed_seqs so pop() does not count or
+        conceal their hole either.
+        """
+        ordered = sorted(self._heap)
+        newest = ordered[-1][0] if ordered else None
+        chosen = [e for e in ordered if e[3] == FRAME_KIND_SILENCE
+                  and e[0] != newest][:count]
+        if len(chosen) < count:
+            chosen += [e for e in ordered if e[3] == FRAME_KIND_UNKNOWN
+                       and e[0] != newest][:count - len(chosen)]
+        if len(chosen) < count and excess > SPEECH_SHED_EXCESS:
+            chosen += [e for e in ordered if e[3] == FRAME_KIND_SPEECH
+                       and e[0] != newest][:count - len(chosen)]
+        if not chosen:
+            return
+        gone = {e[0] for e in chosen}
+        self._heap = [e for e in self._heap if e[0] not in gone]
+        self._heapq.heapify(self._heap)
+        front = min(e[0] for e in self._heap) if self._heap else None
+        for seq, pcm, _t, kind in chosen:
+            self._seqs.discard(seq)
+            _wipe(pcm)
+            self.stats["drift"] += 1
+            if kind == FRAME_KIND_SILENCE:
+                self.stats["shed_silence"] += 1
+            elif kind == FRAME_KIND_SPEECH:
+                self.stats["shed_speech"] += 1
+            # Older than everything still queued: consumed, so the marker
+            # moves (and a late copy of it is refused as late). Otherwise it
+            # is a hole in the middle that pop() must step over silently.
+            if front is None or seq < front:
+                if seq > self._last_played:
+                    self._last_played = seq
+            else:
+                self._shed_seqs.add(seq)
+        if len(chosen) > 1:
+            self.stats["burst_drain"] += 1
 
     def depth(self) -> int:
         with self._lock:
@@ -416,12 +481,13 @@ class JitterBuffer:
         with self._lock:
             while self._heap:
                 try:
-                    _, pcm, _t = self._heapq.heappop(self._heap)
+                    _, pcm, _t, _k = self._heapq.heappop(self._heap)
                     _wipe(pcm)
                     self.stats["cleared"] += 1
                 except Exception:
                     break
             self._seqs.clear()
+            self._shed_seqs.clear()
             self._primed = False
 
 
@@ -429,10 +495,16 @@ class JitterBuffer:
 # Opus padding
 # ---------------------------------------------------------------------------
 
-def pad_opus(opus_frame: bytes, send_ts_ms: int = 0):
+def pad_opus(opus_frame: bytes, send_ts_ms: int = 0,
+             kind: int = FRAME_KIND_UNKNOWN):
     """Pad to the fixed slot, carrying the sender's timestamp.
 
-    Layout: len(2) || send_ts_ms(8) || opus || zero padding.
+    Layout: len(2) || send_ts_ms(8) || opus || zero padding, and the LAST
+    byte of the padding is [kind] (FRAME_KIND_*): speech or silence, so the
+    receiver can shorten pauses rather than drop words. It is padding that was
+    always sent, inside the AEAD, so the packet is the same size and nothing
+    new is visible on the wire; a receiver that predates it never reads it.
+    An Opus frame that fills the whole slot leaves no room and sends UNKNOWN.
 
     The timestamp sits INSIDE the AEAD, so it is encrypted and authenticated
     rather than exposed in the header. It is milliseconds since the sender's
@@ -441,9 +513,10 @@ def pad_opus(opus_frame: bytes, send_ts_ms: int = 0):
     """
     if len(opus_frame) > VOICE_OPUS_SLOT:
         return None
+    pad = VOICE_OPUS_SLOT - len(opus_frame)
+    tail = (b"\x00" * (pad - 1) + bytes([int(kind) & 0xFF])) if pad else b""
     return (struct.pack(">HQ", len(opus_frame), int(send_ts_ms) & 0xFFFFFFFFFFFFFFFF)
-            + bytes(opus_frame)
-            + b"\x00" * (VOICE_OPUS_SLOT - len(opus_frame)))
+            + bytes(opus_frame) + tail)
 
 
 def unpad_frame(plain: bytes):
@@ -455,6 +528,19 @@ def unpad_frame(plain: bytes):
         raise FrameError("declared Opus length exceeds the slot")
     off = 2 + VOICE_TS_LEN
     return bytes(plain[off:off + length]), send_ts
+
+
+def frame_kind(plain: bytes) -> int:
+    """What the sender said the frame holds (FRAME_KIND_*), from the last
+    padding byte; UNKNOWN for anything else, including a frame whose Opus
+    data reaches the end of the slot."""
+    if len(plain) != VOICE_PLAIN_LEN:
+        return FRAME_KIND_UNKNOWN
+    length = struct.unpack(">H", plain[:2])[0]
+    if length >= VOICE_OPUS_SLOT:
+        return FRAME_KIND_UNKNOWN
+    kind = plain[-1]
+    return kind if kind in (FRAME_KIND_SPEECH, FRAME_KIND_SILENCE) else FRAME_KIND_UNKNOWN
 
 
 def unpad_opus(plain: bytes) -> bytes:
@@ -630,6 +716,10 @@ class LatencyTracker:
         self.sent = 0
         self.answered = 0
         self.timed_out = 0
+        #: The peer's latest report of how much of OUR audio it is missing,
+        #: per mille; None until a report arrives (or never, from an older
+        #: peer).
+        self.peer_loss_permille = None
 
     # -- clocks -----------------------------------------------------------
 
@@ -670,14 +760,29 @@ class LatencyTracker:
                 self.timed_out += 1
         return ping_id, struct.pack(">QQ", ping_id, t1)
 
-    def build_pong_stamped(self, ping_payload: bytes) -> bytes:
-        """Echo a PING, stamping our receive and send times on OUR clock."""
+    #: Marks the optional loss report after the 32 PONG bytes. A PONG from a
+    #: sender without it is zero there: no report.
+    LOSS_REPORT_MARK = 0xA1
+
+    def build_pong_stamped(self, ping_payload: bytes,
+                           loss_permille=None) -> bytes:
+        """Echo a PING, stamping our receive and send times on OUR clock.
+
+        [loss_permille], when known, is how much of the PEER's audio this end
+        has been missing lately (per mille). It rides in the padding a PONG
+        already carries (mark, u16), so the peer can set its Opus FEC to the
+        loss its packets actually meet. A receiver that predates it reads the
+        first 32 bytes and nothing else."""
         if len(ping_payload) < 16:
             raise FrameError("PING payload too short")
         ping_id, t1 = struct.unpack(">QQ", ping_payload[:16])
         t2 = self.stamp()
         t3 = t2                              # turnaround is immediate
-        return struct.pack(">QQQQ", ping_id, t1, t2, t3)
+        pong = struct.pack(">QQQQ", ping_id, t1, t2, t3)
+        if loss_permille is not None:
+            pong += struct.pack(">BH", self.LOSS_REPORT_MARK,
+                                max(0, min(1000, int(loss_permille))))
+        return pong
 
     @staticmethod
     def build_pong(ping_payload: bytes) -> bytes:
@@ -693,6 +798,8 @@ class LatencyTracker:
         if len(payload) < 32:
             raise FrameError("PONG payload too short")
         ping_id, _t1_echo, t2, t3 = struct.unpack(">QQQQ", payload[:32])
+        if len(payload) >= 35 and payload[32] == self.LOSS_REPORT_MARK:
+            self.peer_loss_permille = min(1000, struct.unpack(">H", payload[33:35])[0])
         t4 = self.stamp()
         with self._lock:
             t1 = self._pending.pop(ping_id, None)

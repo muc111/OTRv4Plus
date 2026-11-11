@@ -319,8 +319,27 @@ VOICE_COMPLEXITY = _env_int("OTRV4PLUS_OPUS_COMPLEXITY", 8, 0, 10)
 # In-band FEC repairs a ONE-frame gap only; longer gaps fall through to
 # concealment. The observed failure mode is multi-second starvation, which
 # FEC cannot touch, so 20% of the bitrate was being spent on redundancy that
-# never applied. 5% keeps single-frame repair, which does work.
-VOICE_LOSS_PCT = _env_int("OTRV4PLUS_OPUS_FEC_PCT", 5, 0, 50)
+# never applied. 5% kept single-frame repair, which does work.
+#
+# 10% now, as the STARTING level (2026-11-11). Device reports that day
+# measured 8-12% of frames missing at playout in an 8-minute call, which is
+# loss FEC exists for; at 5% the encoder budgets its redundancy for half of
+# that. And it is a starting level only: each PONG now carries the peer's
+# measured loss of OUR audio, and fec_pct_for_loss sets the encoder to it,
+# between VOICE_FEC_MIN_PCT and VOICE_FEC_MAX_PCT, so a clean path pays for
+# less and a lossy one gets more. The frame stays the same CBR size either
+# way: FEC is bits inside it, not bytes on the wire.
+VOICE_LOSS_PCT = _env_int("OTRV4PLUS_OPUS_FEC_PCT", 10, 0, 50)
+VOICE_FEC_MIN_PCT = 5
+VOICE_FEC_MAX_PCT = 30
+
+
+def fec_pct_for_loss(loss_permille: int) -> int:
+    """The Opus packet_loss_perc for a measured loss: a quarter above it
+    (loss arrives in clumps, and FEC budgeted exactly for the mean is short
+    half the time), within VOICE_FEC_MIN_PCT..VOICE_FEC_MAX_PCT."""
+    pct = -(-int(loss_permille) * 125 // 1000)           # ceil(loss% * 1.25)
+    return max(VOICE_FEC_MIN_PCT, min(VOICE_FEC_MAX_PCT, pct))
 
 # Constant-rate shaping.  Opus at 16 kbit/s and 60 ms is exactly 120 bytes in
 # CBR; the slot is sized for the VBR peak so a build that refuses vbr=0
