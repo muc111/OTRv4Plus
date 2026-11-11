@@ -617,6 +617,13 @@ data class ConnectionStatus(
      * lifecycle bug, invisible unless something asks.
      */
     val workerAlive: Boolean = false,
+    /**
+     * While the attempt waits for a built-in router too new to find the
+     * server: seconds waited so far, else -1 (Connect screen countdown).
+     */
+    val routerWaitedS: Int = -1,
+    /** The most that wait lasts, in seconds (with [routerWaitedS]). */
+    val routerWaitLimitS: Int = 0,
 )
 
 /**

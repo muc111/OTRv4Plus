@@ -183,6 +183,37 @@ def _dialled_by_key(server: str) -> bool:
     return host.endswith(".b32.i2p") or bool(_address.shipped_server_address(host))
 
 
+class _RouterWait:
+    """Whether a connection attempt is waiting for a router too new to find
+    the server (I2PSAMConnection.lookup_key), since when, and for how long it
+    will wait at most: the Connect screen's countdown (owner, 2026-11-11).
+    One attempt runs at a time, so one instance serves the process."""
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._since: Optional[float] = None
+        self._limit = 0
+
+    def started(self, limit_s: int) -> None:
+        if self._since is None:
+            self._since = self._clock()
+        self._limit = max(0, int(limit_s))
+
+    def clear(self) -> None:
+        self._since = None
+        self._limit = 0
+
+    def state(self) -> Optional[Dict[str, int]]:
+        """{"waited_s", "limit_s"} while waiting, else None."""
+        since = self._since
+        if since is None:
+            return None
+        return {"waited_s": int(self._clock() - since), "limit_s": self._limit}
+
+
+ROUTER_WAIT = _RouterWait()
+
+
 def _sam_failure(exc: BaseException, server: str) -> "TransportError":
     """The TransportError for a failure opening the I2P stream, by layer
     (`otrv4+.py` `SamError`), so the user is not told to restart a router that
@@ -841,6 +872,20 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         report carries, and remembers it for a timeout message."""
         _forwarder_log(message)
         text = str(message)
+        if "too new to find the server" in text:
+            # The router answered "not found" instantly: it has no peers to
+            # search with yet, and the lookup is asked again
+            # (I2PSAMConnection.lookup_key) rather than failing the attempt.
+            # ROUTER_WAIT gives the Connect screen its countdown.
+            import re
+            m = re.search(r"\((\d+)\)", text)
+            limit = re.search(r"limit=(\d+)", text)
+            ROUTER_WAIT.started(int(limit.group(1)) if limit else 0)
+            _TRACE.record("connection", "router_too_new", "info",
+                          retry=int(m.group(1)) if m else 0)
+            return
+        # Any other step: the router is past waiting (or a new attempt began).
+        ROUTER_WAIT.clear()
         if "opening SAM stream" in text:
             if "a failed attempt already built" in text:
                 # A retry on the held session (HeldSamSession): in a report,
@@ -852,14 +897,6 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             # ships for it (otrv4plus_address.SHIPPED_SERVERS). The step
             # stays sam_opening.
             _TRACE.record("connection", "shipped_address_used", "info")
-        elif "too new to find the server" in text:
-            # The router answered "not found" instantly: it has no peers to
-            # search with yet, and the lookup is asked again
-            # (I2PSAMConnection.lookup_key) rather than failing the attempt.
-            import re
-            m = re.search(r"\((\d+)\)", text)
-            _TRACE.record("connection", "router_too_new", "info",
-                          retry=int(m.group(1)) if m else 0)
         elif "established" in text:
             self._reached("sam_established")
         elif "I2P stream ended" in text:
@@ -1593,7 +1630,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             return await forward(
                 route.host, route.port or DEFAULT_C2S_PORT,
                 self._profile.sam_host, self._profile.sam_port, **extra)
-        except Exception as exc:
+        except BaseException as exc:
+            ROUTER_WAIT.clear()
+            if not isinstance(exc, Exception):
+                raise                                 # cancelled: as before
             self._emit_state("failed")
             from . import server_pins as _pins_mod
             if isinstance(exc, _pins_mod.DestinationChanged):

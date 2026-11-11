@@ -4,7 +4,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.196-untested — 2026-11-11 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.197-untested — 2026-11-11 — on `dev`, not yet tested
+
+- **The Connect screen counts down while the router gets ready** (owner,
+  2026-11-11). While sign-in or sign-up waits for a just-started built-in
+  router to be able to find the server, the screen says so -- "still joining
+  the I2P network ... trying again by itself for up to 1:48 more. No need to
+  tap again" -- instead of only "building tunnels".
+
+## Android 0.7.0-experimental.rc.196-untested — 2026-11-11 — on `dev`
 
 - **rc.195's wait now covers the router's first searches too.** The rc.195
   report (2026-11-11): sign-up waited through seven instant "not found"

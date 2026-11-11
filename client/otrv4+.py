@@ -1415,7 +1415,8 @@ class I2PSAMConnection:
             if progress is not None:
                 try:
                     progress("the router is too new to find the server yet; "
-                             "asking again (%d)" % tries)
+                             "asking again (%d) limit=%d"
+                             % (tries, round(self.key_lookup_settle_s)))
                 except Exception:
                     pass
             pause(wait)

@@ -249,10 +249,40 @@ class OtrConnectionService : Service() {
         if (routerState == RouterChoice.State.RUNNING && router.startedAt > 0)
             System.currentTimeMillis() - router.startedAt else null
 
+    /**
+     * While an attempt waits for the built-in router to be able to find the
+     * server: (seconds waited, most it waits). Read off the main thread by
+     * [watchRouterWait]; null otherwise.
+     */
+    @Volatile
+    private var routerWait: Pair<Int, Int>? = null
+
     /** One line about the router for the connection screen, or null. */
-    fun routerLabel(): String? = RouterChoice.label(
-        routerState, System.currentTimeMillis() - router.startedAt, router.fresh,
-        router.lastFailure)
+    fun routerLabel(): String? = routerWait
+        ?.takeIf { routerState == RouterChoice.State.RUNNING }
+        ?.let { (waited, limit) -> RouterChoice.waitingLabel(waited, limit) }
+        ?: RouterChoice.label(
+            routerState, System.currentTimeMillis() - router.startedAt, router.fresh,
+            router.lastFailure)
+
+    /**
+     * Once a second while signing in or creating the account on the built-in
+     * router: whether the attempt is waiting for the router to be able to
+     * find the server, for the Connect screen's countdown. Python is asked
+     * here, on IO, never from the screen's thread.
+     */
+    private suspend fun watchRouterWait() {
+        while (scope.isActive) {
+            delay(1_000)
+            val asking = (phase.busy || registering) &&
+                routerState == RouterChoice.State.RUNNING
+            routerWait = if (!asking) null else withContext(Dispatchers.IO) {
+                runCatching { core.connectionStatus() }.getOrNull()
+                    ?.takeIf { it.routerWaitedS >= 0 }
+                    ?.let { it.routerWaitedS to it.routerWaitLimitS }
+            }
+        }
+    }
 
     private var worker: Job? = null
     private var watcher: Job? = null
@@ -301,6 +331,7 @@ class OtrConnectionService : Service() {
             getSystemService(android.net.ConnectivityManager::class.java)
                 ?.registerDefaultNetworkCallback(networkWake)
         }
+        scope.launch { watchRouterWait() }
         // The app lock (security/AppLock): a lock closes the connection
         // here first, and a call in progress holds the automatic lock off.
         org.otrv4plus.android.security.AppLock.serviceLock = { restart -> lockApp(restart) }

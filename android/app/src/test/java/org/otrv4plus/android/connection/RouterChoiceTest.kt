@@ -154,6 +154,16 @@ class RouterChoiceTest {
         assertTrue(RouterChoice.logTail(emptyList()).isEmpty())
     }
 
+    @Test
+    fun `while the router is too new the screen counts down and says not to tap`() {
+        // Owner, 2026-11-11: show that the wait is on purpose, with a countdown.
+        val start = RouterChoice.waitingLabel(0, 150)
+        assertTrue("2:30" in start && "No need to tap again" in start, start)
+        assertTrue("1:48" in RouterChoice.waitingLabel(42, 150))
+        val end = RouterChoice.waitingLabel(160, 150)
+        assertTrue("One last try" in end && ":-" !in end && "-0" !in end, end)
+    }
+
     // ── a router that has lost its way is restarted, once in a while ────────
 
     private val min = 60_000L

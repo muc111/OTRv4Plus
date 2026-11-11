@@ -1182,6 +1182,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         fun str(k: String) = s.callAttr("get", k)?.toString() ?: ""
         fun bool(k: String) = s.callAttr("get", k)?.toBoolean() ?: false
         val last = result ?: s.callAttr("get", "last")
+        val wait = s.callAttr("get", "router_wait")
+        fun waitInt(k: String) = wait?.callAttr("get", k)?.toInt()
         return ConnectionStatus(
             stage = str("stage"),
             connected = bool("connected"),
@@ -1194,6 +1196,8 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             inputs = runCatching { ctl.callAttr("inputs_text").toString() }
                 .getOrDefault(""),
             workerAlive = bool("worker_alive"),
+            routerWaitedS = runCatching { waitInt("waited_s") }.getOrNull() ?: -1,
+            routerWaitLimitS = runCatching { waitInt("limit_s") }.getOrNull() ?: 0,
         )
     }
 

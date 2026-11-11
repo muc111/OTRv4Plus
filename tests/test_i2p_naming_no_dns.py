@@ -805,6 +805,48 @@ class TestARouterTooNewToSearchIsAskedAgain:
         assert exc.value.stage == "cancelled"
         fake.close()
 
+    def test_the_connect_screen_gets_a_countdown_while_waiting(self):
+        # Owner, 2026-11-11: show the wait on the Connect screen. The
+        # controller's status carries it while the router is too new, and
+        # drops it at the next step.
+        from android_bridge import transport as T
+        from android_bridge.connection import ConnectionController
+        now = {"t": 100.0}
+        T.ROUTER_WAIT._clock = lambda: now["t"]
+        try:
+            t = T.XmppTransport.__new__(T.XmppTransport)
+            assert ConnectionController._router_wait() is None
+            t._forwarder_progress("[i2p] the router is too new to find the "
+                                  "server yet; asking again (1) limit=150")
+            now["t"] += 5
+            t._forwarder_progress("[i2p] the router is too new to find the "
+                                  "server yet; asking again (2) limit=150")
+            now["t"] += 37
+            assert ConnectionController._router_wait() == {"waited_s": 42,
+                                                           "limit_s": 150}
+            t._forwarder_progress("[i2p] SAM stream established.")
+            assert ConnectionController._router_wait() is None
+        finally:
+            T.ROUTER_WAIT._clock = T.time.monotonic
+            T.ROUTER_WAIT.clear()
+
+    def test_the_progress_line_carries_the_limit(self):
+        fake = FakeSam(unknown_result="INVALID_KEY")
+        sam = self._sam(fake, settle=150.0)
+        calls = {"n": 0}
+        real = sam.naming_lookup
+
+        def lookup(name):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                fake.names[name] = DEST
+            return real(name)
+        sam.naming_lookup = lookup
+        sam.lookup_key(B32)
+        assert sam.said == ["the router is too new to find the server yet; "
+                            "asking again (1) limit=150"]
+        fake.close()
+
     def test_the_transport_records_each_retry_for_the_report(self):
         from android_bridge import transport as T
         from android_bridge.trace import TRACE

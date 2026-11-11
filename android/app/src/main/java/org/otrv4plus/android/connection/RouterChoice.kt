@@ -268,6 +268,23 @@ object RouterChoice {
         |enabled = true
         |""".trimMargin()
 
+    /**
+     * The Connect screen's line while an attempt waits for a built-in router
+     * too new to find the server (owner, 2026-11-11: say it is waiting on
+     * purpose, with a countdown). [waitedS] so far, [limitS] at most.
+     */
+    fun waitingLabel(waitedS: Int, limitS: Int): String {
+        val left = (limitS - waitedS).coerceAtLeast(0)
+        val clock = "%d:%02d".format(left / 60, left % 60)
+        return if (left > 0)
+            "Built-in I2P router: still joining the I2P network, so it cannot " +
+                "find the server yet. Trying again by itself for up to $clock more. " +
+                "No need to tap again."
+        else
+            "Built-in I2P router: still joining the I2P network. One last try " +
+                "to find the server..."
+    }
+
     /** The router's log is emptied at start once it is larger than this. */
     const val LOG_CAP_BYTES = 512L * 1024
 
