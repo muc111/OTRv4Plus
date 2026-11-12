@@ -33,6 +33,10 @@ reports of a 12-minute call, phone and laptop:
   -- but the list kept "Verified" for as long as the app ran, because a
   poll was never allowed to lower it. A poll now can, except in the first
   15 s after a verification.
+- **The desktop report names the commit its engine runs from**
+  (`build_id`, as the phone's does). Its `app_version` has said 0.15.0 since
+  rc.194 whatever was checked out, so a report could not say whether the
+  laptop had pulled the build under test.
 
 ## Android 0.7.0-experimental.rc.200-untested — 2026-11-11 — on `dev`, superseded by rc.201
 
