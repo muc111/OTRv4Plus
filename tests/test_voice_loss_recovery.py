@@ -279,3 +279,41 @@ def test_the_repair_line_says_when_the_buffer_ran_dry_and_overflowed():
                                             "underrun": 3, "overflow": 40})
     line = V.VoiceCallManager._repair_line(s)
     assert "ran dry 3 times, burst overflow 40 frames" in line
+
+
+# -- rc.202: a backlog waits for a pause, but not for the whole call -------
+
+def test_a_backlog_with_no_pause_comes_down_one_frame_at_a_time(monkeypatch):
+    """Device report 2026-11-12 (rc.201): ~1.2 s of buffer for most of an
+    8-minute call, because the backlog stayed under SPEECH_SHED_EXCESS and
+    nothing in it was marked silence."""
+    clock = [100.0]
+    monkeypatch.setattr(J.time, "monotonic", lambda: clock[0])
+    jb = J.JitterBuffer(adaptive=False, prefill=2, drift_high=3, shed_margin=1,
+                        maxlen=40)
+    for n in range(14):                          # a backlog of speech only
+        jb.push(0, n, bytearray(b"x"), J.FRAME_KIND_SPEECH)
+    jb.pop()
+    assert jb.stats["shed_speech"] == 0, "words went before waiting for a pause"
+    clock[0] += J.PAUSE_WAIT_S + 0.1
+    before = len(jb._heap)
+    jb.pop()
+    assert jb.stats["shed_speech"] == 1, "one frame per playout, not a chunk"
+    assert len(jb._heap) == before - 2
+    while len(jb._heap) > 3 + 1:
+        jb.pop()
+    assert jb.stats["gaps"] == 0, "a skipped frame is not a hole"
+
+
+def test_a_pause_resets_the_wait(monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(J.time, "monotonic", lambda: clock[0])
+    jb = J.JitterBuffer(adaptive=False, prefill=2, drift_high=3, shed_margin=1,
+                        maxlen=40)
+    for n in range(8):
+        jb.push(0, n, bytearray(b"x"), J.FRAME_KIND_SPEECH)
+    jb.pop()
+    while len(jb._heap) > 3:                     # back down to the line
+        jb.pop()
+    jb.pop()                                     # the pop that sees it
+    assert jb._deep_since is None

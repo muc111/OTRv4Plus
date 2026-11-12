@@ -46,6 +46,18 @@ FRAME_KIND_SILENCE = 2
 #: VOICE_JITTER_MAX_MS's note lost a fifth more speech at 8.
 SPEECH_SHED_EXCESS = 20
 
+#: How long a backlog may wait for a pause before speech is shed anyway, one
+#: frame per playout (seconds). Device report 2026-11-12 (rc.201): the
+#: buffer held ~1.2 s for most of an 8-minute call -- 1636 ms mouth-to-ear --
+#: because the backlog stayed under SPEECH_SHED_EXCESS and too few frames
+#: were marked silence to bring it down. Waiting for a pause is right for a
+#: second or two after a burst and wrong for a whole call. One frame per
+#: playout plays a 60 ms frame, skips one: faster speech, not a hole.
+#: Simulated with every frame marked speech and a stall every ~12 s: median
+#: buffer delay 1072 ms (rc.201) -> 411 ms; with ordinary pauses, speech
+#: lost 3.9% -> 4.3%. 1.5 s lost more speech, 5 s held more delay.
+PAUSE_WAIT_S = 3.0
+
 
 class JitterBuffer:
     """Bounded, sequence-aware reorder buffer for decoded PCM.
@@ -135,6 +147,9 @@ class JitterBuffer:
         #: playout skips them without counting a gap or concealing them,
         #: and a copy that arrives later is a duplicate, not a new frame.
         self._shed_seqs = set()
+        #: When the backlog last went above the shed line (monotonic), or
+        #: None while it is not. See PAUSE_WAIT_S.
+        self._deep_since = None
         #: Highest sequence key accepted, so an in-time frame that arrived
         #: behind a later one is counted as reordered.
         self._highest = -1
@@ -346,6 +361,10 @@ class JitterBuffer:
             # latency decision, not a tuning detail, which is why it is
             # expressed in milliseconds rather than in frames.
             excess = len(self._heap) - (self.target_depth + self._shed_margin)
+            if excess <= 0:
+                self._deep_since = None
+            elif self._deep_since is None:
+                self._deep_since = time.monotonic()
             if excess > 0:
                 # Proportional, not one-per-pop. One-per-pop drains at exactly
                 # the playout rate, so a 30-frame burst spent 1.5 s at high
@@ -413,18 +432,23 @@ class JitterBuffer:
         the middle are remembered in _shed_seqs so pop() does not count or
         conceal their hole either.
         """
-        chosen = self._victims(count, overflow=False, excess=excess)
+        waited = (time.monotonic() - self._deep_since
+                  if self._deep_since is not None else 0.0)
+        chosen = self._victims(count, overflow=False, excess=excess,
+                               waited=waited)
         if chosen:
             self._drop(chosen, "drift")
             if len(chosen) > 1:
                 self.stats["burst_drain"] += 1
 
-    def _victims(self, count: int, overflow: bool, excess: int = 0) -> list:
+    def _victims(self, count: int, overflow: bool, excess: int = 0,
+                 waited: float = 0.0) -> list:
         """Which [count] queued frames to give up. Lock held.
 
         Silence first (never the newest frame), then frames of unknown kind
-        oldest first, then speech oldest first -- for the shedder only past
-        SPEECH_SHED_EXCESS, for overflow always, because the cap is hard."""
+        oldest first, then speech oldest first -- for the shedder past
+        SPEECH_SHED_EXCESS, or one frame per pop once the backlog has waited
+        PAUSE_WAIT_S for a pause; for overflow always, the cap being hard."""
         ordered = sorted(self._heap)
         newest = ordered[-1][0] if ordered else None
         chosen = [e for e in ordered if e[3] == FRAME_KIND_SILENCE
@@ -432,9 +456,13 @@ class JitterBuffer:
         if len(chosen) < count:
             chosen += [e for e in ordered if e[3] == FRAME_KIND_UNKNOWN
                        and e[0] != newest][:count - len(chosen)]
-        if len(chosen) < count and (overflow or excess > SPEECH_SHED_EXCESS):
-            chosen += [e for e in ordered if e[3] == FRAME_KIND_SPEECH
-                       and e[0] != newest][:count - len(chosen)]
+        if len(chosen) < count:
+            speech = [e for e in ordered if e[3] == FRAME_KIND_SPEECH
+                      and e[0] != newest]
+            if overflow or excess > SPEECH_SHED_EXCESS:
+                chosen += speech[:count - len(chosen)]
+            elif waited >= PAUSE_WAIT_S and not chosen:
+                chosen += speech[:1]
         return chosen
 
     def _drop(self, chosen: list, reason: str) -> None:

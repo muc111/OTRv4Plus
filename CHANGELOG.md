@@ -4,9 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.201-untested — 2026-11-11 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.202-untested — 2026-11-12 — on `dev`, not yet tested
 
-The last build tested on devices is rc.194, on `main`. From the rc.200
+The last build tested on devices is rc.194, on `main`. From the rc.201
+reports of an 8-minute call (phone on rc.201, laptop on an older engine):
+
+- **rc.201 fixed the loss and cost the delay.** The phone heard the laptop
+  with 2.6% missing and 2.4% shed (7% and 12% the day before), and 187 of
+  the 189 holes were single frames that FEC repaired. But mouth-to-ear was
+  1.6 s: the buffer sat ~1.2 s deep for most of the call, because a backlog
+  below 1.2 s waited for a pause to shorten and too few frames came marked
+  as silence.
+- **A backlog now waits at most 3 s for a pause.** After that it plays one
+  frame and skips the next until it is back down: faster speech for a
+  moment, not a hole. Simulated with every frame marked speech: median
+  buffer delay 1072 ms -> 411 ms; with ordinary pauses, speech lost 3.9% ->
+  4.3%.
+- **The repair line is whole in the report.** Values were cut at 200
+  characters; a call line's detail now keeps up to 320.
+
+## Android 0.7.0-experimental.rc.201-untested — 2026-11-11 — on `dev`, superseded by rc.202
+
+From the rc.200
 reports of a 12-minute call, phone and laptop:
 
 - **The phone heard much less of the laptop than the laptop heard of the
