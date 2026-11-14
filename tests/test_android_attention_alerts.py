@@ -12,6 +12,7 @@ on a locked screen.
 
 import os
 import re
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KT = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
@@ -19,7 +20,7 @@ KT = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
 
 
 def _read(*parts):
-    return open(os.path.join(KT, *parts), encoding="utf-8").read()
+    return with_parts(os.path.join(KT, *parts))
 
 
 SERVICE = _read("connection", "OtrConnectionService.kt")
@@ -54,12 +55,12 @@ class TestARequestNamesNobody:
 
     def test_one_notification_for_every_request(self):
         assert "ATTENTION_NOTIFICATION_ID = 6" in SERVICE
-        body = _block(SERVICE, "private fun needAttention(", "private fun cancelAttentionNotification")
+        body = _block(SERVICE, "internal fun OtrConnectionService.needAttention(", "internal fun OtrConnectionService.cancelAttentionNotification")
         assert "notify(ATTENTION_NOTIFICATION_ID" in body
         assert "VISIBILITY_SECRET" in body
 
     def test_its_text_is_the_kind_only(self):
-        body = _block(SERVICE, "private fun needAttention(", "private fun cancelAttentionNotification")
+        body = _block(SERVICE, "internal fun OtrConnectionService.needAttention(", "internal fun OtrConnectionService.cancelAttentionNotification")
         assert "Attention.text(" in body
         for leak in ("peer", "room", "jid", "displayName", "sender"):
             assert not re.search(r"\b%s\b" % leak, body), leak
@@ -86,7 +87,7 @@ class TestEveryoneOnScreenGetsATone:
         assert "RINGER_MODE_SILENT) return" in fb
         assert "RINGER_MODE_NORMAL) tone(context)" in fb
         assert "vibrate(context)" in fb
-        assert "private fun playInAppTone() = AlertFeedback.inApp(this)" in SERVICE
+        assert "internal fun OtrConnectionService.playInAppTone() = AlertFeedback.inApp(this)" in SERVICE
 
     def test_the_password_prompt_does_too(self):
         screen = _read("ui", "ConversationsScreen.kt")

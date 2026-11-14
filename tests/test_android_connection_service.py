@@ -23,6 +23,7 @@ import os
 import re
 
 import pytest
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANDROID = os.path.join(ROOT, "android", "app", "src", "main")
@@ -30,8 +31,7 @@ JAVA = os.path.join(ANDROID, "java", "org", "otrv4plus", "android")
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def _code_only(text):
@@ -226,8 +226,8 @@ class TestNothingSensitiveLeaves:
     def test_the_notification_carries_no_identity(self, service):
         """It is visible on a locked screen. Who someone talks to is the thing
         this client protects."""
-        block = service[service.index("private fun buildNotification"):]
-        block = block[:block.index("private fun phaseText")]
+        block = service[service.index("internal fun OtrConnectionService.buildNotification"):]
+        block = block[:block.index("internal fun OtrConnectionService.phaseText")]
         for leak in ("jid", "status.jid", "peer", "server"):
             assert leak not in block, leak
 
@@ -330,8 +330,8 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
         form and hand `LoginProgress.problemToShow` a problem the user never
         caused."""
         code = _code_only(service)
-        idle = code[code.index("private fun idle()"):]
-        idle = idle[:idle.index("private fun createChannel")]
+        idle = code[code.index("internal fun OtrConnectionService.idle()"):]
+        idle = idle[:idle.index("internal fun OtrConnectionService.createChannel")]
         assert "LinkPhase.STOPPED" in idle
         assert "LinkPhase.FAILED" not in idle
 
@@ -339,8 +339,8 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
         """A persistent connection notification in the shade of somebody who
         has not signed in is a statement about work that is not happening."""
         code = _code_only(service)
-        idle = code[code.index("private fun idle()"):]
-        idle = idle[:idle.index("private fun createChannel")]
+        idle = code[code.index("internal fun OtrConnectionService.idle()"):]
+        idle = idle[:idle.index("internal fun OtrConnectionService.createChannel")]
         assert "stopForeground" in idle
 
     def test_opening_the_app_does_not_connect(self):

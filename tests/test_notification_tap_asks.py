@@ -15,14 +15,14 @@ wiring around it.
 import io
 import os
 import re
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 JAVA = os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus", "android")
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def _code_only(text):
@@ -54,7 +54,7 @@ def _effect(text, key):
 
 class TestTheNotificationStillNamesNobody:
     def test_the_tap_intent_carries_an_action_and_no_sender(self):
-        arrival = _block(SERVICE, "private fun buildArrivalNotification(")
+        arrival = _block(SERVICE, "internal fun OtrConnectionService.buildArrivalNotification(")
         assert ".setAction(MainActivity.ACTION_OPEN_ARRIVAL)" in arrival
         assert "putExtra" not in arrival
         assert "setData" not in arrival
@@ -67,7 +67,7 @@ class TestTheNotificationStillNamesNobody:
 
 class TestTheServiceRemembersWhoTheAlertWasFor:
     def test_a_posted_notification_records_its_sender(self):
-        announce = _block(SERVICE, "private fun announceArrival(from: String)")
+        announce = _block(SERVICE, "internal fun OtrConnectionService.announceArrival(from: String)")
         note = announce.index("alerts.note() ?: return")
         assert announce.index("arrivals.arrived(from)") > note
 

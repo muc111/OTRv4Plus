@@ -1006,8 +1006,8 @@ class TestAnIncomingCallRingsThePhone:
         assert "announceCall()" in drain and "cancelCallNotification()" in drain
 
     def test_the_ring_says_nothing_about_who(self, service):
-        body = service[service.index("private fun announceCall("):]
-        body = body[:body.index("private fun cancelCallNotification()")]
+        body = service[service.index("internal fun OtrConnectionService.announceCall("):]
+        body = body[:body.index("internal fun OtrConnectionService.cancelCallNotification()")]
         assert "VISIBILITY_SECRET" in body, (
             "the call notification is visible on a locked screen")
         for leak in ("peer", "jid", "displayName", "setContentText(peer"):
