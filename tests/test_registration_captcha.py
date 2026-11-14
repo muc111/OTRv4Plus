@@ -202,3 +202,15 @@ def test_accepts_a_whole_iq_wrapper():
     assert captcha.is_captcha_query(iq)
     ch = captcha.extract_challenge(iq)
     assert ch.image_bytes == PNG
+
+
+def test_a_document_with_a_dtd_is_refused_unread():
+    """XMPP forbids DTDs (RFC 6120 11.1). A registration reply carrying one --
+    the shape of an entity-expansion ("billion laughs") attack -- is not
+    parsed at all (audit 2026-11-14)."""
+    from android_bridge import captcha
+    bomb = ('<?xml version="1.0"?><!DOCTYPE q [<!ENTITY a "aaaaaaaaaa">'
+            '<!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">]>'
+            '<query xmlns="jabber:iq:register"><x xmlns="jabber:x:data">&b;</x></query>')
+    assert captcha.is_captcha_query(bomb) is False
+    assert captcha.is_captcha_query(bomb.encode()) is False

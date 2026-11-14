@@ -111,6 +111,10 @@ def _as_element(query) -> Optional[ET.Element]:
     el = query
     if isinstance(query, (bytes, bytearray, str)):
         data = query.encode("utf-8") if isinstance(query, str) else bytes(query)
+        # XMPP forbids DTDs (RFC 6120 11.1), so a document carrying one is
+        # refused unread: no entity can be declared, let alone expanded.
+        if b"<!DOCTYPE" in data.upper() or b"<!ENTITY" in data.upper():
+            return None
         try:
             el = ET.fromstring(data)
         except ET.ParseError:
