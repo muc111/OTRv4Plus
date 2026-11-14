@@ -309,8 +309,8 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         self.write::<CURRENT_VERSION>(
             TREE_LABEL,
-            &cbor_enc(&group_id).unwrap(),
-            cbor_enc(&tree).unwrap(),
+            &cbor_enc(&group_id)?,
+            cbor_enc(&tree)?,
         )
     }
 
@@ -324,7 +324,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         let mut values = self.values.write().unwrap();
         let key = build_key::<CURRENT_VERSION, &GroupId>(INTERIM_TRANSCRIPT_HASH_LABEL, group_id);
-        let value = cbor_enc(&interim_transcript_hash).unwrap();
+        let value = cbor_enc(&interim_transcript_hash)?;
 
         values.insert(key, Zeroizing::new(value));
         Ok(())
@@ -340,7 +340,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         let mut values = self.values.write().unwrap();
         let key = build_key::<CURRENT_VERSION, &GroupId>(GROUP_CONTEXT_LABEL, group_id);
-        let value = cbor_enc(&group_context).unwrap();
+        let value = cbor_enc(&group_context)?;
 
         values.insert(key, Zeroizing::new(value));
         Ok(())
@@ -356,7 +356,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         let mut values = self.values.write().unwrap();
         let key = build_key::<CURRENT_VERSION, &GroupId>(CONFIRMATION_TAG_LABEL, group_id);
-        let value = cbor_enc(&confirmation_tag).unwrap();
+        let value = cbor_enc(&confirmation_tag)?;
 
         values.insert(key, Zeroizing::new(value));
         Ok(())
@@ -373,7 +373,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         let mut values = self.values.write().unwrap();
         let key =
             build_key::<CURRENT_VERSION, &SignaturePublicKey>(SIGNATURE_KEY_PAIR_LABEL, public_key);
-        let value = cbor_enc(&signature_key_pair).unwrap();
+        let value = cbor_enc(&signature_key_pair)?;
 
         values.insert(key, Zeroizing::new(value));
         Ok(())
@@ -405,7 +405,10 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
                 let key = (group_id, &proposal_ref);
                 let key = cbor_enc(&key)?;
 
-                let proposal = self.read(QUEUED_PROPOSAL_LABEL, &key)?.unwrap();
+                // A queued ref without its proposal is a corrupt store: an error,
+                // never a panic (the release profile aborts on panic).
+                let proposal = self.read(QUEUED_PROPOSAL_LABEL, &key)?
+                    .ok_or(StorageError::SerializationError)?;
                 Ok((proposal_ref, proposal))
             })
             .collect::<Result<Vec<_>, _>>()
@@ -424,7 +427,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = cbor_dec(value).unwrap();
+        let value = cbor_dec(value)?;
 
         Ok(value)
     }
@@ -442,7 +445,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = cbor_dec(value).unwrap();
+        let value = cbor_dec(value)?;
 
         Ok(value)
     }
@@ -460,7 +463,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = cbor_dec(value).unwrap();
+        let value = cbor_dec(value)?;
 
         Ok(value)
     }
@@ -478,7 +481,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = cbor_dec(value).unwrap();
+        let value = cbor_dec(value)?;
 
         Ok(value)
     }
@@ -498,7 +501,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         let Some(value) = values.get(&key) else {
             return Ok(None);
         };
-        let value = cbor_dec(value).unwrap();
+        let value = cbor_dec(value)?;
 
         Ok(value)
     }
@@ -511,13 +514,10 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         hash_ref: &HashReference,
         key_package: &KeyPackage,
     ) -> Result<(), Self::Error> {
-        let key = cbor_enc(&hash_ref).unwrap();
-        let value = cbor_enc(&key_package).unwrap();
+        let key = cbor_enc(&hash_ref)?;
+        let value = cbor_enc(&key_package)?;
 
         self.write::<CURRENT_VERSION>(KEY_PACKAGE_LABEL, &key, value)
-            .unwrap();
-
-        Ok(())
     }
 
     fn write_psk<
@@ -530,8 +530,8 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         self.write::<CURRENT_VERSION>(
             PSK_LABEL,
-            &cbor_enc(&psk_id).unwrap(),
-            cbor_enc(&psk).unwrap(),
+            &cbor_enc(&psk_id)?,
+            cbor_enc(&psk)?,
         )
     }
 
@@ -545,8 +545,8 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         self.write::<CURRENT_VERSION>(
             ENCRYPTION_KEY_PAIR_LABEL,
-            &cbor_enc(public_key).unwrap(),
-            cbor_enc(key_pair).unwrap(),
+            &cbor_enc(public_key)?,
+            cbor_enc(key_pair)?,
         )
     }
 
@@ -557,7 +557,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         &self,
         hash_ref: &KeyPackageRef,
     ) -> Result<Option<KeyPackage>, Self::Error> {
-        let key = cbor_enc(&hash_ref).unwrap();
+        let key = cbor_enc(&hash_ref)?;
         self.read(KEY_PACKAGE_LABEL, &key)
     }
 
@@ -565,7 +565,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         &self,
         psk_id: &PskId,
     ) -> Result<Option<PskBundle>, Self::Error> {
-        self.read(PSK_LABEL, &cbor_enc(&psk_id).unwrap())
+        self.read(PSK_LABEL, &cbor_enc(&psk_id)?)
     }
 
     fn encryption_key_pair<
@@ -577,7 +577,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<Option<HpkeKeyPair>, Self::Error> {
         self.read(
             ENCRYPTION_KEY_PAIR_LABEL,
-            &cbor_enc(public_key).unwrap(),
+            &cbor_enc(public_key)?,
         )
     }
 
@@ -589,7 +589,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         self.delete::<CURRENT_VERSION>(
             SIGNATURE_KEY_PAIR_LABEL,
-            &cbor_enc(public_key).unwrap(),
+            &cbor_enc(public_key)?,
         )
     }
 
@@ -599,7 +599,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         self.delete::<CURRENT_VERSION>(
             ENCRYPTION_KEY_PAIR_LABEL,
-            &cbor_enc(&public_key).unwrap(),
+            &cbor_enc(&public_key)?,
         )
     }
 
@@ -812,7 +812,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
 
 
         if let Some(value) = value {
-            return Ok(cbor_dec(value).unwrap());
+            return Ok(cbor_dec(value)?);
         }
 
         Ok(vec![])
@@ -862,7 +862,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         &self,
         group_id: &GroupId,
     ) -> Result<Option<MlsGroupJoinConfig>, Self::Error> {
-        self.read(JOIN_CONFIG_LABEL, &cbor_enc(group_id).unwrap())
+        self.read(JOIN_CONFIG_LABEL, &cbor_enc(group_id)?)
     }
 
     fn write_mls_join_config<
@@ -873,8 +873,8 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         group_id: &GroupId,
         config: &MlsGroupJoinConfig,
     ) -> Result<(), Self::Error> {
-        let key = cbor_enc(group_id).unwrap();
-        let value = cbor_enc(config).unwrap();
+        let key = cbor_enc(group_id)?;
+        let value = cbor_enc(config)?;
 
         self.write::<CURRENT_VERSION>(JOIN_CONFIG_LABEL, &key, value)
     }
@@ -886,7 +886,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         &self,
         group_id: &GroupId,
     ) -> Result<Vec<LeafNode>, Self::Error> {
-        self.read_list(OWN_LEAF_NODES_LABEL, &cbor_enc(group_id).unwrap())
+        self.read_list(OWN_LEAF_NODES_LABEL, &cbor_enc(group_id)?)
     }
 
     fn append_own_leaf_node<
@@ -906,21 +906,21 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         &self,
         group_id: &GroupId,
     ) -> Result<(), Self::Error> {
-        self.delete::<CURRENT_VERSION>(OWN_LEAF_NODES_LABEL, &cbor_enc(group_id).unwrap())
+        self.delete::<CURRENT_VERSION>(OWN_LEAF_NODES_LABEL, &cbor_enc(group_id)?)
     }
 
     fn delete_group_config<GroupId: traits::GroupId<CURRENT_VERSION>>(
         &self,
         group_id: &GroupId,
     ) -> Result<(), Self::Error> {
-        self.delete::<CURRENT_VERSION>(JOIN_CONFIG_LABEL, &cbor_enc(group_id).unwrap())
+        self.delete::<CURRENT_VERSION>(JOIN_CONFIG_LABEL, &cbor_enc(group_id)?)
     }
 
     fn delete_tree<GroupId: traits::GroupId<CURRENT_VERSION>>(
         &self,
         group_id: &GroupId,
     ) -> Result<(), Self::Error> {
-        self.delete::<CURRENT_VERSION>(TREE_LABEL, &cbor_enc(group_id).unwrap())
+        self.delete::<CURRENT_VERSION>(TREE_LABEL, &cbor_enc(group_id)?)
     }
 
     fn delete_confirmation_tag<GroupId: traits::GroupId<CURRENT_VERSION>>(
@@ -929,7 +929,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         self.delete::<CURRENT_VERSION>(
             CONFIRMATION_TAG_LABEL,
-            &cbor_enc(group_id).unwrap(),
+            &cbor_enc(group_id)?,
         )
     }
 
@@ -937,7 +937,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         &self,
         group_id: &GroupId,
     ) -> Result<(), Self::Error> {
-        self.delete::<CURRENT_VERSION>(GROUP_CONTEXT_LABEL, &cbor_enc(group_id).unwrap())
+        self.delete::<CURRENT_VERSION>(GROUP_CONTEXT_LABEL, &cbor_enc(group_id)?)
     }
 
     fn delete_interim_transcript_hash<GroupId: traits::GroupId<CURRENT_VERSION>>(
@@ -946,7 +946,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
     ) -> Result<(), Self::Error> {
         self.delete::<CURRENT_VERSION>(
             INTERIM_TRANSCRIPT_HASH_LABEL,
-            &cbor_enc(group_id).unwrap(),
+            &cbor_enc(group_id)?,
         )
     }
 
@@ -958,12 +958,12 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
         group_id: &GroupId,
         proposal_ref: &ProposalRef,
     ) -> Result<(), Self::Error> {
-        let key = cbor_enc(group_id).unwrap();
-        let value = cbor_enc(proposal_ref).unwrap();
+        let key = cbor_enc(group_id)?;
+        let value = cbor_enc(proposal_ref)?;
 
         self.remove_item::<CURRENT_VERSION>(PROPOSAL_QUEUE_REFS_LABEL, &key, value)?;
 
-        let key = cbor_enc(&(group_id, proposal_ref)).unwrap();
+        let key = cbor_enc(&(group_id, proposal_ref))?;
         self.delete::<CURRENT_VERSION>(QUEUED_PROPOSAL_LABEL, &key)
     }
 
@@ -996,7 +996,7 @@ fn build_key_from_vec<const V: u16>(label: &[u8], key: Vec<u8>) -> Vec<u8> {
 
 /// Build a key with version and label.
 fn build_key<const V: u16, K: Serialize>(label: &[u8], key: K) -> Vec<u8> {
-    build_key_from_vec::<V>(label, cbor_enc(&key).unwrap())
+    build_key_from_vec::<V>(label, cbor_enc(&key).expect("CBOR into a Vec<u8> cannot fail: the writer is infallible"))
 }
 
 fn epoch_key_pairs_id(

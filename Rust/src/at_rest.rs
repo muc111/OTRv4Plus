@@ -102,6 +102,11 @@ fn wrap_key(cipher: &Aes256Gcm, key: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 fn unwrap_key(raw: &[u8]) -> Result<SecretBytes<KEY_LEN>, String> {
+    // Checked here as well as by the caller: the slices below must never be
+    // able to panic (the release profile aborts on panic).
+    if raw.len() != WRAPPED_LEN || &raw[..8] != WRAP_MAGIC {
+        return Err("not a wrapped key file".to_string());
+    }
     let cipher = kek_cipher()?.ok_or_else(|| {
         "key file is wrapped by the platform key store, and no key-wrapping key \
          is installed (it was deleted, or the key store is unavailable)"
