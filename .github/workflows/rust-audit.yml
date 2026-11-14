@@ -15,12 +15,17 @@ on:
       - "Rust/Cargo.toml"
       - "Rust/Cargo.lock"
       - "Rust/.cargo/audit.toml"
+      - "Rust/mls/Cargo.toml"
+      - "Rust/mls/Cargo.lock"
+      - "Rust/mls/.cargo/audit.toml"
       - ".github/workflows/rust-audit.yml"
   pull_request:
     paths:
       - "Rust/Cargo.toml"
       - "Rust/Cargo.lock"
       - "Rust/.cargo/audit.toml"
+      - "Rust/mls/Cargo.lock"
+      - "Rust/mls/.cargo/audit.toml"
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
@@ -44,3 +49,28 @@ jobs:
       - name: Audit Rust/Cargo.lock against the RustSec database
         working-directory: Rust
         run: cargo audit --deny warnings
+
+      # The lock the MLS crate's own tests build against. Its ignores are
+      # the same decisions as the core's (Rust/mls/.cargo/audit.toml).
+      - name: Audit Rust/mls/Cargo.lock
+        working-directory: Rust/mls
+        run: cargo audit --deny warnings
+
+      # Every ignore above says "locked, not built". Checked, not trusted:
+      # each crate an ignore names must be absent from the shipped build
+      # (the APK's features), or the job fails. ml-kem is the
+      # control -- it IS in the build, so an empty answer means absent, not
+      # a broken query.
+      - name: Ignored advisories are not in the shipped build
+        working-directory: Rust
+        run: |
+          set -eu
+          test -n "$(cargo tree -e all --features mls,android-opus --target all -i ml-kem 2>/dev/null)"
+          for c in crypto-bigint@0.5.5 libcrux-kem libcrux-hmac-drbg libsqlite3-sys proc-macro-error2; do
+            out=$(cargo tree -e all --features mls,android-opus --target all -i "$c" 2>/dev/null || true)
+            if [ -n "$out" ]; then
+              echo "::error::$c is in the shipped build, so its ignore is wrong"
+              echo "$out"
+              exit 1
+            fi
+          done
