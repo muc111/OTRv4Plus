@@ -58,6 +58,7 @@ path = [
     "docs/AUDIT_TEST_INTEGRITY.md",
     "docs/AUDIT_THREAT_MODEL.md",
     "docs/AUDIT_SUMMARY.md",
+    "docs/AUDIT_2026-11.md",
     "docs/CRYPTOGRAPHER_QUESTIONS.md",
     "docs/CRYPTOGRAPHER_BRIEF.md",
     "docs/SECURITY_AUDIT_2026-10-11.md",
