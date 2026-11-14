@@ -52,6 +52,7 @@ from android_bridge.app import OtrApp, Transport                  # noqa: E402
 from android_bridge.events import SecurityState, SmpState         # noqa: E402
 from android_bridge.files import FileOutcome, is_file_signal      # noqa: E402
 from source_of import conversation_screen_source  # noqa: E402
+from kotlin_parts import with_parts  # noqa: E402
 
 SECRET = "a shared secret we both know"
 
@@ -490,9 +491,7 @@ MANIFEST = os.path.join(
 
 
 def _kt(*parts):
-    import io
-    with io.open(os.path.join(ANDROID, *parts), encoding="utf-8") as handle:
-        return handle.read()
+    return with_parts(os.path.join(ANDROID, *parts))
 
 
 class TestTheTwoSidesAgreeOnTheCodes:

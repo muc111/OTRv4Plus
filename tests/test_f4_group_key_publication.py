@@ -22,6 +22,7 @@ core = pytest.importorskip("otrv4_core")
 from android_bridge.groups import GroupError                        # noqa: E402
 from test_secure_groups import ROOM, _group                         # noqa: E402
 from test_secure_groups import _rooms_settle_at_once                 # noqa: E402,F401
+from kotlin_parts import with_parts  # noqa: E402
 
 
 def _clocked(members, start=1_000_000.0):
@@ -137,8 +138,7 @@ def test_leaving_or_wipe_drops_unpublished_keys():
 def _src(*parts):
     import os
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    with open(os.path.join(root, *parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(root, *parts))
 
 
 def test_the_controller_and_the_desktop_host_offer_it():

@@ -12,6 +12,7 @@ These pin the shape on both apps; GroupRosterTest runs the rules.
 import io
 import os
 import re
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANDROID = os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus", "android")
@@ -19,8 +20,7 @@ DESKTOP = os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4pl
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def _fn(src, signature):

@@ -21,9 +21,28 @@ import org.otrv4plus.android.security.KeystoreVault
  * multi-minute computations and the DAKE takes roughly 20 seconds; the engine
  * expects to be driven from the service thread that owns it.
  */
-class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
+class ChaquopyOtrCore private constructor(
+    private val appContext: Context,
+    private val handles: BridgeHandles,
+) : OtrCore,
+    SecureGroupsApi by ChaquopyGroups(handles),
+    AccountAdminApi by ChaquopyAccountAdmin(handles),
+    MediaApi by ChaquopyMedia(handles) {
 
-    private var app: PyObject? = null
+    constructor(appContext: Context) : this(appContext, BridgeHandles())
+
+    /** The engine's `OtrApp`; null before [initialize] and after [shutdown]. */
+    private var app: PyObject?
+        get() = handles.app
+        set(value) { handles.app = value }
+
+    private fun requireApp(): PyObject = handles.requireApp()
+
+    private fun call(name: String, vararg args: Any): PyObject? = handles.call(name, *args)
+
+    private fun roomWithStanding(name: String, vararg args: Any): Pair<RoomOutcome, RoomStanding> =
+        handles.roomWithStanding(name, *args)
+
     private var sink: OtrEventSink? = null
 
     /**
@@ -275,9 +294,6 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     private fun section(report: PyObject, group: String, key: String): String =
         report.callAttr("get", group)?.callAttr("get", key)?.toString() ?: ""
 
-    private fun requireApp(): PyObject =
-        app ?: throw OtrBridgeException("not_initialized")
-
     /**
      * P1: the user, told what it costs, discards [jid]'s saved contact keys
      * after they would not open (`trust_unavailable`). Every contact of the
@@ -309,7 +325,9 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     // thread. A tunnel build can take minutes; on the main thread that is an
     // ANR, not a slow connection.
 
-    private var controller: PyObject? = null
+    private var controller: PyObject?
+        get() = handles.controller
+        set(value) { handles.controller = value }
 
     /**
      * Prepare a controller for [jid], using the compiled-in default server.
@@ -613,273 +631,6 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result)
     }
 
-    // -- secure groups (MLS; android_bridge.groups) ---------------------------
-
-    /** A new room that is an OTRv4Plus secure group from its first message. */
-    fun createSecureGroup(room: String, password: String = "",
-                          passphrase: String = ""): RoomOutcome {
-        val result = call("create_secure_group", room, password, passphrase)
-            ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** Verify every member with the group passphrase ("" = the one set at creation). */
-    fun startGroupVerify(room: String, passphrase: String): RoomOutcome {
-        val result = call("start_group_verify", room, passphrase) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** Who is verified in [room], and a verification someone started. */
-    fun groupVerifyState(room: String): GroupVerifyState {
-        val result = call("group_verify_state", room) ?: return GroupVerifyState()
-        val value = listValue(result) ?: return GroupVerifyState()
-        val members = mutableMapOf<String, String>()
-        runCatching {
-            value.callAttr("get", "members")?.asMap()?.forEach { (k, v) ->
-                members[k.toString()] = v.toString()
-            }
-        }
-        fun int(key: String): Int =
-            runCatching { value.callAttr("get", key)?.toInt() }.getOrNull() ?: 0
-        val excluded = runCatching {
-            value.callAttr("get", "excluded")?.asList()?.map { it.toString() }
-        }.getOrNull() ?: emptyList()
-        return GroupVerifyState(
-            members = members,
-            allVerified = flag(value, "all_verified"),
-            startedBy = entry(value, "started_by"),
-            active = flag(value, "active"),
-            done = int("done"),
-            total = int("total"),
-            etaSeconds = int("eta"),
-            excluded = excluded,
-            coordinator = entry(value, "coordinator"),
-            canStart = flag(value, "can_start"),
-        )
-    }
-
-    /** Verified members' calls are joined by themselves only with the microphone allowed. */
-    fun setGroupCallAutoJoin(allowed: Boolean) {
-        call("set_group_call_auto_join", allowed)
-    }
-
-    fun startGroupCall(room: String): RoomOutcome =
-        call("start_group_call", room)?.let { outcomeOf(it) } ?: notPrepared()
-
-    fun joinGroupCall(room: String): RoomOutcome =
-        call("join_group_call", room)?.let { outcomeOf(it) } ?: notPrepared()
-
-    fun pauseGroupCall(): RoomOutcome =
-        call("pause_group_call")?.let { outcomeOf(it) } ?: notPrepared()
-
-    fun hangupGroupCall(): RoomOutcome =
-        call("hangup_group_call")?.let { outcomeOf(it) } ?: notPrepared()
-
-    fun groupCallState(room: String): GroupCallState {
-        val result = call("group_call_state", room) ?: return GroupCallState()
-        val value = listValue(result) ?: return GroupCallState()
-        val people = runCatching {
-            value.callAttr("get", "participants")?.asList()?.map { it.toString() }
-        }.getOrNull() ?: emptyList()
-        return GroupCallState(
-            inCall = flag(value, "in_call"),
-            paused = flag(value, "paused"),
-            participants = people,
-            ringingFrom = entry(value, "ringing_from"),
-            micSilent = flag(value, "mic_silent"),
-        )
-    }
-
-    /** Invite [peer] over our encrypted OTRv4+ session with them. */
-    fun inviteToGroup(room: String, peer: String): RoomOutcome {
-        val result = call("invite_to_group", room, peer) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** Ask the members of the encrypted group [room] to invite us
-     *  (`ConnectionController.request_group_entry`). */
-    /** The creator's Accept or Deny to "X asks to join". On a denial the
-     *  second value is the seconds before they can be shown asking again. */
-    fun answerEntryRequest(room: String, requester: String, accept: Boolean): Pair<RoomOutcome, Int> {
-        val result = call("answer_entry_request", room, requester, accept) ?: return notPrepared() to 0
-        val wait = if (accept) 0 else runCatching { listValue(result)?.toInt() }.getOrNull() ?: 0
-        return outcomeOf(result) to wait
-    }
-
-    fun requestGroupEntry(room: String): RoomOutcome {
-        val result = call("request_group_entry", room) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** [password]: the room's, when the user typed it (the inviter's, sent
-     *  with the invitation, is used otherwise). */
-    fun acceptGroupInvite(room: String, password: String = ""): RoomOutcome {
-        val result = call("accept_group_invite", room, password) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    fun declineGroupInvite(room: String): RoomOutcome {
-        val result = call("decline_group_invite", room) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    fun removeGroupMember(room: String, member: String): RoomOutcome {
-        val result = call("remove_group_member", room, member) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** The creator removes everyone whose verification failed, in one commit. */
-    fun removeFailedGroupMembers(room: String): RoomOutcome {
-        val result = call("remove_failed_group_members", room) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** Send this phone's group key to each member; the detail says who needs SMP. */
-    fun verifyGroupMembers(room: String): RoomOutcome {
-        val result = call("verify_group_members", room) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** Delete a secure group for everyone (its creator only; the server checks). */
-    fun deleteSecureGroup(room: String): RoomOutcome {
-        val result = call("delete_secure_group", room) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** "Make Group Deniable" (F4): see SecureGroups.make_deniable. */
-    fun makeGroupDeniable(room: String): RoomOutcome {
-        val result = call("make_group_deniable", room) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /** Who our earlier group keys wait for (F4): see SecureGroups.keys_waiting. */
-    fun groupKeysWaiting(room: String): List<String> {
-        val result = call("group_publication_waiting", room) ?: return emptyList()
-        if (!outcomeOf(result).ok) return emptyList()
-        return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
-    }
-
-    fun leaveSecureGroup(room: String): RoomOutcome {
-        val result = call("leave_secure_group", room) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    fun groupMembers(room: String): Pair<RoomOutcome, List<GroupMember>> {
-        val result = call("group_members", room) ?: return notPrepared() to emptyList()
-        val members = mutableListOf<GroupMember>()
-        listValue(result)?.let { items ->
-            for (item in items.asList()) {
-                members += GroupMember(
-                    jid = entry(item, "jid"),
-                    fingerprint = entry(item, "fingerprint"),
-                    me = entry(item, "me") == "True",
-                    verified = entry(item, "verified") == "True",
-                    bound = entry(item, "bound") == "True",
-                    failed = entry(item, "failed") == "True",
-                )
-            }
-        }
-        return outcomeOf(result) to members
-    }
-
-    fun secureGroups(): List<String> {
-        val result = call("secure_groups") ?: return emptyList()
-        return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
-    }
-
-    /** Rooms we are in as owner (creator, or a server admin): the only
-     *  ones a delete button is shown for. */
-    fun ownedRooms(): List<String>? {
-        val result = call("owned_rooms") ?: return null
-        if (!outcomeOf(result).ok) return null
-        return listValue(result)?.asList()?.map { it.toString() } ?: emptyList()
-    }
-
-    /** Whether this account administers its server (XEP-0133 commands
-     *  listed to it); null when the server did not say. */
-    /**
-     * A server admin's moderation of [account]: "status", "ban" ([days] 0 =
-     * permanent) or "unban". The server runs it for its admins only
-     * (prosody/mod_otrv4plus_moderation.lua).
-     */
-    fun moderate(op: String, account: String, days: Int = 0, reason: String = ""): Moderation {
-        val result = call("moderate", op, account, days, reason)
-            ?: return Moderation(notPrepared())
-        val value = listValue(result)
-        return Moderation(
-            outcome = outcomeOf(result),
-            banned = value?.let { flag(it, "banned") } ?: false,
-            until = value?.let { entry(it, "until").toLongOrNull() } ?: -1,
-            said = value?.let { entry(it, "message") }.orEmpty(),
-        )
-    }
-
-    fun serverAdmin(): Boolean? {
-        val result = call("server_admin") ?: return null
-        if (!outcomeOf(result).ok) return null
-        return result.callAttr("get", "value")?.toBoolean()
-    }
-
-    /** How many other sessions of our own account the server told us
-     *  about; null when unknown (not connected). */
-    fun otherSessions(): Int? {
-        val result = call("other_sessions") ?: return null
-        if (!outcomeOf(result).ok) return null
-        return listValue(result)?.asList()?.size ?: 0
-    }
-
-    /** Sign out our account's other sessions (server admins only): the
-     *  outcome and how many were ended. */
-    fun endOtherSessions(): Pair<RoomOutcome, Int> {
-        val result = call("end_other_sessions") ?: return notPrepared() to 0
-        val ended = runCatching { result.callAttr("get", "value")?.toInt() }.getOrNull() ?: 0
-        return outcomeOf(result) to ended
-    }
-
-    /**
-     * Change the account's password on the server (XEP-0077). The engine
-     * checks [currentPassword] against the one it signed in with; neither is
-     * kept, logged or put in any status here.
-     */
-    fun changePassword(currentPassword: String, newPassword: String): RoomOutcome {
-        val result = call("change_password", currentPassword, newPassword)
-            ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    fun destroyRoom(room: String, reason: String = ""): RoomOutcome {
-        val result = call("destroy_room", room, reason) ?: return notPrepared()
-        return outcomeOf(result)
-    }
-
-    /**
-     * What the server advertises about keeping [jid]'s history (our own
-     * account when blank). `null` mam when it did not answer: unknown is not
-     * "no archive". Asked, never acted on -- see `ChatDeletion`.
-     */
-    fun archiveSupport(jid: String = ""): Pair<RoomOutcome, Boolean?> {
-        val result = call("archive_support", jid) ?: return notPrepared() to null
-        val outcome = outcomeOf(result)
-        if (!outcome.ok) return outcome to null
-        val mam = runCatching {
-            listValue(result)?.callAttr("get", "mam")?.toBoolean()
-        }.getOrNull()
-        return outcome to mam
-    }
-
-    /**
-     * Create the OTRv4Plus Welcome room (explicit user action only).
-     * Returns the outcome and the settings the server did NOT apply.
-     */
-    fun createWelcomeRoom(): Pair<RoomOutcome, List<String>> {
-        val result = call("create_welcome_room") ?: return notPrepared() to emptyList()
-        val outcome = outcomeOf(result)
-        val missing = runCatching {
-            listValue(result)?.callAttr("get", "missing")?.asList()?.map { it.toString() }
-        }.getOrNull() ?: emptyList()
-        return outcome to missing
-    }
-
     // ── avatars ──────────────────────────────────────────────────────────
 
     /**
@@ -951,12 +702,6 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
         return outcomeOf(result) to jsonMap(entry(result, "value"))
     }
 
-    private fun jsonMap(text: String): Map<String, String> = runCatching {
-        if (text.isBlank() || text == "None") return emptyMap()
-        val obj = org.json.JSONObject(text)
-        obj.keys().asSequence().associateWith { obj.optString(it, "") }
-    }.getOrDefault(emptyMap())
-
     fun removeAvatar(): RoomOutcome {
         val result = call("remove_avatar") ?: return notPrepared()
         return outcomeOf(result)
@@ -1009,83 +754,6 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
             ?: emptyList()
         return outcomeOf(result) to rooms
     }
-
-    private fun roomWithStanding(name: String, vararg args: Any):
-        Pair<RoomOutcome, RoomStanding> {
-        val result = call(name, *args) ?: return notPrepared() to RoomStanding()
-        val value = result.callAttr("get", "value")
-        val standing = if (value == null) RoomStanding() else RoomStanding(
-            room = entry(value, "room"),
-            nick = entry(value, "nick"),
-            affiliation = entry(value, "affiliation").ifBlank { "none" },
-            role = entry(value, "role").ifBlank { "none" },
-            speak = flag(value, "speak"),
-            changeSubject = flag(value, "change_subject"),
-            invite = flag(value, "invite"),
-            kick = flag(value, "kick"),
-            ban = flag(value, "ban"),
-            configure = flag(value, "configure"),
-            destroy = flag(value, "destroy"),
-            grantMembership = flag(value, "grant_membership"),
-        )
-        return outcomeOf(result) to standing
-    }
-
-    /**
-     * A controller call that answers rather than throws.
-     *
-     * WRAPPED, and it was not. This returned `controller?.callAttr(...)` bare,
-     * so anything the Python side raised -- a `TransportError` from a room
-     * join, a malformed JID, a timeout -- crossed Chaquopy as a PyException
-     * and propagated out of `createRoom` into `RoomsViewModel`'s coroutine.
-     * That coroutine had no `finally`, so `busy` was never cleared and the
-     * Rooms screen sat on "Creating the room..." for good.
-     *
-     * The roster calls have answered this way since `addContact` was fixed
-     * for the same reason; the room calls were the ones still throwing.
-     * Returning null means "no answer", which every caller here already
-     * handles as `notPrepared()`.
-     *
-     * The exception TYPE is not propagated and its message is never read: a
-     * PyException carries the engine's own text, which can quote what it was
-     * handling. The caller's own `RoomOutcome` carries the reportable code,
-     * which Python wrote for a person.
-     */
-    private fun call(name: String, vararg args: Any): PyObject? =
-        try {
-            controller?.callAttr(name, *args)
-        } catch (t: Throwable) {
-            null
-        }
-
-    private fun outcomeOf(result: PyObject): RoomOutcome = RoomOutcome(
-        ok = result.callAttr("get", "ok")?.toBoolean() ?: false,
-        code = result.callAttr("get", "code")?.toString()?.ifBlank { "unknown" }
-            ?: "unknown",
-        detail = result.callAttr("get", "detail")?.toString() ?: "",
-    )
-
-    private fun listValue(result: PyObject): PyObject? =
-        result.callAttr("get", "value")
-
-    private fun entry(item: PyObject, key: String): String =
-        runCatching { item.callAttr("get", key)?.toString() }.getOrNull()
-            ?: ""
-
-    private fun flag(item: PyObject, key: String): Boolean =
-        runCatching { item.callAttr("get", key)?.toBoolean() }.getOrNull()
-            ?: false
-
-    /**
-     * No controller yet, which is not the same as a failure to do the thing.
-     *
-     * Reported as `network` because from the user's side it is the same
-     * situation — nothing has connected — and it is the code the rooms screen
-     * already knows how to render.
-     */
-    private fun notPrepared(): RoomOutcome = RoomOutcome(
-        ok = false, code = "network",
-        detail = "Connect before using rooms.")
 
     // ── the shareable error log ───────────────────────────────────────────
 
@@ -1467,308 +1135,6 @@ class ChaquopyOtrCore(private val appContext: Context) : OtrCore {
     override fun smpAbort(peer: String) {
         wrap { requireApp().callAttr("smp_abort", peer) }
     }
-
-    // ── Calls ─────────────────────────────────────────────────────────────
-    //
-    // Thin, like everything else here: each of these is one `callAttr` onto
-    // `OtrApp`, which delegates to `android_bridge.voice.CallBridge`, which
-    // delegates to `otrv4plus_voice.VoiceCallManager` -- the same state
-    // machine, signalling and SMP gate the terminal client has always used.
-    //
-    // NOTHING ON THIS SIDE DECIDES WHETHER A CALL MAY HAPPEN. The gate is
-    // `VoiceCallManager`'s, read from the engine's own verification
-    // predicate. A second check in Kotlin would be a second answer that
-    // could disagree with the one that actually refuses, and the UI would
-    // be showing the wrong one.
-    //
-    // BLOCKING, so every one of these belongs on a worker thread -- the same
-    // rule as the rest of this class. None of them waits for a call to
-    // connect, though: placing a call builds I2P tunnels, and the Python
-    // side returns as soon as the request is handed over.
-
-    /**
-     * Place a call to [peer]. Returns a `CallOutcome` code, never a sentence.
-     *
-     * "started" means the request reached the call manager, NOT that anything
-     * is ringing. Building the tunnels takes 30-120 s, so the screen follows
-     * [callState] and the events that arrive through [drainEvents].
-     */
-    fun startCall(peer: String): String =
-        runCatching {
-            requireApp().callAttr("start_call", peer).toString()
-        }.getOrDefault(CallOutcome.UNAVAILABLE)
-
-    /** Answer a ringing call. Returns a `CallOutcome` code. */
-    fun answerCall(peer: String): String =
-        runCatching {
-            requireApp().callAttr("answer_call", peer).toString()
-        }.getOrDefault(CallOutcome.UNAVAILABLE)
-
-    /**
-     * End an active call, or reject a ringing one.
-     *
-     * One verb for both because the state machine has one: rejecting and
-     * hanging up are the same transition, and splitting them here would
-     * invent a distinction the protocol does not have.
-     */
-    fun endCall(peer: String): String =
-        runCatching {
-            requireApp().callAttr("end_call", peer).toString()
-        }.getOrDefault(CallOutcome.UNAVAILABLE)
-
-    /**
-     * "Mask my voice" for live calls, 1:1 and group, at once (Rust
-     * live_mask.rs through otrv4plus_audio). Returns whether this build can
-     * mask at all.
-     */
-    fun setVoiceMask(on: Boolean): Boolean = runCatching {
-        val state = requireApp().callAttr("set_voice_mask", on)
-        state.callAttr("get", "available")?.toBoolean() == true
-    }.getOrDefault(false)
-
-    /** This peer's call state, read from the live session. */
-    fun callState(peer: String): CallState =
-        runCatching {
-            CallState.fromName(
-                requireApp().callAttr("call_state", peer)
-                    .get("name")?.toString() ?: "IDLE")
-        }.getOrDefault(CallState.IDLE)
-
-    /**
-     * Seconds since the call became ACTIVE, or 0.
-     *
-     * Never counts the tunnel build. A timer that started when the user
-     * pressed Call would show a minute and a half of conversation that had
-     * not happened yet.
-     */
-    fun callDurationSeconds(peer: String): Int =
-        runCatching {
-            requireApp().callAttr("call_duration_seconds", peer).toInt()
-        }.getOrDefault(0)
-
-    /**
-     * Why voice cannot run on this device, or "" when it can.
-     *
-     * Asked of Python, which asks `otrv4plus_voice`'s own host hook -- the
-     * same question the call manager asks before doing anything. A separate
-     * answer here could tell the user something the engine would contradict.
-     */
-    /**
-     * Whether a call may be offered to [peer], from the engine: the code and,
-     * for "voice_unavailable", the host hook's reason. Null when the bridge
-     * could not be asked -- the caller then decides from what it has, and
-     * never towards "available". See `OtrApp.call_gate`.
-     */
-    fun callGate(peer: String): Pair<String, String>? =
-        runCatching {
-            val d = requireApp().callAttr("call_gate", peer)
-            (d.callAttr("get", "gate")?.toString() ?: return@runCatching null) to
-                (d.callAttr("get", "reason")?.toString() ?: "")
-        }.getOrNull()
-
-    /**
-     * The next call's I2P path (`OtrApp.warm_call_path`): built in advance
-     * when [build] is true, otherwise only read. Returns the state code
-     * ("cold", "warming", "ready") and the seconds it is still kept for.
-     */
-    fun callPath(build: Boolean): Pair<String, Int> =
-        runCatching {
-            val d = requireApp().callAttr(if (build) "warm_call_path" else "call_path_state")
-            (d.callAttr("get", "state")?.toString() ?: "cold") to
-                (d.callAttr("get", "seconds_left")?.toInt() ?: 0)
-        }.getOrDefault("cold" to 0)
-
-    fun voiceUnavailableReason(): String =
-        runCatching {
-            requireApp().callAttr("voice_unavailable_reason").toString()
-        }.getOrDefault("Voice is not available on this device.")
-
-    // ── File transfer ─────────────────────────────────────────────────────
-    //
-    // Thin, like the calls. `otrv4plus_filetransfer` owns the FileKey, the
-    // AEAD, the chunk format, the hashes, the offer semantics, the filename
-    // rules, the size limit and the atomic commit -- and the SMP gate on
-    // BOTH sides. None of that is restated here.
-    //
-    // THE PATH COMES FROM SAF. Android picks through the Storage Access
-    // Framework and hands down a path it has already resolved; the Termux
-    // picker `otrv4plus_filetransfer.pick_file` shells out to is never
-    // reached from an APK.
-
-    /**
-     * Offer a file to [peer]. Returns a `FileOutcome` code, never a sentence.
-     *
-     * "started" means the engine accepted the offer and it is on its way,
-     * NOT that the peer has it -- the peer has to accept, and then every
-     * chunk crosses I2P.
-     */
-    fun sendFile(peer: String, path: String,
-                 stripMetadata: Boolean = false): String =
-        runCatching {
-            requireApp().callAttr("send_file", peer, path, stripMetadata)
-                .toString()
-        }.getOrDefault(FileOutcome.UNAVAILABLE)
-
-    /**
-     * What [path] carries before it is sent, so the user can choose.
-     *
-     * Examined in Python, where `android_bridge.metadata` is driven against
-     * real files in the test suite. A failure to ask is reported as UNKNOWN
-     * -- "the app cannot check" -- never as clean.
-     */
-    fun inspectFile(path: String): MetadataFinding =
-        runCatching {
-            val d = requireApp().callAttr("inspect_file", path)
-            MetadataFinding(
-                kind = d.callAttr("get", "kind")?.toString() ?: "unknown",
-                carriesMetadata = d.callAttr("get", "carries_metadata")?.toBoolean() ?: false,
-                metadataBytes = d.callAttr("get", "metadata_bytes")?.toInt() ?: 0,
-                canScrub = d.callAttr("get", "can_scrub")?.toBoolean() ?: false,
-            )
-        }.getOrDefault(MetadataFinding.UNKNOWN)
-
-    // -- voice notes (otrv4plus_voicenote; the recording stays in Python) ------
-
-    /** Start recording. "ok", or an error code for [VoiceNotes.errorText]. */
-    fun voiceNoteStart(): String =
-        runCatching { requireApp().callAttr("voice_note_start").toString() }
-            .getOrDefault("no_microphone")
-
-    fun voiceNoteStatus(): org.otrv4plus.android.chat.VoiceRecording =
-        runCatching {
-            val d = requireApp().callAttr("voice_note_status")
-            org.otrv4plus.android.chat.VoiceRecording(
-                recording = d.callAttr("get", "recording")?.toBoolean() ?: false,
-                seconds = d.callAttr("get", "seconds")?.toDouble() ?: 0.0,
-                level = d.callAttr("get", "level")?.toDouble() ?: 0.0,
-                error = d.callAttr("get", "error")?.toString() ?: "",
-            )
-        }.getOrDefault(org.otrv4plus.android.chat.VoiceRecording(false, 0.0, 0.0, ""))
-
-    /** Stop, disguise and write the note under [directory]. */
-    fun voiceNoteStop(mode: String, directory: String): org.otrv4plus.android.chat.VoiceNoteFile =
-        runCatching {
-            val d = requireApp().callAttr("voice_note_stop", mode, directory)
-            org.otrv4plus.android.chat.VoiceNoteFile(
-                path = d.callAttr("get", "path")?.toString() ?: "",
-                seconds = d.callAttr("get", "seconds")?.toDouble() ?: 0.0,
-                mode = d.callAttr("get", "mode")?.toString() ?: mode,
-                error = d.callAttr("get", "error")?.toString() ?: "",
-            )
-        }.getOrDefault(org.otrv4plus.android.chat.VoiceNoteFile("", 0.0, mode, "failed"))
-
-    /** Send a note made by [voiceNoteStop]: the [sendFile] outcome, and the
-     *  sealed copy kept so the sender can play it back ("" when none). */
-    fun sendVoiceNote(peer: String, path: String): Pair<String, String> =
-        runCatching {
-            val d = requireApp().callAttr("send_voice_note", peer, path)
-            (d.callAttr("get", "outcome")?.toString() ?: FileOutcome.UNAVAILABLE) to
-                (d.callAttr("get", "path")?.toString() ?: "")
-        }.getOrDefault(FileOutcome.UNAVAILABLE to "")
-
-    fun voiceNoteCancel() {
-        runCatching { requireApp().callAttr("voice_note_cancel") }
-    }
-
-    fun voiceNoteDiscard(path: String) {
-        runCatching { requireApp().callAttr("voice_note_discard", path) }
-    }
-
-    /** A note's waveform for its bubble, or null when it cannot be read. */
-    fun voiceNoteWaveform(path: String): org.otrv4plus.android.chat.VoiceWaveform? =
-        runCatching {
-            val d = requireApp().callAttr("voice_note_waveform", path, 0)
-            val bars = d.callAttr("get", "bars") ?: return@runCatching null
-            org.otrv4plus.android.chat.VoiceWaveform(
-                bars.asList().map { it.toFloat().coerceIn(0f, 1f) },
-                d.callAttr("get", "seconds")?.toDouble() ?: 0.0)
-        }.getOrNull()
-
-    /** Accept an offered transfer, by the id [transfers] reported. */
-    fun acceptFile(transferId: String): String =
-        runCatching {
-            requireApp().callAttr("accept_file", transferId).toString()
-        }.getOrDefault(FileOutcome.UNAVAILABLE)
-
-    /** Stop a transfer under way: ours, or one we accepted. */
-    fun cancelFile(transferId: String): String =
-        runCatching {
-            requireApp().callAttr("cancel_file", transferId).toString()
-        }.getOrDefault(FileOutcome.UNAVAILABLE)
-
-    /** Decline an offered transfer. */
-    fun declineFile(transferId: String): String =
-        runCatching {
-            requireApp().callAttr("decline_file", transferId).toString()
-        }.getOrDefault(FileOutcome.UNAVAILABLE)
-
-    /**
-     * Every live transfer, structured.
-     *
-     * Structured rather than the engine's own progress lines: those are
-     * written for a terminal, name files and embed transfer ids. The
-     * filename here has already been through the engine's
-     * `sanitise_filename`, which matters because it was chosen by somebody
-     * else and is about to be rendered.
-     */
-    // `callAttr("get", key)`, NOT `row.get(key)`. Chaquopy's PyObject is a
-    // Map over the object's ATTRIBUTES, so on a Python dict `get("path")`
-    // looked up an attribute called `path` and returned null. Every field of
-    // every row decoded as empty: `state` was never RECEIVED and `path` was
-    // blank, so `canOpen` was false and a received file could never be
-    // opened -- the Android-to-Android "cannot open" report. The Python side
-    // was right all along (tests/test_android_files.py), which is why no
-    // Python test saw it; tests/test_chaquopy_dict_access.py now pins it.
-    fun transfers(): List<FileTransferView> =
-        runCatching {
-            requireApp().callAttr("transfers").asList().map { row ->
-                FileTransferView(
-                    id = row.callAttr("get", "id")?.toString().orEmpty(),
-                    peer = row.callAttr("get", "peer")?.toString().orEmpty(),
-                    filename = row.callAttr("get", "filename")?.toString().orEmpty(),
-                    sizeBytes = row.callAttr("get", "size")?.toLong() ?: 0L,
-                    outgoing = row.callAttr("get", "outgoing")?.toBoolean() ?: false,
-                    accepted = row.callAttr("get", "accepted")?.toBoolean() ?: false,
-                    cancelled = row.callAttr("get", "cancelled")?.toBoolean() ?: false,
-                    progress = row.callAttr("get", "progress")?.toFloat() ?: 0f,
-                    state = row.callAttr("get", "state")?.toString().orEmpty(),
-                    reason = row.callAttr("get", "reason")?.toString().orEmpty(),
-                    path = row.callAttr("get", "path")?.toString().orEmpty(),
-                    group = row.callAttr("get", "group")?.toBoolean() ?: false,
-                    sender = row.callAttr("get", "from")?.toString().orEmpty(),
-                    deliveredTo = row.callAttr("get", "delivered_to")?.toInt() ?: 0,
-                )
-            }
-        }.getOrDefault(emptyList())
-
-    /**
-     * Where a FINISHED file lands.
-     *
-     * Not the partial-work directory: the engine keeps the two apart so a
-     * partial file can never be mistaken for a complete one, and pointing
-     * the user at that one would point them at the files that are not
-     * theirs yet.
-     */
-    /**
-     * Decrypt a received `.otrv` container into [directory] (the viewer's
-     * transient copy). Null when it does not open; the reason stays in
-     * Python, as a code.
-     */
-    fun openReceivedTo(container: String, directory: String): String? =
-        runCatching {
-            requireApp().callAttr("open_received_to", container, directory).toString()
-        }.getOrNull()
-
-    /** Explicit Save of a received file's plaintext to [destination]. */
-    fun saveReceived(container: String, destination: String): String =
-        runCatching {
-            requireApp().callAttr("save_received", container, destination).toString()
-        }.getOrDefault("save_failed")
-
-    fun receivedFileDir(): String =
-        runCatching {
-            requireApp().callAttr("received_file_dir").toString()
-        }.getOrDefault("")
 
     override fun setEventSink(sink: OtrEventSink?) {
         this.sink = sink

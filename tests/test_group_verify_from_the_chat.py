@@ -11,6 +11,7 @@ test_secure_groups (TestGroupVerification); these pin the apps around it.
 """
 import io
 import os
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 AND = os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus", "android")
@@ -18,8 +19,7 @@ DESK = os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus"
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def test_no_passphrase_when_a_group_is_made():

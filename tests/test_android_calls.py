@@ -63,6 +63,7 @@ from android_bridge.app import OtrApp, Transport                  # noqa: E402
 from android_bridge.events import (CallState, CallStateChanged,   # noqa: E402
                                    SecurityState, SmpState)
 from android_bridge.voice import CallBridge, CallOutcome, is_call_signal  # noqa: E402
+from kotlin_parts import with_parts  # noqa: E402
 
 SECRET = "a shared secret we both know"
 
@@ -634,8 +635,7 @@ class TestDebugLoggingIsReachableFromTheApk:
 
     def test_the_debug_build_wires_it_on(self):
         import io
-        core = io.open(os.path.join(ANDROID, "bridge", "ChaquopyOtrCore.kt"),
-                       encoding="utf-8").read()
+        core = with_parts(os.path.join(ANDROID, "bridge", "ChaquopyOtrCore.kt"))
         assert '"set_debug_logging", BuildConfig.DEBUG' in core, (
             "the debug build does not turn on verbose voice logging")
 
@@ -741,9 +741,7 @@ ANDROID_TESTS = os.path.join(
 
 
 def _kt(*parts):
-    import io
-    with io.open(os.path.join(ANDROID, *parts), encoding="utf-8") as handle:
-        return handle.read()
+    return with_parts(os.path.join(ANDROID, *parts))
 
 
 class TestTheTwoSidesAgreeOnTheCodes:
