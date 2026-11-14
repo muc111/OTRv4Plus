@@ -52,9 +52,9 @@ import org.otrv4plus.android.crypto.Verification
  */
 class ChatViewModel : ViewModel() {
 
-    private var core: ChaquopyOtrCore? = null
-    private var state: ChatState? = null
-    private var pollJob: Job? = null
+    internal var core: ChaquopyOtrCore? = null
+    internal var state: ChatState? = null
+    internal var pollJob: Job? = null
 
     /**
      * Redraw ticket.
@@ -63,9 +63,9 @@ class ChatViewModel : ViewModel() {
      * without Compose, in a service, and be unit-testable -- so the ViewModel
      * tells Compose when to look again.
      */
-    private var revision by mutableStateOf(0)
+    internal var revision by mutableStateOf(0)
 
-    private fun observe() {
+    internal fun observe() {
         @Suppress("UNUSED_EXPRESSION") revision
     }
 
@@ -194,7 +194,7 @@ class ChatViewModel : ViewModel() {
         return state?.pendingGroupInvites.orEmpty()
     }
 
-    private val groupMembers = mutableMapOf<String, List<org.otrv4plus.android.bridge.GroupMember>>()
+    internal val groupMembers = mutableMapOf<String, List<org.otrv4plus.android.bridge.GroupMember>>()
 
     fun groupMembers(jid: String): List<org.otrv4plus.android.bridge.GroupMember> {
         observe()
@@ -1874,29 +1874,8 @@ class ChatViewModel : ViewModel() {
     // enforces the SMP gate on both sides. This only carries the request.
 
     /** What the attach control should be for [jid]. Never a security claim. */
-    fun transferOffer(jid: String): TransferUi.Offer {
-        observe()
-        // A secure group: every other member verified (the bridge decides;
-        // this only mirrors it). An ordinary room has no files at all.
-        if (isRoom(jid)) {
-            return if (isSecureRoom(jid))
-                // Members not listed yet: still encrypted, still to be verified.
-                TransferUi.groupOffer(groupMembers(jid)) ?: TransferUi.Offer.NeedsVerification
-            else TransferUi.Offer.NeedsEncryption
-        }
-        return TransferUi.offer(conversation(jid).security)
-    }
 
     /** Live transfers with [jid], newest state first read. */
-    fun transfers(jid: String): List<FileTransferView> {
-        observe()
-        val core = this.core ?: return emptyList()
-        val bare = ChatState.bare(jid)
-        return runCatching { core.transfers() }.getOrDefault(emptyList())
-            .filter { ChatState.bare(it.peer) == bare }
-            // Voice notes are bubbles in the chat, not files.
-            .filterNot { VoiceNotes.looksLikeNote(it.filename) }
-    }
 
     /** A received file being viewed: its sealed container and its name. */
     data class ViewedFile(val path: String, val filename: String)
@@ -1905,88 +1884,15 @@ class ChatViewModel : ViewModel() {
     var viewing: ViewedFile? by mutableStateOf(null)
         private set
 
-    private var receivedDir: String? = null
-
-    private fun receivedDirOrNull(): String? = receivedDir ?: core?.let { c ->
-        runCatching { c.receivedFileDir() }.getOrDefault("").also {
-            if (it.isNotBlank()) receivedDir = it
-        }.ifBlank { null }
-    }
-
-    /**
-     * Whether [transfer] may be opened in the viewer: received, verified by
-     * the engine, and inside the private received directory.
-     */
-    fun canOpen(transfer: FileTransferView): Boolean {
-        if (transfer.outgoing || transfer.state != TransferUi.State.RECEIVED) return false
-        val dir = receivedDirOrNull() ?: return false
-        return SafeView.openable(transfer.path, dir)
-    }
+    internal var receivedDir: String? = null
 
     /** Explicit tap only; nothing is ever opened on arrival. */
-    fun openReceived(transfer: FileTransferView) {
-        if (canOpen(transfer)) viewing = ViewedFile(transfer.path, transfer.filename)
-    }
-
-    /**
-     * Whether a conversation line can open its file: a file we received and
-     * the engine verified ([Message.filePath]), still in the private received
-     * directory (deleted chats and Wipe remove it).
-     */
-    fun canOpenLine(message: Message): Boolean {
-        if (message.filePath.isEmpty()) return false
-        val dir = receivedDirOrNull() ?: return false
-        return SafeView.openable(message.filePath, dir) && java.io.File(message.filePath).isFile
-    }
 
     /** Open a conversation line's file in the viewer. Explicit tap only. */
-    fun openLine(message: Message) {
-        if (canOpenLine(message)) viewing = ViewedFile(message.filePath, receivedName(message.filePath))
-    }
 
     /** The name a container was stored under, without the `.otrv` suffix. */
-    private fun receivedName(path: String): String =
-        java.io.File(path).name.removeSuffix(".otrv")
 
-    /**
-     * What metadata [plainPath] (the viewer's decrypted copy) still carries,
-     * so the viewer can show that a picture's was stripped. Null if the
-     * question could not be asked.
-     */
-    fun inspectViewed(plainPath: String): MetadataFinding? {
-        val c = core ?: return null
-        return runCatching { c.inspectFile(plainPath) }.getOrNull()
-    }
-
-    fun closeViewer() { viewing = null }
-
-    /**
-     * Decrypt a received container into [directory] for the viewer. Blocking;
-     * the viewer calls it off the main thread. Null when it does not open.
-     */
-    fun openReceivedTo(container: String, directory: String): String? {
-        val c = core ?: return null
-        val file = viewing ?: return null
-        val dir = receivedDirOrNull() ?: return null
-        if (file.path != container || !SafeView.openable(container, dir)) return null
-        return c.openReceivedTo(container, directory)
-    }
-
-    private val rates = TransferUi.RateMeter()
-
-    /**
-     * The row for [transfer], with speed and ETA while bytes are moving.
-     * The rate is sampled here, on each redraw, from the engine's own
-     * progress; nothing is estimated for a transfer that is not moving.
-     */
-    fun transferRow(transfer: FileTransferView): TransferUi.Row {
-        val moving = transfer.state == TransferUi.State.ACCEPTED &&
-            transfer.progress > 0f && transfer.progress < 1f
-        val rate = if (moving) rates.sample(
-            transfer.id, (transfer.sizeBytes * transfer.progress).toLong(),
-            transfer.sizeBytes, System.currentTimeMillis()) else null
-        return TransferUi.row(transfer, rate)
-    }
+    internal val rates = TransferUi.RateMeter()
 
     /**
      * A picked file waiting on the user's metadata choice, or null.
@@ -2001,88 +1907,7 @@ class ChatViewModel : ViewModel() {
     data class PendingMetadata(val jid: String, val path: String,
                                val question: String)
 
-    /**
-     * A file has been picked and staged. Look at it before anything is sent.
-     *
-     * [path] has been resolved by Android through the Storage Access
-     * Framework and copied into this app's cache. Examined on the IO
-     * dispatcher: it reads the file, and this is reached from a picker
-     * callback on the main thread.
-     */
-    fun prepareFile(jid: String, path: String) {
-        val state = this.state ?: return
-        val core = this.core ?: run {
-            state.note("The connection is not ready yet.")
-            revision++
-            return
-        }
-        viewModelScope.launch {
-            val finding = withContext(Dispatchers.IO) {
-                runCatching { core.inspectFile(path) }
-                    .getOrDefault(MetadataFinding.UNKNOWN)
-            }
-            when (val next = MetadataChoice.next(finding)) {
-                is MetadataChoice.Next.Send -> sendFile(jid, path, false)
-                is MetadataChoice.Next.SendUnchecked -> {
-                    sendFile(jid, path, false)
-                    state.note(next.notice)
-                }
-                is MetadataChoice.Next.Ask ->
-                    pendingMetadata = PendingMetadata(jid, path, next.question)
-            }
-            revision++
-        }
-    }
-
     /** The user answered the metadata question. */
-    fun answerMetadata(strip: Boolean) {
-        val pending = pendingMetadata ?: return
-        pendingMetadata = null
-        sendFile(pending.jid, pending.path, strip)
-    }
-
-    /**
-     * The user dismissed the question without answering.
-     *
-     * NOTHING IS SENT. Dismissing is not consent to either option, and the
-     * staged copy is deleted rather than left in the cache.
-     */
-    fun cancelMetadata() {
-        val pending = pendingMetadata ?: return
-        pendingMetadata = null
-        discardStaged(pending.path)
-        revision++
-    }
-
-    /**
-     * Offer a file, having settled the metadata question.
-     *
-     * The staged copy is deleted once the offer is made: the engine seals the
-     * whole file into memory in `offer_file` and never reads the path again,
-     * so the copy in the cache would only be a second plaintext of the
-     * user's file left behind.
-     */
-    private fun sendFile(jid: String, path: String, strip: Boolean) {
-        val state = this.state ?: return
-        val core = this.core ?: return
-        val bare = ChatState.bare(jid)
-        viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                val result = runCatching { core.sendFile(bare, path, strip) }
-                    .getOrDefault(FileOutcome.UNAVAILABLE)
-                discardStaged(path)
-                result
-            }
-            val refusal = if (isRoom(jid)) TransferUi.groupRefusal(outcome)
-                          else TransferUi.refusal(outcome)
-            refusal?.let(state::note)
-            revision++
-        }
-    }
-
-    private fun discardStaged(path: String) {
-        runCatching { java.io.File(path).delete() }
-    }
 
     // -- location pins (Location.kt) --------------------------------------------
     //
@@ -2105,80 +1930,13 @@ class ChatViewModel : ViewModel() {
     /** Encrypted 1:1 conversation, or a secure group. Never a plain room. */
     /** Null when a location may go to [jid]; otherwise why not (see
      *  [Location.shareRefusal]: verified, not merely encrypted). */
-    fun locationRefusal(jid: String): String? {
-        observe()
-        val offer = transferOffer(jid)
-        return Location.shareRefusal(
-            encrypted = offer !is TransferUi.Offer.NeedsEncryption,
-            verified = offer is TransferUi.Offer.Available,
-            group = isRoom(jid),
-        )
-    }
-
-    fun canShareLocation(jid: String): Boolean = locationRefusal(jid) == null
 
     /** 📍: the sheet where sharing is allowed; elsewhere only the reason.
      *  The sheet -- and with it the GPS -- is never opened before. */
-    fun openLocation(jid: String) {
-        val refusal = locationRefusal(jid)
-        if (refusal != null) {
-            actionStatus = refusal
-            return
-        }
-        actionStatus = null
-        locationFor = ChatState.bare(jid)
-        locationText = ""
-        locationPin = null
-        locationStatus = null
-        gpsBusy = false
-    }
-
-    fun closeLocation() {
-        locationFor = null
-        locationPin = null
-        locationText = ""
-        locationStatus = null
-        gpsBusy = false
-    }
-
-    fun typeLocation(text: String) {
-        locationText = text.take(200)
-        locationPin = Location.fromTyped(locationText)
-        locationStatus = Location.typedStatus(locationText, locationPin)
-    }
-
-    fun gpsStarted() { gpsBusy = true; locationStatus = "Waiting for satellites… (outdoors works best)" }
 
     /** A GPS fix, or [failure] in our own words. */
-    fun gpsFinished(pin: Location.Pin?, failure: String?) {
-        gpsBusy = false
-        if (pin != null) {
-            locationPin = pin
-            locationText = pin.code
-            locationStatus = null
-        } else {
-            locationStatus = failure ?: "No GPS fix."
-        }
-    }
 
     /** Send the pin as an ordinary (encrypted) message, through [send]. */
-    fun sendLocation() {
-        val state = this.state ?: return
-        val jid = locationFor ?: return
-        val pin = locationPin ?: return
-        locationRefusal(jid)?.let { locationStatus = it; return }
-        val previous = state.draft(jid)
-        val keepEditing = editing
-        val keepReply = replyingTo
-        editing = null
-        replyingTo = null
-        state.setDraft(jid, Location.body(pin))
-        send(jid)
-        state.setDraft(jid, previous)
-        editing = keepEditing
-        replyingTo = keepReply
-        closeLocation()
-    }
 
     // -- voice notes ------------------------------------------------------------
     //
@@ -2188,129 +1946,22 @@ class ChatViewModel : ViewModel() {
     /** The open voice-note sheet, or null. */
     var voiceSheet by mutableStateOf<VoiceSheet?>(null)
         private set
-    private var voiceMode = VoiceNotes.DEFAULT
-    private var voicePoll: Job? = null
+    internal var voiceMode = VoiceNotes.DEFAULT
+    internal var voicePoll: Job? = null
 
     /** The conversation whose file picker the composer's 📎 asked for. */
     var pickFileFor by mutableStateOf<String?>(null)
 
     /** 📎 in the composer: the picker if allowed here, otherwise why not. */
-    fun requestFile(jid: String) {
-        val hint = TransferUi.lockedHint(transferOffer(jid), isRoom(jid))
-        if (hint == null) { actionStatus = null; pickFileFor = ChatState.bare(jid) }
-        else actionStatus = hint
-    }
-
-    fun filePickerOpened() { pickFileFor = null }
 
     /** 🎤 in the composer: the voice-note sheet if allowed, otherwise why not. */
-    fun requestVoice(jid: String) {
-        val hint = TransferUi.lockedHint(transferOffer(jid), isRoom(jid))
-        if (hint == null) { actionStatus = null; openVoiceSheet() }
-        else actionStatus = hint
-    }
-
-    fun openVoiceSheet() {
-        if (voiceSheet == null) voiceSheet = VoiceSheet.Choosing(voiceMode)
-    }
-
-    fun chooseVoice(mode: String) {
-        if (mode !in VoiceNotes.MODES) return
-        voiceMode = mode
-        when (val s = voiceSheet) {
-            is VoiceSheet.Choosing -> voiceSheet = s.copy(mode = mode)
-            is VoiceSheet.Failed -> voiceSheet = VoiceSheet.Choosing(mode)
-            else -> {}
-        }
-    }
 
     /** Start recording, once the microphone is ours to use. */
-    fun startVoiceNote(micGranted: Boolean) {
-        val core = this.core ?: return
-        val mode = voiceSheet?.mode ?: voiceMode
-        if (!micGranted) {
-            voiceSheet = VoiceSheet.Failed(mode, MicPermission.REFUSED)
-            return
-        }
-        viewModelScope.launch {
-            val started = withContext(Dispatchers.IO) { core.voiceNoteStart() }
-            if (started != "ok") {
-                voiceSheet = VoiceSheet.Failed(mode, VoiceNotes.errorText(started))
-                return@launch
-            }
-            voiceSheet = VoiceSheet.Recording(mode)
-            voicePoll?.cancel()
-            voicePoll = viewModelScope.launch {
-                while (voiceSheet is VoiceSheet.Recording) {
-                    val st = withContext(Dispatchers.IO) { core.voiceNoteStatus() }
-                    if (voiceSheet !is VoiceSheet.Recording) break
-                    if (!st.recording) {
-                        // The limit was reached, or the microphone failed.
-                        if (st.error.isNotEmpty()) {
-                            voiceSheet = VoiceSheet.Failed(mode, VoiceNotes.errorText("no_microphone"))
-                            core.voiceNoteCancel()
-                        } else {
-                            stopVoiceNote()
-                        }
-                        break
-                    }
-                    voiceSheet = VoiceSheet.Recording(mode, st.seconds, st.level)
-                    delay(200)
-                }
-            }
-        }
-    }
 
     /** Stop and disguise. The note goes into the app's private cache. */
-    fun stopVoiceNote(cacheDir: java.io.File? = voiceDir) {
-        val core = this.core ?: return
-        val sheet = voiceSheet as? VoiceSheet.Recording ?: return
-        val dir = cacheDir ?: return
-        voicePoll?.cancel()
-        voiceSheet = VoiceSheet.Making(sheet.mode)
-        viewModelScope.launch {
-            val note = withContext(Dispatchers.IO) {
-                core.voiceNoteStop(sheet.mode, java.io.File(dir, "outbox").also { it.mkdirs() }.absolutePath)
-            }
-            voiceSheet = if (note.error.isEmpty() && note.path.isNotEmpty()) {
-                VoiceSheet.Ready(note.mode, note.path, note.seconds)
-            } else {
-                VoiceSheet.Failed(sheet.mode, VoiceNotes.errorText(note.error))
-            }
-        }
-    }
 
     /** Where notes are written; set by the screen (it has the Context). */
     var voiceDir: java.io.File? = null
-
-    /**
-     * Send the ready note. It travels as an encrypted file, but shows in the
-     * chat as a voice-note bubble that plays, from a sealed copy the engine
-     * keeps. The plaintext in the cache goes either way.
-     */
-    fun sendVoiceNote(jid: String) {
-        val ready = voiceSheet as? VoiceSheet.Ready ?: return
-        val state = this.state ?: return
-        val core = this.core ?: return
-        voiceSheet = null
-        val bare = ChatState.bare(jid)
-        viewModelScope.launch {
-            val (outcome, kept) = withContext(Dispatchers.IO) {
-                val result = runCatching { core.sendVoiceNote(bare, ready.path) }
-                    .getOrDefault(FileOutcome.UNAVAILABLE to "")
-                discardStaged(ready.path)
-                result
-            }
-            if (outcome == FileOutcome.STARTED) {
-                if (kept.isNotEmpty()) state.addOutgoingVoiceNote(bare, kept)
-            } else {
-                val refusal = if (isRoom(jid)) TransferUi.groupRefusal(outcome)
-                              else TransferUi.refusal(outcome)
-                refusal?.let(state::note)
-            }
-            revision++
-        }
-    }
 
     /**
      * Decrypt a voice note's sealed copy into [directory] for the player, which
@@ -2320,107 +1971,20 @@ class ChatViewModel : ViewModel() {
      */
     /** The waveform for a voice-note bubble, read once per note and kept
      *  in memory for this screen. Blocking; null when it cannot be read. */
-    fun voiceWaveform(message: Message): VoiceWaveform? {
-        val c = core ?: return null
-        val s = state ?: return null
-        if (message.voicePath.isEmpty() ||
-            s.messages(message.conversationId).none { it.id == message.id && it.voicePath == message.voicePath })
-            return null
-        waveforms[message.voicePath]?.let { return it }
-        return c.voiceNoteWaveform(message.voicePath)?.also { waveforms[message.voicePath] = it }
-    }
 
-    private val waveforms = java.util.concurrent.ConcurrentHashMap<String, VoiceWaveform>()
-
-    fun openVoiceNote(message: Message, directory: String): String? {
-        val c = core ?: return null
-        val s = state ?: return null
-        if (message.voicePath.isEmpty() ||
-            s.messages(message.conversationId).none { it.id == message.id && it.voicePath == message.voicePath })
-            return null
-        return c.openReceivedTo(message.voicePath, directory)
-    }
+    internal val waveforms = java.util.concurrent.ConcurrentHashMap<String, VoiceWaveform>()
 
     /** Close the sheet: stop any recording and delete any unsent note. */
-    fun closeVoiceSheet() {
-        val core = this.core
-        val sheet = voiceSheet
-        voiceSheet = null
-        voicePoll?.cancel()
-        viewModelScope.launch(Dispatchers.IO) {
-            when (sheet) {
-                is VoiceSheet.Recording -> core?.voiceNoteCancel()
-                is VoiceSheet.Ready -> {
-                    core?.voiceNoteDiscard(sheet.path)
-                    discardStaged(sheet.path)
-                }
-                else -> {}
-            }
-        }
-    }
 
     /** Incoming offers waiting for Accept or Decline. See [ChatState.pendingFileOffers]. */
-    fun fileOffers(): List<OtrEvent.FileTransferChanged> {
-        observe()
-        return state?.pendingFileOffers ?: emptyList()
-    }
 
     /** "Not now": the prompt goes; the offer stays in its conversation. */
-    fun putAsideFileOffer(transferId: String) {
-        state?.dismissFileOffer(transferId)
-        revision++
-    }
 
     /** Accept an offered transfer. */
-    fun acceptTransfer(transferId: String) {
-        val state = this.state ?: return
-        val core = this.core ?: return
-        state.dismissFileOffer(transferId)
-        revision++
-        viewModelScope.launch {
-            val outcome = withContext(Dispatchers.IO) {
-                runCatching { core.acceptFile(transferId) }
-                    .getOrDefault(FileOutcome.UNAVAILABLE)
-            }
-            TransferUi.refusal(outcome)?.let(state::note)
-            revision++
-        }
-    }
 
     /** Decline an offered transfer. */
-    fun declineTransfer(transferId: String) {
-        val core = this.core ?: return
-        state?.dismissFileOffer(transferId)
-        revision++
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching { core.declineFile(transferId) }
-            }
-            revision++
-        }
-    }
-
-    /**
-     * Stop a transfer under way -- one of ours, or one we accepted. Not
-     * [declineTransfer]: that answers an offer, and routing a cancel through
-     * it found no offer and did nothing.
-     */
-    fun cancelTransfer(transferId: String) {
-        val core = this.core ?: return
-        viewModelScope.launch {
-            withContext(Dispatchers.IO) {
-                runCatching { core.cancelFile(transferId) }
-            }
-            revision++
-        }
-    }
 
     /** Where a finished file lands, for the screen to tell the user. */
-    fun receivedFileDir(): String {
-        observe()
-        val core = this.core ?: return ""
-        return runCatching { core.receivedFileDir() }.getOrDefault("")
-    }
 
     override fun onCleared() {
         super.onCleared()

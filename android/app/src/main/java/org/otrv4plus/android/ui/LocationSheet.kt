@@ -49,6 +49,12 @@ import androidx.core.content.ContextCompat
 import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.Location
 import org.otrv4plus.android.crypto.MicPermission
+import org.otrv4plus.android.chat.canShareLocation
+import org.otrv4plus.android.chat.closeLocation
+import org.otrv4plus.android.chat.gpsFinished
+import org.otrv4plus.android.chat.gpsStarted
+import org.otrv4plus.android.chat.sendLocation
+import org.otrv4plus.android.chat.typeLocation
 
 /**
  * One position from the GPS RECEIVER only.

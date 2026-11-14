@@ -3,6 +3,7 @@
 """Location pins: GPS receiver only, asked on tap, encrypted conversations only."""
 
 from pathlib import Path
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 ANDROID = ROOT / "android/app/src/main"
@@ -33,13 +34,13 @@ def test_only_fine_location_and_never_in_the_background():
 def test_pins_go_only_where_the_identity_is_verified():
     """Owner (2026-10-15): "GPS location should be behind verification".
     Encrypted is not enough; the sheet (and the GPS) does not open before."""
-    vm = _src(ANDROID / "java/org/otrv4plus/android/chat/ChatViewModel.kt")
-    open_fn = vm[vm.index("fun openLocation"):vm.index("fun closeLocation")]
+    vm = with_parts(str(ANDROID / "java/org/otrv4plus/android/chat/ChatViewModel.kt"))
+    open_fn = vm[vm.index("fun ChatViewModel.openLocation"):vm.index("fun ChatViewModel.closeLocation")]
     assert "locationRefusal(jid)" in open_fn and "return" in open_fn
     assert open_fn.index("return") < open_fn.index("locationFor =")
-    refusal = vm[vm.index("fun locationRefusal"):vm.index("fun canShareLocation")]
+    refusal = vm[vm.index("fun ChatViewModel.locationRefusal"):vm.index("fun ChatViewModel.canShareLocation")]
     assert "TransferUi.Offer.Available" in refusal
-    send = vm[vm.index("fun sendLocation"):]
+    send = vm[vm.index("fun ChatViewModel.sendLocation"):]
     assert "locationRefusal(jid)" in send[:400]
     desktop = _src(ROOT / "desktop/src/main/kotlin/org/otrv4plus/desktop/ui/ConversationPane.kt")
     assert "Location.shareRefusal(" in desktop and "enabled = allowed && pin != null" in desktop

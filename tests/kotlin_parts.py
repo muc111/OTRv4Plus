@@ -5,7 +5,8 @@
 Kotlin has no partial classes. When a large class is split, its parts live in
 sibling files (an interface plus an implementation it delegates to), and a
 test that reads the class to check a rule must read the parts too, or it
-checks less than it did. Audit tidy 4 (2026-11-14): ChaquopyOtrCore, OtrConnectionService.
+checks less than it did. Audit tidy 4 (2026-11-14): ChaquopyOtrCore, OtrConnectionService,
+ChatViewModel.
 """
 import os
 
@@ -14,6 +15,7 @@ PARTS = {
     "ChaquopyOtrCore.kt": ("PyResult.kt", "ChaquopyGroups.kt",
                            "ChaquopyAccountAdmin.kt", "ChaquopyMedia.kt"),
     "OtrConnectionService.kt": ("ServiceNotifications.kt",),
+    "ChatViewModel.kt": ("ChatMedia.kt",),
 }
 
 

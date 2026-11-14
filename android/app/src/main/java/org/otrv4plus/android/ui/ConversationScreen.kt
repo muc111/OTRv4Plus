@@ -53,6 +53,12 @@ import org.otrv4plus.android.crypto.MicPermission
 import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.HandshakeUi
 import org.otrv4plus.android.crypto.Verification
+import org.otrv4plus.android.chat.canOpenLine
+import org.otrv4plus.android.chat.openLine
+import org.otrv4plus.android.chat.openLocation
+import org.otrv4plus.android.chat.requestFile
+import org.otrv4plus.android.chat.requestVoice
+import org.otrv4plus.android.chat.transferOffer
 
 /**
  * One conversation: history above, composer below.

@@ -829,16 +829,16 @@ class TestTheMetadataChoiceOnAndroid:
         assert "model.sendFile(" not in picker
 
     def test_dismissing_the_question_sends_nothing(self, model):
-        body = model[model.index("fun cancelMetadata()"):]
-        body = body[:body.index("\n    }")]
+        body = model[model.index("fun ChatViewModel.cancelMetadata()"):]
+        body = body[:body.index("\n}")]
         assert "sendFile(" not in body, (
             "dismissing the metadata question sends the file anyway")
         assert "discardStaged(" in body, (
             "a dismissed file's staged copy is left in the cache")
 
     def test_the_staged_copy_is_deleted_after_sending(self, model):
-        body = model[model.index("private fun sendFile("):]
-        body = body[:body.index("private fun discardStaged(")]
+        body = model[model.index("private fun ChatViewModel.sendFile("):]
+        body = body[:body.index("private fun ChatViewModel.discardStaged(")]
         assert "discardStaged(path)" in body
 
     def test_the_core_passes_the_choice_through(self):

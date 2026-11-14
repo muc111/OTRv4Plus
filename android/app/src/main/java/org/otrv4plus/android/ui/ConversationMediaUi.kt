@@ -53,6 +53,25 @@ import org.otrv4plus.android.crypto.MicPermission
 import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.HandshakeUi
 import org.otrv4plus.android.crypto.Verification
+import org.otrv4plus.android.chat.acceptTransfer
+import org.otrv4plus.android.chat.answerMetadata
+import org.otrv4plus.android.chat.canOpen
+import org.otrv4plus.android.chat.cancelMetadata
+import org.otrv4plus.android.chat.cancelTransfer
+import org.otrv4plus.android.chat.closeViewer
+import org.otrv4plus.android.chat.declineTransfer
+import org.otrv4plus.android.chat.fileOffers
+import org.otrv4plus.android.chat.filePickerOpened
+import org.otrv4plus.android.chat.inspectViewed
+import org.otrv4plus.android.chat.openReceived
+import org.otrv4plus.android.chat.openReceivedTo
+import org.otrv4plus.android.chat.openVoiceNote
+import org.otrv4plus.android.chat.prepareFile
+import org.otrv4plus.android.chat.putAsideFileOffer
+import org.otrv4plus.android.chat.transferOffer
+import org.otrv4plus.android.chat.transferRow
+import org.otrv4plus.android.chat.transfers
+import org.otrv4plus.android.chat.voiceWaveform
 
 // Files, calls and voice notes on the conversation screen. Split from ConversationScreen.kt;
 // shared helpers there are internal for that reason.
