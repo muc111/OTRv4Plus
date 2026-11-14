@@ -812,7 +812,7 @@ impl StorageProvider<CURRENT_VERSION> for SecureStorage {
 
 
         if let Some(value) = value {
-            return Ok(cbor_dec(value)?);
+            return cbor_dec(value);
         }
 
         Ok(vec![])

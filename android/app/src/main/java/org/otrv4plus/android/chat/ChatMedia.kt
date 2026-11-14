@@ -37,6 +37,8 @@ import org.otrv4plus.android.crypto.OtrV4PlusProvider
 import org.otrv4plus.android.crypto.SafeView
 import org.otrv4plus.android.crypto.TransferUi
 import org.otrv4plus.android.crypto.Verification
+import org.otrv4plus.android.chat.ChatViewModel.PendingMetadata
+import org.otrv4plus.android.chat.ChatViewModel.ViewedFile
 
 // Files, location pins and voice notes, as the conversation screen offers
 // them: split out of ChatViewModel (audit tidy 4). Extension functions on
