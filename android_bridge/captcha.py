@@ -48,10 +48,28 @@ _CAPTCHA_FORM_TYPE = "urn:xmpp:captcha"
 _ANSWER_VARS = ("ocr", "qa", "audio_recog", "picture_q", "picture_recog",
                 "speech_q", "speech_recog", "video_q", "video_recog")
 
-#: Image types we will render. A server that offers only something exotic is
-#: treated as "no usable image" rather than trusted to name a renderer.
-_IMAGE_TYPES = ("image/png", "image/jpeg", "image/jpg", "image/gif",
-                "image/webp", "image/bmp")
+#: Image types we will render, told by the file's own first bytes.
+#:
+#: The UI hands these bytes to the platform's image decoder, which picks a
+#: codec by looking at the data and ignores any type we were told. So the
+#: declared type restricts nothing: a server could say "image/png" and send
+#: WebP, HEIF, BMP, ICO or a camera raw file, and reach that codec on a phone
+#: whose owner has only tapped "create account". Those codecs are where
+#: image-borne exploits have lived. Only the three formats a CAPTCHA is ever
+#: made in get through, and the type reported onward is the one found.
+_IMAGE_TYPES = ("image/png", "image/jpeg", "image/gif")
+_MAGIC = ((b"\x89PNG\r\n\x1a\n", "image/png"),
+          (b"\xff\xd8\xff", "image/jpeg"),
+          (b"GIF87a", "image/gif"),
+          (b"GIF89a", "image/gif"))
+
+
+def sniff_image(data: bytes) -> Optional[str]:
+    """The type the bytes are, or None if not one we show."""
+    for magic, kind in _MAGIC:
+        if data[:len(magic)] == magic:
+            return kind
+    return None
 
 #: A hard cap on the inline image: a registration challenge is a few KB. This
 #: stops a hostile or broken server making the bridge hold megabytes, and
@@ -257,14 +275,15 @@ def extract_challenge(query) -> Challenge:
         raise CaptchaError("registration_captcha_unsupported",
                            "The server's CAPTCHA form had no answer field.")
     bob = _collect_bob(el)
-    mime, data = _image_from_field(field, bob)
-    if mime not in _IMAGE_TYPES:
-        raise CaptchaError("registration_captcha_unsupported",
-                           "The server's CAPTCHA image is in a format the app "
-                           "does not show. Register on its web page instead.")
+    _declared, data = _image_from_field(field, bob)
     if len(data) > MAX_IMAGE_BYTES:
         raise CaptchaError("registration_captcha_unsupported",
                            "The server's CAPTCHA image was too large to show.")
+    mime = sniff_image(data)
+    if mime is None:
+        raise CaptchaError("registration_captcha_unsupported",
+                           "The server's CAPTCHA image is in a format the app "
+                           "does not show. Register on its web page instead.")
 
     hidden: Dict[str, List[str]] = {}
     fields: Dict[str, str] = {}

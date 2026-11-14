@@ -168,16 +168,41 @@ def test_cid_with_no_inline_data_is_not_fetched():
                             "registration_captcha_external")
 
 
-def test_unshowable_image_type_is_refused():
-    q = _form(_ocr_field(utype="image/svg+xml"))  # svg: not in the render set
-    # The BOB data still declares image/png, but the media uri type is svg;
-    # the BOB type wins, so craft a BOB of an unrenderable type instead.
-    bob = ("<data xmlns='urn:xmpp:bob' cid='%s' type='image/svg+xml'>%s</data>"
-           % (CID, base64.b64encode(PNG).decode()))
-    q = q.replace("</x>", "</x>").rsplit("<data", 1)[0] + bob + "</query>"
+def _with_image(data: bytes, declared: str = "image/png") -> str:
+    q = _form(_ocr_field())
+    bob = ("<data xmlns='urn:xmpp:bob' cid='%s' type='%s'>%s</data>"
+           % (CID, declared, base64.b64encode(data).decode()))
+    return q.rsplit("<data", 1)[0] + bob + "</query>"
+
+
+@pytest.mark.parametrize("name,data", [
+    ("svg", b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
+    ("webp", b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 24),
+    ("bmp", b"BM" + b"\x00" * 52),
+    ("heic", b"\x00\x00\x00\x18ftypheic" + b"\x00" * 24),
+    ("avif", b"\x00\x00\x00\x1cftypavif" + b"\x00" * 24),
+    ("ico", b"\x00\x00\x01\x00\x01\x00" + b"\x00" * 24),
+    ("tiff/dng", b"II*\x00" + b"\x00" * 24),
+    ("empty", b""),
+])
+def test_what_the_bytes_are_decides_not_what_the_server_calls_them(name, data):
+    """Red team 2026-11: the platform decoder picks its codec from the data.
+    A hostile server calling WebP or a camera raw file "image/png" would
+    have reached that codec."""
     with pytest.raises(captcha.CaptchaError) as e:
-        captcha.extract_challenge(q)
-    assert e.value.code == "registration_captcha_unsupported"
+        captcha.extract_challenge(_with_image(data, "image/png"))
+    assert e.value.code == "registration_captcha_unsupported", name
+
+
+@pytest.mark.parametrize("data,kind", [
+    (PNG, "image/png"),
+    (b"\xff\xd8\xff\xe0" + b"jfif" * 8, "image/jpeg"),
+    (b"GIF89a" + b"\x00" * 16, "image/gif"),
+])
+def test_the_type_reported_is_the_one_found(data, kind):
+    for declared in ("image/png", "image/webp", "image/svg+xml", ""):
+        ch = captcha.extract_challenge(_with_image(data, declared))
+        assert ch.image_mime == kind
 
 
 def test_oversized_image_is_refused():

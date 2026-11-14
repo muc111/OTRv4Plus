@@ -1025,10 +1025,16 @@ class I2PSAMConnection:
     #: (KEY_LOOKUP_SETTLE_S); a test of the "not found" outcome sets it to 0.
     key_lookup_settle_s = KEY_LOOKUP_SETTLE_S
 
+    #: Random bytes in the SAM session name. SAM has no login and any
+    #: program on the machine can reach its port, so the name is the only
+    #: thing between such a program and this session (STREAM CONNECT or
+    #: ACCEPT by ID). Four bytes could be guessed in days; sixteen cannot.
+    SAM_SESSION_ID_BYTES = 16
+
     def __init__(self, sam_host: str = None, sam_port: int = None):
         self.sam_host = sam_host or NetworkConstants.I2P_SAM_HOST
         self.sam_port = sam_port or NetworkConstants.I2P_SAM_PORT
-        self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
+        self._session_id = f"otrv4plus_{secrets .token_hex (self .SAM_SESSION_ID_BYTES )}"
         self._control_sock = None
         self._our_destination = None
         #: Set by `resolve`: the name is the project's server and was dialled
@@ -1437,7 +1443,7 @@ class I2PSAMConnection:
 
         if not self.session_alive():
             self.close()
-            self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
+            self._session_id = f"otrv4plus_{secrets .token_hex (self .SAM_SESSION_ID_BYTES )}"
             self._control_sock = self._bridge_socket(90)
             if self._abandoned:
                 self.close()

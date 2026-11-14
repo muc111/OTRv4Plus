@@ -4,6 +4,31 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.204-untested — 2026-11-14 — on `dev`, not yet tested
+
+A red-team pass: what an attacker would do, not whether the code is correct
+(docs/RED_TEAM_2026-11.md). Nothing was found that reads messages. What was
+found, and is fixed:
+
+- **A hostile server, or on clearnet anyone on the path before encryption
+  starts, could reach the XML parser's DTD code.** The apps now refuse a DTD,
+  and a stanza that never ends, before the parser reads it.
+- **A server could be accepted without proving it knows your account**, could
+  freeze the app, and could weaken your login proof (three faults in the XMPP
+  library's SCRAM). Sign-in now requires the server's proof and refuses
+  unreasonable settings; if a server fails, you are told it did not prove
+  itself, and the app does not retry.
+- **The sign-up CAPTCHA could reach any image decoder on the phone.** Only
+  PNG, JPEG and GIF are shown now, judged by the file itself.
+- **Server operators: a hidden server set up from our guide was not hidden.**
+  Prosody listens on every address and federates unless told not to; either
+  reveals the machine. `sudo HIDDEN_SERVICE=1 bash
+  prosody/install-server-limits.sh` closes both, and
+  docs/SERVER_HARDENING.md says how to check. Please check yours.
+- The I2P session name is unguessable (128 bits, was 32); the diagnostic
+  report shows the XML library's version; a server module no longer logs
+  account names at sign-in.
+
 ## Android 0.7.0-experimental.rc.203-untested — 2026-11-14 — on `dev`, not yet tested
 
 The last build tested on devices is rc.194, on `main`. A code-structure pass

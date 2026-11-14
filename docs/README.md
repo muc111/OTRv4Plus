@@ -45,6 +45,8 @@ records: they describe the code as it was when they were written.
 - [DENIABILITY_LAYERS.md](DENIABILITY_LAYERS.md): what each deniability mechanism denies and still proves (for reviewers)
 - [PQC_DECISIONS.md](PQC_DECISIONS.md): post-quantum choices for the deniability work, with rationale
 - [AUDIT_2026-11.md](AUDIT_2026-11.md): whole-codebase audit and release readiness before rc.203, what it fixed and what still blocks a release
+- [RED_TEAM_2026-11.md](RED_TEAM_2026-11.md): the attacker's view after that audit: what a hostile server, network, peer or local app can do, what was fixed in rc.204, and what an app cannot defend
+- [RELEASE_SIGNING.md](RELEASE_SIGNING.md): creating the release signing key, backing it up, and giving it to CI as repository secrets (the owner's one-time step)
 - [AUDIT_SUMMARY.md](AUDIT_SUMMARY.md): the audit and hardening pass of 2026-10-26, what it removed and what it fixed
 - [AUDIT_CLAIM_MATRIX.md](AUDIT_CLAIM_MATRIX.md): every protection claimed, its code, its test, its residual
 - [AUDIT_TEST_INTEGRITY.md](AUDIT_TEST_INTEGRITY.md): what each claim test shows, with mutation results
