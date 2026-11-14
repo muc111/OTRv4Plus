@@ -24,6 +24,15 @@
 #
 # Override any value from the environment, e.g.
 #   sudo LOGIN_RATE=20 bash prosody/install-server-limits.sh
+#
+# For a server that is reached ONLY through I2P or Tor, add HIDDEN_SERVICE=1:
+#   sudo HIDDEN_SERVICE=1 bash prosody/install-server-limits.sh
+# It also sets interfaces = { "127.0.0.1" }, turns federation (s2s) off and
+# stops the server naming its operating system. Without these the machine's
+# real address can be found: see "Keep the server's address hidden" in
+# docs/SERVER_HARDENING.md. Not the default, because a server that federates
+# or is reached directly needs the opposite. Either way the script says what
+# it finds exposed.
 set -euo pipefail
 
 CFG="${PROSODY_CFG:-/usr/local/etc/prosody/prosody.cfg.lua}"
@@ -49,6 +58,7 @@ MAX_REGISTERED_USERS="${MAX_REGISTERED_USERS:-5000}"
 # with this, a 1,600-user run (2026-10-20) recovered within two minutes.
 PROSODY_GC="${PROSODY_GC:-{ mode = \"generational\" \}}"
 MUC_EVENT_RATE="${MUC_EVENT_RATE:-10}"
+HIDDEN_SERVICE="${HIDDEN_SERVICE:-0}"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say() { printf '==> %s\n' "$*"; }
@@ -114,6 +124,31 @@ set_option max_registered_users "$MAX_REGISTERED_USERS"
 set_option gc "$PROSODY_GC"
 set_option muc_event_rate "$MUC_EVENT_RATE"
 
+# Is `"$1"` an entry of modules_disabled?
+module_disabled() {
+    sed -n '/^[[:space:]]*modules_disabled[[:space:]]*=[[:space:]]*{/,/}/p' "$CFG" \
+        | grep -q "\"$1\""
+}
+disable_module() {
+    module_disabled "$1" && return 0
+    if grep -qE '^[[:space:]]*modules_disabled[[:space:]]*=[[:space:]]*\{' "$CFG"; then
+        sed -i "0,/^\([[:space:]]*modules_disabled[[:space:]]*=[[:space:]]*{\)/s//\1\n\t\"$1\";/" "$CFG"
+    else
+        set_option modules_disabled "{ \"$1\"; }"
+    fi
+}
+if [ "$HIDDEN_SERVICE" = 1 ]; then
+    say "hidden service: this machine only, no federation, no OS name"
+    # Prosody listens on every address by default. Reached that way, it
+    # answers for its hidden name and shows its certificate to anyone
+    # scanning the internet.
+    set_option interfaces '{ "127.0.0.1" }'
+    # With federation on, a message from any account to a domain its sender
+    # controls makes this server connect there from its real address.
+    disable_module s2s
+    set_option hide_os_type true
+fi
+
 say "checking the configuration"
 if ! "$PROSODYCTL" check config; then
     cp -a "$BACKUP" "$CFG"
@@ -131,6 +166,24 @@ if [ "$RESTART" = 1 ]; then
     [ -f "$LOG" ] && tail -n +"$((lines + 1))" "$LOG" | tail -20
 fi
 
+# Read-only: say what would give the machine's address away. Not an error,
+# because a server that federates or is reached directly wants these.
+if ! module_disabled s2s; then
+    say "NOTE: federation (s2s) is on. If this server is reached only through"
+    say "      I2P or Tor, any account can make it connect out from its real"
+    say "      address. Run again with HIDDEN_SERVICE=1 (docs/SERVER_HARDENING.md)."
+fi
+if [ "$RESTART" = 1 ] && command -v ss >/dev/null 2>&1; then
+    open=$(ss -H -ltnp 2>/dev/null | grep -E '"(lua[0-9.]*|prosody)"' \
+        | awk '{print $4}' | grep -vE '^(127\.|\[::1\])' || true)
+    if [ -n "$open" ]; then
+        say "NOTE: Prosody is listening beyond this machine:"
+        for addr in $open; do printf '        %s\n' "$addr"; done
+        say "      If this server is reached only through I2P or Tor, that is how"
+        say "      its real address is found. Run again with HIDDEN_SERVICE=1."
+    fi
+fi
+
 say "now in $CFG:"
-grep -nE '"otrv4plus_|c2s_limit_sessions|^[[:space:]]*(max_resources|max_online_users|login_rate|login_burst|max_registrations_per_hour|max_registered_users|muc_event_rate|gc)[[:space:]]*=' "$CFG"
+grep -nE '"otrv4plus_|c2s_limit_sessions|^[[:space:]]*(max_resources|max_online_users|login_rate|login_burst|max_registrations_per_hour|max_registered_users|muc_event_rate|gc|interfaces|hide_os_type|modules_disabled)[[:space:]]*=' "$CFG"
 say "done. To undo: sudo cp $BACKUP $CFG && sudo systemctl restart prosody"

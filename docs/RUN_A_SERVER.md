@@ -19,8 +19,9 @@ If you have run Prosody before, this is the familiar setup with i2pd in front:
    i2p.streaming.maxConnsPerMinute = 10
    ```
    Restart i2pd. Its web console (Server tunnels) shows the new `.b32.i2p` address: that is your server.
-3. **Limits and modules (recommended):** `cd ~/OTRv4Plus && sudo bash prosody/install-server-limits.sh` installs the three modules and the limits, checks the config, and restores the backup if the check fails. It was written and measured on Prosody built from source in `/usr/local`; for a packaged Prosody, set `PROSODYCTL` if needed. Details: [SERVER_HARDENING.md](SERVER_HARDENING.md).
-4. **Point the clients at it:** in the app, change the server on the sign-in screen; in the terminal client, `--jid you@yourserver --server <address>.b32.i2p`.
+3. **Keep its address hidden (do not skip):** as installed, Prosody listens on every network address and federates with other servers. Either one lets a stranger find the machine behind the `.i2p` name. Step 4's command with `HIDDEN_SERVICE=1` in front closes both; then add a firewall. Why, and how to check: [SERVER_HARDENING.md](SERVER_HARDENING.md#keep-the-servers-address-hidden).
+4. **Limits and modules (recommended):** `cd ~/OTRv4Plus && sudo HIDDEN_SERVICE=1 bash prosody/install-server-limits.sh` installs the three modules and the limits, checks the config, and restores the backup if the check fails. It was written and measured on Prosody built from source in `/usr/local`; for a packaged Prosody, set `PROSODYCTL` if needed. Details: [SERVER_HARDENING.md](SERVER_HARDENING.md).
+5. **Point the clients at it:** in the app, change the server on the sign-in screen; in the terminal client, `--jid you@yourserver --server <address>.b32.i2p`.
 
 Optional: the People list and Welcome room need [PROSODY_USER_DISCOVERY.md](PROSODY_USER_DISCOVERY.md).
 
@@ -42,7 +43,8 @@ is a much smaller target.
   - who is in which room, and when someone is online;
   - offline messages, still encrypted, until they are delivered.
 - Keep that small: archive only what you need, and keep no logs you do not
-  read.
+  read. What Prosody records by default, and the line that turns each off:
+  [SERVER_HARDENING.md](SERVER_HARDENING.md#what-a-break-in-or-a-seizure-would-find).
 
 **Running a server does not put you outside the law.** Three places' laws
 can reach it:

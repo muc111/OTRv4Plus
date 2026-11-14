@@ -110,7 +110,12 @@ class ServerMixin:
         items = await disco.get_items(jid=domain,
                                       node="http://jabber.org/protocol/commands",
                                       timeout=CALL_TIMEOUT)
-        return any(str(node or "").startswith(self.ADMIN_COMMAND_PREFIX)
+        # Either list: an operator who administers from the server's own
+        # shell can drop mod_admin_adhoc (docs/SERVER_HARDENING.md) and
+        # keep moderation, which mod_otrv4plus_moderation also offers to
+        # admins only.
+        mine = (self.ADMIN_COMMAND_PREFIX, self.MODERATION_NS)
+        return any(str(node or "").startswith(mine)
                    for _jid, node, _name in items["disco_items"].get_items())
 
     # -- moderation (server admins; prosody/mod_otrv4plus_moderation.lua) ----

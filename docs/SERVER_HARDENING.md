@@ -22,6 +22,153 @@ it ended with and any new error-log lines. Running it again changes nothing.
 Override a value from the environment, e.g. `sudo LOGIN_RATE=20 bash
 prosody/install-server-limits.sh`.
 
+## Keep the server's address hidden
+
+For a server reached **only through I2P or Tor**. Two Prosody defaults give
+its real address away, and neither is mentioned by Prosody's own setup,
+because an ordinary XMPP server wants both. Checked against the source of
+Prosody 0.12.4 and 13.0.7.
+
+**1. Prosody listens on every address.** `core/portmanager.lua` binds the
+client port (5222) and the server-to-server port (5269) to `*` and `::`
+unless told otherwise. Anyone who connects to the machine's public address
+gets a server that answers for its hidden name and presents its certificate.
+Internet-wide scanners record exactly that, so the hidden name leads
+straight to the address.
+
+**2. Federation is on.** `s2s` loads by itself (`core/modulemanager.lua`).
+With it, a message from any account to `someone@a-domain-the-sender-owns`
+makes the server look that domain up and connect to it, from its real
+address. One message from one free account is enough.
+
+Both are closed by:
+
+```bash
+cd ~/OTRv4Plus && git pull && sudo HIDDEN_SERVICE=1 bash prosody/install-server-limits.sh
+```
+
+which sets, before any `VirtualHost`:
+
+```lua
+interfaces = { "127.0.0.1" }      -- i2pd's tunnel connects to 127.0.0.1:5222
+modules_disabled = { "s2s" }      -- "Communication with remote domains is not enabled"
+hide_os_type = true               -- mod_version stops naming the OS
+```
+
+Then check, on the server:
+
+```bash
+sudo ss -ltnp | grep -E 'lua|prosody'     # every line should start 127.0.0.1 or [::1]
+```
+
+If a line still shows `0.0.0.0`, `*` or `[::]`, a narrower option is
+overriding the global one (`c2s_interfaces`, `s2s_interfaces`,
+`https_interfaces`): remove it. The script prints the same warning whenever
+it runs, with or without `HIDDEN_SERVICE`.
+
+**3. A firewall that refuses everything inbound** except i2pd's own port
+(`port` in `/etc/i2pd/i2pd.conf` if you set one; otherwise the port its web
+console shows in the router's external address). It costs nothing and covers
+the day a config edit undoes step 1. If you reach the machine over SSH, allow
+that **before** enabling the firewall, or you lock yourself out:
+
+```bash
+sudo ufw default deny incoming
+sudo ufw allow <i2pd port>          # TCP and UDP
+sudo ufw allow ssh                  # only if you administer it remotely
+sudo ufw enable
+```
+
+**4. Say less about the machine.** `version`, `uptime` and `time` are in
+Prosody's default `modules_enabled` and answer anyone signed in: the exact
+Prosody version (which advisories apply), how long since the last restart
+(matches a power cut or an ISP outage to the server), and the server's clock.
+The apps use none of them. Remove the three lines from `modules_enabled`.
+
+A block at the firewall or by `interfaces` cannot be undone from an XMPP
+account; a kernel-level block on Prosody making outbound connections at all
+is stronger still, and is what [XMPP Guard](XMPP_GUARD.md)'s egress lock
+adds.
+
+## What a break-in or a seizure would find
+
+End-to-end encryption means no message, call or file can be read from the
+server. What is there is who, and when. Each of these is on by default
+somewhere and can be reduced:
+
+| On the server | Why it is there | To reduce it |
+|---|---|---|
+| Sign-in and sign-out times, per account, in `prosody.log` | Prosody's default `log = { info = "prosody.log"; ... }` records "Authenticated as ..." and "Client disconnected" | `log = { error = "prosody.err" }`: errors only. Our modules log counts, and names only for admin actions (bans, room deletions) |
+| Last-seen time per account, in storage | `account_activity`, new in Prosody 13's default `modules_enabled` | Remove it from `modules_enabled` unless you use it to prune dead accounts |
+| Push registrations | `cloud_notify`, also new in 13's default list. The apps do not use push | Remove it |
+| Contact lists, room memberships | The roster and rooms are the service | Nothing to remove; this is the metadata the server exists to hold |
+| Undelivered messages (still encrypted) | Offline storage, and `mam` if you enabled it | `archive_expires_after = "1d"` if `mam` is on (default one week) |
+| Password verifiers | SCRAM stored keys, never the password | See below |
+
+**Passwords.** Prosody stores a salted PBKDF2 verifier (`internal_hashed`).
+Someone who copies the account store can test guesses offline; the iteration
+count sets the price of each guess. `default_iteration_count` is 10,000 by
+default. Raising it is safe: it applies to passwords set from then on, and
+existing accounts keep working.
+
+```lua
+default_iteration_count = 100000
+```
+
+Do **not** change `password_hash` on a server that already has accounts.
+It is one switch for the whole server, the stored verifiers are specific to
+the hash, and every existing account would be locked out
+(`plugins/mod_auth_internal_hashed.lua`). On a brand-new server with no
+accounts, `password_hash = "SHA-256"` is the better choice.
+
+**The admin account.** `admin_adhoc` lets an account in `admins = { ... }`
+change any user's password, read any user's contact list, and load any
+module on disk, from an XMPP client, over the network. Whoever gets that
+account's password, or its unlocked phone, gets all of that; loading `s2s`
+undoes step 2 above. So:
+
+- Make the admin account a separate one, used only to administer, with a
+  long password used nowhere else and the app lock on.
+- If you administer from the server's own shell (`prosodyctl shell`), remove
+  `admin_adhoc` from `modules_enabled`. Banning, unbanning and room
+  moderation in the apps keep working (they come from
+  `mod_otrv4plus_moderation`). What stops is the admin's list of who is
+  online and the terminal client's XEP-0133 commands.
+
+**The machine.**
+- Full-disk encryption (LUKS). Without it, whoever takes the machine reads
+  everything above without a password. It protects a machine that is
+  switched off, not one that is running.
+- Prosody as its own user, never root (the packaged service already is).
+- Security updates. A packaged Prosody gets them with the system's
+  (`unattended-upgrades`); one built from source gets them only when you
+  rebuild, so watch <https://prosody.im/security/>. The same goes for i2pd
+  and OpenSSL.
+- A systemd sandbox for Prosody and i2pd (`NoNewPrivileges`,
+  `ProtectSystem=strict`, `PrivateTmp`, `MemoryDenyWriteExecute`,
+  `SystemCallFilter=@system-service`) limits what a hole in either can
+  reach. XMPP Guard's `harden.sh` installs and tests one.
+
+## What these limits do not stop
+
+Stated so nobody relies on them for it:
+
+- **One determined client can lock others out for a while.** Sign-in pacing
+  and the registration limit are server-wide, because Prosody cannot tell
+  I2P clients apart. Someone who opens connections faster than `login_rate`
+  uses up the allowance for everyone, and 30 junk registrations use up the
+  hour's sign-ups. i2pd's per-destination limit (below) slows one client,
+  and a client that makes a new destination for each attempt gets round it.
+  Invitation-only sign-up is the answer to the second; there is none yet for
+  the first that does not also cost honest users.
+- **A server can be asked whether an account name exists.** SCRAM answers
+  differently for an unknown name, and registration says "already taken".
+  Both are how XMPP works.
+- **An unknown hole in Prosody, Lua, OpenSSL or i2pd.** Nothing on this page
+  finds one. What it does is make the server hard to find (the section
+  above), make a hole yield less (this section), and keep the fix one
+  update away.
+
 ## What protects the server today
 
 | Protection | State | What it does |
@@ -157,12 +304,9 @@ restrict_room_creation = "local"
 After enabling `limits`, re-run one stress step (STRESS_TEST.md) to confirm
 delivery is unchanged.
 
-If the server does not federate with other XMPP servers (an I2P-only server
-usually does not), turn federation off. That removes a whole listener:
-
-```lua
-modules_disabled = { "s2s" }
-```
+On a server reached only through I2P or Tor, federation must be off; that
+is a matter of the server's address, not of load. See "Keep the server's
+address hidden" above.
 
 **Stronger sign-up control, if abuse starts:** Prosody's invitations
 (`mod_invites` with `registration_invite_only = true`) allow sign-up only with
