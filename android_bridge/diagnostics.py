@@ -57,7 +57,16 @@ def _python_info() -> Dict[str, Any]:
         "meets_3_12_requirement": (version.major, version.minor) >= (3, 12),
         "implementation": _guard(platform.python_implementation),
         "abi_platform": _guard(lambda: sys.platform),
+        # The XML parser every byte from the server goes through. Its DTD
+        # code is fenced off (xmlguard), but which expat is on a device is
+        # otherwise invisible, and its advisories are frequent.
+        "expat": _guard(_expat_version),
     }
+
+
+def _expat_version() -> str:
+    import pyexpat
+    return str(pyexpat.EXPAT_VERSION).replace("expat_", "")
 
 
 def _abi_info() -> Dict[str, Any]:

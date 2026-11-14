@@ -135,6 +135,7 @@ object ConnectProblem {
         "i2p_destination_changed", "i2p_server_pins_unreadable", "i2p_name_invalid",
         "identity_unavailable", "trust_unavailable",
         "tls_required", "certificate_failure", "no_safe_auth_mechanism",
+        "server_not_proven",
         "route_refused", "malformed_server", "bad_transport", "no_server",
         SIGNED_IN_ELSEWHERE, ACCOUNT_BANNED,
     )
@@ -236,6 +237,11 @@ object ConnectProblem {
         "no_safe_auth_mechanism" ->
             "The server offered no safe sign-in method over I2P (SCRAM), so " +
                 "the password was not sent."
+        "server_not_proven" ->
+            "The server did not prove it knows this account, or sent " +
+                "something this app refuses to read, so the app disconnected. " +
+                "Check the server address. If it is right, tell the server's " +
+                "operator."
         "tls_required", "certificate_failure" ->
             "The server's encryption could not be verified, so nothing was sent."
         "profile_incomplete" -> "Fill in the address and password."

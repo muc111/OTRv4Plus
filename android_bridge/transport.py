@@ -319,6 +319,15 @@ SCRAM_ONLY = frozenset({
 })
 
 
+from .xmlguard import REFUSED_EVENT  # noqa: E402
+
+SERVER_NOT_PROVEN_CODE = "server_not_proven"
+SERVER_NOT_PROVEN_TEXT = (
+    "the server did not prove it knows this account, or sent something this "
+    "app refuses to read, so the app disconnected. Nothing that reveals the "
+    "password was sent.")
+
+
 def _restrict_to_scram(client) -> None:
     """Never send the password itself where the certificate is not checked.
 
@@ -1034,6 +1043,15 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
                 TransportError("auth_failed",
                                "the server rejected the account or password"))
 
+        def on_refused(_reason):
+            # xmlguard or sasl_hardening closed the stream: a DTD, an
+            # endless stanza, or a server that skipped SCRAM's proof. Fired
+            # before the close, so this is what the user is told rather than
+            # "the server closed the connection".
+            if not started.done():
+                started.set_exception(TransportError(
+                    SERVER_NOT_PROVEN_CODE, SERVER_NOT_PROVEN_TEXT))
+
         def on_no_auth(_event):
             # No mechanism this app allows was offered. Over I2P and Tor that
             # set is SCRAM only: a server (or an impostor) offering only
@@ -1136,6 +1154,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed)
         client.add_event_handler("no_auth", on_no_auth)
+        client.add_event_handler(REFUSED_EVENT, on_refused)
         watch = None
         if self._route.kind == _route_mod.CLEARNET_TLS:
             # Every address before giving up, and the stage named -- the same
@@ -2750,9 +2769,19 @@ def _default_client_factory():
     to import on a handset.
     """
     from slixmpp import ClientXMPP
+    from . import sasl_hardening
+    from .xmlguard import GuardedStream
+
+    # Before any client exists: the SASL handlers are bound when the client
+    # registers its plugins.
+    sasl_hardening.apply()
+
+    class GuardedClient(GuardedStream, ClientXMPP):
+        """slixmpp's client, with a DTD or an endless stanza refused before
+        the parser reads it (android_bridge/xmlguard.py)."""
 
     def factory(jid: str, password: str):
-        client = ClientXMPP(jid, password)
+        client = GuardedClient(jid, password)
         # STARTTLS, never direct TLS: the far end of a SAM stream is a normal
         # c2s port. This mirrors what the terminal client sets in main().
         if hasattr(client, "enable_direct_tls"):

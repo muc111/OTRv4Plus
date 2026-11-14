@@ -603,6 +603,19 @@ except ImportError as _e:
         name=getattr(_e, "name", None) or "slixmpp",
         cause=_e)
 
+# The same two guards the apps connect through: a DTD or an endless stanza
+# refused before the XML parser reads it, and SCRAM that insists on the
+# server's proof (android_bridge/xmlguard.py, sasl_hardening.py). Applied
+# before the client class exists, because slixmpp binds its SASL handlers
+# when a client registers its plugins.
+try:
+    from android_bridge import sasl_hardening as _sasl_hardening
+    from android_bridge.xmlguard import GuardedStream as _GuardedStream
+    _sasl_hardening.apply()
+except ImportError:
+    class _GuardedStream:  # type: ignore[no-redef]
+        """Without the android_bridge package there is no stream guard."""
+
 try:
     import otrv4plus_admin as _admin
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
@@ -779,9 +792,9 @@ def _make_groups(host):
     return _og.TermuxGroups(host, _xmpp_state_path("groups"), printer=print)
 
 
-class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
-                    _TrustMixin, _FilesMixin, _TradeMixin, _AdminMixin,
-                    _TuiMixin, ClientXMPP):
+class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
+                    _PresenceMixin, _TrustMixin, _FilesMixin, _TradeMixin,
+                    _AdminMixin, _TuiMixin, ClientXMPP):
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
     async def _welcome_join(self):

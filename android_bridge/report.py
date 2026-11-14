@@ -257,6 +257,7 @@ def _environment_fields(env: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "python": get("python", "version"),
+        "expat": get("python", "expat"),
         "abi": get("abi", "android_abi"),
         "rust_core_loaded": get("rust_core", "loaded"),
         "rust_core_version": get("rust_core", "version"),
