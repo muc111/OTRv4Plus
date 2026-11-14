@@ -4,7 +4,29 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.202-untested — 2026-11-12 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.203-untested — 2026-11-14 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`. A code-structure pass
+and a full audit (docs/AUDIT_2026-11.md); one change you may notice:
+
+- **A call keeps your microphone when the screen locks.** Since Android 11 an
+  app in the background can use the microphone only from a foreground
+  service of type microphone; the app's service was declared for data sync
+  only, so a call with the screen off could send silence. The service now
+  claims the microphone for the length of a call (1:1 or group) and gives it
+  back after. If Android refuses (no microphone permission yet), the call
+  goes on as before and the report says `microphone_not_claimed`.
+- **No crash on a corrupt group store.** 38 places in the MLS key store that
+  would have stopped the app on a damaged value now return an error.
+- **Registration replies with a DTD are refused unread** (XMPP forbids them).
+- **Audit plumbing.** The MLS crate's own lock file is audited in CI, and CI
+  fails if any advisory we ignore as "locked, not built" ever reaches the
+  shipped build.
+- **Structure.** ChaquopyOtrCore (1957 -> 1388 lines), OtrConnectionService
+  (1934 -> 1535) and ChatViewModel (2463 -> 2027) are split into parts by
+  interface delegation and extension functions; no behaviour changed.
+
+## Android 0.7.0-experimental.rc.202-untested — 2026-11-12 — on `dev`, superseded by rc.203
 
 The last build tested on devices is rc.194, on `main`. From the rc.201
 reports of an 8-minute call (phone on rc.201, laptop on an older engine):

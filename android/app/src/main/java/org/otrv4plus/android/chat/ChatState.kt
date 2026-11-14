@@ -865,6 +865,11 @@ class ChatState(
     /** Whether any call is in progress (ringing, connecting or live). */
     fun anyCall(): Boolean = callStates.values.any { it != CallState.IDLE && it != CallState.ENDED }
 
+    /** A call that needs the microphone: a 1:1 call under way, or a group
+     *  call we are in and have not paused. */
+    fun usingMicrophone(): Boolean =
+        anyCall() || groupCalls.values.any { it.inCall && !it.paused }
+
     /** Who is calling us right now (RINGING is only ever incoming), for a
      *  prompt that shows whichever screen is open. */
     fun ringingPeers(): List<String> =

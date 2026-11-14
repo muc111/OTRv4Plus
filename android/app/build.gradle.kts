@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 203
+        versionCode = 204
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -94,7 +94,7 @@ android {
         // "untested" (owner, 2026-10-30): main holds the build tested on
         // phones and a laptop -- rc.194 since 2026-11-10 -- and every build
         // after it says "-untested" until it is tested too.
-        versionName = "0.7.0-experimental.rc.202-untested+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.203-untested+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //

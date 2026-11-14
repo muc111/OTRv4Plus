@@ -270,10 +270,57 @@ internal fun OtrConnectionService.buildArrivalNotification(alert: InboundAlerts.
 
 internal fun OtrConnectionService.goForeground() {
     ServiceCompat.startForeground(
-        this, NOTIFICATION_ID, buildNotification(),
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC else 0,
+        this, NOTIFICATION_ID, buildNotification(), foregroundTypes(micClaimed),
     )
+}
+
+/** The foreground-service types to claim: always dataSync (the XMPP
+ *  session), plus microphone while a call holds it. */
+private fun foregroundTypes(microphone: Boolean): Int = when {
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && microphone ->
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+    Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ->
+        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+    else -> 0
+}
+
+/**
+ * Claim the microphone foreground type for the length of a call, and give it
+ * back after. Called on every drain tick with [ChatState.usingMicrophone].
+ *
+ * WHY. Since Android 11 an app in the background may use the microphone only
+ * from a foreground service of type microphone; under any other type the
+ * capture reads silence. The service was dataSync only, so a call with the
+ * screen locked could go silent on our side (audit 2026-11-14; the app's
+ * "your microphone is sending silence" warning is the symptom).
+ *
+ * Android allows claiming it only while the app may start a microphone
+ * service -- on screen, as when the user taps Call or Answer. A refusal
+ * (SecurityException, or no RECORD_AUDIO yet) leaves dataSync, which is what
+ * every call had before, and is not retried until the next call.
+ */
+internal fun OtrConnectionService.claimMicrophone(inCall: Boolean) {
+    if (inCall) {
+        if (micClaimed || micTried) return
+        micTried = true
+        micClaimed = runCatching {
+            ServiceCompat.startForeground(
+                this, NOTIFICATION_ID, buildNotification(), foregroundTypes(true))
+        }.isSuccess
+        runCatching {
+            core.note("calls", if (micClaimed) "microphone_claimed" else "microphone_not_claimed",
+                      if (micClaimed) "info" else "warning", "")
+        }
+    } else if (micClaimed || micTried) {
+        val held = micClaimed
+        micClaimed = false
+        micTried = false
+        if (held) runCatching {
+            ServiceCompat.startForeground(
+                this, NOTIFICATION_ID, buildNotification(), foregroundTypes(false))
+        }
+    }
 }
 
 /**

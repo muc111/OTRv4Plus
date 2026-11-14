@@ -63,16 +63,35 @@ class TestTheManifestDeclaresIt:
         assert 'android:exported="false"' in block
 
     def test_it_declares_a_foreground_type(self, manifest):
-        """Required from API 34, and `dataSync` is the honest one: a long-lived
-        network session the user asked for. It is not a media, location or call
-        service and must not claim to be."""
+        """Required from API 34. `dataSync` is the session: a long-lived
+        network connection the user asked for. `microphone` is declared too
+        and claimed only while a call is under way (claimMicrophone): from
+        Android 11 a background app may use the microphone only from a
+        microphone-type foreground service, or a call with the screen locked
+        reads silence (audit 2026-11-14). Never media or location."""
         block = manifest[manifest.index("OtrConnectionService"):]
         block = block[:block.index("/>")]
-        assert 'android:foregroundServiceType="dataSync"' in block
+        assert 'android:foregroundServiceType="dataSync|microphone"' in block
+        assert "location" not in block and "mediaPlayback" not in block
+
+    def test_the_microphone_type_is_held_only_for_a_call(self, service):
+        claim = service[service.index("internal fun OtrConnectionService.claimMicrophone("):]
+        claim = claim[:claim.index("\n}\n")]
+        # Claimed once per call, inside runCatching: a refusal must never
+        # crash the service, and must not be retried every tick.
+        assert "micTried = true" in claim and "runCatching" in claim
+        assert "foregroundTypes(true)" in claim and "foregroundTypes(false)" in claim
+        types = service[service.index("private fun foregroundTypes("):]
+        types = types[:types.index("\n}\n")]
+        assert "FOREGROUND_SERVICE_TYPE_MICROPHONE" in types
+        assert "Build.VERSION_CODES.R" in types
+        # Driven by the drain loop, for 1:1 and group calls alike.
+        assert "claimMicrophone(chat.usingMicrophone())" in service
 
     def test_the_permissions_are_declared(self, manifest):
         for permission in ("FOREGROUND_SERVICE",
                            "FOREGROUND_SERVICE_DATA_SYNC",
+                           "FOREGROUND_SERVICE_MICROPHONE",
                            "POST_NOTIFICATIONS"):
             assert "android.permission.%s" % permission in manifest, permission
 

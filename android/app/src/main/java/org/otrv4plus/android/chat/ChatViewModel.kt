@@ -1383,12 +1383,12 @@ class ChatViewModel : ViewModel() {
     var replyingTo by mutableStateOf<Message?>(null)
     /** The message of ours being corrected: the composer holds its text. */
     var editing by mutableStateOf<Message?>(null)
-        private set
+        internal set
     /** The message whose action menu is open (its local id). */
     var actionsFor by mutableStateOf<String?>(null)
     /** Why the last action did not go, for a line under the composer. */
     var actionStatus by mutableStateOf<String?>(null)
-        private set
+        internal set
 
     /** Actions need a wire id: one-to-one conversations, plain rooms
      *  (standard XEPs) and secure groups (inside MLS). */
@@ -1882,7 +1882,7 @@ class ChatViewModel : ViewModel() {
 
     /** A verified received file the user asked to view, or null. */
     var viewing: ViewedFile? by mutableStateOf(null)
-        private set
+        internal set
 
     internal var receivedDir: String? = null
 
@@ -1902,7 +1902,7 @@ class ChatViewModel : ViewModel() {
      * would then never be sent or deleted.
      */
     var pendingMetadata: PendingMetadata? by mutableStateOf(null)
-        private set
+        internal set
 
     data class PendingMetadata(val jid: String, val path: String,
                                val question: String)
@@ -1917,15 +1917,15 @@ class ChatViewModel : ViewModel() {
 
     /** The conversation the pin sheet is open for, or null. */
     var locationFor by mutableStateOf<String?>(null)
-        private set
+        internal set
     var locationText by mutableStateOf("")
-        private set
+        internal set
     var locationPin by mutableStateOf<Location.Pin?>(null)
-        private set
+        internal set
     var locationStatus by mutableStateOf<String?>(null)
-        private set
+        internal set
     var gpsBusy by mutableStateOf(false)
-        private set
+        internal set
 
     /** Encrypted 1:1 conversation, or a secure group. Never a plain room. */
     /** Null when a location may go to [jid]; otherwise why not (see
@@ -1945,7 +1945,7 @@ class ChatViewModel : ViewModel() {
 
     /** The open voice-note sheet, or null. */
     var voiceSheet by mutableStateOf<VoiceSheet?>(null)
-        private set
+        internal set
     internal var voiceMode = VoiceNotes.DEFAULT
     internal var voicePoll: Job? = null
 

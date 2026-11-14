@@ -1191,6 +1191,9 @@ class OtrConnectionService : Service() {
                 // 500 ms pace kept the phone out of deep sleep.
                 val visible = alerts.uiVisible
                 val inCall = chat.anyCall()
+                // The microphone foreground type, for exactly as long as a
+                // call (1:1 or group) needs it (claimMicrophone).
+                runCatching { claimMicrophone(chat.usingMicrophone()) }
                 withContext(Dispatchers.IO) {
                     if (DrainPace.readsState(tick, visible, inCall)) {
                         runCatching { core.connectionStatus() }.getOrNull()
@@ -1389,6 +1392,13 @@ class OtrConnectionService : Service() {
         // while nobody is looking, which saves battery and radio.
         scope.launch(Dispatchers.IO) { runCatching { core.setClientActive(visible) } }
     }
+
+    /** Whether the foreground service holds the microphone type now, and
+     *  whether this call already tried (see claimMicrophone). */
+    @Volatile
+    internal var micClaimed = false
+    @Volatile
+    internal var micTried = false
 
     /** Kinds waiting since the app was last on screen, oldest first. */
     internal val pendingAttention = mutableListOf<org.otrv4plus.android.chat.Attention.Kind>()
