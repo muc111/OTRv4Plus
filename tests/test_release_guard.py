@@ -19,6 +19,12 @@ confirm the wheel really is the test build.
 
 CI wiring: run this module with the variable UNSET against the release wheel.
 It is the assertion that the release pipeline fails closed on.
+
+The third gate, `raw-key-test-api` (section R3 below), does not take the
+answer from a variable alone: the artifact says what it is, and a test build
+is a failure wherever a release is expected (CI, or
+OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1) unless it is declared. On a developer's
+machine with the test build installed, the suite is green with nothing set.
 """
 
 import os
@@ -425,9 +431,40 @@ def test_optin_object_file_really_carries_the_gated_symbols():
 # Python entry points that take or return raw key material. Production uses
 # handles; these exist for known-answer, cross-implementation and fixed-key
 # tests. OFF by default, refused by build.rs unless
-# OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1. CI runs the suite on the test wheel and
-# then runs THIS file on a separately built release wheel with the variable
-# unset: that is the assertion that nothing here ships.
+# OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1.
+#
+# WHICH ARTIFACT IS THIS? The two older gates above take the answer from an
+# environment variable: unset means "demand a release artifact". For this
+# gate that rule made the suite red on every developer's machine, because
+# the suite NEEDS the test build (hundreds of tests use the raw-key surface),
+# so the artifact installed there is always the test build. A check that is
+# red whenever the suite can run gets a variable exported to quiet it, and a
+# variable exported out of habit protects nothing.
+#
+# So the artifact is asked. It says which test features it was compiled with
+# (`otrv4_core.TEST_FEATURES`, set in Rust/src/lib.rs under the same
+# `#[cfg]`s that add the surface), its surface is measured, and the two are
+# held to each other. What happens then depends on where this runs:
+#
+#   release artifact                       the assertion runs, and passes
+#   test build, declared (opt-in set)      skipped: this is the test wheel
+#   test build in a pipeline, undeclared   FAILS (CI, or
+#                                          OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1)
+#   test build on a developer's machine    skipped, saying why, and the build
+#                                          is confirmed to be the whole one
+#   part of the surface                    FAILS everywhere: neither build
+#   declared a test build AND a release    FAILS: both cannot hold
+#
+# The strictness that matters is unchanged: where an artifact is meant to
+# ship, a test build is a failure, and leaving a variable out cannot skip
+# it. CI builds the release wheel separately and runs this file on it with
+# OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1 (.github/workflows/python.yml).
+
+RAW_KEY_FEATURE = "raw-key-test-api"
+RAW_KEY_OPT_IN_VAR = "OTRV4PLUS_ALLOW_RAW_KEY_TEST_API"
+EXPECT_RELEASE_VAR = "OTRV4PLUS_EXPECT_RELEASE_ARTIFACT"
+#: Set by CI systems; GitHub Actions sets both.
+PIPELINE_VARS = ("GITHUB_ACTIONS", "CI")
 
 RAW_KEY_MODULE_FUNCTIONS = (
     "py_ring_sign", "mldsa87_keygen", "mldsa87_sign",
@@ -445,7 +482,10 @@ RAW_KEY_CLASS_METHODS = {
 # The raw-key constructors: callable with raw keys only in the test build.
 RAW_KEY_CONSTRUCTORS = ("RustDoubleRatchet", "RustDAKE")
 
-_RAW_KEY_TEST_BUILD = os.environ.get("OTRV4PLUS_ALLOW_RAW_KEY_TEST_API") == "1"
+_RAW_KEY_SURFACE_SIZE = (
+    len(RAW_KEY_MODULE_FUNCTIONS)
+    + sum(len(methods) for methods in RAW_KEY_CLASS_METHODS.values())
+    + len(RAW_KEY_CONSTRUCTORS))
 
 
 def _exposed_raw_key_surface():
@@ -466,22 +506,255 @@ def _exposed_raw_key_surface():
     return exposed
 
 
-@pytest.mark.skipif(_RAW_KEY_TEST_BUILD,
-                    reason="OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1: this is the test wheel")
-def test_production_artifact_exposes_no_raw_key_entry_point():
+def raw_key_artifact(exposed=None):
+    """"release", "test" or "mixed": what the installed artifact IS, from what
+    it exposes. Nothing here reads the environment."""
+    if exposed is None:
+        exposed = _exposed_raw_key_surface()
+    if not exposed:
+        return "release"
+    if len(exposed) == _RAW_KEY_SURFACE_SIZE:
+        return "test"
+    return "mixed"
+
+
+def declared_test_features():
+    """What the artifact says it was built with, or None from a core built
+    before it could say."""
+    label = getattr(otrv4_core, "TEST_FEATURES", None)
+    return None if label is None else tuple(label)
+
+
+def _in_a_pipeline(environ):
+    return any(str(environ.get(name, "")).strip().lower()
+               not in ("", "0", "false", "no") for name in PIPELINE_VARS)
+
+
+def release_expected(environ):
+    """Whether a release artifact is what this run is meant to be looking
+    at: said outright, or the run is a CI pipeline."""
+    return environ.get(EXPECT_RELEASE_VAR) == "1" or _in_a_pipeline(environ)
+
+
+def raw_key_verdict(kind, environ):
+    """("pass" | "skip" | "fail", why) for the release assertion, given what
+    the artifact is and the environment it is judged in. A pure function, so
+    that every row of the table in the comment above is a test below."""
+    opted_in = environ.get(RAW_KEY_OPT_IN_VAR) == "1"
+    if kind == "mixed":
+        return "fail", (
+            "the installed otrv4_core exposes PART of the raw-key surface. "
+            "That is neither the release artifact nor the test build: a "
+            "gate was added on one side only, or the wheel is stale. Rebuild "
+            "it.")
+    if opted_in and environ.get(EXPECT_RELEASE_VAR) == "1":
+        return "fail", (
+            f"{RAW_KEY_OPT_IN_VAR}=1 says this is the test build and "
+            f"{EXPECT_RELEASE_VAR}=1 says it is the release artifact. Unset "
+            f"one of them.")
+    if kind == "release":
+        return "pass", "a release artifact: no raw-key entry point may exist"
+    if opted_in:
+        return "skip", f"{RAW_KEY_OPT_IN_VAR}=1: this is the test wheel"
+    if release_expected(environ):
+        where = (f"{EXPECT_RELEASE_VAR}=1"
+                 if environ.get(EXPECT_RELEASE_VAR) == "1"
+                 else "this is a CI pipeline (%s is set)" % " or ".join(
+                     PIPELINE_VARS))
+        return "fail", (
+            f"the installed otrv4_core is the TEST build (it exposes the "
+            f"raw-key entry points) and {where}, where the artifact under "
+            f"test is taken to be one that ships. If this job is meant to "
+            f"test the test build, say so: {RAW_KEY_OPT_IN_VAR}=1. If it is "
+            f"meant to test the release, rebuild without --features "
+            f"{RAW_KEY_FEATURE}.")
+    return "skip", (
+        "the installed otrv4_core is the test build, on a machine that is "
+        "not a CI pipeline: the release assertion does not apply to it. "
+        "(test_raw_key_optin_build_really_is_the_test_build confirms it is "
+        f"the whole test build. To assert a release artifact here, install "
+        f"one and set {EXPECT_RELEASE_VAR}=1.)")
+
+
+def _artifact_report():
+    """What a failure needs to be acted on, and nothing secret: the file,
+    what it says it is, the NAMES it exposes, and which variables are set."""
     exposed = _exposed_raw_key_surface()
+    lines = [
+        "  artifact      %s" % getattr(otrv4_core, "__file__", "?"),
+        "  version       %s" % getattr(otrv4_core, "__version__", "?"),
+        "  says it has   %s" % (declared_test_features(),),
+        "  exposes       %d of %d raw-key entry points%s" % (
+            len(exposed), _RAW_KEY_SURFACE_SIZE,
+            (": " + ", ".join(exposed)) if exposed else ""),
+    ]
+    for name in (RAW_KEY_OPT_IN_VAR, EXPECT_RELEASE_VAR) + PIPELINE_VARS:
+        lines.append("  %-38s %s" % (
+            name, "set" if os.environ.get(name) else "not set"))
+    return "\n".join(lines)
+
+
+def test_production_artifact_exposes_no_raw_key_entry_point():
+    """The release assertion. Which of the rows above applies is decided by
+    `raw_key_verdict`; a release artifact always reaches the assert."""
+    exposed = _exposed_raw_key_surface()
+    verdict, why = raw_key_verdict(raw_key_artifact(exposed), os.environ)
+    if verdict == "skip":
+        pytest.skip(why)
+    if verdict == "fail":
+        pytest.fail(why + "\n" + _artifact_report())
     assert not exposed, (
         f"otrv4_core exposes raw-key entry points {exposed}. Production uses "
-        f"handles; rebuild without --features raw-key-test-api.")
+        f"handles; rebuild without --features {RAW_KEY_FEATURE}.")
 
 
-@pytest.mark.skipif(not _RAW_KEY_TEST_BUILD, reason="release build: nothing to confirm")
 def test_raw_key_optin_build_really_is_the_test_build():
-    """With the opt-in set, the whole surface must be there, or the tests
-    that need it would fail for the wrong reason."""
-    expected = len(RAW_KEY_MODULE_FUNCTIONS) + sum(
-        len(m) for m in RAW_KEY_CLASS_METHODS.values()) + len(RAW_KEY_CONSTRUCTORS)
-    assert len(_exposed_raw_key_surface()) == expected
+    """Whenever the release assertion stands down, this one stands up: the
+    artifact must then be the WHOLE test build, by its surface and by its own
+    account. Otherwise the tests that need the surface would fail for the
+    wrong reason, or a half-gated build would pass as "the test wheel"."""
+    kind = raw_key_artifact()
+    opted_in = os.environ.get(RAW_KEY_OPT_IN_VAR) == "1"
+    if kind == "release" and not opted_in:
+        pytest.skip("release build: nothing to confirm")
+    assert kind == "test", (
+        f"{RAW_KEY_OPT_IN_VAR}=1 says this is the test build, but the "
+        f"installed artifact is a {kind} one.\n" + _artifact_report())
+    label = declared_test_features()
+    assert label is not None and RAW_KEY_FEATURE in label, (
+        "the artifact exposes the raw-key surface and does not say so.\n"
+        + _artifact_report())
+
+
+def test_the_artifact_says_what_it_is():
+    """`otrv4_core.TEST_FEATURES` is the build's own account of itself, and
+    this holds it to the build: each feature named exactly when its surface
+    is there. A diagnostic report prints it, and the guard above reads it."""
+    label = declared_test_features()
+    assert label is not None, (
+        "otrv4_core has no TEST_FEATURES: the installed core predates the "
+        "build label. Rebuild it.")
+    assert isinstance(otrv4_core.TEST_FEATURES, tuple)
+    assert all(isinstance(name, str) for name in label)
+    assert len(set(label)) == len(label)
+    assert set(label) <= {RAW_KEY_FEATURE, "test-only-kdf", "legacy-dake-keys"}
+    kind = raw_key_artifact()
+    if kind != "mixed":
+        assert (RAW_KEY_FEATURE in label) == (kind == "test"), (label, kind)
+    assert ("test-only-kdf" in label) == bool(_exposed_vault_methods()), label
+    assert ("legacy-dake-keys" in label) == bool(_exposed_dake_methods()), label
+
+
+def test_the_feature_name_is_in_the_object_file_only_when_it_is_on():
+    """The label is compiled under `#[cfg]`, so a release artifact does not
+    even contain the feature's name. `.github/scripts/inspect_apk.py` looks
+    for that string in the APK's core; this is the same check on the host
+    artifact, in both directions."""
+    so = _installed_object_file()
+    if so is None:
+        pytest.skip("no compiled otrv4_core extension found next to the module")
+    blob = so.read_bytes()
+    kind = raw_key_artifact()
+    if kind == "mixed":
+        pytest.skip("a mixed artifact: the tests above already fail on it")
+    assert (RAW_KEY_FEATURE.encode("ascii") in blob) == (kind == "test"), (
+        so.name, kind)
+    apk = os.path.join(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))), ".github", "scripts", "inspect_apk.py")
+    with open(apk, encoding="utf-8") as handle:
+        assert 'b"%s"' % RAW_KEY_FEATURE in handle.read()
+
+
+_E, _O = EXPECT_RELEASE_VAR, RAW_KEY_OPT_IN_VAR
+
+
+@pytest.mark.parametrize("kind,environ,expected", [
+    # A release artifact passes wherever it is.
+    ("release", {}, "pass"),
+    ("release", {"CI": "true", "GITHUB_ACTIONS": "true"}, "pass"),
+    ("release", {_E: "1"}, "pass"),
+    ("release", {_E: "1", "CI": "true"}, "pass"),
+    # The test build, declared: the main CI job, and a developer who says so.
+    ("test", {_O: "1"}, "skip"),
+    ("test", {_O: "1", "CI": "true", "GITHUB_ACTIONS": "true"}, "skip"),
+    # The test build on a developer's machine, with nothing set.
+    ("test", {}, "skip"),
+    ("test", {"CI": ""}, "skip"),
+    ("test", {"CI": "false"}, "skip"),
+    ("test", {_O: "0"}, "skip"),
+    # The test build where a release is expected: red, never skipped.
+    ("test", {"CI": "true"}, "fail"),
+    ("test", {"GITHUB_ACTIONS": "true"}, "fail"),
+    ("test", {"CI": "1"}, "fail"),
+    ("test", {_E: "1"}, "fail"),
+    # Contradictory declarations.
+    ("test", {_E: "1", _O: "1"}, "fail"),
+    ("release", {_E: "1", _O: "1"}, "fail"),
+    # Neither build.
+    ("mixed", {}, "fail"),
+    ("mixed", {_O: "1"}, "fail"),
+    ("mixed", {_E: "1"}, "fail"),
+])
+def test_the_raw_key_verdict_table(kind, environ, expected):
+    verdict, why = raw_key_verdict(kind, environ)
+    assert verdict == expected, why
+    assert why and "\n" not in why
+
+
+def test_a_pipeline_never_skips_the_release_assertion_by_omission():
+    """In a pipeline the only way past a test build is to declare it, and
+    the failure says how. Then the workflow itself: the step that tests the
+    wheel that ships declares that it expects one, and does not opt in."""
+    for pipeline in ({"CI": "true"}, {"GITHUB_ACTIONS": "true"},
+                     {EXPECT_RELEASE_VAR: "1"}):
+        verdict, why = raw_key_verdict("test", pipeline)
+        assert verdict == "fail", pipeline
+        assert RAW_KEY_OPT_IN_VAR in why and RAW_KEY_FEATURE in why
+    workflow_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        ".github", "workflows", "python.yml")
+    with open(workflow_path, encoding="utf-8") as handle:
+        workflow = handle.read()
+    suite = workflow[workflow.index("- name: pytest"):
+                     workflow.index("- name: Failures as annotations")]
+    assert f'{RAW_KEY_OPT_IN_VAR}: "1"' in suite
+    release = workflow[workflow.index(
+        "- name: Release wheel exposes no raw-key API"):
+        workflow.index("- name: Gates-open wheel runs the gated tests")]
+    assert f'{EXPECT_RELEASE_VAR}: "1"' in release
+    assert RAW_KEY_OPT_IN_VAR not in release
+    assert "raw-key-test-api" not in release
+    assert "tests/test_release_guard.py" in release
+
+
+def test_part_of_the_surface_is_neither_build():
+    assert raw_key_artifact([]) == "release"
+    assert raw_key_artifact(["x"] * _RAW_KEY_SURFACE_SIZE) == "test"
+    for size in (1, _RAW_KEY_SURFACE_SIZE - 1, _RAW_KEY_SURFACE_SIZE + 1):
+        assert raw_key_artifact(["x"] * size) == "mixed"
+
+
+def test_the_build_label_cannot_name_a_feature_that_is_off():
+    """Read from the Rust source: each name in `test_features()` sits
+    directly under the `#[cfg]` for that same feature, and the function does
+    not use `cfg!()`, which would leave every name in every binary."""
+    import re
+    lib = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "Rust", "src", "lib.rs")
+    if not os.path.isfile(lib):
+        pytest.skip("Rust sources not present next to the tests")
+    with open(lib, encoding="utf-8") as handle:
+        source = handle.read()
+    body = source[source.index("pub fn test_features()"):]
+    body = body[:body.index("\n}\n")]
+    assert "cfg!(" not in body
+    pairs = re.findall(
+        r'#\[cfg\(feature = "([a-z-]+)"\)\]\n\s*"([a-z-]+)",', body)
+    assert pairs == [("raw-key-test-api", "raw-key-test-api"),
+                     ("test-only-kdf", "test-only-kdf"),
+                     ("legacy-dake-keys", "legacy-dake-keys")], pairs
+    assert body.count('"') == 4 * len(pairs), "a name outside a #[cfg]"
+    assert 'm.add("TEST_FEATURES"' in source
 
 
 def test_the_raw_key_surface_is_fully_enumerated():
@@ -496,7 +769,6 @@ def test_the_raw_key_surface_is_fully_enumerated():
         if name.endswith(".rs"):
             with open(os.path.join(rust, name), encoding="utf-8") as f:
                 gated += f.read().count('#[cfg(feature = "raw-key-test-api")]\n')
-    listed = (len(RAW_KEY_MODULE_FUNCTIONS) + sum(len(m) for m in RAW_KEY_CLASS_METHODS.values())
-              + len(RAW_KEY_CONSTRUCTORS))
-    # +1: the PyByteArray import in dake.rs is gated on the same feature.
-    assert gated == listed + 1, (gated, listed)
+    # +2: the PyByteArray import in dake.rs is gated on the same feature, and
+    # so is the feature's own name in lib.rs's build label.
+    assert gated == _RAW_KEY_SURFACE_SIZE + 2, (gated, _RAW_KEY_SURFACE_SIZE)

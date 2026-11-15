@@ -271,6 +271,8 @@ def _environment_fields(env: Dict[str, Any]) -> Dict[str, Any]:
         "abi": get("abi", "android_abi"),
         "rust_core_loaded": get("rust_core", "loaded"),
         "rust_core_version": get("rust_core", "version"),
+        # "none" on a core that may ship; anything else is a test build.
+        "rust_core_test_features": get("rust_core", "test_features"),
         "engine_initialized": get("otrv4plus", "initialized"),
         "slixmpp": get("transport_deps", "slixmpp"),
     }

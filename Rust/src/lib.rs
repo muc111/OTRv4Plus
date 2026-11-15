@@ -45,11 +45,37 @@ pub mod live_mask;        // voice masking for live calls (pitch + formants, gen
 use pyo3::prelude::*;
 use pyo3::wrap_pyfunction;
 
+/// The test-only Cargo features this build was compiled with; empty for a
+/// build that may ship.
+///
+/// So that an artifact can say what it is. The release guard
+/// (tests/test_release_guard.py) used to learn whether it was looking at the
+/// test build from an environment variable, which says what the person
+/// running the tests believes, not what was built; a diagnostic report had
+/// no way to tell at all.
+///
+/// Each name sits under its own `#[cfg]`, not behind `cfg!()`: with the
+/// feature off the string is not in the binary, so a release artifact does
+/// not carry the name of a test feature (the APK inspection looks for it),
+/// and the label cannot name a feature that was not compiled in.
+pub fn test_features() -> Vec<&'static str> {
+    vec![
+        #[cfg(feature = "raw-key-test-api")]
+        "raw-key-test-api",
+        #[cfg(feature = "test-only-kdf")]
+        "test-only-kdf",
+        #[cfg(feature = "legacy-dake-keys")]
+        "legacy-dake-keys",
+    ]
+}
+
 #[pymodule]
 fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The crate's own version, so a diagnostic report can say which core it
     // ran on (it showed `rust_core_version -` with the core loaded).
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    // Which test-only features were compiled in: `()` for a release build.
+    m.add("TEST_FEATURES", pyo3::types::PyTuple::new(_py, test_features())?)?;
     // DAKE
     m.add_class::<dake::PyDake>()?;
     // SMP
@@ -139,4 +165,26 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<mls_group::RustGroupVoice>()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod build_label_tests {
+    use super::test_features;
+
+    /// The label is the build's own account of itself, so it is held to the
+    /// build: each name present exactly when its feature is on, and nothing
+    /// else in it.
+    #[test]
+    fn the_label_names_exactly_the_test_features_compiled_in() {
+        let label = test_features();
+        let compiled = [
+            ("raw-key-test-api", cfg!(feature = "raw-key-test-api")),
+            ("test-only-kdf", cfg!(feature = "test-only-kdf")),
+            ("legacy-dake-keys", cfg!(feature = "legacy-dake-keys")),
+        ];
+        for (name, on) in compiled {
+            assert_eq!(label.contains(&name), on, "{name}");
+        }
+        assert_eq!(label.len(), compiled.iter().filter(|(_, on)| *on).count());
+    }
 }

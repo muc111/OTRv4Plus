@@ -138,6 +138,14 @@ def _rust_core_info() -> Dict[str, Any]:
     # The release-boundary check, surfaced where a developer will see it.
     info["test_gates_open"] = bool(_guard(
         lambda: hasattr(otrv4_core.RustSMPVault, "load"), default=False))
+    # What the core says it was built with (Rust/src/lib.rs): "none" on a
+    # core that may ship, the feature names on a test build. Feature names
+    # only; a core built before it could say is reported as such.
+    label = getattr(otrv4_core, "TEST_FEATURES", None)
+    if label is None:
+        info["test_features"] = "unknown (core predates its build label)"
+    else:
+        info["test_features"] = ", ".join(str(name) for name in label) or "none"
     return info
 
 

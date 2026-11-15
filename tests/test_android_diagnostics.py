@@ -69,6 +69,18 @@ class TestDiagnosticsContent:
         assert report["rust_core"]["test_gates_open"] is hasattr(
             otrv4_core.RustSMPVault, "load")
 
+    def test_says_which_test_features_the_core_was_built_with(self, report):
+        """On a handset this must read "none". Anything else is a test build
+        of the Rust core in someone's hands, and the report is where that
+        would be seen."""
+        import otrv4_core
+        said = report["rust_core"]["test_features"]
+        label = tuple(otrv4_core.TEST_FEATURES)
+        assert said == (", ".join(label) or "none")
+        from android_bridge import report as report_mod
+        fields = report_mod._environment_fields(report)
+        assert fields["rust_core_test_features"] == said
+
     def test_report_is_json_serialisable(self, report):
         json.dumps(report)          # must not raise: Kotlin renders this
 

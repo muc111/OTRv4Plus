@@ -26,12 +26,18 @@ result. CI does exactly this, in order:
    opens vault read-back / seed injection, which the release guards must see
    absent). `android-opus` is on so the APK's codec path is exercised here too.
 
-2. **Run the whole suite** with the raw-key gate allowed and `TEST_GATES`
-   **unset**:
+2. **Run the whole suite**, with `TEST_GATES` **unset**:
 
    ```sh
-   OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 python -m pytest tests/ -q
+   python -m pytest tests/ -q
    ```
+
+   On your own machine nothing else needs setting: the core says what it was
+   built with (`otrv4_core.TEST_FEATURES`), and the release guard stands down
+   for a test build that is not in a pipeline, saying so in its skip reason.
+   CI runs the same command with `OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1`,
+   because in a pipeline a test build has to be *declared*: undeclared, it
+   is a failure (see the table below).
 
 3. **Re-check the shipping artifact.** Build the *release* wheel — the exact
    features the APK ships, **no** test gates — reinstall it, and re-run only
@@ -42,9 +48,13 @@ result. CI does exactly this, in order:
      --features pyo3/extension-module,android-opus,mls \
      --interpreter python3.12 --out dist-release
    pip install --force-reinstall --no-deps dist-release/*.whl
-   python -m pytest -q tests/test_release_guard.py \
+   OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1 python -m pytest -q \
+     tests/test_release_guard.py \
      tests/test_dake3_rust_authority.py tests/test_android_diagnostics.py
    ```
+
+   `OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1` says "the artifact under test is one
+   that ships": with it, a test build is a failure wherever this runs.
 
 Step 2 proves every protocol/transport/UI rule against a wheel whose test-only
 constructors exist; step 3 proves the wheel that actually ships exposes none of
@@ -69,6 +79,21 @@ They read `OTRV4PLUS_ALLOW_TEST_GATES` to know what artifact to expect:
 | test wheel (`raw-key-test-api`) | unset | **pass** — raw-key handles are a reviewed, documented set; the vault/seed gates (`test-only-kdf`) are still absent |
 | test wheel **with `test-only-kdf`** | unset | **fail** — a gate-open wheel is being judged as if it were the release one |
 | any gated wheel | `=1` | **pass** — assertions flip to confirm it really is the test build |
+
+The raw-key gate (`raw-key-test-api`) does not go by a variable alone. The
+artifact is asked what it is, and where it is being judged decides the rest:
+
+| Installed wheel | Where | Raw-key release guard |
+|---|---|---|
+| release | anywhere | **pass**: the assertion runs |
+| test wheel | your machine, nothing set | **skip**, with the reason; the wheel is confirmed to be the whole test build |
+| test wheel | `OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1` (anywhere) | **skip**: declared |
+| test wheel | a pipeline (`CI` or `GITHUB_ACTIONS` set), undeclared | **fail** |
+| test wheel | `OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1` | **fail** |
+| part of the surface | anywhere | **fail**: neither build |
+
+So a release pipeline cannot pass a test build by leaving a variable out,
+and a developer does not need one to get a green suite.
 
 So the way to make the guards "fail" is to install a `test-only-kdf` wheel and
 then run pytest with `OTRV4PLUS_ALLOW_TEST_GATES` unset (or to install the

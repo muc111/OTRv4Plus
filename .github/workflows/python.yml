@@ -224,8 +224,14 @@ jobs:
       # must expose no raw-key entry point and must still run the live
       # paths: the engine imports, the handle-based self-test passes, and a
       # real DAKE plus messages both ways go through.
+      # OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1: this step tests the wheel that
+      # ships, so a test build here is a failure whatever else is set. (In CI
+      # it would be anyway; saying it makes the step mean the same thing when
+      # someone runs it by hand.)
       - name: Release wheel exposes no raw-key API
         working-directory: Rust
+        env:
+          OTRV4PLUS_EXPECT_RELEASE_ARTIFACT: "1"
         run: |
           maturin build --release \
             --features pyo3/extension-module,android-opus,mls \
