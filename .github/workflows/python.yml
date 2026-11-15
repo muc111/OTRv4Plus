@@ -184,6 +184,21 @@ jobs:
           print("otrv4_core at", otrv4_core.__file__)
           PY
 
+      # tests/test_real_prosody.py signs the hardened client in to a real
+      # server, and runs prosody/install-server-limits.sh against one. The
+      # stream guard and the SCRAM checks are otherwise tested only against
+      # servers written for the test, which shows they refuse what they
+      # should and cannot show they pass what a real server sends.
+      # The package starts a system Prosody on every address; the tests
+      # bring their own on loopback ports, and the install script would
+      # count the system one's sockets, so it is stopped.
+      - name: A real Prosody for the sign-in tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends prosody iproute2
+          sudo systemctl disable --now prosody || true
+          prosodyctl about | head -3
+
       # -rs lists the reason for every skip. Skips are how a suite loses
       # coverage without losing its green tick: `opuslib` and `kyber_py` are
       # not installed here and some tests stand down accordingly, which is a
@@ -195,6 +210,9 @@ jobs:
           # without noticing; every transport in this project is local.
           PYTHONWARNINGS: default
           OTRV4PLUS_ALLOW_RAW_KEY_TEST_API: "1"
+          # Where no Prosody is installed these tests skip; here that would
+          # be a failure nobody saw, so here it is a failure.
+          OTRV4PLUS_REQUIRE_REAL_SERVER: "1"
 
       # The job log is not readable everywhere the result is needed; the
       # failed tests are, as annotations through the API.
