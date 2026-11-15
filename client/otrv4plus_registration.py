@@ -122,6 +122,11 @@ CODES = {
     "tls_required": "The server did not offer TLS, so the new password was "
                     "not sent. This app does not register over an "
                     "unencrypted connection.",
+    # android_bridge/sasl_hardening.py or xmlguard.py ended the connection.
+    # The detail composed where it is raised says which check failed.
+    "server_not_proven": "The server did not prove it knows this account, or "
+                         "sent something this app refuses to read, so the "
+                         "app disconnected.",
     "server_identity_changed": "SECURITY: this I2P server name now points to "
                                "a different destination than the one this "
                                "device trusted. Nothing was sent. Confirm the "

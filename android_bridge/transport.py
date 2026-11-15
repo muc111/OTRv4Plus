@@ -320,12 +320,10 @@ SCRAM_ONLY = frozenset({
 
 
 from .xmlguard import REFUSED_EVENT  # noqa: E402
-
-SERVER_NOT_PROVEN_CODE = "server_not_proven"
-SERVER_NOT_PROVEN_TEXT = (
-    "the server did not prove it knows this account, or sent something this "
-    "app refuses to read, so the app disconnected. Nothing that reveals the "
-    "password was sent.")
+# The code, the sentence and the line that says which check failed live in
+# transport_base, where registration (transport_registration.py) shares them.
+from .transport_base import (  # noqa: E402,F401
+    SERVER_NOT_PROVEN_CODE, SERVER_NOT_PROVEN_TEXT, server_not_proven_detail)
 
 
 def _restrict_to_scram(client) -> None:
@@ -1047,10 +1045,13 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             # xmlguard or sasl_hardening closed the stream: a DTD, an
             # endless stanza, or a server that skipped SCRAM's proof. Fired
             # before the close, so this is what the user is told rather than
-            # "the server closed the connection".
+            # "the server closed the connection". The detail ends with the
+            # line that says which check failed and at which step.
+            detail = server_not_proven_detail(
+                self._route, "sign-in", getattr(self, "_progress", None))
             if not started.done():
                 started.set_exception(TransportError(
-                    SERVER_NOT_PROVEN_CODE, SERVER_NOT_PROVEN_TEXT))
+                    SERVER_NOT_PROVEN_CODE, detail))
 
         def on_no_auth(_event):
             # No mechanism this app allows was offered. Over I2P and Tor that

@@ -169,6 +169,16 @@ def build(status: Optional[Dict[str, Any]] = None,
         parts.append(_section("Last sign-in"))
         parts.append("  " + took)
 
+    # Always printed, healthy or not: "the guards were in the path and
+    # passed N streams" is as much an answer as a refusal is. Names, lengths
+    # and counts only (android_bridge/server_proof.py holds it to that).
+    parts.append(_section("Server checks"))
+    try:
+        from . import server_proof
+        parts.append(server_proof.render())
+    except Exception as exc:                                # pragma: no cover
+        parts.append("  (could not read: %s)" % type(exc).__name__)
+
     parts.append(_section("Failures seen (most frequent first)"))
     try:
         from . import codes
@@ -301,6 +311,14 @@ def summary(status: Optional[Dict[str, Any]] = None,
         worst = []
     if worst:
         lines.append("failed  %s" % ", ".join("%s x%d" % (c, n) for c, n, _, _ in worst))
+    try:
+        from . import server_proof
+        refusals = server_proof.recent()
+    except Exception:                                       # pragma: no cover
+        refusals = []
+    if refusals:
+        lines.append("refused %d server refusal(s); last: %s"
+                     % (len(refusals), server_proof.summary_line(refusals[-1])))
     lines.append("")
     lines.append("last %d events:" % events)
     try:

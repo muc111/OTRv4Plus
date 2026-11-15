@@ -17,7 +17,10 @@ import otrv4plus_registration as _registration
 from . import captcha as _captcha
 from . import route as _route_mod
 from .trace import TRACE as _TRACE
-from .transport_base import CONNECT_TIMEOUT, DEFAULT_C2S_PORT, TransportError
+from .transport_base import (CONNECT_TIMEOUT, DEFAULT_C2S_PORT,
+                             SERVER_NOT_PROVEN_CODE, TransportError,
+                             server_not_proven_detail)
+from .xmlguard import REFUSED_EVENT
 from .transport_stream import _StreamWatch, _stream_failure_text, _tls_in_place
 
 
@@ -508,9 +511,22 @@ class RegistrationMixin:
             client.add_event_handler("connection_failed", on_connection_failed)
         self._watch_registration_discovery(client, done)
 
+        def on_refused(_reason):
+            # The stream guard or the SCRAM hardening ended the connection
+            # (registration carries straight on into a sign-in, and the
+            # server's proof is checked there as anywhere). Without this the
+            # user waited for the timeout and read "the server did not
+            # answer". The detail says which check, and that the password
+            # chosen for the new account had already been sent.
+            detail = server_not_proven_detail(self._route, "registration")
+            if not done.done():
+                done.set_exception(_registration.RegistrationFailed(
+                    SERVER_NOT_PROVEN_CODE, detail))
+
         client.add_event_handler("register", on_register)
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed_auth)
+        client.add_event_handler(REFUSED_EVENT, on_refused)
 
         _TRACE.record("registration", "requested", "info")
         client.connect(host=host, port=port)
@@ -810,6 +826,14 @@ class RegistrationMixin:
 
         client.add_filter("in", features)
         client.add_event_handler("register", on_register)
+        # The probe never authenticates, so only the stream guard can fire
+        # here: a server (or someone on the path) that sent XML this app
+        # will not read is worth knowing before an account is asked for.
+        client.add_event_handler(
+            REFUSED_EVENT,
+            lambda _reason: finish(SERVER_NOT_PROVEN_CODE,
+                                   server_not_proven_detail(
+                                       self._route, "probe")))
         self._watch_registration_discovery(client, done)
         _TRACE.record("probe", "requested", "info", route=self._route.kind)
         client.connect(host=host, port=port)

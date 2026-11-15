@@ -281,7 +281,8 @@ def test_the_user_is_told_and_no_retry_follows():
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     with open(os.path.join(here, "android_bridge", "transport.py")) as fh:
         transport = fh.read()
-    assert 'SERVER_NOT_PROVEN_CODE = "server_not_proven"' in transport
+    with open(os.path.join(here, "android_bridge", "transport_base.py")) as fh:
+        assert 'SERVER_NOT_PROVEN_CODE = "server_not_proven"' in fh.read()
     assert "client.add_event_handler(REFUSED_EVENT, on_refused)" in transport
     kt = os.path.join(here, "android", "app", "src", "main", "java", "org",
                       "otrv4plus", "android", "connection",

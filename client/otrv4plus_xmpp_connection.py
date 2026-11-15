@@ -341,6 +341,34 @@ class ConnectionMixin:
               "(it will not be shown).")
         self._password_prompt = "Password for %s: " % (self._own_bare or "?")
 
+    def _on_stream_refused(self, reason):
+        """The stream guard or the SCRAM hardening ended the connection: the
+        server sent XML this client will not read, or did not prove that it
+        holds this account's keys (android_bridge/xmlguard.py,
+        sasl_hardening.py).
+
+        Trying again would meet the same server, so the session stays down.
+        What is printed says which check failed and at which step, in names,
+        lengths and counts: nothing the server sent, no password, no key.
+        """
+        self._shutting_down = True          # no reconnect to the same server
+        detail, section = "", ""
+        try:
+            from android_bridge import server_proof
+            from android_bridge.transport_base import server_not_proven_detail
+            detail = server_not_proven_detail(None, "sign-in")
+            section = server_proof.render()
+        except Exception:
+            detail = ("the server did not prove it knows this account, or "
+                      "sent something this client refuses to read (%s)."
+                      % _sanitise(str(reason))[:40])
+        print("\n[server not proven] " + detail, file=sys.stderr)
+        if section:
+            print(section, file=sys.stderr)
+        print("[server not proven] not reconnecting. Check the server "
+              "address; if it is right, send the lines above to the "
+              "server's operator.", file=sys.stderr)
+
     def _can_prompt_for_password(self) -> bool:
         """True when a hidden prompt can actually be delivered.
 

@@ -1101,6 +1101,9 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
         self.add_event_handler("session_start",      self._on_start)
         self.add_event_handler("message",            self._on_message)
         self.add_event_handler("failed_auth",        self._on_failed_auth)
+        # Fired by the stream guard and the SCRAM hardening just before they
+        # close a stream they refuse (android_bridge.xmlguard.REFUSED_EVENT).
+        self.add_event_handler("stream_refused",     self._on_stream_refused)
         self.add_event_handler("message_error",      self._on_message_error)
         self.add_event_handler("disconnected",       self._on_disconnected)
         self.add_event_handler("connection_failed",  self._on_connection_failed)

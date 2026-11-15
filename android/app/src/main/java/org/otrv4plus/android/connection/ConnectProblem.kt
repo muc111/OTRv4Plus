@@ -241,7 +241,8 @@ object ConnectProblem {
             "The server did not prove it knows this account, or sent " +
                 "something this app refuses to read, so the app disconnected. " +
                 "Check the server address. If it is right, tell the server's " +
-                "operator."
+                "operator, and include the line below: it says which check " +
+                "failed. It contains no password, key or address."
         "tls_required", "certificate_failure" ->
             "The server's encryption could not be verified, so nothing was sent."
         "profile_incomplete" -> "Fill in the address and password."
