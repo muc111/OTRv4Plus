@@ -16,6 +16,11 @@ build/
 
 # ── Rust ─────────────────────────────────────────────────────────────────────
 Rust/target/
+# Every crate under Rust/ and research/ that has been built by itself leaves
+# a target/ of its own. Rust/opus-codec/target was committed that way: 77
+# generated files, and a diff on every build.
+Rust/*/target/
+research/*/target/
 
 # ── Android ──────────────────────────────────────────────────────────────────
 # Written by :app:syncPythonSources, which copies the orchestration layer into
@@ -65,6 +70,9 @@ Rust/fuzz/corpus/
 Rust/fuzz/artifacts/
 Rust/fuzz/coverage/
 Rust/audit/target/
+
+# Gradle's own state for the Android project (was committed once).
+/android/.gradle/
 
 # ── Desktop GUI (desktop/, Gradle) ──
 /desktop/.gradle/
