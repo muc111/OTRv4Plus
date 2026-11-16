@@ -11,21 +11,30 @@
 # `run` (weekly and on demand) fuzzes every target for a short, fixed time on
 # nightly with the sanitizer cargo-fuzz enables by default. A crash fails the
 # job and the reproducer is kept as an artifact.
+#
+# WHEN IT RUNS
+# `compile`: on a change to the core, its build script, its manifest or lock
+# file, or the harnesses. One list, used for a push and a pull request alike
+# (they had drifted: a pull request that changed only Rust/Cargo.lock or this
+# file compiled nothing). Anything else matches nothing and pays nothing.
+#
+# `run`: weekly, on `main` AND `dev`. A scheduled workflow only ever runs
+# from the default branch, and `dev` is where a parser changes first; with
+# `main` alone, new code was not fuzzed until it was released.
 name: Fuzz
 
 on:
   push:
     branches: [main, dev, "claude/**"]
-    paths:
+    paths: &fuzzed
       - "Rust/src/**"
+      - "Rust/build.rs"
       - "Rust/Cargo.toml"
       - "Rust/Cargo.lock"
       - "Rust/fuzz/**"
       - ".github/workflows/fuzz.yml"
   pull_request:
-    paths:
-      - "Rust/src/**"
-      - "Rust/fuzz/**"
+    paths: *fuzzed
   schedule:
     - cron: "41 3 * * 0"
   workflow_dispatch:
@@ -37,6 +46,7 @@ jobs:
   compile:
     name: Fuzz harnesses compile
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -47,15 +57,30 @@ jobs:
         run: cargo check --locked --bins
 
   run:
-    name: Fuzz every target (60 s each)
+    name: Fuzz every target (60 s each)${{ matrix.ref && format(' on {0}', matrix.ref) || '' }}
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: compile
     runs-on: ubuntu-latest
+    # Eight targets at a minute each, after a sanitizer build of the core.
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        # The weekly run: both branches. On demand: the branch it was
+        # started on ("" is what actions/checkout does by default).
+        ref: ${{ fromJSON(github.event_name == 'schedule' && '["main", "dev"]' || '[""]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
       - uses: dtolnay/rust-toolchain@nightly
+      # Building cargo-fuzz took longer than the fuzzing it was built for.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-fuzz
+          key: cargo-fuzz-0.13.2
       - name: Install cargo-fuzz 0.13.2
-        run: cargo install cargo-fuzz --locked --version 0.13.2
+        run: command -v cargo-fuzz || cargo install cargo-fuzz --locked --version 0.13.2
       - name: Run
         working-directory: Rust/fuzz
         run: |
@@ -67,5 +92,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: fuzz-artifacts
+          # One name per branch: two uploads under one name fail.
+          name: fuzz-artifacts${{ matrix.ref && format('-{0}', matrix.ref) || '' }}
           path: Rust/fuzz/artifacts/

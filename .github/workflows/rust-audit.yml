@@ -4,14 +4,26 @@
 # RustSec advisory audit of Rust/Cargo.lock.
 #
 # `--deny warnings`: every advisory against a locked crate fails the job
-# unless Rust/.cargo/audit.toml names it with a reason. Weekly as well as on
-# change, because advisories arrive against code that has not moved.
+# unless Rust/.cargo/audit.toml names it with a reason.
+#
+# WHEN IT RUNS
+# On a change to a manifest, a lock file or an ignore list. The list is
+# written once and used for a push and a pull request alike (they had
+# drifted: a pull request touching Rust/mls/Cargo.toml, or this file, ran
+# no audit). A change to anything else matches nothing and pays nothing.
+#
+# Weekly as well, because advisories arrive against code that has not
+# moved. The weekly run audits `main` AND `dev`: a scheduled workflow only
+# ever runs from the default branch, and `dev` is where a new dependency
+# lands first and what the test builds are made from. With `main` alone,
+# an advisory against a crate that only `dev` had locked went unreported
+# until the next push that happened to touch a lock file.
 name: Rust audit
 
 on:
   push:
     branches: [main, dev, "claude/**"]
-    paths:
+    paths: &audited
       - "Rust/Cargo.toml"
       - "Rust/Cargo.lock"
       - "Rust/.cargo/audit.toml"
@@ -20,12 +32,7 @@ on:
       - "Rust/mls/.cargo/audit.toml"
       - ".github/workflows/rust-audit.yml"
   pull_request:
-    paths:
-      - "Rust/Cargo.toml"
-      - "Rust/Cargo.lock"
-      - "Rust/.cargo/audit.toml"
-      - "Rust/mls/Cargo.lock"
-      - "Rust/mls/.cargo/audit.toml"
+    paths: *audited
   schedule:
     - cron: "17 6 * * 1"
   workflow_dispatch:
@@ -35,10 +42,19 @@ permissions:
 
 jobs:
   audit:
-    name: cargo audit (RustSec)
+    name: cargo audit (RustSec)${{ matrix.ref && format(' on {0}', matrix.ref) || '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The weekly run: both branches. Otherwise the commit that
+        # triggered the run ("" is what actions/checkout does by default).
+        ref: ${{ fromJSON(github.event_name == 'schedule' && '["main", "dev"]' || '[""]') }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/cache@v4
         with:
