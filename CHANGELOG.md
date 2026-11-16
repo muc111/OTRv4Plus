@@ -4,7 +4,58 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.204-untested — 2026-11-14 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.205-untested — 2026-11-16 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`; this one has not
+been on a device. It is rc.204's hardening, made into something a person
+can act on, and run against a real server. No new features.
+
+- **"The server did not prove it knows this account" now says which check
+  failed.** The message ends with a line you can copy, such as
+  `[check=iteration_count phase=sign-in mechanism=SCRAM-SHA-1 step=2
+  proof_sent=no ...]`, and the diagnostic report has a "Server checks"
+  section: which guards are active, how many connections they passed, and
+  for each refusal the step it happened at and the shape of the server's
+  reply. Names, lengths and counts only: no password, key or address. If
+  you see this message on a device, that line is what to send.
+- **The message says only what is known.** rc.204 said "nothing that
+  reveals the password was sent" every time. While creating an account that
+  is not true (the new password has just gone to that server), and it now
+  says so, and tells you not to reuse it.
+- **Failures that used to end in a timeout end at once.** A server reply
+  with a part missing or unreadable left the app waiting; a wrong server
+  signature was reported as "the server closed the connection"; creating an
+  account on a server the app refused said "the server did not answer".
+  Each is now refused straight away with its reason.
+- **Checked against a real Prosody on every push.** A real sign-in, a wrong
+  password, account creation, an attacker injecting data before encryption
+  starts, our server modules, and the install script below, all run in CI
+  against Prosody 0.12.4. (An earlier version of the first of these was
+  also run by hand against 13.0.7; the code has changed since and 13 has
+  not been re-run.)
+- **Server operators: the install script can look before it changes
+  anything.** `bash prosody/install-server-limits.sh --check` says whether
+  Prosody is reachable from outside right now, whether federation is on,
+  and exactly which lines a real run would change. A real run says the same
+  first, before it closes anything. Running it twice no longer restarts
+  Prosody (which signed everyone out). With `HIDDEN_SERVICE=1`, a server
+  that can still be found afterwards is a failure with its own exit status,
+  naming the line or the port. The output never prints the machine's
+  address, so it can be sent to someone helping you.
+  docs/SERVER_HARDENING.md has the details.
+- **Four server settings lock the apps out, and the script names them.**
+  One is easy to hit on Prosody 13: do not put `SCRAM-SHA-1-PLUS` in
+  `disable_sasl_mechanisms`. Every sign-in from the apps then fails as if
+  the password were wrong.
+- **For developers.** The test suite is green on a fresh checkout with no
+  environment variables: the Rust core now says whether it is a test build
+  (`otrv4_core.TEST_FEATURES`), and in CI a test build is a failure unless
+  declared. Licence headers are checked in a second, as their own CI job.
+  The Rust core's own 228 unit tests now run in CI (no workflow ran them),
+  three server-module test files that CI skipped now run, and the weekly
+  advisory audit and fuzz runs cover `dev` as well as `main`.
+
+## Android 0.7.0-experimental.rc.204-untested — 2026-11-14 — on `dev`, superseded by rc.205
 
 A red-team pass: what an attacker would do, not whether the code is correct
 (docs/RED_TEAM_2026-11.md). Nothing was found that reads messages. What was
