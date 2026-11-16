@@ -16,8 +16,13 @@ injects a DOCTYPE before TLS.
 
 WHICH PROSODY. Whatever `prosody` and `prosodyctl` are on PATH, or the pair
 named by OTRV4PLUS_PROSODY / OTRV4PLUS_PROSODYCTL. CI installs Ubuntu's
-package (0.12.4); the same file was run by hand against 13.0.7 built from
-source on 2026-11-15, with the same results.
+package, 0.12.4, and that is the version every test here is known to pass
+on. On 2026-11-15 the first eight (the sign-in, wrong-password,
+registration, injection, modules and install-script tests) were also run by
+hand against 13.0.7 built from source, with the same results, and each
+setting in the table further down was measured against both versions. The
+client code was revised after that run and has not been run against 13
+again: run this file against a 13 when one is to hand.
 
 Skips when no Prosody is installed, EXCEPT where
 OTRV4PLUS_REQUIRE_REAL_SERVER=1 (CI): there a missing server is a failure,
