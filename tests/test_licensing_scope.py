@@ -60,8 +60,10 @@ def test_no_document_header_names_the_software_licence():
         if not f.endswith(".md"):
             continue
         head = open(os.path.join(ROOT, f), encoding="utf-8").read(400)
+        # REUSE-IgnoreStart  (a string searched for, not a declaration)
         if "SPDX-License-Identifier: " + SOFTWARE in head:
             wrong.append(f)
+        # REUSE-IgnoreEnd
     assert wrong == [], "documents whose header says the software licence: %s" % wrong
 
 

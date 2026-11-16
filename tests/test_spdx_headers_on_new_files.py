@@ -172,6 +172,7 @@ class TestNewSourceFilesDeclareTheLicence:
     def test_every_new_source_file_has_the_identifier(self, new_files):
         missing = [p for p in new_files if "SPDX-License-Identifier" not in
                    _header_of(p)]
+        # REUSE-IgnoreStart  (the text of a message, not a declaration)
         assert missing == [], (
             "these files were added after %s and carry no SPDX header:\n  %s\n"
             "Add, as the first line (with // in .kt/.rs/.kts):\n"
@@ -179,6 +180,7 @@ class TestNewSourceFilesDeclareTheLicence:
             "  # Copyright (C) 2025-2026 muc111\n"
             "See CONTRIBUTING.md. Existing files are exempt on purpose."
             % (SPDX_POLICY_BASELINE, "\n  ".join(missing), SPDX))
+        # REUSE-IgnoreEnd
 
     def test_the_identifier_is_the_dual_licence(self, new_files):
         """A header naming only the AGPL would be worse than none: it would
