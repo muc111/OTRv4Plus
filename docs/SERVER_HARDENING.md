@@ -14,13 +14,88 @@ go -- the three modules, the limits, and the room rate raised to 10:
 cd ~/OTRv4Plus && git pull && sudo bash prosody/install-server-limits.sh
 ```
 
-If XMPP Guard (i2pd-dash) is installed, the script turns on its maintenance
-mode first, so its own changes become XMPP Guard's new baseline instead of
-integrity alerts. It backs up `prosody.cfg.lua` first, runs `prosodyctl check config` and
-puts the backup back if that fails, restarts Prosody and prints the settings
-it ended with and any new error-log lines. Running it again changes nothing.
-Override a value from the environment, e.g. `sudo LOGIN_RATE=20 bash
-prosody/install-server-limits.sh`.
+**Look first.** `--check` changes nothing, and needs no `sudo` if you can
+read the configuration:
+
+```bash
+bash prosody/install-server-limits.sh --check
+HIDDEN_SERVICE=1 bash prosody/install-server-limits.sh --check   # for a hidden server
+```
+
+It says what is true now, then exactly what a real run would change: which
+modules it would install or update, and the lines of `prosody.cfg.lua` it
+would change (those lines only: the file holds passwords, and nothing
+beside a changed line is printed).
+
+**What it tells you before it changes anything.** Every run, real or
+`--check`, begins with what it found:
+
+```
+==> what is true now, before anything is changed
+      listening beyond this machine: YES
+          0.0.0.0:5222
+          [::]:5269
+      federation (s2s): ON
+      settings that stop the apps signing in: none
+```
+
+On a server meant to be hidden, the first two are how it is found (next
+section). A run with `HIDDEN_SERVICE=1` closes them, and with that removes
+the evidence that they were open, so they are stated first. If either read
+YES or ON on a server that has been up for a while, the address may already
+be on record: closing it stops new discoveries, it does not undo old ones
+([RED_TEAM_2026-11.md](RED_TEAM_2026-11.md#for-the-servers-operator)).
+
+**Settings that stop the apps signing in.** From rc.204 the apps end a
+sign-in when the server does not prove it knows the account, and sign in
+with SCRAM only over I2P and Tor. Four settings in `prosody.cfg.lua` lock
+everyone out; the script names the line and what to change. Each was
+measured with the hardened client against Prosody 0.12.4 and 13.0.7, and
+`tests/test_real_prosody.py` repeats it against whichever is installed:
+
+| Setting | What the user sees | Prosody 0.12 | Prosody 13 |
+|---|---|---|---|
+| `default_iteration_count` above 2,000,000 | "the server did not prove it knows this account", with the count | stops | stops |
+| `default_iteration_count` below 4096 | the same | stops | a note: 13 uses 4096 itself |
+| `disable_sasl_mechanisms` naming `SCRAM-SHA-1` (or `SCRAM-SHA-256` with `password_hash = "SHA-256"`) | "no safe sign-in method" | stops | stops |
+| `disable_sasl_mechanisms` naming the `-PLUS` form of it | a wrong-password error, for a right password | a note | stops |
+
+The iteration count is stored with each password, so after correcting it an
+affected account's password has to be set again. The last row is the least
+obvious: with no `-PLUS` mechanism offered, the apps' sign-in says "this
+server offered no channel binding"; a server that does channel binding
+(13, always) reads that as the offer having been removed on the way, and
+fails the sign-in. Leave `SCRAM-*` out of `disable_sasl_mechanisms`.
+
+**What a real run does.** If XMPP Guard (i2pd-dash) is installed, the script
+turns on its maintenance mode first, so its own changes become XMPP Guard's
+new baseline instead of integrity alerts. It makes every edit in a scratch
+copy and checks that copy is still valid Lua; backs up `prosody.cfg.lua`
+beside itself; installs the modules; runs `prosodyctl check config` and, if
+that fails, puts back the configuration **and** the modules; restarts
+Prosody; prints the new error-log lines and stops if one names a module of
+ours; then says what it found before and after. Override a value from the
+environment, e.g. `sudo LOGIN_RATE=20 bash prosody/install-server-limits.sh`.
+
+**Running it again does nothing.** When the modules and the configuration
+are already as it would leave them, there is no backup, no restart (a
+restart signs everyone out) and no XMPP Guard maintenance window.
+
+**Exit status**, for a script or a deploy job that calls it:
+
+| | |
+|---|---|
+| `0` | done, or nothing needed doing; with `--check`: nothing would change and nothing is wrong |
+| `1` | stopped: a precondition failed, the edit was not valid, `prosodyctl check config` refused it (the old files are back), Prosody did not start, or a module of ours did not load |
+| `2` | `--check` only: a real run would change something (printed) |
+| `3` | `HIDDEN_SERVICE=1` and the server can still be found, or what it listens on could not be read (no `ss`: install `iproute2`). The message names the line or the socket |
+| `4` | a setting that stops the apps signing in |
+| `64` | bad usage |
+
+**Its output can be passed on.** It never prints one of the machine's own
+addresses: a socket on a specific address is shown by its port, and an
+`interfaces` line that names one is shown without its value. `prosodyctl
+check config`, whose output it shows, may name your hosts.
 
 ## Keep the server's address hidden
 
@@ -63,8 +138,13 @@ sudo ss -ltnp | grep -E 'lua|prosody'     # every line should start 127.0.0.1 or
 
 If a line still shows `0.0.0.0`, `*` or `[::]`, a narrower option is
 overriding the global one (`c2s_interfaces`, `s2s_interfaces`,
-`https_interfaces`): remove it. The script prints the same warning whenever
-it runs, with or without `HIDDEN_SERVICE`.
+`https_interfaces`): remove it. The script makes the same check itself
+after it restarts Prosody. With `HIDDEN_SERVICE=1`, a server that is still
+listening beyond the machine, or still federating, is a failure (exit
+status 3) that names the overriding line or the socket; so is a machine
+with no `ss` to look with, because "probably hidden" is not an answer.
+Without `HIDDEN_SERVICE` it is a note, since a server that federates wants
+both.
 
 **3. A firewall that refuses everything inbound** except i2pd's own port
 (`port` in `/etc/i2pd/i2pd.conf` if you set one; otherwise the port its web
