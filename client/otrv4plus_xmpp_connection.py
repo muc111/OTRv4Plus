@@ -12,6 +12,7 @@ import secrets
 import sys
 import time
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import otrv4plus_ping as _ping
 import otrv4plus_tunnels as _tunnels
 from otrv4plus_term import print, _sanitise  # noqa: A004 (the client's print)

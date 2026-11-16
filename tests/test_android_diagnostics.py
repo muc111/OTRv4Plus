@@ -75,7 +75,7 @@ class TestDiagnosticsContent:
         would be seen."""
         import otrv4_core
         said = report["rust_core"]["test_features"]
-        label = tuple(otrv4_core.TEST_FEATURES)
+        label = [name for name in otrv4_core.TEST_FEATURES.split(",") if name]
         assert said == (", ".join(label) or "none")
         from android_bridge import report as report_mod
         fields = report_mod._environment_fields(report)

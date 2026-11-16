@@ -58,6 +58,12 @@ use pyo3::wrap_pyfunction;
 /// feature off the string is not in the binary, so a release artifact does
 /// not carry the name of a test feature (the APK inspection looks for it),
 /// and the label cannot name a feature that was not compiled in.
+///
+/// Python sees it as one string, the names joined by commas and empty for
+/// a release build. Not a tuple: no Python list or tuple type appears
+/// anywhere in this crate, which is what SECURITY.md's reachability
+/// argument for GHSA-36hh-v3qg-5jq4 rests on
+/// (tests/test_dependency_advisories.py holds the crate to it).
 pub fn test_features() -> Vec<&'static str> {
     vec![
         #[cfg(feature = "raw-key-test-api")]
@@ -74,8 +80,9 @@ fn otrv4_core(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     // The crate's own version, so a diagnostic report can say which core it
     // ran on (it showed `rust_core_version -` with the core loaded).
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
-    // Which test-only features were compiled in: `()` for a release build.
-    m.add("TEST_FEATURES", pyo3::types::PyTuple::new(_py, test_features())?)?;
+    // Which test-only features were compiled in, comma-separated: "" for
+    // a release build.
+    m.add("TEST_FEATURES", test_features().join(","))?;
     // DAKE
     m.add_class::<dake::PyDake>()?;
     // SMP

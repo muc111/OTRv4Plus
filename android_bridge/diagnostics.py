@@ -142,10 +142,11 @@ def _rust_core_info() -> Dict[str, Any]:
     # core that may ship, the feature names on a test build. Feature names
     # only; a core built before it could say is reported as such.
     label = getattr(otrv4_core, "TEST_FEATURES", None)
-    if label is None:
+    if not isinstance(label, str):
         info["test_features"] = "unknown (core predates its build label)"
     else:
-        info["test_features"] = ", ".join(str(name) for name in label) or "none"
+        info["test_features"] = ", ".join(
+            name for name in label.split(",") if name) or "none"
     return info
 
 

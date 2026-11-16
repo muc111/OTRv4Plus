@@ -442,9 +442,10 @@ def test_optin_object_file_really_carries_the_gated_symbols():
 # variable exported out of habit protects nothing.
 #
 # So the artifact is asked. It says which test features it was compiled with
-# (`otrv4_core.TEST_FEATURES`, set in Rust/src/lib.rs under the same
-# `#[cfg]`s that add the surface), its surface is measured, and the two are
-# held to each other. What happens then depends on where this runs:
+# (`otrv4_core.TEST_FEATURES`: the names joined by commas, "" for a build
+# that may ship; set in Rust/src/lib.rs under the same `#[cfg]`s that add
+# the surface), its surface is measured, and the two are held to each
+# other. What happens then depends on where this runs:
 #
 #   release artifact                       the assertion runs, and passes
 #   test build, declared (opt-in set)      skipped: this is the test wheel
@@ -519,10 +520,12 @@ def raw_key_artifact(exposed=None):
 
 
 def declared_test_features():
-    """What the artifact says it was built with, or None from a core built
-    before it could say."""
+    """What the artifact says it was built with, as a tuple of feature
+    names; None from a core built before it could say."""
     label = getattr(otrv4_core, "TEST_FEATURES", None)
-    return None if label is None else tuple(label)
+    if not isinstance(label, str):
+        return None
+    return tuple(name for name in label.split(",") if name)
 
 
 def _in_a_pipeline(environ):
@@ -634,8 +637,10 @@ def test_the_artifact_says_what_it_is():
     assert label is not None, (
         "otrv4_core has no TEST_FEATURES: the installed core predates the "
         "build label. Rebuild it.")
-    assert isinstance(otrv4_core.TEST_FEATURES, tuple)
-    assert all(isinstance(name, str) for name in label)
+    # One string: no Python sequence type crosses the Rust boundary
+    # (tests/test_dependency_advisories.py).
+    assert isinstance(otrv4_core.TEST_FEATURES, str)
+    assert otrv4_core.TEST_FEATURES == ",".join(label)
     assert len(set(label)) == len(label)
     assert set(label) <= {RAW_KEY_FEATURE, "test-only-kdf", "legacy-dake-keys"}
     kind = raw_key_artifact()
@@ -754,7 +759,7 @@ def test_the_build_label_cannot_name_a_feature_that_is_off():
                      ("test-only-kdf", "test-only-kdf"),
                      ("legacy-dake-keys", "legacy-dake-keys")], pairs
     assert body.count('"') == 4 * len(pairs), "a name outside a #[cfg]"
-    assert 'm.add("TEST_FEATURES"' in source
+    assert 'm.add("TEST_FEATURES", test_features().join(","))' in source
 
 
 def test_the_raw_key_surface_is_fully_enumerated():
