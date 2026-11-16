@@ -304,6 +304,55 @@ def test_what_prosody_13_offers_changes_nothing_for_the_checks():
     assert plugin.xmpp.authenticated is False
 
 
+def test_if_the_challenge_step_cannot_be_hooked_the_fixes_still_hold(
+        monkeypatch):
+    """The desktop installer does not pin slixmpp. On a version whose SCRAM
+    has no challenge step to hook, the "answer was built" flag is never
+    set. Requiring it there would refuse every server and blame each one;
+    dropping the check would undo rc.204. So the rule falls back to
+    rc.204's: an honest server signs in, a success before the challenge or
+    with a wrong signature is still refused, and the report says the
+    reasons are coarser."""
+    monkeypatch.setattr(sasl_hardening, "_describes", False)
+
+    def unhooked():
+        plugin = scram.plugin_for()
+        # As if `process_2` had never been wrapped: nothing sets the flag.
+        monkeypatch.setattr(type(plugin.mech), "_otr_answered", False,
+                            raising=False)
+        return plugin
+
+    plugin = unhooked()
+    server = scram.Server()
+    final = scram.challenge(plugin, server.first(plugin.mech.process()))
+    plugin.mech.__dict__.pop("_otr_answered", None)
+    plugin._handle_success({"value": server.final(bytes(final))})
+    assert plugin.xmpp.authenticated is True
+    assert proof.recent() == []
+
+    plugin = unhooked()
+    _before_challenge(plugin, scram.Server())
+    assert plugin.xmpp.authenticated is False
+    assert proof.last()["reason"] == "success_before_challenge"
+    # Whether the proof had been sent is not known here, and is not guessed.
+    assert "proof_sent" not in proof.last()["facts"]
+
+    proof.clear()
+    plugin = unhooked()
+    server = scram.Server()
+    scram.challenge(plugin, server.first(plugin.mech.process()))
+    plugin.mech.__dict__.pop("_otr_answered", None)
+    plugin._handle_success({"value": b"v=" + base64.b64encode(b"\0" * 20)})
+    assert plugin.xmpp.authenticated is False
+    assert proof.last()["reason"] == "signature_mismatch"
+    assert "(challenge step not hooked)" in proof.guards_line()
+
+
+def test_the_challenge_step_is_hooked_on_the_slixmpp_the_apps_ship():
+    assert sasl_hardening.describes_challenges() is True
+    assert "not hooked" not in proof.guards_line()
+
+
 def test_a_mechanism_that_is_not_scram_is_left_to_slixmpp():
     """PLAIN over a verified certificate (clearnet) has no server proof to
     check. The hardening must neither refuse it nor count it."""

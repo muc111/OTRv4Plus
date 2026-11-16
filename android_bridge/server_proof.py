@@ -327,6 +327,9 @@ def guards_line() -> str:
             missing = sorted(name for name, on in status.items() if not on)
             if missing:
                 scram += " (NOT active: %s)" % ", ".join(missing)
+            if not sasl_hardening.describes_challenges():
+                # Another slixmpp: the fixes hold, the reasons are coarser.
+                scram += " (challenge step not hooked)"
     except Exception:
         scram = "state unknown"
     with _lock:

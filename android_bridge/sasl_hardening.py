@@ -61,10 +61,20 @@ _status: Dict[str, bool] = {"success_needs_proof": False,
 
 
 _applied = False
+#: Whether SCRAM's challenge step is hooked (see `apply`). It is what makes
+#: a refusal say which part of the challenge was wrong, and what records
+#: that the client's answer was built. Not one of the three fixes above:
+#: without it they still hold, and refusals are described less exactly.
+_describes = False
 
 
 def status() -> Dict[str, bool]:
     return dict(_status)
+
+
+def describes_challenges() -> bool:
+    """Whether the challenge step could be hooked on this slixmpp."""
+    return _describes
 
 
 def applied() -> bool:
@@ -252,8 +262,14 @@ def apply() -> Dict[str, bool]:
             mech = getattr(self, "mech", None)
             if scram is None or not isinstance(mech, scram):
                 return original(self, stanza)
-            if (getattr(mech, "step", 0) != 2
-                    or not getattr(mech, "_otr_answered", False)):
+            # The answered flag is set by the hook on the challenge step.
+            # Where that hook could not be installed (a slixmpp whose SCRAM
+            # is shaped differently) the flag is never set, and requiring
+            # it would refuse every server, blaming each one. There the
+            # rule is rc.204's: the step alone. The signature check below
+            # does not depend on either.
+            answered = getattr(mech, "_otr_answered", False) or not _describes
+            if getattr(mech, "step", 0) != 2 or not answered:
                 return _refuse(self, "success_before_challenge", mech, stanza)
             try:
                 result = original(self, stanza)
@@ -284,7 +300,9 @@ def apply() -> Dict[str, bool]:
     _status["success_needs_proof"] = bool(getattr(
         getattr(FeatureMechanisms, "_handle_success", None),
         "_otr_checked", False))
-    global _applied
+    global _applied, _describes
+    _describes = bool(scram is not None and getattr(
+        getattr(scram, "process_2", None), "_otr_described", False))
     _applied = True
     return status()
 
@@ -302,7 +320,10 @@ def _facts(plugin: Any, mech: Any, success: Any = None) -> Dict[str, Any]:
         facts.update(getattr(mech, "_otr_facts", None) or {})
         facts["mechanism"] = getattr(mech, "name", None)
         facts["step"] = getattr(mech, "step", None)
-        facts["proof_sent"] = bool(getattr(mech, "_otr_answered", False))
+        # Known only where the challenge step is hooked; otherwise left
+        # out, which the record shows as absent and not as "no".
+        if _describes:
+            facts["proof_sent"] = bool(getattr(mech, "_otr_answered", False))
         facts["channel_binding"] = bool(
             getattr(mech, "use_channel_binding", False))
         if "tls" not in facts:
