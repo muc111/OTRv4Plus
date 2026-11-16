@@ -254,6 +254,56 @@ def test_an_honest_server_signs_in_and_is_counted_not_recorded():
     assert "iterations accepted 4096..2000000" in line
 
 
+#: What Prosody 13.0.7 offered a client over TLS 1.3 on 2026-11-15 (0.12.4
+#: offered PLAIN and SCRAM-SHA-1 only): it can do channel binding, so it
+#: offers the -PLUS mechanism, and it offers OAUTHBEARER.
+PROSODY_13_OFFER = {"SCRAM-SHA-1", "SCRAM-SHA-1-PLUS", "PLAIN", "OAUTHBEARER"}
+
+
+def _plugin_as_prosody_13_sees_it():
+    """The client's state after choosing against that offer: Python's TLS
+    cannot export key material for channel binding, so slixmpp declines
+    -PLUS, falls back to SCRAM-SHA-1 and says `n` (no channel binding) in
+    its first message, because a -PLUS mechanism was on offer."""
+    plugin = scram.plugin_for()
+    plugin.mech_list = set(PROSODY_13_OFFER)
+    plugin.mech.security_settings["binding_proposed"] = True
+    return plugin
+
+
+def test_what_prosody_13_offers_changes_nothing_for_the_checks():
+    """The real-server tests run against Prosody 0.12.4 in CI. What differs
+    on 13 from the client's side is the offer, and with it the first byte
+    of the client's first message. Neither may change what the checks do:
+    an honest server signs in, and a refusal is recorded the same way, with
+    the offer listed by name."""
+    plugin = _plugin_as_prosody_13_sees_it()
+    server = scram.Server()
+    first = plugin.mech.process()
+    assert bytes(first).startswith(b"n,,"), "no channel binding, and says so"
+    final = scram.challenge(plugin, server.first(first))
+    plugin._handle_success({"value": server.final(bytes(final))})
+    assert plugin.xmpp.authenticated is True
+    assert plugin.xmpp.closed == [] and proof.recent() == []
+    assert "server proofs verified 1" in proof.guards_line()
+
+    plugin = _plugin_as_prosody_13_sees_it()
+    _with_count(b"3000000")(plugin, scram.Server())
+    record = proof.last()
+    assert record["reason"] == "iteration_count"
+    assert record["facts"]["offered"] == (
+        "OAUTHBEARER, PLAIN, SCRAM-SHA-1, SCRAM-SHA-1-PLUS")
+    assert record["facts"]["mechanism"] == "SCRAM-SHA-1"
+    assert record["facts"]["channel_binding"] == "no"
+    assert record["facts"]["proof_sent"] == "no"
+
+    proof.clear()
+    plugin = _plugin_as_prosody_13_sees_it()
+    _wrong_signature(plugin, scram.Server())
+    assert proof.last()["reason"] == "signature_mismatch"
+    assert plugin.xmpp.authenticated is False
+
+
 def test_a_mechanism_that_is_not_scram_is_left_to_slixmpp():
     """PLAIN over a verified certificate (clearnet) has no server proof to
     check. The hardening must neither refuse it nor count it."""
