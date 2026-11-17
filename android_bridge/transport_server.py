@@ -130,6 +130,12 @@ class ServerMixin:
     def banned_text(self) -> str:
         return getattr(self, "_banned", "")
 
+    @property
+    def closed_by_admin(self):
+        """(kind, text) when the administrator ended the stream: signed
+        out, account removed, or maintenance (restrictions.py); else None."""
+        return getattr(self, "_closed_by_admin", None)
+
     def moderation(self, op: str, account: str = "", days: int = 0,
                    reason: str = "") -> "tuple[str, str, dict]":
         """Run one moderation command: "status", "ban", "unban", "rooms" or

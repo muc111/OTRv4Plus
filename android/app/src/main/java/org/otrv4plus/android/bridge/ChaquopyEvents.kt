@@ -104,6 +104,10 @@ internal object ChaquopyEvents {
             "MessageDelivered" ->
                 OtrEvent.MessageDelivered(str("peer"), str("message_id"))
 
+            // Refused by the server: a restriction on this account.
+            "MessageBlocked" ->
+                OtrEvent.MessageBlocked(str("peer"), str("message_id"), str("reason"))
+
             "CallStateChanged" ->
                 OtrEvent.CallChanged(
                     str("peer"), CallState.fromName(str("state")),

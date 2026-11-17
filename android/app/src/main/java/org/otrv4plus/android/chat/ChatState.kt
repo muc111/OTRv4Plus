@@ -456,6 +456,9 @@ class ChatState(
             is OtrEvent.MessageReceived -> receive(event)
             // Ticks: never a notification.
             is OtrEvent.MessageDelivered -> { markDelivered(event.peer, event.messageId); false }
+            // Refused by the server (a restriction on this account): the
+            // bubble says "not sent", the conversation and the banner say why.
+            is OtrEvent.MessageBlocked -> { markBlocked(event); false }
             is OtrEvent.RoomMessageAcked -> { ackRoom(event); false }
             is OtrEvent.MessageDisplayed -> { markSeenUpTo(event.peer, event.messageId); false }
             // Written by us elsewhere: stored, never announced.
@@ -1151,6 +1154,12 @@ class ChatState(
         // in front of them. Either alone is not "they saw it".
         if (added) deleted.restore(jid)
         if (added && uiVisible && openConversation == jid) store.markRead(jid)
+        // An announcement from the server's administrator: in its own
+        // conversation (named for the server, plaintext, as it is), and on
+        // the banner, so it is seen without opening anything.
+        if (added && event.source == "server") {
+            note("Announcement from the server: " + event.body.take(ANNOUNCEMENT_BANNER_CHARS))
+        }
         // Something from while this device was away is history, not news:
         // stored, counted unread, but no sound or notification.
         return added && event.source != "archive"
@@ -1429,6 +1438,52 @@ class ChatState(
         return store.update(m.copy(sendState = SendState.DELIVERED))
     }
 
+    /**
+     * The server refused our message: its administrator restricted this
+     * account (muted, or file transfers stopped). The bubble becomes
+     * FAILED ("not sent", in red) -- never "sent" -- and nothing retries it.
+     * One line in the conversation says why (not one per refused stanza: a
+     * message in fragments, or a handshake, is refused many times over),
+     * and the app's banner says it wherever the user is.
+     */
+    fun markBlocked(event: OtrEvent.MessageBlocked): Boolean {
+        val jid = bare(event.peer)
+        if (jid.isEmpty()) return false
+        var changed = false
+        if (event.messageId.isNotEmpty()) {
+            store.messages(jid).firstOrNull { it.outgoing && it.wireId == event.messageId }
+                ?.let { m ->
+                    if (m.sendState != SendState.FAILED) {
+                        changed = store.update(m.copy(sendState = SendState.FAILED))
+                    }
+                }
+        }
+        // Held messages that never went out (no session while muted) are
+        // dropped by the bridge and reported here by id; anything still
+        // shown as on its way in this conversation is not.
+        for (m in store.messages(jid)) {
+            if (m.outgoing && m.sendState in setOf(SendState.SENDING, SendState.QUEUED)) {
+                changed = store.update(m.copy(sendState = SendState.FAILED)) || changed
+            }
+        }
+        val text = FailureText.restricted(event.reason)
+        val last = store.messages(jid).lastOrNull()
+        if (last == null || last.security != SecurityLabel.SYSTEM || last.body != text) {
+            val at = now()
+            changed = store.append(Message(
+                id = "restricted:${event.reason}:$at",
+                conversationId = jid,
+                body = text,
+                outgoing = false,
+                at = at,
+                sendState = SendState.NONE,
+                security = SecurityLabel.SYSTEM,
+            )) || changed
+        }
+        note(text)
+        return changed
+    }
+
     /** [peer] has seen our messages up to [wireId]: that one and every
      *  earlier one that went out are READ. */
     fun markSeenUpTo(peer: String, wireId: String): Boolean {
@@ -1612,6 +1667,10 @@ class ChatState(
     companion object {
         /** Most "asks to join" banners held at once. */
         const val MAX_ENTRY_REQUESTS = 20
+
+        /** How much of a server announcement the banner shows; the whole of it
+         *  is in the server's conversation. */
+        const val ANNOUNCEMENT_BANNER_CHARS = 300
 
         /** How long after a verification event a roster poll reading
          *  ENCRYPTED is taken as one read before it. A poll is applied before

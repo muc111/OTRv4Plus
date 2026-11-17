@@ -1047,6 +1047,17 @@ sealed interface OtrEvent {
     /** Our message [messageId] reached [peer]'s device (XEP-0184). */
     data class MessageDelivered(val peer: String, val messageId: String) : OtrEvent
 
+    /**
+     * The server refused our message [messageId] to [peer]: the server's
+     * administrator restricted this account. [reason] is "account_muted",
+     * "files_restricted" or "files_disabled_on_server"
+     * (android_bridge/restrictions.py). [messageId] is "" when the refused
+     * stanza was not a typed message: the conversation is told, no bubble
+     * is marked. Nothing retries it.
+     */
+    data class MessageBlocked(val peer: String, val messageId: String,
+                              val reason: String) : OtrEvent
+
     /** [peer] has seen our messages up to [messageId] (XEP-0333). */
     data class MessageDisplayed(val peer: String, val messageId: String) : OtrEvent
 

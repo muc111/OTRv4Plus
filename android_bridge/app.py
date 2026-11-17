@@ -51,7 +51,7 @@ from otrv4plus_mode import OtrMode
 
 from .events import (
     CallState, ConnectionState, ConnectionStateChanged, ChatStateChanged,
-    ErrorOccurred, Event, EventSink, HistorySynced, MessageChanged,
+    ErrorOccurred, Event, EventSink, HistorySynced, MessageBlocked, MessageChanged,
     MessageDelivered, MessageDisplayed, MessageReceived, MessageSentElsewhere,
     OtrCapabilityChanged, QueuedSent, SecurityState, SessionStateChanged,
     SmpProgress, SmpState, security_state_from_level, smp_state_from_status,
@@ -427,6 +427,40 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         resource = text.split("/", 1)[1] if "/" in text else ""
         key = self.canonical_peer(text)
         self._presence.note(key + "/" + resource if resource else key, online, show)
+
+    def note_restricted(self, peer: str, stanza_id: str, kind: str) -> None:
+        """The server refused something we sent to [peer]: the server's
+        administrator has restricted this account (restrictions.py).
+
+        Told to the UI as MessageBlocked, and NOTHING IS RETRIED. What this
+        conversation still holds unsent (no session yet: while muted, the
+        handshake itself is refused) is dropped and reported as blocked too;
+        left queued, it would go out on its own once the restriction ended,
+        long after the person was told it was not sent."""
+        if self._wiped:
+            return
+        peer = self.canonical_peer(peer)
+        if not peer:
+            return
+        held = self._outbox.pop(peer, None) or []
+        self._emit(MessageBlocked(peer=peer, message_id=str(stanza_id or ""),
+                                  reason=str(kind or "")))
+        for body in held:
+            mid = str(getattr(body, "message_id", "") or "")
+            if mid and mid != stanza_id:
+                self._emit(MessageBlocked(peer=peer, message_id=mid,
+                                          reason=str(kind or "")))
+
+    def note_announcement(self, domain: str, body: str, timestamp: float) -> None:
+        """A message from our own server (an administrator's announcement):
+        shown in a conversation named for the server, and plaintext, as it
+        is (the server has no encrypted session with anyone). Source
+        "server", so the UI can show it as what it is."""
+        if self._wiped:
+            return
+        self._emit(MessageReceived(peer=str(domain), body=str(body),
+                                   timestamp=float(timestamp or 0.0),
+                                   message_id=None, source="server"))
 
     def note_presence_lost(self) -> None:
         """The stream went. Everything we knew about availability goes too.

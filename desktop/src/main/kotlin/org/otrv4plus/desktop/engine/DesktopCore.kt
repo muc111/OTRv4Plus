@@ -671,6 +671,8 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "FingerprintChanged" -> OtrEvent.FingerprintChanged(
                     str("peer"), str("stored_fingerprint"), str("received_fingerprint"))
                 "MessageDelivered" -> OtrEvent.MessageDelivered(str("peer"), str("message_id"))
+                "MessageBlocked" -> OtrEvent.MessageBlocked(
+                    str("peer"), str("message_id"), str("reason"))
                 "CallStateChanged" -> OtrEvent.CallChanged(
                     str("peer"), CallState.fromName(str("state")), int("duration_seconds"))
                 "SubscriptionRequested" -> OtrEvent.SubscriptionRequested(

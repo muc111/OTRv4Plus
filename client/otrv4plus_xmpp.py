@@ -1480,6 +1480,19 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
     # -------------------------------------------------------------------------
 
     def _on_message(self, msg):
+        # An announcement from our own server's administrator (a headline,
+        # or a chat message, from the bare domain): plaintext, shown as what
+        # it is, never handed to OTR (android_bridge/restrictions.py).
+        try:
+            from android_bridge import restrictions as _restrictions
+            own_domain = str(getattr(getattr(self, "boundjid", None), "domain", "") or "")
+            announced = _restrictions.is_server_announcement(str(msg["from"]), own_domain)
+        except Exception:
+            announced = False           # never a reason to lose a message
+        if announced:
+            if msg["type"] in ("headline", "chat", "normal") and msg["body"]:
+                print("\n[server announcement] %s" % _sanitise(str(msg["body"])[:4000]))
+            return
         if msg["type"] not in ("chat", "normal"):
             return
         peer = msg["from"].bare

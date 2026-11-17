@@ -1346,8 +1346,13 @@ class OtrConnectionService : Service() {
                 // Replaced by a newer sign-in of this account: stop, and say
                 // so. Reconnecting would sign that device out, and it would
                 // do the same back.
+                // So is a ban, a removed account, or being signed out by the
+                // server's administrator: a reconnect would be refused, or
+                // would undo what the administrator did.
                 if (current.code == ConnectProblem.SIGNED_IN_ELSEWHERE ||
-                    current.code == ConnectProblem.ACCOUNT_BANNED) {
+                    current.code == ConnectProblem.ACCOUNT_BANNED ||
+                    current.code == ConnectProblem.ACCOUNT_REMOVED ||
+                    current.code == ConnectProblem.SIGNED_OUT_BY_ADMIN) {
                     failure = current.code
                     reconnect.onFailure(current.code)
                     enter(LinkPhase.FAILED, "needs the user: ${current.code}")

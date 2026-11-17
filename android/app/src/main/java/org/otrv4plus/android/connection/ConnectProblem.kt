@@ -78,8 +78,32 @@ object ConnectProblem {
     const val ACCOUNT_BANNED = "account_banned"
 
     const val ACCOUNT_BANNED_TEXT =
-        "This account is banned from this server by its administrator. " +
-            "Sign-in will not work until the ban ends."
+        "Your account has been suspended by the server's administrator. " +
+            "Sign-in will not work until the suspension is lifted."
+
+    /** The administrator removed this account (XMPP Guard "wipe";
+     *  android_bridge/restrictions.py). Never retried. */
+    const val ACCOUNT_REMOVED = "account_removed"
+
+    const val ACCOUNT_REMOVED_TEXT =
+        "This account was removed from the server by its administrator. " +
+            "Sign-in will not work again."
+
+    /** The administrator signed this session out (XMPP Guard "kick").
+     *  Not retried by itself: an automatic sign-in would undo it. */
+    const val SIGNED_OUT_BY_ADMIN = "signed_out_by_admin"
+
+    const val SIGNED_OUT_BY_ADMIN_TEXT =
+        "You were signed out by the server's administrator. Press Connect " +
+            "to sign in again."
+
+    /** The server is in maintenance mode or locked down (XMPP Guard).
+     *  Retried with the usual backoff, and said while it is. */
+    const val SERVER_MAINTENANCE = "server_maintenance"
+
+    const val SERVER_MAINTENANCE_TEXT =
+        "The server is in maintenance mode. Please try again later; the app " +
+            "also tries again by itself."
 
     const val SIGNED_IN_ELSEWHERE_TEXT =
         "Signed out: this account signed in on another device, and the " +
@@ -137,7 +161,7 @@ object ConnectProblem {
         "tls_required", "certificate_failure", "no_safe_auth_mechanism",
         "server_not_proven",
         "route_refused", "malformed_server", "bad_transport", "no_server",
-        SIGNED_IN_ELSEWHERE, ACCOUNT_BANNED,
+        SIGNED_IN_ELSEWHERE, ACCOUNT_BANNED, ACCOUNT_REMOVED, SIGNED_OUT_BY_ADMIN,
     )
 
     /** Codes I2P produces on its way up; retrying is the remedy. */
@@ -195,6 +219,9 @@ object ConnectProblem {
         if (code == SERVER_FULL) {
             return Line(SERVER_FULL_TEXT, if (retrying) Tone.QUIET else Tone.ERROR)
         }
+        if (code == SERVER_MAINTENANCE) {
+            return Line(SERVER_MAINTENANCE_TEXT, if (retrying) Tone.QUIET else Tone.ERROR)
+        }
         if (code == SESSION_LIMIT) {
             return Line(SESSION_LIMIT_TEXT + if (retrying) " Trying again." else "", Tone.ERROR)
         }
@@ -248,6 +275,8 @@ object ConnectProblem {
         "profile_incomplete" -> "Fill in the address and password."
         SIGNED_IN_ELSEWHERE -> SIGNED_IN_ELSEWHERE_TEXT
         ACCOUNT_BANNED -> ACCOUNT_BANNED_TEXT
+        ACCOUNT_REMOVED -> ACCOUNT_REMOVED_TEXT
+        SIGNED_OUT_BY_ADMIN -> SIGNED_OUT_BY_ADMIN_TEXT
         else -> "The connection needs your attention ($code)."
     }
 

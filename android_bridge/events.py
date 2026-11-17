@@ -40,7 +40,7 @@ __all__ = [
     "FileTransferChanged", "VoiceNoteReceived", "OtrCapabilityChanged", "EventSink",
     "GroupInvite", "GroupChanged", "GroupEntryRequested",
     "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
-    "MessageChanged", "RoomMessageAcked", "KeysPublished",
+    "MessageChanged", "RoomMessageAcked", "KeysPublished", "MessageBlocked",
 ]
 
 
@@ -323,6 +323,21 @@ class MessageDelivered(Event):
     """The contact's device received our message `message_id` (XEP-0184)."""
 
     message_id: str = ""
+
+
+@dataclass(frozen=True)
+class MessageBlocked(Event):
+    """The server refused our message `message_id` to `peer` because the
+    server's administrator has restricted this account
+    (android_bridge/restrictions.py). It is not sent and nothing retries it.
+
+    `reason` is a restriction kind: "account_muted", "files_restricted" or
+    "files_disabled_on_server". `message_id` is "" when the refused stanza
+    was not one the person typed (a fragment, a handshake frame): the
+    conversation is told, no bubble is marked."""
+
+    message_id: str = ""
+    reason: str = ""
 
 
 @dataclass(frozen=True)

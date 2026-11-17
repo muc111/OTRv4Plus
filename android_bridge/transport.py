@@ -65,6 +65,7 @@ from .transport_server import ServerMixin
 from .transport_welcome import WelcomeMixin
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
+from . import restrictions as _restrictions
 from .transport_base import _log, CONNECT_TIMEOUT, CALL_TIMEOUT, DEFAULT_C2S_PORT, TransportError  # noqa: F401
 from .transport_stream import _StreamWatch, _stream_failure_text, _tls_in_place
 
@@ -1097,6 +1098,14 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             if not started.done():
                 if _is_ban(cond, said):
                     started.set_exception(TransportError(BANNED_CODE, _ban_text(said)))
+                    return
+                # XMPP Guard: suspended, maintenance, signed out, removed
+                # (android_bridge/restrictions.py). The app's own sentence;
+                # the server's text is only matched, never shown.
+                restricted = _restrictions.of_stream_error(cond, said)
+                if restricted is not None:
+                    started.set_exception(TransportError(
+                        restricted.kind, restricted.text))
                     return
                 if _is_session_limit(cond, said):
                     # Signed in, refused at resource bind: the server allows
@@ -2389,15 +2398,25 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             cond = ""
         _TRACE.record("transport", "live_stream_error", "warning",
                       condition=cond or "unknown")
+        try:
+            said = str(stanza["text"] or "")
+        except Exception:
+            said = ""
         if cond == "conflict":
             self._replaced = True
-        elif cond == "policy-violation":
-            try:
-                said = str(stanza["text"] or "")
-            except Exception:
-                said = ""
-            if _is_ban(cond, said):
-                self._banned = _ban_text(said)
+        elif _is_ban(cond, said):
+            self._banned = _ban_text(said)
+        else:
+            restricted = _restrictions.of_stream_error(cond, said)
+            if restricted is None:
+                return
+            if restricted.kind == BANNED_CODE:
+                self._banned = restricted.text
+            else:
+                # Read by the controller while it handles "restricted".
+                self._closed_by_admin = (restricted.kind, restricted.text)
+            _TRACE.record("transport", "closed_by_admin", "warning",
+                          kind=restricted.kind)
 
     def _note_inbound(self, stanza):
         """Record that the stream delivered something. Returns it unchanged.
@@ -2439,12 +2458,73 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         to_room = sender in self._room_nicks
         _TRACE.record("rooms" if to_room else "chat", "message_rejected",
                       "warning", peer=sender, condition=cond[:40])
+        try:
+            restricted = _restrictions.of_stanza_error(
+                str(stanza["error"]["type"] or ""), cond,
+                str(stanza["error"]["text"] or ""))
+            stanza_id = str(stanza.get("id") or "")
+        except Exception:
+            restricted, stanza_id = None, ""
+        if restricted is not None:
+            # Muted, or file transfers stopped, by the server's administrator.
+            # The send is over: nothing here or in the engine retries it.
+            _TRACE.record("chat", "send_restricted", "warning",
+                          kind=restricted.kind, peer=sender)
+            handler = getattr(self, "_on_restricted", None)
+            if handler is not None:
+                try:
+                    handler(sender, stanza_id, restricted.kind)
+                except Exception:
+                    _log.warning("the restriction handler raised")
+            return
         handler = getattr(self, "_on_room_rejected", None)
         if to_room and handler is not None:
             try:
                 handler(sender, cond[:40])
             except Exception:
                 _log.warning("the room-rejected handler raised")
+
+    def set_restriction_handler(self, handler) -> None:
+        """`handler(peer, stanza_id, kind)` when the server refuses something
+        we sent because of a restriction on this account (restrictions.py)."""
+        self._on_restricted = handler
+
+    def set_announcement_handler(self, handler) -> None:
+        """`handler(domain, body, timestamp)` for a message from the server
+        itself (an administrator's announcement)."""
+        self._on_announcement = handler
+
+    #: An announcement longer than this is cut; XMPP Guard sends at most 500
+    #: characters, its notify 2000.
+    MAX_ANNOUNCEMENT = 4000
+
+    def _server_announcement(self, stanza) -> bool:
+        """True if [stanza] is a message from our own server's domain, and it
+        was handed to the announcement handler. Plaintext by nature: the
+        server has no OTR session with anyone. Never reaches the engine."""
+        try:
+            sender = str(stanza.get("from") or "")
+            domain = str(self._profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
+        except Exception:
+            return False
+        if not _restrictions.is_server_announcement(sender, domain):
+            return False
+        try:
+            kind = stanza.get("type") or "normal"
+            body = str(stanza.get("body") or "")
+        except Exception:
+            return True
+        if kind not in ("headline", "chat", "normal") or not body.strip():
+            return True                 # from the server, but nothing to show
+        body = body[:self.MAX_ANNOUNCEMENT]
+        _TRACE.record("chat", "server_announcement", "info", chars=len(body))
+        handler = getattr(self, "_on_announcement", None)
+        if handler is not None:
+            try:
+                handler(sender.lower(), body, time.time())
+            except Exception:
+                _log.warning("the announcement handler raised")
+        return True
 
     def _on_message(self, stanza) -> None:
         """Hand the body up, whatever it is.
@@ -2455,6 +2535,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         whether a payload is a DAKE frame, an SMP frame, ciphertext, or a
         plaintext message from someone with no session.
         """
+        if self._server_announcement(stanza):
+            return
         try:
             if stanza.get("type") not in ("chat", "normal", None, ""):
                 return
@@ -2727,6 +2809,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             # "banned", which runs inside this call; cleared after.
             self._emit_state("banned")
             self._banned = ""
+            return
+        if getattr(self, "_closed_by_admin", None):
+            # Signed out, removed, or maintenance: `closed_by_admin` is read
+            # inside this call, as `banned_text` is above.
+            self._emit_state("restricted")
+            self._closed_by_admin = None
             return
         self._emit_state("disconnected")
 

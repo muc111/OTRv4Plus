@@ -494,6 +494,29 @@ class ConnectionMixin:
         # slixmpp does not always populate .condition, so fall back to
         # matching the element name inside the raw stanza.
         matched = None
+        # The server's administrator: suspended, removed, signed out, or
+        # maintenance (android_bridge/restrictions.py). Our sentence, not the
+        # server's; the reconnect loop stops unless trying again can work.
+        try:
+            from android_bridge import restrictions as _restrictions
+            try:
+                said = str(error["text"] or "")
+            except Exception:
+                said = raw
+            restricted = _restrictions.of_stream_error(str(condition), said)
+        except ImportError:
+            restricted = None
+        if restricted is not None:
+            if restricted.retry:
+                print("[server] %s" % restricted.text)
+                return
+            self._shutting_down = True
+            print("\n[fatal] %s\n" % restricted.text)
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            return
         if _is_session_limit(str(condition), raw):
             self._shutting_down = True
             print("\n[fatal] %s\n" % SESSION_LIMIT_TEXT)
