@@ -4,7 +4,35 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.205-untested — 2026-11-16 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.206-untested — 2026-11-17 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`; this one has not
+been on a device. What the apps show when the server's administrator
+restricts an account, and announcements that now reach everyone.
+
+- **A message refused because your account is muted says so.** It used to
+  show as sent. Now the bubble says "not sent" in red, the conversation
+  says why, and a banner says it wherever you are. Nothing is retried by
+  itself, and text that was waiting for an encrypted session is dropped
+  and marked "not sent" too, instead of going out later on its own.
+- **File transfers stopped by the administrator** (for your account, or
+  for the whole server) are said the same way.
+- **Suspended, signed out, removed, maintenance.** A suspension from the
+  admin panel now says "Your account has been suspended by the server's
+  administrator" and the app stops trying to sign in; it used to treat it
+  as an unexplained error and keep retrying. Being signed out by the
+  administrator, or having the account removed, says so and waits for you.
+  Maintenance says "The server is in maintenance mode" and the app tries
+  again by itself.
+- **Server announcements reach every client.** An announcement from the
+  admin panel arrived and was thrown away. It now appears in a
+  conversation named for the server, as plaintext (which is what it is),
+  with a notification and a banner. The terminal client prints it.
+- The server's own wording is never shown, only recognised: the apps say
+  what happened in their own words, so a server cannot write to your
+  screen this way. An announcement is accepted only from your own server.
+
+## Android 0.7.0-experimental.rc.205-untested — 2026-11-16 — on `dev`, superseded by rc.206
 
 The last build tested on devices is rc.194, on `main`; this one has not
 been on a device. It is rc.204's hardening, made into something a person
