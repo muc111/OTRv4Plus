@@ -24,8 +24,11 @@ tested now, and this one builds on it.
   transfers are stopped, and your profile says so (with the end time when
   there is one), instead of finding out from the first refused message. A
   server that does not answer changes nothing.
-- **Build toolchain: Kotlin 2.4.21** in both apps, for CVE-2026-53914 (the
-  Kotlin Gradle plugin's build cache; it affected builds, not the app).
+- **Build toolchain: Kotlin 2.4.21** in the Android app, for CVE-2026-53914
+  (the Kotlin Gradle plugin's build cache; it affected builds, not the app).
+  The desktop app stays on 2.0.21 for now: Kotlin 2.4 refuses the setting
+  its screens rely on to redraw, and changing how they redraw needs trying
+  on a desktop first.
 - **Dependency updates are proposed automatically** (Dependabot, weekly, to
   `dev`), and the repository passes the REUSE licence check, now run in CI.
 

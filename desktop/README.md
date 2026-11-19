@@ -171,8 +171,13 @@ screens as the `desktop-screens` artifact.
 
 ## Versions
 
-Compose Multiplatform 1.7.3 with Kotlin 2.4.21, the same Kotlin as the
-Android app (2.4.20 fixed CVE-2026-53914 in the Kotlin Gradle plugin).
+Compose Multiplatform 1.7.3 with Kotlin 2.0.21. The Android app is on
+2.4.21 (for CVE-2026-53914, in the Kotlin Gradle plugin's build cache). The
+desktop app cannot follow yet: Kotlin 2.4 refuses
+`ComposeFeatureFlag.StrongSkipping.disabled()`, and this UI is redrawn
+through `AppModel.revision` with strong skipping off (see `build.gradle.kts`).
+It moves once every model read observes the revision, as the Android
+`ChatViewModel`'s do, and that has been tried on a desktop.
 
 Two repositories are used:
 
