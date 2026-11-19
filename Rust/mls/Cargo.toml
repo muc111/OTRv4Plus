@@ -36,8 +36,8 @@ serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 tls_codec = { version = "0.5", features = ["derive", "serde", "mls"] }
 # The core's versions, so no second copy of a primitive enters the build.
-ml-kem = { version = "0.3.2", default-features = false, features = ["alloc", "zeroize"] }
-ml-dsa = { version = "0.1.1", default-features = false, features = ["alloc", "zeroize"] }
+ml-kem = { version = "0.3.4", default-features = false, features = ["alloc", "zeroize"] }
+ml-dsa = { version = "0.1.2", default-features = false, features = ["alloc", "zeroize"] }
 # "zeroize": cipher and hash states are wiped when dropped (see ../Cargo.toml).
 aes-gcm = { version = "0.11", features = ["aes", "zeroize"] }
 hkdf = "0.13"

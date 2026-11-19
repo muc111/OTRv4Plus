@@ -193,17 +193,17 @@ class TestSyntaxErrorIsTheInterestingCase:
     """
 
     def _syntax_error(self):
-        try:
-            compile('f"{x !r }"\n', "otrv4+.py", "exec")
-        except SyntaxError as e:
-            return e
-        return None
+        """The SyntaxError Python 3.11 raises for a PEP 701 f-string.
+
+        Measured with python3.11 (`compile('f"{x !r }"', ...)`), then built
+        directly, so the test runs on every interpreter: 3.12+ parses the
+        f-string, and compiling it there raised nothing and the test skipped.
+        """
+        return SyntaxError("f-string: expecting '}'",
+                           ("otrv4+.py", 1, 11, 'f"{x !r }"\n', 1, 11))
 
     def test_it_names_the_file_and_line(self):
         exc = self._syntax_error()
-        if exc is None:
-            import pytest
-            pytest.skip("this interpreter parses PEP 701 f-strings")
         d = failure.describe(exc)
         assert d["code"] == "SyntaxError"
         assert "otrv4+.py" in d["detail"]
@@ -212,9 +212,6 @@ class TestSyntaxErrorIsTheInterestingCase:
     def test_it_does_not_include_the_source_line(self):
         """exc.text is the offending source. Not shown, on principle."""
         exc = self._syntax_error()
-        if exc is None:
-            import pytest
-            pytest.skip("this interpreter parses PEP 701 f-strings")
         assert exc.text, "the fixture is not exercising the property"
         assert exc.text.strip() not in repr(failure.describe(exc))
 

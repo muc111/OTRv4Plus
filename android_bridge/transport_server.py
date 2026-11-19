@@ -110,7 +110,12 @@ class ServerMixin:
         items = await disco.get_items(jid=domain,
                                       node="http://jabber.org/protocol/commands",
                                       timeout=CALL_TIMEOUT)
-        return any(str(node or "").startswith(self.ADMIN_COMMAND_PREFIX)
+        # Either list: an operator who administers from the server's own
+        # shell can drop mod_admin_adhoc (docs/SERVER_HARDENING.md) and
+        # keep moderation, which mod_otrv4plus_moderation also offers to
+        # admins only.
+        mine = (self.ADMIN_COMMAND_PREFIX, self.MODERATION_NS)
+        return any(str(node or "").startswith(mine)
                    for _jid, node, _name in items["disco_items"].get_items())
 
     # -- moderation (server admins; prosody/mod_otrv4plus_moderation.lua) ----
@@ -124,6 +129,12 @@ class ServerMixin:
     @property
     def banned_text(self) -> str:
         return getattr(self, "_banned", "")
+
+    @property
+    def closed_by_admin(self):
+        """(kind, text) when the administrator ended the stream: signed
+        out, account removed, or maintenance (restrictions.py); else None."""
+        return getattr(self, "_closed_by_admin", None)
 
     def moderation(self, op: str, account: str = "", days: int = 0,
                    reason: str = "") -> "tuple[str, str, dict]":

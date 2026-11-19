@@ -134,8 +134,8 @@ built artifact exposes neither surface.
 `--deny warnings` (`.github/workflows/rust-audit.yml`).
 
 The post-quantum primitives are now the pure-Rust RustCrypto crates:
-ML-KEM-1024 (FIPS 203) on `ml-kem` 0.3.2 and ML-DSA-87 (FIPS 204) on
-`ml-dsa` 0.1.1, with X448 (RFC 7748) on `ed448-goldilocks-plus` 0.18.1.
+ML-KEM-1024 (FIPS 203) on `ml-kem` 0.3.4 and ML-DSA-87 (FIPS 204) on
+`ml-dsa` 0.1.2, with X448 (RFC 7748) on `ed448-goldilocks-plus` 0.18.1.
 This replaced the earlier PQClean C bindings (`pqcrypto-mlkem` /
 `pqcrypto-mldsa` and their `pqcrypto-traits` / `pqcrypto-internals` /
 `paste` helpers), which were flagged **unmaintained** because the PQClean

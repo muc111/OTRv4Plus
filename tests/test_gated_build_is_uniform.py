@@ -9,14 +9,16 @@ depends on how the Rust core was compiled:
 
     capability present (test-only-kdf wheel)   capability absent (release wheel)
     ----------------------------------------   --------------------------------
-    tests/test_android_identity.py       (36)  tests/test_rust_identity_sealing.py
     tests/test_rust_security.py          vault  tests/test_release_guard.py
     tests/test_harness_audit.py          vault  tests/test_release_guard.py
+    tests/test_release_guard.py   opt-in guards  tests/test_release_guard.py
 
 That is a sound design -- the absent half is the security boundary working, so
-it should skip rather than fail -- and it is why 42 of this suite's 46 skips
-are legitimate. Each of those files says so in a comment naming its
-counterpart.
+it should skip rather than fail. Each of those files says so in a comment
+naming its counterpart, and CI runs both halves: the "gates-open wheel" step
+in .github/workflows/python.yml builds the test-only-kdf wheel. (Until it did,
+the left column ran nowhere, and this file's own invariant had never been
+checked against a wheel it could fail on. When it was, it failed: see GATED.)
 
 WHAT THE COMMENTS CANNOT SAY
 ----------------------------
@@ -92,8 +94,16 @@ def _module_fn_compiled_in(name):
 #: for, which `test_the_registry_matches_the_release_guard` checks.
 #:
 #: The vault methods and key-injection constructors use `hasattr` because they
-#: are methods on PyO3 classes and conftest does not shim them; only the three
-#: module-level functions need the stricter probe.
+#: are methods on PyO3 classes and conftest does not shim them.
+#:
+#: The module-level names (`test_release_guard.GATED_MODULE_FUNCTIONS`) are not
+#: here: no build compiles them in. This registry once listed them, and the
+#: first run of this file against a real test-only-kdf wheel failed with a
+#: "MIXED build" -- four present, four absent -- because `kdf_1` and
+#: `encode_header` were gated #[pyfunction]s that lib.rs never registered, and
+#: `rust_kdf_1` / `rust_encode_header` exist only as conftest shims. The two
+#: dead functions were deleted from the core; `TestNoBuildExportsTheRawKdf`
+#: below holds every build to their absence.
 GATED = (
     ("RustSMPVault.load",
      lambda: hasattr(otrv4_core.RustSMPVault, "load")),
@@ -105,11 +115,6 @@ GATED = (
     ("X448KeyHandle.from_priv_bytes",
      lambda: hasattr(getattr(otrv4_core, "X448KeyHandle", None),
                      "from_priv_bytes")),
-    ("kdf_1", lambda: _module_fn_compiled_in("kdf_1")),
-    ("encode_header", lambda: _module_fn_compiled_in("encode_header")),
-    ("rust_kdf_1", lambda: _module_fn_compiled_in("rust_kdf_1")),
-    ("rust_encode_header",
-     lambda: _module_fn_compiled_in("rust_encode_header")),
 )
 
 
@@ -181,25 +186,41 @@ class TestTheWheelIsUniformlyOneThing:
                     "test_release_guard gates %s.%s and this file does not "
                     "probe it" % (cls, attr))
 
-        mine_mod = {n for n, _ in GATED if "." not in n}
-        missing = set(guard.GATED_MODULE_FUNCTIONS) - mine_mod
-        assert not missing, (
-            "test_release_guard gates module functions %s that this file "
-            "does not probe" % sorted(missing))
+
+
+class TestNoBuildExportsTheRawKdf:
+    """The raw KDF and header encoder are exported by NO build, test or not.
+
+    `test_release_guard.test_production_artifact_exposes_no_raw_kdf` checks
+    this on a release wheel only; on a declared test build it stands down.
+    Since no feature compiles these in any more, the rule holds everywhere,
+    and is checked everywhere. (conftest's pure-Python shims are not native
+    exports and are ignored.)
+    """
+
+    def test_no_native_raw_kdf_or_header_encoder(self):
+        exposed = [n for n in _GUARD.GATED_MODULE_FUNCTIONS
+                   if _module_fn_compiled_in(n)]
+        assert not exposed, (
+            "otrv4_core natively exports %s; no build should" % exposed)
 
 
 class TestTheSealingModuleIsPresentEitherWay:
-    """`create_sealed_identity` is NOT gated, and that matters.
+    """Identity sealing is NOT gated, and that matters.
 
-    It is what `test_rust_identity_sealing` uses to cover the identity
-    lifecycle on a release wheel, so if it were ever gated out the production
-    half of that pair would vanish and the 36 skips in
-    `test_android_identity` would be covered by nothing.
+    Production seals and opens identities with `create_sealed_identity_under`
+    / `unseal_identity_under` (under an opaque Rust `FileDek`); every build
+    must have them, or no identity could be created or restored. The raw-key
+    pair `create_sealed_identity` / `unseal_identity` that the identity tests
+    use is behind `raw-key-test-api`, so it is NOT required here.
+
+    (This test used to require `create_sealed_identity` itself, and so failed
+    on the release wheel -- where it had never been run.)
     """
 
     def test_sealing_is_compiled_in(self):
-        assert hasattr(otrv4_core, "create_sealed_identity"), (
-            "the Rust core has no identity sealing module, so "
-            "test_rust_identity_sealing skips -- and on a release wheel "
-            "test_android_identity skips too. The identity lifecycle would "
-            "then be tested nowhere.")
+        missing = [n for n in ("create_sealed_identity_under", "unseal_identity_under")
+                   if not hasattr(otrv4_core, n)]
+        assert not missing, (
+            "the Rust core lacks %s: no identity could be sealed or restored"
+            % ", ".join(missing))

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
 # The Python suite — the part of this project CI could not see
 #
 # WHY THIS EXISTS
@@ -50,6 +53,24 @@ env:
   PYTHON_VERSION: "3.12"
 
 jobs:
+  # In seconds, and before anything is built. The suite checks licence
+  # headers too (tests/test_spdx_headers_on_new_files.py), about eleven
+  # minutes in: rc.204's five files with the wrong identifier were reported
+  # thirteen minutes after the push. This job is the same policy from a
+  # script with nothing to install.
+  licence-headers:
+    name: Licence headers
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The whole history: the policy starts at a commit, and a shallow
+      # clone does not contain it (the script then exits 2, not 0).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: New files carry the header, and the right one
+        run: python3 .github/scripts/check-licence-headers.py
+
   tests:
     name: The suite that asserts the protocol rules
     runs-on: ubuntu-latest
@@ -155,8 +176,14 @@ jobs:
           #                    `test_metadata_scrub` decodes it and compares
           #                    pixels. The scrubber itself is stdlib-only and
           #                    never imports it; the APK does not ship it.
+          #   lupa             Lua, in-process. It runs the server modules
+          #                    in prosody/ against stubbed Prosody APIs
+          #                    (tests/lua/) and checks that the config the
+          #                    install script writes is still Lua. Without
+          #                    it three test files skipped here, and a test
+          #                    of the install script went stale unseen.
           pip install segno hypothesis cryptography pytest pytest-timeout \
-                      pyyaml pillow
+                      pyyaml pillow lupa
 
       - name: Show what is actually installed
         # Printed because "which environment was this" is the first question
@@ -184,6 +211,21 @@ jobs:
           print("otrv4_core at", otrv4_core.__file__)
           PY
 
+      # tests/test_real_prosody.py signs the hardened client in to a real
+      # server, and runs prosody/install-server-limits.sh against one. The
+      # stream guard and the SCRAM checks are otherwise tested only against
+      # servers written for the test, which shows they refuse what they
+      # should and cannot show they pass what a real server sends.
+      # The package starts a system Prosody on every address; the tests
+      # bring their own on loopback ports, and the install script would
+      # count the system one's sockets, so it is stopped.
+      - name: A real Prosody for the sign-in tests
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends prosody iproute2
+          sudo systemctl disable --now prosody || true
+          prosodyctl about | head -3
+
       # -rs lists the reason for every skip. Skips are how a suite loses
       # coverage without losing its green tick: `opuslib` and `kyber_py` are
       # not installed here and some tests stand down accordingly, which is a
@@ -195,6 +237,9 @@ jobs:
           # without noticing; every transport in this project is local.
           PYTHONWARNINGS: default
           OTRV4PLUS_ALLOW_RAW_KEY_TEST_API: "1"
+          # Where no Prosody is installed these tests skip; here that would
+          # be a failure nobody saw, so here it is a failure.
+          OTRV4PLUS_REQUIRE_REAL_SERVER: "1"
 
       # The job log is not readable everywhere the result is needed; the
       # failed tests are, as annotations through the API.
@@ -206,16 +251,46 @@ jobs:
       # must expose no raw-key entry point and must still run the live
       # paths: the engine imports, the handle-based self-test passes, and a
       # real DAKE plus messages both ways go through.
+      # OTRV4PLUS_EXPECT_RELEASE_ARTIFACT=1: this step tests the wheel that
+      # ships, so a test build here is a failure whatever else is set. (In CI
+      # it would be anyway; saying it makes the step mean the same thing when
+      # someone runs it by hand.)
       - name: Release wheel exposes no raw-key API
         working-directory: Rust
+        env:
+          OTRV4PLUS_EXPECT_RELEASE_ARTIFACT: "1"
         run: |
           maturin build --release \
             --features pyo3/extension-module,android-opus,mls \
             --interpreter python${{ env.PYTHON_VERSION }} \
             --out ../dist-release
           pip install --force-reinstall --no-deps ../dist-release/*.whl
-          cd .. && python -m pytest -q tests/test_release_guard.py \
+          cd .. && python -m pytest -q -rs tests/test_release_guard.py \
+            tests/test_gated_build_is_uniform.py \
             tests/test_dake3_rust_authority.py tests/test_android_diagnostics.py
+
+      # The other half of every gated pair. The test-only-kdf and
+      # legacy-dake-keys surfaces (vault read-back, seed injection, the legacy
+      # DAKE getters) are compiled in here, so the internals tests that skip
+      # on the other two wheels run, and test_release_guard's opt-in guards
+      # confirm the gates really opened. Until this step existed that half
+      # ran nowhere. Never shipped: it is built, tested and discarded.
+      - name: Gates-open wheel runs the gated tests
+        working-directory: Rust
+        env:
+          OTRV4PLUS_ALLOW_TEST_GATES: "1"
+          OTRV4PLUS_ALLOW_LEGACY_DAKE_KEYS: "1"
+          OTRV4PLUS_ALLOW_RAW_KEY_TEST_API: "1"
+        run: |
+          maturin build --release \
+            --features pyo3/extension-module,android-opus,mls,raw-key-test-api,test-only-kdf,legacy-dake-keys \
+            --interpreter python${{ env.PYTHON_VERSION }} \
+            --out ../dist-gates
+          pip install --force-reinstall --no-deps ../dist-gates/*.whl
+          cd .. && python -m pytest -q -rs tests/test_release_guard.py \
+            tests/test_gated_build_is_uniform.py tests/test_rust_security.py \
+            tests/test_harness_audit.py tests/test_rust_identity_sealing.py \
+            tests/test_android_identity.py
 
       - name: Keep the report
         if: always()

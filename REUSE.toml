@@ -58,6 +58,9 @@ path = [
     "docs/AUDIT_TEST_INTEGRITY.md",
     "docs/AUDIT_THREAT_MODEL.md",
     "docs/AUDIT_SUMMARY.md",
+    "docs/AUDIT_2026-11.md",
+    "docs/RED_TEAM_2026-11.md",
+    "docs/RELEASE_SIGNING.md",
     "docs/CRYPTOGRAPHER_QUESTIONS.md",
     "docs/CRYPTOGRAPHER_BRIEF.md",
     "docs/SECURITY_AUDIT_2026-10-11.md",
@@ -149,6 +152,22 @@ path = ["LICENSE", "LICENSE-COMMERCIAL.md", "CLA.md", "CONTRACTOR-IP.md", "NOTIC
 precedence = "override"
 SPDX-FileCopyrightText = "2025-2026 muc111"
 SPDX-License-Identifier = "LicenseRef-OTRv4Plus-Legal"
+
+# Files with no room for a header: Cargo's lock files, the ignore lists, and
+# the shipped I2P alias list (which maps no name to a destination).
+[[annotations]]
+path = ["**/Cargo.lock", ".gitignore", "**/.gitignore",
+        "client/i2p_hosts.defaults"]
+precedence = "closest"
+SPDX-FileCopyrightText = "2025-2026 muc111"
+SPDX-License-Identifier = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
+
+# The Gradle wrapper, as Gradle distributes it.
+[[annotations]]
+path = ["android/gradle/wrapper/gradle-wrapper.jar"]
+precedence = "override"
+SPDX-FileCopyrightText = "Gradle, Inc. and contributors"
+SPDX-License-Identifier = "Apache-2.0"
 
 # Vendored OpenMLS crates (MIT), patched for the hybrid suite: see
 # Rust/vendor/VENDORED.md for every change.

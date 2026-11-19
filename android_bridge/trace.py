@@ -90,7 +90,11 @@ MAX_VALUE = 200
 #: are the ones worth having. These two are produced by `failure.describe`,
 #: which already caps its own output and emits no values -- so a longer
 #: allowance costs nothing in safety.
-LONG_KEYS = {"stack_trace": 1200, "exception_detail": 500}
+LONG_KEYS = {"stack_trace": 1200, "exception_detail": 500,
+             # A call line's counts (android_bridge.voice.DETAIL_MAX): the
+             # repair line runs to ~250 and lost its last part at 200
+             # (device report 2026-11-12). Counts only; aliased as any value.
+             "reason": 320}
 
 #: Keys that are redacted whatever they contain, because their CONTENT is the
 #: problem rather than their name.

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# cargo-audit configuration for Rust/mls/Cargo.lock: the lock its own tests
+# build against (`cargo test --locked` in .github/workflows/python.yml). The
+# shipped build is otrv4_core with the `mls` feature, audited by
+# Rust/.cargo/audit.toml; CI also asserts that none of the crates below is
+# in that build (.github/workflows/rust-audit.yml, "not in the shipped build").
+#
+# Audited 2026-11-14 with cargo-audit 0.22.2 (1509 advisories). Every entry is
+# the same decision as in Rust/.cargo/audit.toml, with one difference stated:
+# crypto-bigint 0.5.5 IS compiled here, by the test-only `reference-interop`
+# feature (OpenMLS's reference provider, a dev-dependency, for the
+# cross-check against our provider). It is never in the app.
+[advisories]
+ignore = [
+  "RUSTSEC-2026-0173",  # proc-macro-error2 2.0.1: unmaintained, compile time only
+  "RUSTSEC-2026-0329",  # libcrux-hmac-drbg 0.0.1: locked through openmls's optional libcrux provider, not built
+  "RUSTSEC-2026-0330",  # libcrux-kem 0.0.9: as above, not built
+  "RUSTSEC-2026-0331",  # libcrux-kem 0.0.9: as above, not built
+  "RUSTSEC-2026-0387",  # crypto-bigint 0.5.5: built only by the reference-interop TEST feature
+  "RUSTSEC-2026-0459",  # libsqlite3-sys 0.35.0: openmls's optional SQLite storage, not built
+]

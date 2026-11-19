@@ -24,6 +24,7 @@ import re
 import xml.etree.ElementTree as ET
 
 import pytest
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAIN = os.path.join(ROOT, "android", "app", "src", "main")
@@ -31,8 +32,7 @@ JAVA = os.path.join(MAIN, "java", "org", "otrv4plus", "android")
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def _code_only(text):
@@ -55,7 +55,7 @@ def service_code(service):
 @pytest.fixture(scope="module")
 def arrival(service):
     """Just the function that builds the arrival notification."""
-    start = service.index("private fun buildArrivalNotification(")
+    start = service.index("internal fun OtrConnectionService.buildArrivalNotification(")
     return service[start:service.index("\n    }", start)]
 
 
@@ -153,8 +153,8 @@ class TestTheChannel:
             "persistent connection notice also silences every message")
 
     def test_the_channel_is_secret_on_the_lock_screen(self, service):
-        block = service[service.index("private fun createChannel("):]
-        block = block[:block.index("\n    private fun ", 10)]
+        block = service[service.index("internal fun OtrConnectionService.createChannel("):]
+        block = block[:block.index("\ninternal fun ", 10)]
         assert "lockscreenVisibility = Notification.VISIBILITY_SECRET" in block
 
     def test_the_channel_shows_no_badge(self, service):
@@ -189,7 +189,7 @@ class TestOnlyANewMessageNotifies:
     def test_the_service_makes_no_decision_of_its_own(self, service):
         """Every rule lives in InboundAlerts, which is executed by tests. The
         service may only act on the answer."""
-        block = service[service.index("private fun announceArrival("):]
+        block = service[service.index("internal fun OtrConnectionService.announceArrival("):]
         # To the end of announceArrival itself (the next member).
         block = block[:block.index("\n    }\n") + 6]
         code = _code_only(block)
@@ -291,8 +291,8 @@ class TestNothingSensitiveReachesTheShade:
         """Both notifications, checked together: the connection one has always
         said only what the connection is doing, and the arrival one says only
         how many."""
-        for block_start in ("private fun buildNotification(",
-                            "private fun buildArrivalNotification("):
+        for block_start in ("internal fun OtrConnectionService.buildNotification(",
+                            "internal fun OtrConnectionService.buildArrivalNotification("):
             start = service_code.index(block_start)
             block = service_code[start:service_code.index("\n    }", start)]
             for forbidden in ("jid", "peer", "server", "displayName"):

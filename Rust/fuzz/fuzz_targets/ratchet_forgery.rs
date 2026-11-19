@@ -9,7 +9,7 @@
 #![no_main]
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use otrv4_core::ratchet::DoubleRatchet;
+use otrv4_core::ratchet::{DoubleRatchet, KemItem};
 
 #[derive(Arbitrary, Debug)]
 struct Forgery {
@@ -34,14 +34,15 @@ fuzz_target!(|f: Forgery| {
     let (mut alice, mut bob) = pair();
     let first = alice.encrypt(b"first").expect("encrypt");
     if f.replay_genuine_first {
-        bob.decrypt_same_dh(&first.header, &first.ciphertext, &first.nonce, &first.tag)
+        bob.decrypt_same_dh(&first.header, &first.ciphertext, &first.nonce, &first.tag,
+                           &first.kem_item)
             .expect("genuine first message");
     }
     let forged = if f.new_dh {
         bob.decrypt_new_dh(&f.header, &f.ciphertext, &f.nonce, &f.tag,
-                           &[0x55; 56], &[0x66; 56], &[0xCC; 56])
+                           &[0x55; 56], &[0x66; 56], &[0xCC; 56], &KemItem::None)
     } else {
-        bob.decrypt_same_dh(&f.header, &f.ciphertext, &f.nonce, &f.tag)
+        bob.decrypt_same_dh(&f.header, &f.ciphertext, &f.nonce, &f.tag, &KemItem::None)
     };
     // A forgery cannot authenticate without the key; a hit here is a bug.
     if let Ok(r) = forged {
@@ -51,11 +52,13 @@ fuzz_target!(|f: Forgery| {
         return;
     }
     if !f.replay_genuine_first {
-        bob.decrypt_same_dh(&first.header, &first.ciphertext, &first.nonce, &first.tag)
+        bob.decrypt_same_dh(&first.header, &first.ciphertext, &first.nonce, &first.tag,
+                           &first.kem_item)
             .expect("forgery poisoned the first genuine message");
     }
     let second = alice.encrypt(b"second").expect("encrypt");
-    let pt = bob.decrypt_same_dh(&second.header, &second.ciphertext, &second.nonce, &second.tag)
+    let pt = bob.decrypt_same_dh(&second.header, &second.ciphertext, &second.nonce, &second.tag,
+                                 &second.kem_item)
         .expect("forgery desynchronised the receive chain");
     assert_eq!(pt.plaintext, b"second");
 });

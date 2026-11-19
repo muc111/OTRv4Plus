@@ -429,14 +429,22 @@ class TestInv06CoversTheIrcClientNow:
         "_enh_handle_smp_tlv",
         "_announce_secret_required",
         "_check_smp_secret_required",
-        "handle_line",
+        # Where a line from the IRC server enters the client. (This list once
+        # named `handle_line`, a desktop-bridge method the IRC source does not
+        # contain, so that case skipped and checked nothing.)
+        "handle_message",
+        "_on_chat",
+        "process_incoming_otr_message",
+        "process_otr_payload",
+        "process_smp_message",
     ])
     def test_no_inbound_path_reaches_the_armer(self, inbound, methods):
         """A remote message may reach the CONSENT prompt and stop there.
         `_arm_secret_prompt` is reachable only from `_smp_verify` (a typed
         /smp) and `_handle_smp_consent` (a typed y)."""
-        if inbound not in methods:
-            pytest.skip("%s is not in this build" % inbound)
+        assert inbound in methods, (
+            "%s is not in the IRC client or engine source: an inbound entry "
+            "point was renamed, and this list must follow it" % inbound)
         reachable = self._reachable(inbound, methods)
         assert "_arm_secret_prompt" not in reachable, (
             "%s can reach the passphrase prompt; a peer would then decide "

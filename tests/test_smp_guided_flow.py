@@ -852,7 +852,13 @@ class _Session:
         import logging
         self.logger = logging.getLogger("test-session")
         cls = otr_mod.EnhancedOTRSession
-        for name in ("_enh_handle_smp_tlv", "initialize_smp"):
+        # The inbound handler and the per-message steps it was split into
+        # (2026-11-11), all from the session's SMP mixin.
+        names = ["initialize_smp"] + [
+            n for n in vars(otr_mod.SessionSmpMixin)
+            if n == "_enh_handle_smp_tlv" or (n.startswith("_smp_")
+                                              and n != "_smp_progress_notify")]
+        for name in names:
             setattr(self, name, getattr(cls, name).__get__(self, cls))
 
     # the bits _enh_handle_smp_tlv needs from the wider session

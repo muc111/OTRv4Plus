@@ -57,7 +57,16 @@ def _python_info() -> Dict[str, Any]:
         "meets_3_12_requirement": (version.major, version.minor) >= (3, 12),
         "implementation": _guard(platform.python_implementation),
         "abi_platform": _guard(lambda: sys.platform),
+        # The XML parser every byte from the server goes through. Its DTD
+        # code is fenced off (xmlguard), but which expat is on a device is
+        # otherwise invisible, and its advisories are frequent.
+        "expat": _guard(_expat_version),
     }
+
+
+def _expat_version() -> str:
+    import pyexpat
+    return str(pyexpat.EXPAT_VERSION).replace("expat_", "")
 
 
 def _abi_info() -> Dict[str, Any]:
@@ -129,6 +138,15 @@ def _rust_core_info() -> Dict[str, Any]:
     # The release-boundary check, surfaced where a developer will see it.
     info["test_gates_open"] = bool(_guard(
         lambda: hasattr(otrv4_core.RustSMPVault, "load"), default=False))
+    # What the core says it was built with (Rust/src/lib.rs): "none" on a
+    # core that may ship, the feature names on a test build. Feature names
+    # only; a core built before it could say is reported as such.
+    label = getattr(otrv4_core, "TEST_FEATURES", None)
+    if not isinstance(label, str):
+        info["test_features"] = "unknown (core predates its build label)"
+    else:
+        info["test_features"] = ", ".join(
+            name for name in label.split(",") if name) or "none"
     return info
 
 

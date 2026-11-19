@@ -22,7 +22,6 @@ import os
 import struct
 import secrets
 import hashlib
-import hmac as _hmac
 
 # ── path setup ────────────────────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -138,28 +137,9 @@ class TestKDF:
         assert out1 != out2
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. SHA3-512 HMAC — verify ∘ compute == True
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestMAC:
-    @given(key=key32_st, data=short_bytes)
-    def test_verify_own_mac(self, key, data):
-        mac = otr.SHA3_512.hmac(key, data)
-        assert _hmac.compare_digest(mac, otr.SHA3_512.hmac(key, data))
-
-    @given(key=key32_st, data=short_bytes, wrong_key=key32_st)
-    def test_wrong_key_fails(self, key, data, wrong_key):
-        assume(key != wrong_key)
-        mac = otr.SHA3_512.hmac(key, data)
-        assert not _hmac.compare_digest(mac, otr.SHA3_512.hmac(wrong_key, data))
-
-    @given(key=key32_st, d1=short_bytes, d2=short_bytes)
-    def test_wrong_data_fails(self, key, d1, d2):
-        assume(d1 != d2)
-        mac1 = otr.SHA3_512.hmac(key, d1)
-        mac2 = otr.SHA3_512.hmac(key, d2)
-        assert not _hmac.compare_digest(mac1, mac2)
+# 3. (removed 2026-11-11) SHA3-512 HMAC: `SHA3_512.hmac` was a Python MAC
+#    nothing in the engine called -- every MAC is computed in Rust. The helper
+#    and its tests went together.
 
 
 # ─────────────────────────────────────────────────────────────────────────────

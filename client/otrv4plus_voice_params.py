@@ -319,8 +319,27 @@ VOICE_COMPLEXITY = _env_int("OTRV4PLUS_OPUS_COMPLEXITY", 8, 0, 10)
 # In-band FEC repairs a ONE-frame gap only; longer gaps fall through to
 # concealment. The observed failure mode is multi-second starvation, which
 # FEC cannot touch, so 20% of the bitrate was being spent on redundancy that
-# never applied. 5% keeps single-frame repair, which does work.
-VOICE_LOSS_PCT = _env_int("OTRV4PLUS_OPUS_FEC_PCT", 5, 0, 50)
+# never applied. 5% kept single-frame repair, which does work.
+#
+# 10% now, as the STARTING level (2026-11-11). Device reports that day
+# measured 8-12% of frames missing at playout in an 8-minute call, which is
+# loss FEC exists for; at 5% the encoder budgets its redundancy for half of
+# that. And it is a starting level only: each PONG now carries the peer's
+# measured loss of OUR audio, and fec_pct_for_loss sets the encoder to it,
+# between VOICE_FEC_MIN_PCT and VOICE_FEC_MAX_PCT, so a clean path pays for
+# less and a lossy one gets more. The frame stays the same CBR size either
+# way: FEC is bits inside it, not bytes on the wire.
+VOICE_LOSS_PCT = _env_int("OTRV4PLUS_OPUS_FEC_PCT", 10, 0, 50)
+VOICE_FEC_MIN_PCT = 5
+VOICE_FEC_MAX_PCT = 30
+
+
+def fec_pct_for_loss(loss_permille: int) -> int:
+    """The Opus packet_loss_perc for a measured loss: a quarter above it
+    (loss arrives in clumps, and FEC budgeted exactly for the mean is short
+    half the time), within VOICE_FEC_MIN_PCT..VOICE_FEC_MAX_PCT."""
+    pct = -(-int(loss_permille) * 125 // 1000)           # ceil(loss% * 1.25)
+    return max(VOICE_FEC_MIN_PCT, min(VOICE_FEC_MAX_PCT, pct))
 
 # Constant-rate shaping.  Opus at 16 kbit/s and 60 ms is exactly 120 bytes in
 # CBR; the slot is sized for the VBR peak so a build that refuses vbr=0
@@ -511,10 +530,15 @@ VOICE_JITTER_DRIFT_HIGH_MS = _env_ms("OTRV4PLUS_JITTER_TARGET_MS", 480,
 #: threshold decide steady state -- but the point past which a burst is
 #: discarded outright rather than queued.
 #:
-#: 2000 ms before. A burst that filled it parked two seconds of stale audio
-#: on top of the path's own delay, which for conversation is worse than
-#: having lost it: nothing in a two-second-old frame is worth hearing.
-VOICE_JITTER_MAX_MS = _env_ms("OTRV4PLUS_JITTER_MAX_MS", 1000, 240, 4000)
+#: 2000 ms, then 1000 ms, now 2000 ms again. It was halved when the only way
+#: down from a full buffer was dropping the OLDEST frames one per pop, so a
+#: burst parked two seconds of stale audio on the call. Since rc.200 the
+#: buffer sheds the pauses between words first and comes down within one
+#: (see SPEECH_SHED_EXCESS), and at 1000 ms the cap itself was what threw
+#: words away: the burst after an I2P tunnel stall overflowed it. Simulated
+#: on a path that stalls 0.8-3 s every ~12 s (rc.201): speech lost 9.2% at
+#: 1000 ms, 5.4% at 2000 ms, for +20 ms median delay.
+VOICE_JITTER_MAX_MS = _env_ms("OTRV4PLUS_JITTER_MAX_MS", 2000, 240, 4000)
 
 #: How fast the buffer returns to target after a burst.
 #:

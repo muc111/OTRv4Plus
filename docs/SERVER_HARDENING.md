@@ -14,13 +14,240 @@ go -- the three modules, the limits, and the room rate raised to 10:
 cd ~/OTRv4Plus && git pull && sudo bash prosody/install-server-limits.sh
 ```
 
-If XMPP Guard (i2pd-dash) is installed, the script turns on its maintenance
-mode first, so its own changes become XMPP Guard's new baseline instead of
-integrity alerts. It backs up `prosody.cfg.lua` first, runs `prosodyctl check config` and
-puts the backup back if that fails, restarts Prosody and prints the settings
-it ended with and any new error-log lines. Running it again changes nothing.
-Override a value from the environment, e.g. `sudo LOGIN_RATE=20 bash
-prosody/install-server-limits.sh`.
+**Look first.** `--check` changes nothing, and needs no `sudo` if you can
+read the configuration:
+
+```bash
+bash prosody/install-server-limits.sh --check
+HIDDEN_SERVICE=1 bash prosody/install-server-limits.sh --check   # for a hidden server
+```
+
+It says what is true now, then exactly what a real run would change: which
+modules it would install or update, and the lines of `prosody.cfg.lua` it
+would change (those lines only: the file holds passwords, and nothing
+beside a changed line is printed).
+
+**What it tells you before it changes anything.** Every run, real or
+`--check`, begins with what it found:
+
+```
+==> what is true now, before anything is changed
+      listening beyond this machine: YES
+          0.0.0.0:5222
+          [::]:5269
+      federation (s2s): ON
+      settings that stop the apps signing in: none
+```
+
+On a server meant to be hidden, the first two are how it is found (next
+section). A run with `HIDDEN_SERVICE=1` closes them, and with that removes
+the evidence that they were open, so they are stated first. If either read
+YES or ON on a server that has been up for a while, the address may already
+be on record: closing it stops new discoveries, it does not undo old ones
+([RED_TEAM_2026-11.md](RED_TEAM_2026-11.md#for-the-servers-operator)).
+
+**Settings that stop the apps signing in.** From rc.204 the apps end a
+sign-in when the server does not prove it knows the account, and sign in
+with SCRAM only over I2P and Tor. Four settings in `prosody.cfg.lua` lock
+everyone out; the script names the line and what to change. Each was
+measured with the hardened client against Prosody 0.12.4 and 13.0.7, and
+`tests/test_real_prosody.py` repeats it against whichever is installed:
+
+| Setting | What the user sees | Prosody 0.12 | Prosody 13 |
+|---|---|---|---|
+| `default_iteration_count` above 2,000,000 | "the server did not prove it knows this account", with the count | stops | stops |
+| `default_iteration_count` below 4096 | the same | stops | a note: 13 uses 4096 itself |
+| `disable_sasl_mechanisms` naming `SCRAM-SHA-1` (or `SCRAM-SHA-256` with `password_hash = "SHA-256"`) | "no safe sign-in method" | stops | stops |
+| `disable_sasl_mechanisms` naming the `-PLUS` form of it | a wrong-password error, for a right password | a note | stops |
+
+The iteration count is stored with each password, so after correcting it an
+affected account's password has to be set again. The last row is the least
+obvious: with no `-PLUS` mechanism offered, the apps' sign-in says "this
+server offered no channel binding"; a server that does channel binding
+(13, always) reads that as the offer having been removed on the way, and
+fails the sign-in. Leave `SCRAM-*` out of `disable_sasl_mechanisms`.
+
+**What a real run does.** If XMPP Guard (i2pd-dash) is installed, the script
+turns on its maintenance mode first, so its own changes become XMPP Guard's
+new baseline instead of integrity alerts. It makes every edit in a scratch
+copy and checks that copy is still valid Lua; backs up `prosody.cfg.lua`
+beside itself; installs the modules; runs `prosodyctl check config` and, if
+that fails, puts back the configuration **and** the modules; restarts
+Prosody; prints the new error-log lines and stops if one names a module of
+ours; then says what it found before and after. Override a value from the
+environment, e.g. `sudo LOGIN_RATE=20 bash prosody/install-server-limits.sh`.
+
+**Running it again does nothing.** When the modules and the configuration
+are already as it would leave them, there is no backup, no restart (a
+restart signs everyone out) and no XMPP Guard maintenance window.
+
+**Exit status**, for a script or a deploy job that calls it:
+
+| | |
+|---|---|
+| `0` | done, or nothing needed doing; with `--check`: nothing would change and nothing is wrong |
+| `1` | stopped: a precondition failed, the edit was not valid, `prosodyctl check config` refused it (the old files are back), Prosody did not start, or a module of ours did not load |
+| `2` | `--check` only: a real run would change something (printed) |
+| `3` | `HIDDEN_SERVICE=1` and the server can still be found, or what it listens on could not be read (no `ss`: install `iproute2`). The message names the line or the socket |
+| `4` | a setting that stops the apps signing in |
+| `64` | bad usage |
+
+**Its output can be passed on.** It never prints one of the machine's own
+addresses: a socket on a specific address is shown by its port, and an
+`interfaces` line that names one is shown without its value. `prosodyctl
+check config`, whose output it shows, may name your hosts.
+
+## Keep the server's address hidden
+
+For a server reached **only through I2P or Tor**. Two Prosody defaults give
+its real address away, and neither is mentioned by Prosody's own setup,
+because an ordinary XMPP server wants both. Checked against the source of
+Prosody 0.12.4 and 13.0.7.
+
+**1. Prosody listens on every address.** `core/portmanager.lua` binds the
+client port (5222) and the server-to-server port (5269) to `*` and `::`
+unless told otherwise. Anyone who connects to the machine's public address
+gets a server that answers for its hidden name and presents its certificate.
+Internet-wide scanners record exactly that, so the hidden name leads
+straight to the address.
+
+**2. Federation is on.** `s2s` loads by itself (`core/modulemanager.lua`).
+With it, a message from any account to `someone@a-domain-the-sender-owns`
+makes the server look that domain up and connect to it, from its real
+address. One message from one free account is enough.
+
+Both are closed by:
+
+```bash
+cd ~/OTRv4Plus && git pull && sudo HIDDEN_SERVICE=1 bash prosody/install-server-limits.sh
+```
+
+which sets, before any `VirtualHost`:
+
+```lua
+interfaces = { "127.0.0.1" }      -- i2pd's tunnel connects to 127.0.0.1:5222
+modules_disabled = { "s2s" }      -- "Communication with remote domains is not enabled"
+hide_os_type = true               -- mod_version stops naming the OS
+```
+
+Then check, on the server:
+
+```bash
+sudo ss -ltnp | grep -E 'lua|prosody'     # every line should start 127.0.0.1 or [::1]
+```
+
+If a line still shows `0.0.0.0`, `*` or `[::]`, a narrower option is
+overriding the global one (`c2s_interfaces`, `s2s_interfaces`,
+`https_interfaces`): remove it. The script makes the same check itself
+after it restarts Prosody. With `HIDDEN_SERVICE=1`, a server that is still
+listening beyond the machine, or still federating, is a failure (exit
+status 3) that names the overriding line or the socket; so is a machine
+with no `ss` to look with, because "probably hidden" is not an answer.
+Without `HIDDEN_SERVICE` it is a note, since a server that federates wants
+both.
+
+**3. A firewall that refuses everything inbound** except i2pd's own port
+(`port` in `/etc/i2pd/i2pd.conf` if you set one; otherwise the port its web
+console shows in the router's external address). It costs nothing and covers
+the day a config edit undoes step 1. If you reach the machine over SSH, allow
+that **before** enabling the firewall, or you lock yourself out:
+
+```bash
+sudo ufw default deny incoming
+sudo ufw allow <i2pd port>          # TCP and UDP
+sudo ufw allow ssh                  # only if you administer it remotely
+sudo ufw enable
+```
+
+**4. Say less about the machine.** `version`, `uptime` and `time` are in
+Prosody's default `modules_enabled` and answer anyone signed in: the exact
+Prosody version (which advisories apply), how long since the last restart
+(matches a power cut or an ISP outage to the server), and the server's clock.
+The apps use none of them. Remove the three lines from `modules_enabled`.
+
+A block at the firewall or by `interfaces` cannot be undone from an XMPP
+account; a kernel-level block on Prosody making outbound connections at all
+is stronger still, and is what [XMPP Guard](XMPP_GUARD.md)'s egress lock
+adds.
+
+## What a break-in or a seizure would find
+
+End-to-end encryption means no message, call or file can be read from the
+server. What is there is who, and when. Each of these is on by default
+somewhere and can be reduced:
+
+| On the server | Why it is there | To reduce it |
+|---|---|---|
+| Sign-in and sign-out times, per account, in `prosody.log` | Prosody's default `log = { info = "prosody.log"; ... }` records "Authenticated as ..." and "Client disconnected" | `log = { error = "prosody.err" }`: errors only. Our modules log counts, and names only for admin actions (bans, room deletions) |
+| Last-seen time per account, in storage | `account_activity`, new in Prosody 13's default `modules_enabled` | Remove it from `modules_enabled` unless you use it to prune dead accounts |
+| Push registrations | `cloud_notify`, also new in 13's default list. The apps do not use push | Remove it |
+| Contact lists, room memberships | The roster and rooms are the service | Nothing to remove; this is the metadata the server exists to hold |
+| Undelivered messages (still encrypted) | Offline storage, and `mam` if you enabled it | `archive_expires_after = "1d"` if `mam` is on (default one week) |
+| Password verifiers | SCRAM stored keys, never the password | See below |
+
+**Passwords.** Prosody stores a salted PBKDF2 verifier (`internal_hashed`).
+Someone who copies the account store can test guesses offline; the iteration
+count sets the price of each guess. `default_iteration_count` is 10,000 by
+default. Raising it is safe: it applies to passwords set from then on, and
+existing accounts keep working.
+
+```lua
+default_iteration_count = 100000
+```
+
+Do **not** change `password_hash` on a server that already has accounts.
+It is one switch for the whole server, the stored verifiers are specific to
+the hash, and every existing account would be locked out
+(`plugins/mod_auth_internal_hashed.lua`). On a brand-new server with no
+accounts, `password_hash = "SHA-256"` is the better choice.
+
+**The admin account.** `admin_adhoc` lets an account in `admins = { ... }`
+change any user's password, read any user's contact list, and load any
+module on disk, from an XMPP client, over the network. Whoever gets that
+account's password, or its unlocked phone, gets all of that; loading `s2s`
+undoes step 2 above. So:
+
+- Make the admin account a separate one, used only to administer, with a
+  long password used nowhere else and the app lock on.
+- If you administer from the server's own shell (`prosodyctl shell`), remove
+  `admin_adhoc` from `modules_enabled`. Banning, unbanning and room
+  moderation in the apps keep working (they come from
+  `mod_otrv4plus_moderation`). What stops is the admin's list of who is
+  online and the terminal client's XEP-0133 commands.
+
+**The machine.**
+- Full-disk encryption (LUKS). Without it, whoever takes the machine reads
+  everything above without a password. It protects a machine that is
+  switched off, not one that is running.
+- Prosody as its own user, never root (the packaged service already is).
+- Security updates. A packaged Prosody gets them with the system's
+  (`unattended-upgrades`); one built from source gets them only when you
+  rebuild, so watch <https://prosody.im/security/>. The same goes for i2pd
+  and OpenSSL.
+- A systemd sandbox for Prosody and i2pd (`NoNewPrivileges`,
+  `ProtectSystem=strict`, `PrivateTmp`, `MemoryDenyWriteExecute`,
+  `SystemCallFilter=@system-service`) limits what a hole in either can
+  reach. XMPP Guard's `harden.sh` installs and tests one.
+
+## What these limits do not stop
+
+Stated so nobody relies on them for it:
+
+- **One determined client can lock others out for a while.** Sign-in pacing
+  and the registration limit are server-wide, because Prosody cannot tell
+  I2P clients apart. Someone who opens connections faster than `login_rate`
+  uses up the allowance for everyone, and 30 junk registrations use up the
+  hour's sign-ups. i2pd's per-destination limit (below) slows one client,
+  and a client that makes a new destination for each attempt gets round it.
+  Invitation-only sign-up is the answer to the second; there is none yet for
+  the first that does not also cost honest users.
+- **A server can be asked whether an account name exists.** SCRAM answers
+  differently for an unknown name, and registration says "already taken".
+  Both are how XMPP works.
+- **An unknown hole in Prosody, Lua, OpenSSL or i2pd.** Nothing on this page
+  finds one. What it does is make the server hard to find (the section
+  above), make a hole yield less (this section), and keep the fix one
+  update away.
 
 ## What protects the server today
 
@@ -157,12 +384,9 @@ restrict_room_creation = "local"
 After enabling `limits`, re-run one stress step (STRESS_TEST.md) to confirm
 delivery is unchanged.
 
-If the server does not federate with other XMPP servers (an I2P-only server
-usually does not), turn federation off. That removes a whole listener:
-
-```lua
-modules_disabled = { "s2s" }
-```
+On a server reached only through I2P or Tor, federation must be off; that
+is a matter of the server's address, not of load. See "Keep the server's
+address hidden" above.
 
 **Stronger sign-up control, if abuse starts:** Prosody's invitations
 (`mod_invites` with `registration_invite_only = true`) allow sign-up only with

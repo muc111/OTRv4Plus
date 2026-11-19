@@ -631,3 +631,25 @@ class TestTheSetupDetailIsBehindTheFlag:
             stripped = line.strip()
             if stripped.startswith("_print(") and "WARNING" not in stripped:
                 pytest.fail("un-demoted setup line: %s" % stripped)
+
+
+class TestTheRepairLine:
+    """What the call did about its losses (2026-11-11): FEC repairs, hole
+    lengths, pauses shortened against speech dropped. Counts only."""
+
+    def test_a_lossy_call_says_what_was_repaired_and_how_long_the_holes_were(self):
+        s = FakeSession(oneway=500.0, queued=1000, gaps=40, drift=30)
+        s.jitter.stats.update({"gap1": 30, "gap2_3": 4, "gap4": 1,
+                               "shed_silence": 28, "shed_speech": 2})
+        s.stats.update({"fec_recovered": 25, "fec_pct": 15, "audio_rerouted": 1})
+        s.latency.peer_loss_permille = 82
+        line = manager()._call_summary(s)[-1]
+        assert line.startswith("[voice] audio repair: ")
+        for text in ("25 frames repaired by FEC", "holes 1-frame 30, 2-3 frames 4, longer 1",
+                     "pauses shortened 28 frames, speech dropped 2", "FEC at 15%",
+                     "peer missed 8.2% of ours", "audio route changed 1 times"):
+            assert text in line, text
+
+    def test_a_clean_call_has_no_repair_line(self):
+        lines = manager()._call_summary(FakeSession(oneway=50.0, queued=1000))
+        assert not any("audio repair" in l for l in lines)

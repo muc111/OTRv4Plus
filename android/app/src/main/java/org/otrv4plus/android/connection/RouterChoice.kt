@@ -213,12 +213,18 @@ object RouterChoice {
      *  - No UPnP: the app does not open ports on the user's router.
      *  - Reseed downloads checked against the bundled certificates.
      *  - The address book stays on, so names like otrv4plus.i2p resolve.
-     *  - Logs only errors, to a file in the router's private directory.
+     *  - Logs errors and warnings, to a file in the router's private
+     *    directory (cut back at each start: [LOG_CAP_BYTES]). Warnings are
+     *    where i2pd says a stream ran out of resend attempts or tunnels
+     *    would not build; after a dropped connection the last of them go,
+     *    scrubbed ([logTail]), into the diagnostic report (device report
+     *    2026-11-10: a stream ended 11 minutes in, and nothing said whether
+     *    this router or the server's had given up).
      */
     fun config(samPort: Int): String = """
         |# Written by OTRv4+ on every start; edits are overwritten.
         |log = file
-        |loglevel = error
+        |loglevel = warn
         |ipv4 = true
         |ipv6 = true
         |floodfill = false
@@ -261,6 +267,36 @@ object RouterChoice {
         |[addressbook]
         |enabled = true
         |""".trimMargin()
+
+    /**
+     * The Connect screen's line while an attempt waits for a built-in router
+     * too new to find the server (owner, 2026-11-11: say it is waiting on
+     * purpose, with a countdown). [waitedS] so far, [limitS] at most.
+     */
+    fun waitingLabel(waitedS: Int, limitS: Int): String {
+        val left = (limitS - waitedS).coerceAtLeast(0)
+        val clock = "%d:%02d".format(left / 60, left % 60)
+        return if (left > 0)
+            "Built-in I2P router: still joining the I2P network, so it cannot " +
+                "find the server yet. Trying again by itself for up to $clock more. " +
+                "No need to tap again."
+        else
+            "Built-in I2P router: still joining the I2P network. One last try " +
+                "to find the server..."
+    }
+
+    /** The router's log is emptied at start once it is larger than this. */
+    const val LOG_CAP_BYTES = 512L * 1024
+
+    /** How many router log lines a dropped connection adds to the report. */
+    const val LOG_TAIL_LINES = 15
+
+    /**
+     * The last [max] non-empty lines of the router's log, each [scrub]bed:
+     * what goes into the diagnostic report after a dropped connection.
+     */
+    fun logTail(lines: List<String>, max: Int = LOG_TAIL_LINES): List<String> =
+        lines.map { it.trim() }.filter { it.isNotEmpty() }.takeLast(max).map { scrub(it) }
 
     /**
      * Whether [path] is [base] or below it (both canonical). Guards the

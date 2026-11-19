@@ -90,7 +90,49 @@ def test_the_device_facts_name_no_person_or_machine():
         assert user not in flat
     assert os.path.expanduser("~") not in flat
     assert set(info) == {"host", "os", "release", "machine", "python",
-                         "core_version", "app_version"}
+                         "core_version", "app_version", "build_id"}
+
+
+# -- which commit the engine runs from (device report 2026-11-12) ----------
+
+SHA = "155b614a899ddd09eff63dabf66242c525c96fb5"
+
+
+def _git(head, refs=None, packed=None):
+    import tempfile
+    root = tempfile.mkdtemp()
+    git = os.path.join(root, ".git")
+    os.makedirs(os.path.join(git, "refs", "heads"))
+    with open(os.path.join(git, "HEAD"), "w") as fh:
+        fh.write(head + "\n")
+    for name, value in (refs or {}).items():
+        with open(os.path.join(git, name), "w") as fh:
+            fh.write(value + "\n")
+    if packed:
+        with open(os.path.join(git, "packed-refs"), "w") as fh:
+            fh.write("# pack-refs with: peeled\n" + packed)
+    return root
+
+
+def test_the_build_id_is_the_checked_out_commit():
+    assert H.source_build_id(_git("ref: refs/heads/dev", {"refs/heads/dev": SHA})) == SHA
+
+
+def test_a_packed_or_detached_head_is_read_too():
+    assert H.source_build_id(_git("ref: refs/heads/dev",
+                                  packed="%s refs/heads/dev\n" % SHA)) == SHA
+    assert H.source_build_id(_git(SHA)) == SHA
+
+
+def test_no_checkout_says_unknown_and_never_raises():
+    import tempfile
+    assert H.source_build_id(tempfile.mkdtemp()) == "unknown"
+    assert H.source_build_id(_git("garbage")) == "unknown"
+
+
+def test_the_desktop_report_names_its_build():
+    text = _host().call("diagnostic_report", {"app_version": "0.15.0"})
+    assert "build_id" in text
 
 
 def test_identities_in_the_trace_are_labels_in_the_desktop_report():

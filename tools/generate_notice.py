@@ -338,7 +338,7 @@ def main():
     w("APK. See docs/LICENSING_AUDIT.md §3.")
     w("")
     for name, ver, lic, holder in (
-        ("CPython (via Chaquopy, target 3.12.12-0)", "3.12", "PSF-2.0",
+        ("CPython (via Chaquopy, target 3.12.15-0)", "3.12", "PSF-2.0",
          "Copyright (c) 2001-2026 Python Software Foundation. "
          "All Rights Reserved."),
         ("OpenSSL (libcrypto/libssl shipped with Chaquopy's CPython)", "3.x",
@@ -357,7 +357,7 @@ def main():
     for name, ver, lic in (
         ("slixmpp", "1.17.0", "MIT"),
         ("PySocks", "1.7.1", "BSD-3-Clause"),
-        ("pyasn1", "0.6.4", "BSD-2-Clause"),
+        ("pyasn1", "0.6.5", "BSD-2-Clause"),
         ("pyasn1-modules", "0.4.2", "BSD-2-Clause"),
     ):
         w("%s %s" % (name, ver))

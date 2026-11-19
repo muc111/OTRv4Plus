@@ -5,8 +5,8 @@
 //!     KDF(usage_id || value, size) = SHAKE-256("OTRv4" || usage_id || value, size)
 //!
 //! Hardening:
-//!   * `kdf_1_py` PyO3 export is gated behind `test-only-kdf` feature.
-//!     Production builds (`--features pq-rust` only) do not expose the KDF.
+//!   * No build exposes the KDF to Python. (A `kdf_1_py` export behind
+//!     `test-only-kdf` was never registered with the module; it is removed.)
 //!   * No `expect()` on attacker-controlled inputs.  Internal invariants
 //!     (HMAC-SHA3-512 always accepts any key length) use `expect()` guarded
 //!     by the type system.
@@ -67,20 +67,6 @@ pub fn kdf_secret<const N: usize>(usage_id: u8, value: &[u8]) -> SecretBytes<N> 
     arr.copy_from_slice(&raw);
     raw.zeroize();   // audit M2: wipe the heap copy of the secret
     SecretBytes::new(arr)
-}
-
-// ── PyO3 bridge - TEST ONLY ──────────────────────────────────────────────────
-#[cfg(feature = "test-only-kdf")]
-#[pyo3::pyfunction]
-#[pyo3(name = "kdf_1")]
-pub fn kdf_1_py(usage_id: u8, value: &[u8], output_len: usize) -> pyo3::PyResult<Vec<u8>> {
-    if output_len == 0 {
-        return Err(pyo3::exceptions::PyValueError::new_err("output_len must be > 0"));
-    }
-    if output_len > (1 << 20) {
-        return Err(pyo3::exceptions::PyValueError::new_err("output_len too large"));
-    }
-    Ok(kdf_1(usage_id, value, output_len))
 }
 
 // ── Ratchet KDF ──────────────────────────────────────────────────────────────

@@ -171,6 +171,7 @@ class ReconnectPolicyTest {
     @Test
     fun `TLS and SASL refusals also wait for the user`() {
         for (code in listOf("tls_required", "no_safe_auth_mechanism",
+                            "server_not_proven",
                             "route_refused", "malformed_server",
                             "certificate_failure",
                             // rc.63: a wrong password is the user's to fix;

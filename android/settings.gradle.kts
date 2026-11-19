@@ -3,7 +3,7 @@ pluginManagement {
         google()
         mavenCentral()
         gradlePluginPortal()
-        // Chaquopy is mirrored on Maven Central (16.0.0 present, 17.0.0 latest),
+        // Chaquopy is mirrored on Maven Central (17.2.0 used and present),
         // which mavenCentral() above already covers. chaquo.com is kept as a
         // fallback only -- it is NOT required, and in restricted-egress
         // environments it may be unreachable without blocking the build.

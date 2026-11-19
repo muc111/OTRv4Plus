@@ -231,23 +231,29 @@ class TestItNeverPromisesWhatItCannotDo:
             # every later test's input line and was caught doing exactly that.
             otr.set_input_mask(False)
 
-    def test_the_prompt_branches_on_the_return_value(self):
-        src = inspect.getsource(xmpp.OTRv4PlusXMPP._arm_secret_prompt)
-        assert "hidden = self._mask_next_input(True)" in src
-        assert "if hidden:" in src
-        low = src.lower()
-        assert "warning" in low and "will be" in low, (
-            "when hiding fails the user must be told plainly, not told the "
-            "opposite")
+    # Run, not read (Phase 5, 2026-11-11): the prompt is armed on a bare
+    # client whose masking succeeds or fails, and what it says is checked.
 
-    def test_the_claim_and_the_warning_are_mutually_exclusive(self):
-        import ast, textwrap
-        fn = ast.parse(textwrap.dedent(
-            inspect.getsource(xmpp.OTRv4PlusXMPP._arm_secret_prompt))).body[0]
-        branch = [n for n in ast.walk(fn) if isinstance(n, ast.If)
-                  and isinstance(n.test, ast.Name) and n.test.id == "hidden"]
-        assert branch, "the promise is not guarded by whether it is true"
-        assert branch[0].orelse, "there is no else branch for the failure case"
+    @staticmethod
+    def _armed(hidden, capsys):
+        from xmpp_double import bare_client
+        c = bare_client(xmpp.OTRv4PlusXMPP)
+        c._mask_next_input = lambda on: hidden
+        xmpp.OTRv4PlusXMPP._arm_secret_prompt(c, "bob", "start")
+        assert c._secret_request == "bob" and c._secret_purpose == "start"
+        return capsys.readouterr().out
+
+    def test_a_hidden_prompt_says_hidden_and_no_warning(self, capsys):
+        out = self._armed(True, capsys)
+        assert "(hidden)" in out
+        assert "WARNING" not in out
+
+    def test_when_hiding_fails_the_user_is_told_plainly(self, capsys):
+        """When hiding fails the user must be told plainly, not told the
+        opposite: the claim and the warning are mutually exclusive."""
+        out = self._armed(False, capsys)
+        assert "WARNING" in out and "WILL be" in out
+        assert "(hidden)" not in out
 
     def test_echo_restoration_is_registered_for_exit(self):
         src = inspect.getsource(xmpp.OTRv4PlusXMPP._mask_next_input)

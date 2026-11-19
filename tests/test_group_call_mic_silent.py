@@ -22,6 +22,7 @@ for p in (ROOT, os.path.join(ROOT, "client")):
 import otrv4plus_groupcall as G  # noqa: E402
 import otrv4plus_voice as V  # noqa: E402
 from android_bridge.trace import TRACE  # noqa: E402
+from kotlin_parts import with_parts  # noqa: E402
 
 FRAME = V.VOICE_FRAME_BYTES
 SILENCE = b"\x00" * FRAME
@@ -152,7 +153,7 @@ def test_the_report_records_it_once_per_call():
 
 def test_every_app_shows_it():
     def src(*parts):
-        return open(os.path.join(ROOT, *parts), encoding="utf-8").read()
+        return with_parts(os.path.join(ROOT, *parts))
     kt = "android/app/src/main/java/org/otrv4plus/android".split("/")
     assert "micSilent" in src(*kt, "bridge", "OtrCore.kt")
     assert 'flag(value, "mic_silent")' in src(*kt, "bridge", "ChaquopyOtrCore.kt")

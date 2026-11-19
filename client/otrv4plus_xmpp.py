@@ -603,6 +603,19 @@ except ImportError as _e:
         name=getattr(_e, "name", None) or "slixmpp",
         cause=_e)
 
+# The same two guards the apps connect through: a DTD or an endless stanza
+# refused before the XML parser reads it, and SCRAM that insists on the
+# server's proof (android_bridge/xmlguard.py, sasl_hardening.py). Applied
+# before the client class exists, because slixmpp binds its SASL handlers
+# when a client registers its plugins.
+try:
+    from android_bridge import sasl_hardening as _sasl_hardening
+    from android_bridge.xmlguard import GuardedStream as _GuardedStream
+    _sasl_hardening.apply()
+except ImportError:
+    class _GuardedStream:  # type: ignore[no-redef]
+        """Without the android_bridge package there is no stream guard."""
+
 try:
     import otrv4plus_admin as _admin
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
@@ -779,9 +792,9 @@ def _make_groups(host):
     return _og.TermuxGroups(host, _xmpp_state_path("groups"), printer=print)
 
 
-class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
-                    _TrustMixin, _FilesMixin, _TradeMixin, _AdminMixin,
-                    _TuiMixin, ClientXMPP):
+class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
+                    _PresenceMixin, _TrustMixin, _FilesMixin, _TradeMixin,
+                    _AdminMixin, _TuiMixin, ClientXMPP):
     """XMPP transport driving the OTRv4+ engine, with IRC-identical SMP flow."""
 
     async def _welcome_join(self):
@@ -1088,6 +1101,9 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
         self.add_event_handler("session_start",      self._on_start)
         self.add_event_handler("message",            self._on_message)
         self.add_event_handler("failed_auth",        self._on_failed_auth)
+        # Fired by the stream guard and the SCRAM hardening just before they
+        # close a stream they refuse (android_bridge.xmlguard.REFUSED_EVENT).
+        self.add_event_handler("stream_refused",     self._on_stream_refused)
         self.add_event_handler("message_error",      self._on_message_error)
         self.add_event_handler("disconnected",       self._on_disconnected)
         self.add_event_handler("connection_failed",  self._on_connection_failed)
@@ -1464,6 +1480,19 @@ class OTRv4PlusXMPP(_TermSyncMixin, _ConnectionMixin, _PresenceMixin,
     # -------------------------------------------------------------------------
 
     def _on_message(self, msg):
+        # An announcement from our own server's administrator (a headline,
+        # or a chat message, from the bare domain): plaintext, shown as what
+        # it is, never handed to OTR (android_bridge/restrictions.py).
+        try:
+            from android_bridge import restrictions as _restrictions
+            own_domain = str(getattr(getattr(self, "boundjid", None), "domain", "") or "")
+            announced = _restrictions.is_server_announcement(str(msg["from"]), own_domain)
+        except Exception:
+            announced = False           # never a reason to lose a message
+        if announced:
+            if msg["type"] in ("headline", "chat", "normal") and msg["body"]:
+                print("\n[server announcement] %s" % _sanitise(str(msg["body"])[:4000]))
+            return
         if msg["type"] not in ("chat", "normal"):
             return
         peer = msg["from"].bare

@@ -174,16 +174,19 @@ def verified(pair):
     return pair
 
 
-def _dummy_tags():
-    """The state tags of the placeholder `RustDoubleRatchet.zeroize` leaves.
+def _destroyed(rust_ratchet):
+    """Whether `RustDoubleRatchet.zeroize` has run on this ratchet.
 
-    `zeroize` replaces the ratchet's keys with fixed dummies and drops the
-    real ones (ZeroizeOnDrop). A ratchet whose tags equal these has had its
-    keys destroyed; one whose tags differ has not.
+    `zeroize` wipes the keys in place and marks the ratchet wiped; from then
+    on every call that would touch a key, `state_tags` included, refuses.
     """
-    r = core.RustDoubleRatchet(b"\x01" * 32, b"\x02" * 32, b"\x03" * 32,
-                               b"\x04" * 32, b"\x05" * 56, False)
-    return {k: bytes(v) for k, v in r.state_tags().items()}
+    if not rust_ratchet.wiped:
+        return False
+    with pytest.raises(Exception, match="zeroized"):
+        rust_ratchet.state_tags()
+    with pytest.raises(Exception, match="zeroized"):
+        rust_ratchet.encrypt(b"after the wipe")
+    return True
 
 
 def _tags(rust_ratchet):
@@ -200,11 +203,11 @@ class TestTheSecretsAreDestroyedInRust:
         session = pair.alice._engine.sessions[pair.bob_jid]
         leaked_rust = session.ratchet._rust          # the "leaked" reference
         leaked_dh = session.ratchet.dh_ratchet_local
-        assert _tags(leaked_rust) != _dummy_tags()
+        assert not leaked_rust.wiped and _tags(leaked_rust)
 
         pair.alice.wipe()
 
-        assert _tags(leaked_rust) == _dummy_tags(), (
+        assert _destroyed(leaked_rust), (
             "the ratchet still holds its keys: the wipe relied on the last "
             "reference going, and the test is holding it")
         assert leaked_dh.destroyed
@@ -714,7 +717,7 @@ class TestCryptoIsDestroyedFirst:
         sent_before = len(pair.alice_wire.sent) if hasattr(pair.alice_wire, "sent") else None
         report = pair.alice.wipe_crypto()
         assert report["errors"] == []
-        assert _tags(leaked) == _dummy_tags(), "ratchet keys survived stage B"
+        assert _destroyed(leaked), "ratchet keys survived stage B"
         assert closed == [], "stage B closed the transport"
         if sent_before is not None:
             assert len(pair.alice_wire.sent) == sent_before, "stage B sent something"

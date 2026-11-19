@@ -255,9 +255,53 @@ class TestCaptureIntegration(IntegrationBase):
 
 class TestDisconnectPropagation(IntegrationBase):
 
-    def test_capture_disconnect_ends_the_call(self):
+    def test_a_route_change_reopens_the_microphone_and_the_call_goes_on(self):
+        """Owner, 2026-11-11: a call was lost 16 s in to 'audio device
+        disconnected'. One disconnect (speaker/earpiece/Bluetooth) now reopens
+        the stream on the new route; nothing is reported as lost."""
         install(FakeAAudioLib(frames_per_burst=480,
                               read_plan=[A.AAUDIO_ERROR_DISCONNECTED]))
+        session = build_session(self.loop)
+        session._capture = A.AAudioCapture()
+        reopened = []
+
+        class _Working:
+            name = "aaudio"
+            def __init__(self):
+                self.reads = 0
+            def read_frame(self, timeout_ms=200):
+                self.reads += 1
+                if self.reads > 3:
+                    session._running = False
+                return None
+            def stop(self):
+                pass
+
+        def fake_open(**_kw):
+            stream = _Working()
+            reopened.append(stream)
+            return stream, []
+
+        real_open = V._audio.open_capture
+        V._audio.open_capture = fake_open
+        self.addCleanup(setattr, V._audio, "open_capture", real_open)
+        reported = []
+        session.on_stream_lost = lambda peer, cid, why: reported.append(why)
+        session.loop = _InlineLoop()
+        session._write_packet = lambda p, queued_at=None: None
+        session._running = True
+        session._capture_worker()
+
+        self.assertEqual(reported, [])
+        self.assertEqual(len(reopened), 1)
+        self.assertGreater(reopened[0].reads, 0, "the reopened stream was used")
+        self.assertEqual(session.stats["audio_rerouted"], 1)
+
+    def test_capture_disconnect_ends_the_call(self):
+        """A device that disconnects again every time it is reopened is
+        broken: after AUDIO_REROUTE_MAX reopens the call ends, once."""
+        install(FakeAAudioLib(frames_per_burst=480,
+                              read_plan=[A.AAUDIO_ERROR_DISCONNECTED] * 12))
         session = build_session(self.loop)
         session._capture = A.AAudioCapture()
         self.addCleanup(session._capture.stop)
@@ -273,15 +317,17 @@ class TestDisconnectPropagation(IntegrationBase):
         self.assertIn("disconnected", reported[0])
 
     def test_playback_disconnect_ends_the_call(self):
-        install(FakeAAudioLib(read_plan=[A.AAUDIO_ERROR_DISCONNECTED]))
+        """A speaker that disconnects on every reopen ends the call (after
+        AUDIO_REROUTE_MAX reopens); one route change does not."""
+        install(FakeAAudioLib(read_plan=[A.AAUDIO_ERROR_DISCONNECTED] * 12))
         session = build_session(self.loop)
         session._playback = A.AAudioPlayback()
-        self.addCleanup(session._playback.stop)
 
         reported = []
         session.on_stream_lost = lambda peer, cid, why: reported.append(why)
         session.loop = _InlineLoop()
-        session.jitter.push(0, 0, bytearray(b"\x00" * V.VOICE_FRAME_BYTES))
+        for n in range(8):
+            session.jitter.push(0, n, bytearray(b"\x00" * V.VOICE_FRAME_BYTES))
         session.jitter._primed = True
         session._running = True
 

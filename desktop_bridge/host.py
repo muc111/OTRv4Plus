@@ -422,7 +422,58 @@ def desktop_device_info(app_version: str = "") -> Dict[str, str]:
     # The GUI's own version (its jar manifest): the first question asked of
     # a report is whether it came from the build that was meant to be tested.
     info["app_version"] = str(app_version or "unknown")[:40]
+    # The commit the ENGINE runs from. app_version is the GUI jar's, and it
+    # has said 0.15.0 since rc.194 whatever the checkout: device report
+    # 2026-11-12 could not tell whether the laptop had pulled the fix it
+    # was testing. The phones report the same field (BuildConfig.BUILD_ID).
+    info["build_id"] = source_build_id()
     return info
+
+
+def source_build_id(root: Optional[str] = None) -> str:
+    """The commit of the checkout this engine runs from, read from .git
+    without running git; "unknown" when there is none (a packaged copy).
+    A commit names code, not a person or a machine."""
+    import re
+    base = root or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    git = os.path.join(base, ".git")
+    sha = re.compile(r"^[0-9a-f]{40}$")
+    try:
+        if os.path.isfile(git):                      # a worktree: "gitdir: <path>"
+            with open(git, encoding="utf-8") as fh:
+                line = fh.read().strip()
+            if not line.startswith("gitdir:"):
+                return "unknown"
+            git = os.path.join(base, line[len("gitdir:"):].strip())
+        with open(os.path.join(git, "HEAD"), encoding="utf-8") as fh:
+            head = fh.read().strip()
+        if sha.match(head):
+            return head
+        if not head.startswith("ref: "):
+            return "unknown"
+        ref = head[5:].strip()
+        common = git
+        try:
+            with open(os.path.join(git, "commondir"), encoding="utf-8") as fh:
+                common = os.path.join(git, fh.read().strip())
+        except OSError:
+            pass
+        for d in (git, common):
+            try:
+                with open(os.path.join(d, ref), encoding="utf-8") as fh:
+                    value = fh.read().strip()
+                if sha.match(value):
+                    return value
+            except OSError:
+                continue
+        with open(os.path.join(common, "packed-refs"), encoding="utf-8") as fh:
+            for line in fh:
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref and sha.match(parts[0]):
+                    return parts[0]
+    except Exception:                                 # noqa: BLE001
+        pass
+    return "unknown"
 
 
 def _real_app():

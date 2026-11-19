@@ -21,6 +21,7 @@ import sys
 
 import pytest
 from source_of import CONVERSATION_SCREEN_PARTS  # noqa: E402
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -44,7 +45,7 @@ def read(path):
 def code_of(path):
     """Source with comments stripped, so a test does not match the comment
     explaining why something is absent."""
-    text = re.sub(r"/\*.*?\*/", "", read(path), flags=re.S)
+    text = re.sub(r"/\*.*?\*/", "", with_parts(path), flags=re.S)
     return "\n".join(line for line in text.splitlines()
                      if not line.lstrip().startswith("//"))
 
@@ -278,8 +279,9 @@ class TestTheBridge:
         """A PyException crossing Chaquopy keeps only its message, and a MUC
         error's message carries the room, the service and the nickname."""
         assert "notPrepared()" in bridge
+        # The room calls run from discoverServices to the avatar section.
         block = bridge[bridge.index("fun discoverServices("):
-                       bridge.index("private fun notPrepared")]
+                       bridge.index("fun avatarIndex(")]
         assert "throw" not in block
 
     def test_the_privileges_are_read_rather_than_derived(self, bridge):

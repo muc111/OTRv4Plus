@@ -197,6 +197,55 @@ static SMP_MONTY: LazyLock<FixedMontyParams<{ U3072::LIMBS }>> = LazyLock::new(|
     FixedMontyParams::new(modulus)
 });
 
+/// The group order q = (p - 1) / 2, for constant-time scalar arithmetic.
+/// q is odd (p is a safe prime), so it is a valid Montgomery modulus.
+static SMP_ORDER_MONTY: LazyLock<FixedMontyParams<{ U3072::LIMBS }>> = LazyLock::new(|| {
+    let be = pad_be_384(&SMP_ORDER.to_bytes_be());
+    let q = U3072::from_be_slice(&be);
+    let modulus = Odd::new(q).into_option().expect("the SMP group order is odd");
+    FixedMontyParams::new(modulus)
+});
+
+/// A value mod q, from big-endian bytes, without a `num_bigint` copy.
+/// The padded copy is wiped here; the caller wipes the result.
+fn scalar_mod_q(bytes: &[u8]) -> FixedMontyForm<{ U3072::LIMBS }> {
+    let mut padded = pad_be_384(bytes);
+    let mut int = U3072::from_be_slice(&padded);
+    let out = FixedMontyForm::new(&int, &SMP_ORDER_MONTY);
+    padded.zeroize();
+    int.zeroize();
+    out
+}
+
+/// The Schnorr response `d = (r - c * x) mod q`, in constant time.
+///
+/// Review F2 (2026-11-11): this was `num_bigint` arithmetic -- variable-time
+/// multiply and modulo on the secret `x` (the SMP secret itself in d6, the
+/// a2/a3/b2/b3/r4 exponents elsewhere) and on the nonce `r`, with heap
+/// copies of both freed unwiped. Montgomery arithmetic mod q takes the same
+/// time for every value, and every intermediate is zeroized. The output is
+/// the minimal big-endian encoding `num_bigint::to_bytes_be` gave (`[0]` for
+/// zero), so the wire format is unchanged; trimming it works on the public
+/// result only.
+fn zkp_response(r: &[u8], c: &[u8], x: &[u8]) -> Vec<u8> {
+    let mut r_m = scalar_mod_q(r);
+    let mut c_m = scalar_mod_q(c);
+    let mut x_m = scalar_mod_q(x);
+    // By reference on purpose: the forms are Copy, and by-value operands
+    // would leave extra, unwiped copies of x and r on the stack.
+    #[allow(clippy::op_ref)]
+    let mut cx = &c_m * &x_m;
+    #[allow(clippy::op_ref)]
+    let mut d_m = &r_m - &cx;
+    let mut d = d_m.retrieve();
+    let full = d.to_be_bytes();
+    let bytes: &[u8] = full.as_ref();
+    let first = bytes.iter().position(|&b| b != 0).unwrap_or(bytes.len() - 1);
+    let out = bytes[first..].to_vec();
+    r_m.zeroize(); c_m.zeroize(); x_m.zeroize(); cx.zeroize(); d_m.zeroize(); d.zeroize();
+    out
+}
+
 fn pad_be_384(raw: &[u8]) -> [u8; 384] {
     let mut out = [0u8; 384];
     let n = raw.len().min(384);
@@ -708,9 +757,14 @@ impl SmpState {
         _modulus: &num_bigint::BigUint,
     ) -> num_bigint::BigUint {
         let base_ct = Self::biguint_to_u3072(base);
-        let exp_ct  = U3072::from_be_slice(&pad_be_384(exp_bytes));
+        // The exponent is usually secret (a2, a3, r4, the SMP scalar, ...):
+        // wipe the padded copy and the U3072 copy once the power is taken.
+        let mut exp_be = pad_be_384(exp_bytes);
+        let mut exp_ct = U3072::from_be_slice(&exp_be);
+        exp_be.zeroize();
         let base_m  = FixedMontyForm::new(&base_ct, &SMP_MONTY);
         let res_m   = base_m.pow(&exp_ct);
+        exp_ct.zeroize();
         Self::u3072_to_biguint(&res_m.retrieve())
     }
 
@@ -754,10 +808,9 @@ impl SmpState {
         let commitment   = Self::mod_exp(base, r_bytes, &SMP_PRIME);
         let commitment_b = Self::fe_bytes(&commitment);
         let c            = Self::zkp_challenge(version, &commitment_b, base_val);
-        let r   = num_bigint::BigUint::from_bytes_be(r_bytes);
-        let exp = num_bigint::BigUint::from_bytes_be(exp_bytes);
-        let d   = (r + &*SMP_ORDER - (c.clone() * exp) % &*SMP_ORDER) % &*SMP_ORDER;
-        (c.to_bytes_be(), d.to_bytes_be())
+        let c_b          = c.to_bytes_be();
+        let d            = zkp_response(r_bytes, &c_b, exp_bytes);
+        (c_b, d)
     }
 
     fn verify_zkp(version: u8, c_bytes: &[u8], d_bytes: &[u8], base_val: &[u8]) -> Result<()> {
@@ -1019,17 +1072,23 @@ impl SmpState {
         // sides always derive the same secret scalar regardless of when
         // set_secret is called relative to KEM key generation.
 
-        let binding = mac.finalize().into_bytes();
+        let mut binding = mac.finalize().into_bytes();
         state.zeroize();
 
-        // Step 4: reduce mod order
-        let int_hash = num_bigint::BigUint::from_bytes_be(&binding);
-        let mut secret_int = int_hash % &*SMP_ORDER;
-        if secret_int == num_bigint::BigUint::ZERO {
-            secret_int = num_bigint::BigUint::from(1u8);
+        // Step 4: the binding as a scalar mod q. It is an HMAC-SHA3-512
+        // output -- 64 bytes, below 2^512 and so far below q (3071 bits) --
+        // so "mod q" leaves it unchanged; it is padded straight into the
+        // 384-byte scalar. Review F2: this went through a `num_bigint`
+        // reduction that left heap copies of the secret unwiped. Identical
+        // value to before, including the "zero becomes one" rule.
+        let mut scalar = zeroize::Zeroizing::new(vec![0u8; SMP_SCALAR_BYTES]);
+        scalar[SMP_SCALAR_BYTES - binding.len()..].copy_from_slice(&binding);
+        if scalar.iter().fold(0u8, |acc, &b| acc | b) == 0 {
+            scalar[SMP_SCALAR_BYTES - 1] = 1;
         }
+        Zeroize::zeroize(&mut binding[..]);
 
-        self.secret     = SecretVec::from_slice(&Self::fixed_bytes(&secret_int, SMP_SCALAR_BYTES));
+        self.secret     = SecretVec::from_slice(&scalar);
         self.session_id = Some(session_id.to_vec());
         self.our_fp     = Some(our_fp.to_vec());
         self.peer_fp    = Some(peer_fp.to_vec());
@@ -1318,12 +1377,10 @@ impl SmpState {
         ch_input.extend_from_slice(&r2_commit_b);
         let cp = Self::zkp_challenge(5, &r1_commit_b, &ch_input);
 
-        let r5b_n    = num_bigint::BigUint::from_bytes_be(self.r5b.expose());
-        let r6b_n    = num_bigint::BigUint::from_bytes_be(self.r6b.expose());
-        let r4b_n    = num_bigint::BigUint::from_bytes_be(self.r4b.expose());
-        let secret_n = num_bigint::BigUint::from_bytes_be(self.secret.expose());
-        let d5 = (r5b_n + &*SMP_ORDER - (cp.clone() * r4b_n  ) % &*SMP_ORDER) % &*SMP_ORDER;
-        let d6 = (r6b_n + &*SMP_ORDER - (cp.clone() * secret_n) % &*SMP_ORDER) % &*SMP_ORDER;
+        // d5 = r5 - cp*r4, d6 = r6 - cp*secret (mod q), in constant time.
+        let cp_b = cp.to_bytes_be();
+        let d5 = zkp_response(self.r5b.expose(), &cp_b, self.r4b.expose());
+        let d6 = zkp_response(self.r6b.expose(), &cp_b, self.secret.expose());
 
         self.g2a   = Some(g2a.to_vec());
         self.g3a   = Some(g3a.to_vec());
@@ -1336,7 +1393,7 @@ impl SmpState {
 
         let classical_out = Self::encode_group_elems(&[
             &g2b_b, &c2b, &d2b, &g3b_b, &c3b, &d3b,
-            &pb_b, &qb_b, &cp.to_bytes_be(), &d5.to_bytes_be(), &d6.to_bytes_be(),
+            &pb_b, &qb_b, &cp.to_bytes_be(), &d5, &d6,
         ]);
 
         let mut wire = vec![self.version];
@@ -1784,11 +1841,10 @@ impl PySmp {
         our_fp:     &[u8],
         peer_fp:    &[u8],
     ) -> PyResult<()> {
-        let mut snapshot: Vec<u8> = secret.to_vec();
+        // Zeroizing uses volatile writes the optimiser cannot drop, unlike
+        // the hand-written `*b = 0` loop this replaces.
+        let snapshot = zeroize::Zeroizing::new(secret.to_vec());
         self.inner.set_secret(&snapshot, session_id, our_fp, peer_fp);
-        for b in snapshot.iter_mut() { *b = 0; }
-        snapshot.clear();
-        snapshot.shrink_to_fit();
         drop(snapshot);
         let n = secret.len();
         for i in 0..n { secret.set_item(i, 0u8)?; }
@@ -1894,6 +1950,62 @@ impl PySmp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Review F2 (2026-11-11): the constant-time response is the old one ────
+    /// The `num_bigint` formula `zkp_response` replaced, kept here as the
+    /// reference the wire format must still match.
+    fn old_response(r: &[u8], c: &[u8], x: &[u8]) -> Vec<u8> {
+        use num_bigint::BigUint;
+        let (r, c, x) = (BigUint::from_bytes_be(r), BigUint::from_bytes_be(c), BigUint::from_bytes_be(x));
+        ((r + &*SMP_ORDER - (c * x) % &*SMP_ORDER) % &*SMP_ORDER).to_bytes_be()
+    }
+
+    #[test]
+    fn constant_time_response_matches_the_old_one_byte_for_byte() {
+        use rand::RngCore;
+        let q = SMP_ORDER.to_bytes_be();
+        let q_minus_1 = (&*SMP_ORDER - 1u8).to_bytes_be();
+        let ones = vec![0xFFu8; 384];
+        let zero = vec![0u8; 1];
+        let mut edge: Vec<Vec<u8>> = vec![zero.clone(), vec![1], q.clone(), q_minus_1.clone(), ones.clone(), vec![0u8; 384]];
+        for _ in 0..60 {
+            let mut v = vec![0u8; 384];
+            OsRng.fill_bytes(&mut v);
+            edge.push(v);
+        }
+        // c is a challenge: always reduced mod q.
+        let challenges: Vec<Vec<u8>> = vec![zero.clone(), vec![1], q_minus_1.clone()]
+            .into_iter()
+            .chain((0..5).map(|_| {
+                let mut h = [0u8; 64];
+                OsRng.fill_bytes(&mut h);
+                (num_bigint::BigUint::from_bytes_be(&h) % &*SMP_ORDER).to_bytes_be()
+            }))
+            .collect();
+        for (i, r) in edge.iter().enumerate() {
+            let x = &edge[(i * 7 + 3) % edge.len()];
+            for c in &challenges {
+                assert_eq!(zkp_response(r, c, x), old_response(r, c, x),
+                           "response differs (r #{i})");
+            }
+        }
+    }
+
+    #[test]
+    fn the_secret_scalar_is_the_padded_binding_as_before() {
+        use rand::RngCore;
+        for _ in 0..50 {
+            let mut binding = [0u8; 64];
+            OsRng.fill_bytes(&mut binding);
+            let old = SmpState::fixed_bytes(
+                &(num_bigint::BigUint::from_bytes_be(&binding) % &*SMP_ORDER), SMP_SCALAR_BYTES);
+            let mut new = vec![0u8; SMP_SCALAR_BYTES];
+            new[SMP_SCALAR_BYTES - 64..].copy_from_slice(&binding);
+            assert_eq!(new, old);
+        }
+        // 64 bytes is always below q, which is what makes the padding exact.
+        assert!(num_bigint::BigUint::from_bytes_be(&[0xFF; 64]) < *SMP_ORDER);
+    }
 
     // ── 1. SMP_PRIME_CT and SMP_PRIME must represent the same integer ─────────
     #[test]

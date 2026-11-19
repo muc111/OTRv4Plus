@@ -42,8 +42,9 @@ module:hook("pre-resource-bind", function(event)
 	end);
 	for i = 1, excess do
 		local old = others[i];
-		module:log("info", "Signing out %s: the account signed in again",
-			old.full_jid or "an older session");
+		-- No name: a log line per sign-in would be a record of who
+		-- connected and when, on a server whose point is not to keep one.
+		module:log("info", "Signing out an older session: the account signed in again");
 		old:close({ condition = "conflict",
 			text = "Replaced by a newer sign-in of this account" });
 	end

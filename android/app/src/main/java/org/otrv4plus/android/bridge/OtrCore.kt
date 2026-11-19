@@ -617,6 +617,13 @@ data class ConnectionStatus(
      * lifecycle bug, invisible unless something asks.
      */
     val workerAlive: Boolean = false,
+    /**
+     * While the attempt waits for a built-in router too new to find the
+     * server: seconds waited so far, else -1 (Connect screen countdown).
+     */
+    val routerWaitedS: Int = -1,
+    /** The most that wait lasts, in seconds (with [routerWaitedS]). */
+    val routerWaitLimitS: Int = 0,
 )
 
 /**
@@ -1039,6 +1046,17 @@ sealed interface OtrEvent {
 
     /** Our message [messageId] reached [peer]'s device (XEP-0184). */
     data class MessageDelivered(val peer: String, val messageId: String) : OtrEvent
+
+    /**
+     * The server refused our message [messageId] to [peer]: the server's
+     * administrator restricted this account. [reason] is "account_muted",
+     * "files_restricted" or "files_disabled_on_server"
+     * (android_bridge/restrictions.py). [messageId] is "" when the refused
+     * stanza was not a typed message: the conversation is told, no bubble
+     * is marked. Nothing retries it.
+     */
+    data class MessageBlocked(val peer: String, val messageId: String,
+                              val reason: String) : OtrEvent
 
     /** [peer] has seen our messages up to [messageId] (XEP-0333). */
     data class MessageDisplayed(val peer: String, val messageId: String) : OtrEvent

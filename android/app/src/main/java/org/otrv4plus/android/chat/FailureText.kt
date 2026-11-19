@@ -46,6 +46,21 @@ object FailureText {
     fun fallback(code: String): String =
         "Something did not work ($code). Profile → Diagnostics has the details."
 
+    /**
+     * A message the server refused because its administrator restricted
+     * this account (OtrEvent.MessageBlocked). The same sentences as
+     * android_bridge/restrictions.py; tests/test_account_restrictions.py
+     * holds the two equal. One line each, so that test can find them.
+     */
+    val RESTRICTED: Map<String, String> = mapOf(
+        "account_muted" to "Not sent: the server's administrator has temporarily restricted messaging on your account. Messages and files cannot be sent until the restriction ends. Nothing is retried automatically.",
+        "files_restricted" to "Not sent: the server's administrator has temporarily restricted file transfers on your account.",
+        "files_disabled_on_server" to "Not sent: file transfers are temporarily disabled on this server.",
+    )
+
+    fun restricted(reason: String): String =
+        RESTRICTED[reason] ?: "Not sent: the server refused this message ($reason)."
+
     private val SPECIFIC: Map<String, String> = mapOf(
         "no_transport" to "Not connected to the server.",
         "protocol_send_failed" to "A message to this contact could not be sent. Try again.",

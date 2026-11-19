@@ -527,13 +527,11 @@ procedure; the additions this milestone needs are:
    Tap Revoke and confirm the subscription is actually gone, not just the
    banner. Then sign in as a different account and confirm no trace of the
    request appears.
-10. **Confirm audio is real, not silence.** `test_android_audio_path.py
-    ::test_a_present_backend_is_not_silently_replaced` asserts that when
-    AAudio is available, asking for it yields it rather than a fallback that
-    would transmit silence. That test **cannot run off-device** and has never
-    been executed anywhere — see `SKIP_AUDIT.md`, where it is the one skip of
-    46 with no coverage in any configuration. A call that connects and carries
-    nothing audible is the failure it is looking for.
+10. **Confirm audio is real, not silence.** `test_android_audio_path.py`
+    checks the backend choice off-device (an explicit AAudio choice gives
+    AAudio; where AAudio loads it is tried first), but no test can open a real
+    AAudio stream off a handset. A call that connects and carries nothing
+    audible is the failure to look for (`SKIP_AUDIT.md`, group 7).
 
 11. **Tap "Start OTRv4+" and confirm a DAKE actually runs.** Until this
     milestone nothing in the Android UI could ask for encryption at all —

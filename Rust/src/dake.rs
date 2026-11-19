@@ -545,10 +545,10 @@ impl DakeState {
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
 
-        let mut dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
-        let mut dh2 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
-        let mut dh3 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
-        let (ct, mut mlkem_ss) = Self::mlkem_encapsulate(&self.peer_mlkem_ek)?;
+        let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
+        let dh2 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
+        let dh3 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
+        let (ct, mlkem_ss) = Self::mlkem_encapsulate(&self.peer_mlkem_ek)?;
         let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
 
         // R8: every raw shared secret this function holds is wiped before
@@ -558,15 +558,17 @@ impl DakeState {
         // all four secrets at once and not doing it.
         let combined = zeroize::Zeroizing::new({
             let mut v = Vec::with_capacity(3 * X448_PUB_SIZE + 32);
-            v.extend_from_slice(&dh1); v.extend_from_slice(&dh2);
-            v.extend_from_slice(&dh3); v.extend_from_slice(&mlkem_ss);
+            v.extend_from_slice(&dh1[..]); v.extend_from_slice(&dh2[..]);
+            v.extend_from_slice(&dh3[..]); v.extend_from_slice(&mlkem_ss);
             v
         });
-        let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
-        let ssid = { let mut a = [0u8; 8]; a.copy_from_slice(&kdf::kdf_1(usage::SSID, &mixed_secret, 8)); a };
-        let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
-        // x448_dh returns owned Vec<u8>; wipe them now that they are mixed.
-        dh1.zeroize(); dh2.zeroize(); dh3.zeroize(); mlkem_ss.zeroize();
+        let mixed_secret = zeroize::Zeroizing::new(kdf::kdf_1(usage::SHARED_SECRET, &combined, 64));
+        let ssid = kdf::derive_ssid(&mixed_secret);
+        let mac_key = zeroize::Zeroizing::new(kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64));
+        // dh1..dh3 and mlkem_ss are Zeroizing: wipe them now that they are
+        // mixed; their wrappers (and mixed_secret's, mac_key's) also cover
+        // every early `?` return below.
+        drop((dh1, dh2, dh3, mlkem_ss));
 
         // Build the wire BEFORE computing MAC, so the MAC covers exactly what
         // will be sent.  The parser (process_dake2) MACs over data[..off]
@@ -690,10 +692,10 @@ impl DakeState {
         let prekey_priv_bytes = our_prekey_priv.unwrap_or(self.our_prekey_priv.expose());
 
 
-        let mut dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
-        let mut dh2 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
-        let mut dh3 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
-        let mut mlkem_ss = Self::mlkem_decapsulate(self.our_mlkem_sk.expose(), &mlkem_ct)?;
+        let dh1 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_eph_x448_pub)?;
+        let dh2 = Self::x448_dh(prekey_priv_bytes, &self.peer_eph_x448_pub)?;
+        let dh3 = Self::x448_dh(self.our_eph_x448_priv.expose(), &self.peer_prekey_pub())?;
+        let mlkem_ss = Self::mlkem_decapsulate(self.our_mlkem_sk.expose(), &mlkem_ct)?;
         let brace_key = kdf::derive_brace_key(&[0u8; 32], &mlkem_ss);
 
         // R8: every raw shared secret this function holds is wiped before
@@ -703,15 +705,17 @@ impl DakeState {
         // all four secrets at once and not doing it.
         let combined = zeroize::Zeroizing::new({
             let mut v = Vec::with_capacity(3 * X448_PUB_SIZE + 32);
-            v.extend_from_slice(&dh1); v.extend_from_slice(&dh2);
-            v.extend_from_slice(&dh3); v.extend_from_slice(&mlkem_ss);
+            v.extend_from_slice(&dh1[..]); v.extend_from_slice(&dh2[..]);
+            v.extend_from_slice(&dh3[..]); v.extend_from_slice(&mlkem_ss);
             v
         });
-        let mixed_secret = kdf::kdf_1(usage::SHARED_SECRET, &combined, 64);
-        let ssid = { let mut a = [0u8; 8]; a.copy_from_slice(&kdf::kdf_1(usage::SSID, &mixed_secret, 8)); a };
-        let mac_key = kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64);
-        // x448_dh returns owned Vec<u8>; wipe them now that they are mixed.
-        dh1.zeroize(); dh2.zeroize(); dh3.zeroize(); mlkem_ss.zeroize();
+        let mixed_secret = zeroize::Zeroizing::new(kdf::kdf_1(usage::SHARED_SECRET, &combined, 64));
+        let ssid = kdf::derive_ssid(&mixed_secret);
+        let mac_key = zeroize::Zeroizing::new(kdf::kdf_1(usage::DAKE_MAC_KEY, &mixed_secret, 64));
+        // dh1..dh3 and mlkem_ss are Zeroizing: wipe them now that they are
+        // mixed; their wrappers (and mixed_secret's, mac_key's) also cover
+        // every early `?` return below.
+        drop((dh1, dh2, dh3, mlkem_ss));
 
         let expected_mac = kdf::hmac_sha3_512(&mac_key, message_body);
 
@@ -907,28 +911,28 @@ impl DakeState {
             Err(OtrError::SignatureInvalid)
         }
     }
-    fn x448_dh(priv_bytes: &[u8], pub_bytes: &[u8;56]) -> Result<Vec<u8>> {
+    fn x448_dh(priv_bytes: &[u8], pub_bytes: &[u8;56]) -> Result<zeroize::Zeroizing<[u8;56]>> {
         // RFC 7748 X448; refuses a low-order peer key and an all-zero result.
+        // The shared secret stays in its Zeroizing wrapper, so it is wiped on
+        // every path out of the caller, `?` included.
         let sk = zeroize::Zeroizing::new(
             <[u8;56]>::try_from(priv_bytes).map_err(|_| OtrError::Internal)?);
-        let ss = crate::rfc7748::diffie_hellman(&sk, pub_bytes).ok_or(OtrError::Internal)?;
-        Ok(ss.to_vec())
+        crate::rfc7748::diffie_hellman(&sk, pub_bytes).ok_or(OtrError::Internal)
     }
     fn derive_session_keys(mixed_secret: &[u8], brace_key: &SecretBytes<32>, ssid: &[u8;8]) -> Result<DakeSessionKeys> {
-        use zeroize::Zeroize;
-        let mut root_seed = kdf::kdf_1(usage::ROOT_KEY, mixed_secret, 96);
-        let mut extra_raw = kdf::kdf_1(usage::EXTRA_SYM_KEY, mixed_secret, 32);
-        let mut root=[0u8;32]; root.copy_from_slice(&root_seed[..32]);
-        let mut ck_a=[0u8;32]; ck_a.copy_from_slice(&root_seed[32..64]);
-        let mut ck_b=[0u8;32]; ck_b.copy_from_slice(&root_seed[64..96]);
-        let mut extra=[0u8;32]; extra.copy_from_slice(&extra_raw);
-        let mut sid=[0u8;8]; sid.copy_from_slice(ssid);
-        // Audit M2: wipe the heap copies of the derived root/chain/extra keys.
-        root_seed.zeroize();
-        extra_raw.zeroize();
-        Ok(DakeSessionKeys{ root_key:SecretBytes::new(root), chain_key_send:SecretBytes::new(ck_a),
-            chain_key_recv:SecretBytes::new(ck_b), brace_key:SecretBytes::new(*brace_key.expose()),
-            ssid:SecretBytes::new(sid), extra_sym_key:SecretBytes::new(extra) })
+        // Audit M2: the heap outputs are Zeroizing and the keys go straight
+        // into their SecretBytes, with no plain [u8; 32] copy left on the stack.
+        let root_seed = zeroize::Zeroizing::new(kdf::kdf_1(usage::ROOT_KEY, mixed_secret, 96));
+        let extra_raw = zeroize::Zeroizing::new(kdf::kdf_1(usage::EXTRA_SYM_KEY, mixed_secret, 32));
+        let take32 = |b: &[u8]| SecretBytes::<32>::from_slice(b).ok_or(OtrError::Internal);
+        Ok(DakeSessionKeys{
+            root_key:       take32(&root_seed[..32])?,
+            chain_key_send: take32(&root_seed[32..64])?,
+            chain_key_recv: take32(&root_seed[64..96])?,
+            brace_key:      take32(brace_key.expose())?,
+            ssid:           SecretBytes::<8>::from_slice(ssid).ok_or(OtrError::Internal)?,
+            extra_sym_key:  take32(&extra_raw)?,
+        })
     }
 
     pub fn take_session_keys(&mut self) -> Option<DakeSessionKeys> { self.session_keys.take() }

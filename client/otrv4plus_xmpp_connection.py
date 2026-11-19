@@ -12,6 +12,7 @@ import secrets
 import sys
 import time
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import otrv4plus_ping as _ping
 import otrv4plus_tunnels as _tunnels
 from otrv4plus_term import print, _sanitise  # noqa: A004 (the client's print)
@@ -341,6 +342,34 @@ class ConnectionMixin:
               "(it will not be shown).")
         self._password_prompt = "Password for %s: " % (self._own_bare or "?")
 
+    def _on_stream_refused(self, reason):
+        """The stream guard or the SCRAM hardening ended the connection: the
+        server sent XML this client will not read, or did not prove that it
+        holds this account's keys (android_bridge/xmlguard.py,
+        sasl_hardening.py).
+
+        Trying again would meet the same server, so the session stays down.
+        What is printed says which check failed and at which step, in names,
+        lengths and counts: nothing the server sent, no password, no key.
+        """
+        self._shutting_down = True          # no reconnect to the same server
+        detail, section = "", ""
+        try:
+            from android_bridge import server_proof
+            from android_bridge.transport_base import server_not_proven_detail
+            detail = server_not_proven_detail(None, "sign-in")
+            section = server_proof.render()
+        except Exception:
+            detail = ("the server did not prove it knows this account, or "
+                      "sent something this client refuses to read (%s)."
+                      % _sanitise(str(reason))[:40])
+        print("\n[server not proven] " + detail, file=sys.stderr)
+        if section:
+            print(section, file=sys.stderr)
+        print("[server not proven] not reconnecting. Check the server "
+              "address; if it is right, send the lines above to the "
+              "server's operator.", file=sys.stderr)
+
     def _can_prompt_for_password(self) -> bool:
         """True when a hidden prompt can actually be delivered.
 
@@ -465,6 +494,29 @@ class ConnectionMixin:
         # slixmpp does not always populate .condition, so fall back to
         # matching the element name inside the raw stanza.
         matched = None
+        # The server's administrator: suspended, removed, signed out, or
+        # maintenance (android_bridge/restrictions.py). Our sentence, not the
+        # server's; the reconnect loop stops unless trying again can work.
+        try:
+            from android_bridge import restrictions as _restrictions
+            try:
+                said = str(error["text"] or "")
+            except Exception:
+                said = raw
+            restricted = _restrictions.of_stream_error(str(condition), said)
+        except ImportError:
+            restricted = None
+        if restricted is not None:
+            if restricted.retry:
+                print("[server] %s" % restricted.text)
+                return
+            self._shutting_down = True
+            print("\n[fatal] %s\n" % restricted.text)
+            try:
+                self.disconnect()
+            except Exception:
+                pass
+            return
         if _is_session_limit(str(condition), raw):
             self._shutting_down = True
             print("\n[fatal] %s\n" % SESSION_LIMIT_TEXT)

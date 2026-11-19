@@ -8,6 +8,7 @@ requests, and the bounced messages the server returns."""
 import asyncio
 import time
 
+import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import otrv4plus_caps as _caps
 from otrv4plus_term import print, _sanitise  # noqa: A004 (the client's print)
 
@@ -24,6 +25,19 @@ class PresenceMixin:
         peer = msg["from"].bare
         condition = msg["error"]["condition"]
         text = msg["error"]["text"] or condition
+        # The server's administrator restricted this account (muted, no
+        # files): said in our words, once per refusal, and never retried.
+        try:
+            from android_bridge import restrictions as _restrictions
+            error = msg["error"]
+            restricted = _restrictions.of_stanza_error(
+                error.get("type", "") if hasattr(error, "get") else error["type"],
+                condition, error.get("text", "") if hasattr(error, "get") else error["text"])
+        except Exception:
+            restricted = None           # never a reason to lose the bounce report
+        if restricted is not None:
+            print("\n[not sent] to %s: %s" % (_sanitise(peer, 128), restricted.text))
+            return
         groups = getattr(self, "_groups", None)
         if groups is not None:
             try:

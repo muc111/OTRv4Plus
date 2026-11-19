@@ -4,6 +4,289 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
+## Android 0.7.0-experimental.rc.206-untested — 2026-11-17 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`; this one has not
+been on a device. What the apps show when the server's administrator
+restricts an account, and announcements that now reach everyone.
+
+- **A message refused because your account is muted says so.** It used to
+  show as sent. Now the bubble says "not sent" in red, the conversation
+  says why, and a banner says it wherever you are. Nothing is retried by
+  itself, and text that was waiting for an encrypted session is dropped
+  and marked "not sent" too, instead of going out later on its own.
+- **File transfers stopped by the administrator** (for your account, or
+  for the whole server) are said the same way.
+- **Suspended, signed out, removed, maintenance.** A suspension from the
+  admin panel now says "Your account has been suspended by the server's
+  administrator" and the app stops trying to sign in; it used to treat it
+  as an unexplained error and keep retrying. Being signed out by the
+  administrator, or having the account removed, says so and waits for you.
+  Maintenance says "The server is in maintenance mode" and the app tries
+  again by itself.
+- **Server announcements reach every client.** An announcement from the
+  admin panel arrived and was thrown away. It now appears in a
+  conversation named for the server, as plaintext (which is what it is),
+  with a notification and a banner. The terminal client prints it.
+- The server's own wording is never shown, only recognised: the apps say
+  what happened in their own words, so a server cannot write to your
+  screen this way. An announcement is accepted only from your own server.
+
+## Android 0.7.0-experimental.rc.205-untested — 2026-11-16 — on `dev`, superseded by rc.206
+
+The last build tested on devices is rc.194, on `main`; this one has not
+been on a device. It is rc.204's hardening, made into something a person
+can act on, and run against a real server. No new features.
+
+- **"The server did not prove it knows this account" now says which check
+  failed.** The message ends with a line you can copy, such as
+  `[check=iteration_count phase=sign-in mechanism=SCRAM-SHA-1 step=2
+  proof_sent=no ...]`, and the diagnostic report has a "Server checks"
+  section: which guards are active, how many connections they passed, and
+  for each refusal the step it happened at and the shape of the server's
+  reply. Names, lengths and counts only: no password, key or address. If
+  you see this message on a device, that line is what to send.
+- **The message says only what is known.** rc.204 said "nothing that
+  reveals the password was sent" every time. While creating an account that
+  is not true (the new password has just gone to that server), and it now
+  says so, and tells you not to reuse it.
+- **Failures that used to end in a timeout end at once.** A server reply
+  with a part missing or unreadable left the app waiting; a wrong server
+  signature was reported as "the server closed the connection"; creating an
+  account on a server the app refused said "the server did not answer".
+  Each is now refused straight away with its reason.
+- **Checked against a real Prosody on every push.** A real sign-in, a wrong
+  password, account creation, an attacker injecting data before encryption
+  starts, our server modules, and the install script below, all run in CI
+  against Prosody 0.12.4. (An earlier version of the first of these was
+  also run by hand against 13.0.7; the code has changed since and 13 has
+  not been re-run.)
+- **Server operators: the install script can look before it changes
+  anything.** `bash prosody/install-server-limits.sh --check` says whether
+  Prosody is reachable from outside right now, whether federation is on,
+  and exactly which lines a real run would change. A real run says the same
+  first, before it closes anything. Running it twice no longer restarts
+  Prosody (which signed everyone out). With `HIDDEN_SERVICE=1`, a server
+  that can still be found afterwards is a failure with its own exit status,
+  naming the line or the port. The output never prints the machine's
+  address, so it can be sent to someone helping you.
+  docs/SERVER_HARDENING.md has the details.
+- **Four server settings lock the apps out, and the script names them.**
+  One is easy to hit on Prosody 13: do not put `SCRAM-SHA-1-PLUS` in
+  `disable_sasl_mechanisms`. Every sign-in from the apps then fails as if
+  the password were wrong.
+- **For developers.** The test suite is green on a fresh checkout with no
+  environment variables: the Rust core now says whether it is a test build
+  (`otrv4_core.TEST_FEATURES`), and in CI a test build is a failure unless
+  declared. Licence headers are checked in a second, as their own CI job.
+  The Rust core's own 228 unit tests now run in CI (no workflow ran them),
+  three server-module test files that CI skipped now run, and the weekly
+  advisory audit and fuzz runs cover `dev` as well as `main`.
+
+## Android 0.7.0-experimental.rc.204-untested — 2026-11-14 — on `dev`, superseded by rc.205
+
+A red-team pass: what an attacker would do, not whether the code is correct
+(docs/RED_TEAM_2026-11.md). Nothing was found that reads messages. What was
+found, and is fixed:
+
+- **A hostile server, or on clearnet anyone on the path before encryption
+  starts, could reach the XML parser's DTD code.** The apps now refuse a DTD,
+  and a stanza that never ends, before the parser reads it.
+- **A server could be accepted without proving it knows your account**, could
+  freeze the app, and could weaken your login proof (three faults in the XMPP
+  library's SCRAM). Sign-in now requires the server's proof and refuses
+  unreasonable settings; if a server fails, you are told it did not prove
+  itself, and the app does not retry.
+- **The sign-up CAPTCHA could reach any image decoder on the phone.** Only
+  PNG, JPEG and GIF are shown now, judged by the file itself.
+- **Server operators: a hidden server set up from our guide was not hidden.**
+  Prosody listens on every address and federates unless told not to; either
+  reveals the machine. `sudo HIDDEN_SERVICE=1 bash
+  prosody/install-server-limits.sh` closes both, and
+  docs/SERVER_HARDENING.md says how to check. Please check yours.
+- The I2P session name is unguessable (128 bits, was 32); the diagnostic
+  report shows the XML library's version; a server module no longer logs
+  account names at sign-in.
+
+## Android 0.7.0-experimental.rc.203-untested — 2026-11-14 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`. A code-structure pass
+and a full audit (docs/AUDIT_2026-11.md); one change you may notice:
+
+- **A call keeps your microphone when the screen locks.** Since Android 11 an
+  app in the background can use the microphone only from a foreground
+  service of type microphone; the app's service was declared for data sync
+  only, so a call with the screen off could send silence. The service now
+  claims the microphone for the length of a call (1:1 or group) and gives it
+  back after. If Android refuses (no microphone permission yet), the call
+  goes on as before and the report says `microphone_not_claimed`.
+- **No crash on a corrupt group store.** 38 places in the MLS key store that
+  would have stopped the app on a damaged value now return an error.
+- **Registration replies with a DTD are refused unread** (XMPP forbids them).
+- **Audit plumbing.** The MLS crate's own lock file is audited in CI, and CI
+  fails if any advisory we ignore as "locked, not built" ever reaches the
+  shipped build.
+- **Structure.** ChaquopyOtrCore (1957 -> 1388 lines), OtrConnectionService
+  (1934 -> 1535) and ChatViewModel (2463 -> 2027) are split into parts by
+  interface delegation and extension functions; no behaviour changed.
+
+## Android 0.7.0-experimental.rc.202-untested — 2026-11-12 — on `dev`, superseded by rc.203
+
+The last build tested on devices is rc.194, on `main`. From the rc.201
+reports of an 8-minute call (phone on rc.201, laptop on an older engine):
+
+- **rc.201 fixed the loss and cost the delay.** The phone heard the laptop
+  with 2.6% missing and 2.4% shed (7% and 12% the day before), and 187 of
+  the 189 holes were single frames that FEC repaired. But mouth-to-ear was
+  1.6 s: the buffer sat ~1.2 s deep for most of the call, because a backlog
+  below 1.2 s waited for a pause to shorten and too few frames came marked
+  as silence.
+- **A backlog now waits at most 3 s for a pause.** After that it plays one
+  frame and skips the next until it is back down: faster speech for a
+  moment, not a hole. Simulated with every frame marked speech: median
+  buffer delay 1072 ms -> 411 ms; with ordinary pauses, speech lost 3.9% ->
+  4.3%.
+- **The repair line is whole in the report.** Values were cut at 200
+  characters; a call line's detail now keeps up to 320.
+
+## Android 0.7.0-experimental.rc.201-untested — 2026-11-11 — on `dev`, superseded by rc.202
+
+From the rc.200
+reports of a 12-minute call, phone and laptop:
+
+- **The phone heard much less of the laptop than the laptop heard of the
+  phone.** Laptop to phone, ~4% of frames never arrived, and the I2P tunnels
+  stalled often enough that the bursts after a stall overflowed the
+  1-second jitter buffer. Phone to laptop was "good" (2.4% missing).
+- **An overflowing burst no longer throws words away first.** The cap
+  dropped the oldest frame whatever it held; it now gives up a pause first,
+  as the shedder does. The cap is 2 s again (it was halved when the only
+  way down was dropping the oldest frames), and speech is shed only past
+  1.2 s of backlog. Simulated on a path that stalls 0.8-3 s every ~12 s:
+  speech lost 11.1% (rc.200) -> 5.4%, for +20 ms median delay.
+- **The phone's summary over-counted missing audio.** A frame dropped at
+  the cap was counted as shed and again as missing (~1,000 frames in that
+  call: "1899 missing" was nearer 830). Each frame is now counted once:
+  played + missing + shed = frames the other end sent.
+- **The repair line reaches the diagnostic report.** rc.200 recorded the
+  event and dropped its numbers. It also says how often the buffer ran dry
+  and how much a burst overflowed it (network stalls versus this device's
+  playout falling behind).
+- **The Chats list no longer says "Verified" for a new session.** After
+  Publish Chat Keys the session is replaced, and verification belongs to
+  the session it ran in, so the conversation rightly asked to verify again
+  -- but the list kept "Verified" for as long as the app ran, because a
+  poll was never allowed to lower it. A poll now can, except in the first
+  15 s after a verification.
+- **The desktop report names the commit its engine runs from**
+  (`build_id`, as the phone's does). Its `app_version` has said 0.15.0 since
+  rc.194 whatever was checked out, so a report could not say whether the
+  laptop had pulled the build under test.
+
+## Android 0.7.0-experimental.rc.200-untested — 2026-11-11 — on `dev`, superseded by rc.201
+
+Calls over I2P lose less audio (owner, 2026-11-11: "minimise the audio
+loss"). From the rc.199 device reports: an 8-minute call missed 8-12% of
+frames at playout and its jitter buffer threw away ~500 more to keep the
+delay down.
+
+- **A burst no longer costs words.** After an I2P tunnel stall the frames
+  arrive in a clump and the buffer has to catch up. It used to drop the
+  oldest frames, speech or not; now each frame is marked speech or silence
+  by the sender (in padding it always sent, inside the encryption: the
+  packet does not change), and the buffer shortens pauses first. Speech is
+  only dropped if the backlog passes half a second. Group calls too.
+- **Error correction follows the real loss.** Opus FEC (a low-rate copy of
+  the previous frame inside each packet, same size on the wire) starts at
+  10% instead of 5%, and each end now reports how much of the other's audio
+  it is missing, so the sender sets it to match (5-30%).
+- **Changing the audio route no longer ends the call.** Speaker, earpiece,
+  Bluetooth or a headset mid-call: the microphone or speaker is reopened on
+  the new route (rc.199 lost a call 16 s in this way). A device that keeps
+  dropping still ends it after three tries.
+- **The phone icon turns green only once the call path has settled**: a
+  minute after its tunnels are built. Until then it is amber and says how
+  long is left ("ready in 42 s"); a call can still be made.
+- **The call summary says what was repaired**: frames recovered by FEC,
+  holes by length (single frames versus longer stalls), pauses shortened
+  against speech dropped, the FEC level, and route changes. Also in the
+  diagnostic report.
+
+Works with older builds: nothing new is negotiated, and an older peer's
+frames and PONGs are handled exactly as before.
+
+## Android 0.7.0-experimental.rc.199-untested — 2026-11-11 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194, on `main`.
+
+- **Security updates before the next device test.**
+  - The Python runtime inside the APK moves to Chaquopy 17.2.0: CPython
+    3.12.7 -> 3.12.15, and its OpenSSL (which slixmpp's TLS uses) from
+    3.0.15, a series past its support, to 3.5.9 LTS.
+  - pyasn1 0.6.4 -> 0.6.5 (four CVEs; it parses data from the network for
+    slixmpp) and setuptools 84.0.0 -> 84.1.0 (one advisory; it only builds
+    slixmpp).
+  - The Rust core's hardening (review findings F1-F5): a wiped chat refuses
+    to encrypt or decrypt instead of running on placeholder keys; SMP's
+    zero-knowledge responses are computed in constant time; handshake and
+    ratchet secrets are wiped on every exit path. Dependencies updated to
+    their newest compatible releases (ml-kem 0.3.4, ml-dsa 0.1.2,
+    crypto-bigint 0.7.11, ...). Nothing changes on the wire: old and new
+    builds complete a handshake and exchange messages both ways.
+- **The diagnostic report shows each handshake step.** Which handshake
+  message arrived from a contact, whether it was refused or failed (by error
+  type, never content), when a session came up and how long it took.
+
+## Android 0.7.0-experimental.rc.198-untested — 2026-11-11 — on `dev`, not yet tested
+
+- **Engine tidy-up for auditors (no change in behaviour).** The session's
+  SMP code moved out of `otrv4+.py` into `client/otrv4plus_session_smp.py`,
+  and the 386-line handler for incoming SMP messages is now one short method
+  per message (SMP1 -- with the race tie-break and the held-SMP1 path in
+  their own methods -- SMP2, SMP3, SMP4, abort, error). The engine's state
+  enums and constants (`otrv4plus_states.py`) and its TLV record
+  (`otrv4plus_tlv.py`) are their own modules too. An unused Python
+  `SHA3_512.hmac` was removed: every MAC is computed in Rust.
+
+## Android 0.7.0-experimental.rc.197-untested — 2026-11-11 — on `dev`
+
+- **The Connect screen counts down while the router gets ready** (owner,
+  2026-11-11). While sign-in or sign-up waits for a just-started built-in
+  router to be able to find the server, the screen says so -- "still joining
+  the I2P network ... trying again by itself for up to 1:48 more. No need to
+  tap again" -- instead of only "building tunnels".
+
+## Android 0.7.0-experimental.rc.196-untested — 2026-11-11 — on `dev`
+
+- **rc.195's wait now covers the router's first searches too.** The rc.195
+  report (2026-11-11): sign-up waited through seven instant "not found"
+  answers, then the router's first real search missed after 30 s and the
+  attempt failed; the next tap found the server in under a second. A router
+  that was too new when the attempt began now gets up to two real searches
+  as well, within a 150-second wait. The same report stayed connected for
+  31 minutes, past the 11-minute point where rc.194's connection dropped.
+
+## Android 0.7.0-experimental.rc.195-untested — 2026-11-10 — on `dev`
+
+From a device report (Pixel 7): sign-up failed five times in two minutes on
+a just-started built-in router, and a connection dropped 12 minutes later.
+
+- **A just-started router is waited for, not failed on.** i2pd answers "not
+  found" for the server's address within milliseconds while it has no peers
+  to search with; sign-in and sign-up now ask again (3 s, 5 s, 8 s, ... up to
+  two minutes) instead of failing at once. A real "not found", which takes
+  seconds, still fails at once.
+- **The report says more about a drop.** The built-in router now logs
+  warnings as well as errors (its log is cut back once over 512 KB), and
+  after a dropped connection its last 15 lines go, scrubbed of addresses,
+  into the diagnostic report, with how long the stream lived and how long
+  it had been silent. A failed sign-up now records the transport's own
+  reason, not only "network".
+- **CI:** two builds publishing at once can no longer delete each other's
+  release and leave the Releases page empty.
+
+---
+
 ## Android 0.7.0-experimental.rc.194 and desktop 0.15.0 — 2026-11-10 — tested release, on `main`
 
 Tested by the owner on two Android 15 phones (a Pixel 7 and a Xiaomi) and a

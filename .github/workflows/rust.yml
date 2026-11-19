@@ -1,0 +1,84 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# The Rust core's own tests.
+#
+# `cargo test` in Rust/: the unit tests written beside the code (the
+# ratchet, the DAKE, SMP, the app lock, the containers, the build label).
+# Until this file no workflow ran them. The Python suite drives the same
+# core through PyO3 and is the larger net, but it cannot reach what is not
+# exported: private helpers, error paths that never cross the boundary, and
+# what a build without the test features does.
+#
+# WHEN IT RUNS
+# On a change to the core or to what it is built from. The list is written
+# once and used for a push and a pull request alike, so the two cannot drift
+# apart; a change to Kotlin, Python or the docs matches nothing here and
+# pays nothing. Weekly as well, because `stable` is a toolchain that moves
+# under code that has not. The weekly run tests `main` AND `dev`: a
+# scheduled workflow only ever runs from the default branch, and `dev` is
+# where a change lands first.
+name: Rust core
+
+on:
+  push:
+    branches: [main, dev, "claude/**"]
+    paths: &core
+      - "Rust/src/**"
+      - "Rust/build.rs"
+      - "Rust/Cargo.toml"
+      - "Rust/Cargo.lock"
+      - "Rust/mls/**"
+      - "Rust/vendor/**"
+      - "Rust/opus-codec/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths: *core
+  schedule:
+    - cron: "29 5 * * 3"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: cargo test${{ matrix.ref && format(' on {0}', matrix.ref) || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # The weekly run: both branches. Otherwise the commit that
+        # triggered the run ("" is what actions/checkout does by default).
+        ref: ${{ fromJSON(github.event_name == 'schedule' && '["main", "dev"]' || '[""]') }}
+    defaults:
+      run:
+        working-directory: Rust
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      # otrv4_core is a PyO3 crate: its test binary links libpython.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            Rust/target
+          key: cargo-core-test-${{ hashFiles('Rust/Cargo.lock') }}
+          restore-keys: cargo-core-test-
+
+      # `--locked`: the lock file as committed, or the job fails.
+      - name: The core as built by default
+        run: cargo test --release --locked
+
+      - name: With group chat (the `mls` feature the apps are built with)
+        run: cargo test --release --locked --features mls

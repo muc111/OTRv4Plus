@@ -12,6 +12,7 @@ rules (creator only, 15 minutes doubling after each Deny).
 """
 import io
 import os
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 A = os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus", "android")
@@ -19,8 +20,7 @@ D = os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus", "
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def test_every_request_the_engine_sends_alerts():

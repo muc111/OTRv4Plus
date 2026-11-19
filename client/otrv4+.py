@@ -72,6 +72,14 @@ if not all(hasattr(socks, _attr) for _attr in
 # from a remote transition into AWAITING_SECRET.  A second copy of the logic
 # here would be a second chance to get it wrong.
 import otrv4plus_smpflow as _smpflow
+# Moved out of this file (2026-11-11) and re-exported under the same names.
+from otrv4plus_states import (  # noqa: E402,F401
+    DAKEState, SessionState, StateMachineError, UIConstants, colorize)
+from otrv4plus_tlv import OTRv4TLV, _safe_b64decode  # noqa: E402,F401
+from otrv4plus_manager_dake import ManagerDakeMixin  # noqa: E402
+from otrv4plus_session_smp import (  # noqa: E402,F401
+    SMP_VERSION_MISMATCH_HELP, ManagerSmpMixin, SessionSmpMixin,
+    _is_smp_version_mismatch)
 # Address rules shared with the Android app, including the project server's
 # shipped address (SHIPPED_SERVERS). Standard library only.
 import otrv4plus_address as _address
@@ -607,25 +615,6 @@ class RingSignature:
             return False
 
 
-class SessionState(IntEnum):
-    PLAINTEXT = 0
-    DAKE_IN_PROGRESS = 1
-    ENCRYPTED = 2
-    FINISHED = 3
-    FAILED = 4
-
-
-class DAKEState(IntEnum):
-    """DAKE protocol states - OTRv4 Spec §4.2"""
-
-    IDLE = 0
-    SENT_DAKE1 = 1
-    RECEIVED_DAKE1 = 2
-    SENT_DAKE2 = 3
-    ESTABLISHED = 4
-    FAILED = 5
-
-
 class IRCConstants:
     """IRC Protocol Constants"""
 
@@ -658,112 +647,6 @@ class IRCConstants:
     RPL_TOPIC = 332
     RPL_TOPICWHOTIME = 333
     RPL_CHANNELMODEIS = 324
-
-
-class UIConstants:
-    """UI Constants"""
-
-    MAX_HISTORY_LINES = 10000
-    PAGER_LINES = 20
-    NOTIFICATION_THRESHOLD = 3
-    PANEL_SWITCH_DELAY = 0.5
-    MAX_MESSAGE_LENGTH = 4096
-    MAX_PRIVMSG_LENGTH = 350
-    MESSAGE_FRAGMENT_SIZE = 450
-    OTR_FRAGMENT_SIZE = 450
-    FRAGMENT_TIMEOUT = 120.0
-    FRAGMENT_LIMIT = 50
-    SMP_FRAGMENT_LIMIT = 100
-    HEARTBEAT_INTERVAL = 300
-    DAKE_TIMEOUT = 120.0
-    REKEY_INTERVAL = 100
-
-    class SecurityLevel(IntEnum):
-        PLAINTEXT = 0
-        ENCRYPTED = 1
-        FINGERPRINT = 2
-        SMP_VERIFIED = 3
-
-    class SMPState(IntEnum):
-        NONE = 0
-        EXPECT1 = 1
-        SENT1 = 2
-        EXPECT2 = 3
-        SENT2 = 4
-        EXPECT3 = 5
-        SENT3 = 6
-        EXPECT4 = 7
-        SUCCEEDED = 8
-        FAILED = 9
-
-    COLORS = {
-        "reset": "\033[0m",
-        "bold": "\033[1m",
-        "dim": "\033[2m",
-        "italic": "\033[3m",
-        "underline": "\033[4m",
-        "black": "\033[30m",
-        "red": "\033[91m",
-        "green": "\033[92m",
-        "yellow": "\033[93m",
-        "blue": "\033[94m",
-        "magenta": "\033[95m",
-        "cyan": "\033[96m",
-        "white": "\033[97m",
-        "dark_red": "\033[31m",
-        "dark_green": "\033[32m",
-        "dark_yellow": "\033[33m",
-        "dark_blue": "\033[34m",
-        "dark_magenta": "\033[35m",
-        "dark_cyan": "\033[36m",
-        "grey": "\033[90m",
-        "orange": "\033[38;5;214m",
-        "pink": "\033[38;5;213m",
-        "teal": "\033[38;5;43m",
-        "lime": "\033[38;5;118m",
-        "gold": "\033[38;5;220m",
-        "lavender": "\033[38;5;183m",
-        "bg_green": "\033[42m",
-        "bg_yellow": "\033[43m",
-        "bg_blue": "\033[44m",
-        "bg_magenta": "\033[45m",
-        "bg_cyan": "\033[46m",
-        "bg_red": "\033[41m",
-        "dim_italic": "\033[2;3m",
-        "bold_cyan": "\033[1;96m",
-        "bold_green": "\033[1;92m",
-        "bold_red": "\033[1;91m",
-        "bold_yellow": "\033[1;93m",
-    }
-
-    SECURITY_ICONS = {
-        SecurityLevel.PLAINTEXT: "🔴",
-        SecurityLevel.ENCRYPTED: "🟡",
-        SecurityLevel.FINGERPRINT: "🟢",
-        SecurityLevel.SMP_VERIFIED: "🔵",
-    }
-
-    SECURITY_NAMES = {
-        SecurityLevel.PLAINTEXT: "PLAINTEXT",
-        SecurityLevel.ENCRYPTED: "ENCRYPTED",
-        SecurityLevel.FINGERPRINT: "VERIFIED",
-        SecurityLevel.SMP_VERIFIED: "SMP VERIFIED",
-    }
-
-    USERNAME_COLORS = [
-        "bold_cyan",
-        "magenta",
-        "bold_green",
-        "yellow",
-        "orange",
-        "pink",
-        "teal",
-        "gold",
-        "lavender",
-        "bold_yellow",
-        "cyan",
-        "dark_magenta",
-    ]
 
 
 def _probe_socks5(host: str, port: int, timeout: float = 2.0) -> bool:
@@ -873,6 +756,24 @@ I2P_NAME_UNKNOWN_RESULTS = ("KEY_NOT_FOUND", "INVALID_KEY")
 #: the router (otrv4plus_address.SHIPPED_SERVERS says why). Re-exported here
 #: for the terminal client's callers.
 SHIPPED_SERVERS = _address.SHIPPED_SERVERS
+
+#: What a router answers NAMING LOOKUP with for a .b32.i2p whose LeaseSet it
+#: could not find (i2pd: INVALID_KEY, SAM.cpp HandleNamingLookupLeaseSet-
+#: RequestComplete; Java I2P: KEY_NOT_FOUND).
+I2P_KEY_NOT_FOUND_RESULTS = ("KEY_NOT_FOUND", "INVALID_KEY")
+#: A key lookup refused faster than this was not a search of the network:
+#: a router that has just started has no peers to ask and answers at once. A
+#: real search that finds nothing takes seconds.
+KEY_LOOKUP_INSTANT_S = 2.0
+#: How long one attempt keeps asking while the answers are instant, and the
+#: pauses between asks. Device reports 2026-11-09 and 2026-11-10: on the
+#: built-in router's first minute or two, every sign-in and sign-up failed in
+#: milliseconds (five sign-up taps in 2 minutes) until one found the server.
+KEY_LOOKUP_SETTLE_S = 150.0
+KEY_LOOKUP_PAUSES_S = (3.0, 5.0, 8.0, 12.0, 15.0)
+#: Real (slow) searches still retried once a router has stopped answering
+#: instantly, within the same attempt: its first searches can miss.
+KEY_LOOKUP_SLOW_RETRIES = 2
 
 
 def remember_i2p_alias(name: str, destination: str, path: str = None,
@@ -1120,10 +1021,20 @@ class I2PSAMConnection:
     #: on a cold router legitimately take 60-90 s.
     reply_timeout = 90
 
+    #: How long `lookup_key` keeps asking a router too new to search
+    #: (KEY_LOOKUP_SETTLE_S); a test of the "not found" outcome sets it to 0.
+    key_lookup_settle_s = KEY_LOOKUP_SETTLE_S
+
+    #: Random bytes in the SAM session name. SAM has no login and any
+    #: program on the machine can reach its port, so the name is the only
+    #: thing between such a program and this session (STREAM CONNECT or
+    #: ACCEPT by ID). Four bytes could be guessed in days; sixteen cannot.
+    SAM_SESSION_ID_BYTES = 16
+
     def __init__(self, sam_host: str = None, sam_port: int = None):
         self.sam_host = sam_host or NetworkConstants.I2P_SAM_HOST
         self.sam_port = sam_port or NetworkConstants.I2P_SAM_PORT
-        self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
+        self._session_id = f"otrv4plus_{secrets .token_hex (self .SAM_SESSION_ID_BYTES )}"
         self._control_sock = None
         self._our_destination = None
         #: Set by `resolve`: the name is the project's server and was dialled
@@ -1348,6 +1259,65 @@ class I2PSAMConnection:
             raise SamError("bridge", "SAM NAMING REPLY carried no valid destination")
         return value
 
+    def lookup_key(self, name: str, pause=None) -> str:
+        """`naming_lookup` for a .b32.i2p, waiting out a router that is too
+        new to search.
+
+        A "not found" that came back instantly (KEY_LOOKUP_INSTANT_S) is a
+        router with no peers yet, not an answer about the server: the lookup
+        is asked again, after KEY_LOOKUP_PAUSES_S, for up to
+        `key_lookup_settle_s`. A router that was too new when this began then
+        gets up to KEY_LOOKUP_SLOW_RETRIES real searches as well: its first
+        searches, with few peers, can miss (device report 2026-11-11: seven
+        instant answers, one 30 s search that missed, and the next attempt
+        found the server in under a second). A slow "not found" on a router
+        that answered properly from the start, and any other failure, are
+        raised at once, as before. `abandon()` ends the wait. Each retry is
+        reported through `on_progress`, if set."""
+        pause = pause or self._pause
+        # The pauses, plus the time each failed search took (a search that
+        # came back at once counts as nothing).
+        waited = 0.0
+        tries = 0
+        slow = 0
+        while True:
+            asked = time.monotonic()
+            try:
+                return self.naming_lookup(name)
+            except SamError as exc:
+                took = time.monotonic() - asked
+                instant = took < KEY_LOOKUP_INSTANT_S
+                if not instant:
+                    waited += took
+                wait = KEY_LOOKUP_PAUSES_S[min(tries, len(KEY_LOOKUP_PAUSES_S) - 1)]
+                settling = instant or (tries > 0 and slow < KEY_LOOKUP_SLOW_RETRIES)
+                if (exc.stage != "naming"
+                        or exc.result not in I2P_KEY_NOT_FOUND_RESULTS
+                        or not settling or self._abandoned
+                        or waited + wait > self.key_lookup_settle_s):
+                    raise
+                if not instant:
+                    slow += 1
+            tries += 1
+            waited += wait
+            progress = getattr(self, "on_progress", None)
+            if progress is not None:
+                try:
+                    progress("the router is too new to find the server yet; "
+                             "asking again (%d) limit=%d"
+                             % (tries, round(self.key_lookup_settle_s)))
+                except Exception:
+                    pass
+            pause(wait)
+            if self._abandoned:
+                raise SamError("cancelled", "the SAM connection was abandoned")
+
+    def _pause(self, seconds: float) -> None:
+        """Sleep, in steps, so `abandon()` cuts it short."""
+        end = time.monotonic() + seconds
+        while not self._abandoned and time.monotonic() < end:
+            time.sleep(min(0.25, max(0.0, end - time.monotonic())))
+
     def _naming_failure(self, target, exc, alias_source=None):
         if exc.stage != "naming":
             return exc
@@ -1393,7 +1363,7 @@ class I2PSAMConnection:
                 print(f"[i2p] {target } is a retired address for {moved_to }; "
                       "trying it as given.")
             try:
-                return self.naming_lookup(target)
+                return self.lookup_key(target)
             except SamError as exc:
                 raise self._naming_failure(target, exc) from None
         self.used_shipped_address = False
@@ -1402,7 +1372,7 @@ class I2PSAMConnection:
             # Reported by the caller (`used_shipped_address`), which knows
             # whether its log may name the address.
             try:
-                dest = self.naming_lookup(shipped)
+                dest = self.lookup_key(shipped)
             except SamError as exc:
                 raise self._naming_failure(shipped, exc) from None
             self.used_shipped_address = True
@@ -1473,7 +1443,7 @@ class I2PSAMConnection:
 
         if not self.session_alive():
             self.close()
-            self._session_id = f"otrv4plus_{secrets .token_hex (4 )}"
+            self._session_id = f"otrv4plus_{secrets .token_hex (self .SAM_SESSION_ID_BYTES )}"
             self._control_sock = self._bridge_socket(90)
             if self._abandoned:
                 self.close()
@@ -1732,26 +1702,6 @@ def _generate_instance_tag() -> int:
             return tag
 
 
-SMP_VERSION_MISMATCH_HELP = (
-    "⚠ SMP stopped: version mismatch. The two devices are running different "
-    "OTRv4+ builds, so they derive different secrets from the same "
-    "passphrase.\n"
-    "   This is NOT a wrong passphrase. Update both devices to the same "
-    "version (git pull, then rebuild the Rust core) and run  /smp start  "
-    "again."
-)
-
-
-def _is_smp_version_mismatch(exc: BaseException) -> bool:
-    """Recognise the Rust core's SMP version-mismatch abort.
-
-    Matched on the error text because PyO3 raises it as a plain ValueError.
-    Kept deliberately narrow: this only changes which local help line is
-    printed, never whether anything is trusted or verified.
-    """
-    return "version mismatch" in str(exc).lower()
-
-
 #: Handlers for the non-protocol TLV types, keyed by type.
 #:
 #: The engine routes DISCONNECTED, the SMP types and EXTRA_SYMMETRIC_KEY
@@ -1787,130 +1737,6 @@ def register_tlv_handler(tlv_type: int, handler: Callable[[str, bytes], None]) -
 def clear_tlv_handlers() -> None:
     """Drop every registered handler.  For teardown and for tests."""
     _TLV_HANDLERS.clear()
-
-
-class OTRv4TLV:
-    """Single TLV (Type-Length-Value) record inside an OTRv4 encrypted message.
-
-    Wire format:  uint16 type  |  uint16 length  |  byte[length] value
-    All multi-byte fields are big-endian (network byte order).
-
-    TLV type 0x0000 (PADDING) MUST be silently discarded by receivers.
-    Unknown TLV types MUST be silently ignored (forward compatibility).
-    """
-
-    __slots__ = ("type", "value")
-
-    PADDING = 0x0000
-    DISCONNECTED = 0x0001
-    SMP_MSG_1 = 0x0002
-    SMP_MSG_2 = 0x0003
-    SMP_MSG_3 = 0x0004
-    SMP_MSG_4 = 0x0005
-    SMP_ABORT = 0x0006
-    SMP_MSG_1Q = 0x0007
-    EXTRA_SYMMETRIC_KEY = 0x0009
-
-    #: v10.21.0: /tip -- a Monero address relayed between two SMP-verified
-    #: peers.  Above the OTRv4-allocated range (0x0000-0x0009) so it cannot
-    #: collide with a future spec type, and forward-compatible by the rule at
-    #: the top of this class: a peer that does not know it ignores it.
-    TIP = 0x0020
-
-    #: rc.65: MESSAGE META -- the id of a typed message, and what it does to
-    #: an earlier one (a correction, a deletion for everyone, a reaction, a
-    #: reply), carried INSIDE the encrypted, authenticated payload so the
-    #: server can neither forge nor redirect them. Same forward-compatibility
-    #: rule: an older peer ignores it and shows the text, if any.
-    MESSAGE_META = 0x0021
-
-    SMP_TYPES = frozenset({SMP_MSG_1, SMP_MSG_2, SMP_MSG_3, SMP_MSG_4, SMP_ABORT, SMP_MSG_1Q})
-
-    # Optional SMP_ABORT payload naming WHY the abort happened.
-    #
-    # The TLV payload was always empty and receivers ignored it, so adding a
-    # reason is additive: an older peer drops it exactly as before. It exists
-    # because "aborted" collapsed three different situations into one message
-    # -- the peer has no secret configured, the peer has the wrong secret, or
-    # something genuinely failed -- and only the first is fixed by the user
-    # typing a command.
-    #
-    # It is a DIAGNOSTIC, never a predicate. Nothing branches on it beyond the
-    # wording of a line printed locally: it is attacker-controlled text like
-    # any other field a peer sends.
-    SMP_ABORT_NO_SECRET = b"NOSECRET"
-
-    # The user was asked and said no.  Distinct from NOSECRET, which means
-    # nobody was asked because nothing was configured.  Same rules apply: a
-    # diagnostic that chooses local wording, never a security predicate.
-    SMP_ABORT_DECLINED = b"DECLINED"
-
-    def __init__(self, tlv_type: int, value: bytes = b""):
-        if not (0 <= tlv_type <= 0xFFFF):
-            raise ValueError(f"TLV type out of range: {tlv_type :#06x}")
-        if len(value) > 65535:
-            raise ValueError(f"TLV value too large: {len (value )} bytes (max 65535)")
-        self.type = tlv_type
-        self.value = bytes(value)
-
-    def encode(self) -> bytes:
-        """Serialize to wire bytes: uint16 type + uint16 length + value."""
-        return struct.pack("!HH", self.type, len(self.value)) + self.value
-
-    @classmethod
-    def decode_one(cls, data: bytes, offset: int = 0) -> Tuple["OTRv4TLV", int]:
-        """Decode one TLV from *data* at *offset*.  Returns (tlv, next_offset).
-
-        Raises ValueError on truncated or malformed input.
-        """
-        if offset + 4 > len(data):
-            raise ValueError(
-                f"TLV header truncated at offset {offset } " f"(need 4, have {len (data )-offset })"
-            )
-        tlv_type, length = struct.unpack_from("!HH", data, offset)
-        end = offset + 4 + length
-        if end > len(data):
-            raise ValueError(
-                f"TLV value truncated: type=0x{tlv_type :04x} "
-                f"declares {length } bytes but only {len (data )-offset -4 } available"
-            )
-        return cls(tlv_type, data[offset + 4 : end]), end
-
-    @classmethod
-    def decode_all(cls, data: bytes) -> List["OTRv4TLV"]:
-        """Decode all TLVs from *data*.  Raises ValueError on malformed stream."""
-        tlvs: List["OTRv4TLV"] = []
-        offset = 0
-        while offset < len(data):
-            tlv, offset = cls.decode_one(data, offset)
-            tlvs.append(tlv)
-        return tlvs
-
-    @classmethod
-    def encode_all(cls, tlvs: List["OTRv4TLV"]) -> bytes:
-        return b"".join(t.encode() for t in tlvs)
-
-    @classmethod
-    def random_padding(cls, min_bytes: int = 8, max_bytes: int = 72) -> "OTRv4TLV":
-        """Create a PADDING TLV with random content for traffic analysis resistance."""
-        pad_len = secrets.randbelow(max_bytes - min_bytes + 1) + min_bytes
-        return cls(cls.PADDING, os.urandom(pad_len))
-
-    def __repr__(self) -> str:
-        _NAMES = {
-            0: "PADDING",
-            1: "DISCONNECTED",
-            2: "SMP_MSG_1",
-            3: "SMP_MSG_2",
-            4: "SMP_MSG_3",
-            5: "SMP_MSG_4",
-            6: "SMP_ABORT",
-            7: "SMP_MSG_1Q",
-            8: "EXTRA_SYMMETRIC_KEY",
-            0x0020: "TIP",
-        }
-        name = _NAMES.get(self.type, f"UNKNOWN(0x{self .type :04x})")
-        return f"OTRv4TLV({name }, {len (self .value )} bytes)"
 
 
 class OTRv4Payload:
@@ -2493,11 +2319,6 @@ def _redact_secret(text: str, secret) -> str:
             continue
         text = text.replace(needle, "[redacted]")
     return text
-
-
-def colorize(text: str, color: str) -> str:
-    """Colorize text with ANSI colors"""
-    return f"{UIConstants .COLORS .get (color ,'')}{text }{UIConstants .COLORS ['reset']}"
 
 
 def colorize_username(username: str) -> str:
@@ -3145,12 +2966,6 @@ class RecoveryState:
     timestamp: float = time.time()
 
 
-class StateMachineError(Exception):
-    """State machine transition error"""
-
-    pass
-
-
 class EncryptionError(Exception):
     """Encryption error with context"""
 
@@ -3616,10 +3431,6 @@ class SHA3_512:
     @staticmethod
     def hash(data: bytes) -> bytes:
         return SHA3_512._require()(data).digest()
-
-    @staticmethod
-    def hmac(key: bytes, data: bytes) -> bytes:
-        return hmac.new(key, data, SHA3_512._require()).digest()
 
 
 class ClientProfile:
@@ -4676,8 +4487,8 @@ class RustBackedDoubleRatchet:
         EXPLICIT, not left to reference counting. `self._rust = None` frees
         the Rust ratchet only if nothing else holds it -- a traceback frame, a
         test, a debugger -- and a wipe must not depend on that. So the Rust
-        objects are told to zeroize themselves first: the ratchet replaces its
-        keys (ZeroizeOnDrop runs on the old ones), the X448 handle zeroes its
+        objects are told to zeroize themselves first: the ratchet wipes its keys
+        in place and refuses every later call, the X448 handle zeroes its
         scalar in place, the pending ML-KEM keypair drops its decapsulation
         key. Releasing the Python references afterwards is only tidying.
         """
@@ -4718,69 +4529,6 @@ DoubleRatchet = RustBackedDoubleRatchet
 def determine_roles(local_id_pub: bytes, remote_id_pub: bytes) -> bool:
     """Determine DAKE roles according to OTRv4 spec §4.2"""
     return local_id_pub < remote_id_pub
-
-
-def _safe_b64decode(data: str) -> bytes:
-    """Safely decode base64 with padding.
-
-    v10.7 (Phase 5.3h-D): rescued to module scope from the deleted
-    pure-Python OTRv4DAKE class.  Every caller now uses the bare
-    _safe_b64decode(...) function name.
-    """
-    try:
-        data = str(data).strip()
-        if not data:
-            raise ValueError("Empty base64 data")
-
-        data = "".join(data.split())
-
-        if "[" in data and "]" in data:
-            end_bracket = data.rfind("]")
-            if end_bracket != -1:
-                data = data[end_bracket + 1 :].strip()
-
-        # OTRv4 DATA frames are terminated with a trailing '.' (the encode path
-        # emits  "?OTRv4 <b64url>." ).  DAKE frames have no terminator.  Strip
-        # any trailing dots here so every caller can pass the raw frame body
-        # without having to know whether this particular message type is dotted.
-        data = data.rstrip(".")
-
-        # A url-safe base64 body stripped of '=' padding can only be 0, 2 or 3
-        # (mod 4) characters long.  A length of 1 (mod 4) is impossible for any
-        # valid encoding and is the fingerprint of a body that was decoded with
-        # the STANDARD alphabet (which silently discards '-' and '_').  Fail
-        # loudly instead of letting the b64decode fallback swallow real chars.
-        if len(data) % 4 == 1:
-            raise ValueError(
-                f"corrupt base64: {len (data )} chars is 1 (mod 4); "
-                "url-safe '-'/'_' were likely dropped by a standard-alphabet decode"
-            )
-
-        try:
-            padding_needed = -len(data) % 4
-            if padding_needed:
-                data = data + "=" * padding_needed
-            return base64.urlsafe_b64decode(data)
-        except Exception:
-            data = data.replace("-", "+").replace("_", "/")
-            padding_needed = -len(data) % 4
-            if padding_needed:
-                data = data + "=" * padding_needed
-            return base64.b64decode(data)
-    except Exception as e:
-        try:
-            import re as _re
-
-            # Normalise url-safe alphabet to standard BEFORE stripping, so that
-            # '-'/'_' become '+'/'/' rather than being discarded by b64decode.
-            data = data.replace("-", "+").replace("_", "/")
-            data = _re.sub(r"[^A-Za-z0-9+/=]", "", data)
-            padding_needed = -len(data) % 4
-            if padding_needed:
-                data = data + "=" * padding_needed
-            return base64.b64decode(data)
-        except Exception as e2:
-            raise ValueError(f"Base64 decode failed: {e }, also: {e2 }")
 
 
 class DAKE1RateLimiter:
@@ -6713,7 +6461,7 @@ class MessageRouter:
         return "system"
 
 
-class EnhancedOTRSession:
+class EnhancedOTRSession(SessionSmpMixin):
     """OTR session with integrated DAKE, ratchet, and SMP subsystems."""
 
     def __init__(
@@ -6878,29 +6626,6 @@ class EnhancedOTRSession:
         finally:
             self._release_lock()
 
-    def transition_smp(self, new_state: UIConstants.SMPState, reason: str = ""):
-        """Transition SMP state with validation"""
-        if not self._acquire_lock():
-            raise StateMachineError("Failed to acquire lock for SMP transition")
-
-        try:
-            if self.session_state != SessionState.ENCRYPTED:
-                raise StateMachineError("SMP requires encrypted session")
-
-            old_state = self.smp_state
-
-            self.smp_state = new_state
-            self.tracer.trace(self.peer, "SMP", old_state.name, new_state.name, reason)
-
-            if new_state == UIConstants.SMPState.SUCCEEDED:
-                self.security_level = UIConstants.SecurityLevel.SMP_VERIFIED
-                self.tracer.trace(
-                    self.peer, "SECURITY", "ENCRYPTED", "SMP_VERIFIED", "SMP succeeded"
-                )
-
-        finally:
-            self._release_lock()
-
     def initialize_dake(
         self, client_profile: ClientProfile, explicit_initiator: bool = False
     ) -> "RustDAKEAdapter":
@@ -6999,19 +6724,6 @@ class EnhancedOTRSession:
         theirs = getattr(getattr(engine, "remote_profile", None), "versions", None) or ()
         v2 = OTRConstants.PQ_RATCHET_VERSION
         return v2 in mine and v2 in theirs
-
-    def initialize_smp(self):
-        """Initialize the Rust SMP engine and secret vault (lazy, idempotent)."""
-        if self.rust_smp is None:
-            try:
-                from otrv4_core import RustSMP, RustSMPVault
-
-                self.rust_smp = RustSMP(self.is_initiator)
-                self.smp_vault = RustSMPVault()
-                self.tracer.trace(self.peer, "SMP", None, "READY", "Rust SMP engine initialized")
-            except Exception as e:
-                self.logger.debug("initialize_smp FAILED")
-                raise RuntimeError(f"Failed to initialize Rust SMP engine: {e }") from e
 
     def queue_outgoing_message(self, message: str):
         """Queue outgoing message for later encryption"""
@@ -7447,480 +7159,6 @@ class EnhancedOTRSession:
             except Exception as e:
                 self.tracer.trace(self.peer, "ERROR", "TLV", f"0x{tlv .type :04x}", str(e)[:80])
 
-    def _enh_handle_smp_tlv(self, tlv: "OTRv4TLV") -> None:
-        """Process an incoming SMP TLV and queue the encrypted response.
-
-        Fully Rust-backed: all exponents and the shared secret reside in
-        Rust memory with ZeroizeOnDrop.  Python only handles the TLV framing.
-        """
-        self.initialize_smp()
-        if self._ping_refresh_cb is not None:
-            try:
-                self._ping_refresh_cb()
-            except Exception:
-                pass
-
-        resp_bytes = None
-        out_type = None
-
-        try:
-            if tlv.type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
-
-                phase = self.rust_smp.get_phase()
-                # A FAILED run is over, not in progress. Treating it as a race
-                # made every retry after one wrong passphrase either refused
-                # ("SMP not Idle for SMP1") or, on the side with the lower
-                # fingerprint, silently ignored -- the peer then waited out
-                # its timeout. Rust leaves Failed for Idle and keeps the
-                # attempt count and cooldown, which its guard still enforces.
-                if phase in ("FAILED", "ABORTED"):
-                    try:
-                        self.rust_smp.restart_after_failure()
-                    except Exception:
-                        # The attempt limit is spent: this engine stays shut.
-                        self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
-                                          f"phase={phase }", "attempt limit reached - refused")
-                        self._queued_smp_response = self.encrypt_with_tlvs(
-                            "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
-                        )
-                        return
-                    phase = self.rust_smp.get_phase()
-                # Already verified this session: a second run is not started
-                # by the peer. Refuse it with an abort and keep the result;
-                # the old race path either ignored it or threw the
-                # verification away, depending on whose fingerprint was lower.
-                if phase == "VERIFIED":
-                    self.tracer.trace(self.peer, "SMP", "SMP1_RECEIVED",
-                                      "phase=VERIFIED", "already verified - refused")
-                    self._queued_smp_response = self.encrypt_with_tlvs(
-                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
-                    )
-                    return
-                if phase != "IDLE":
-
-                    local_fp = b""
-                    try:
-                        if self.dake_engine and self.dake_engine.client_profile:
-                            cp = self.dake_engine.client_profile
-                            if cp.identity_pub_bytes:
-                                local_fp = cp.identity_pub_bytes
-                            elif cp.identity_key:
-                                local_fp = bytes(cp.identity_key.public_bytes())
-                    except Exception:
-                        pass
-                    remote_fp = self._remote_long_term_pub_bytes or b""
-
-                    if not local_fp or not remote_fp:
-
-                        self.tracer.trace(
-                            self.peer,
-                            "SMP",
-                            "SMP1_RECEIVED",
-                            f"phase={phase }",
-                            "race detected, no fingerprints to tie-break - aborting",
-                        )
-                        try:
-                            self.rust_smp.abort()
-                        except Exception:
-                            pass
-                        self._queued_smp_response = self.encrypt_with_tlvs(
-                            "", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")]
-                        )
-                        return
-
-                    if local_fp < remote_fp:
-
-                        self.tracer.trace(
-                            self.peer,
-                            "SMP",
-                            "SMP1_RECEIVED",
-                            f"phase={phase }",
-                            "race detected, local_fp < remote_fp - keeping our role as initiator",
-                        )
-                        return
-
-                    self.tracer.trace(
-                        self.peer,
-                        "SMP",
-                        "SMP1_RECEIVED",
-                        f"phase={phase }",
-                        "race detected, local_fp > remote_fp - yielding initiator role",
-                    )
-                    try:
-                        self.rust_smp.abort()
-                    except Exception:
-                        pass
-
-                    # Keep the vault across the rebuild.
-                    #
-                    # initialize_smp() constructs a NEW RustSMPVault whenever
-                    # rust_smp is None, so clearing rust_smp threw away the
-                    # "smp_secret" entry this path is about to read back --
-                    # and the rebind below therefore failed every single time.
-                    # It surfaced on two real phones as
-                    #
-                    #     SMP race-recovery: vault rebind failed
-                    #
-                    # whenever both sides ran /smp at once, which over I2P is
-                    # not rare: it is what happens when two people are told to
-                    # verify and both do.  The vault is a separate Rust object
-                    # holding a secret this session already owns; there is no
-                    # reason for a new engine to mean a new vault.
-                    preserved_vault = self.smp_vault
-                    self.rust_smp = None
-                    self.initialize_smp()
-                    if preserved_vault is not None:
-                        self.smp_vault = preserved_vault
-                    if self.rust_smp is None or self.smp_vault is None:
-                        raise RuntimeError("SMP race-recovery: re-init failed")
-                    sid_recover = self.session_id or b""
-                    ok = self.rust_smp.set_secret_from_vault(
-                        self.smp_vault, "smp_secret", sid_recover, local_fp, remote_fp
-                    )
-                    if not ok:
-                        # No secret to rebind: this side has not been given a
-                        # passphrase at all, so yielding the initiator role
-                        # leaves nothing to answer with.  Fall through to the
-                        # no-secret handling below rather than raising, which
-                        # would report a setup problem as an internal error.
-                        self.tracer.trace(
-                            self.peer, "SMP", "SMP1_RECEIVED", "RACE_NO_SECRET",
-                            "yielded initiator role but no stored passphrase "
-                            "to rebind",
-                        )
-
-                if not self.rust_smp.check_secret_set():
-                    # HOLD the SMP1 rather than abort.
-                    #
-                    # Aborting made a setup problem look like a protocol
-                    # failure: the peer was told "SMP aborted" when the truth
-                    # was that this side had never been given the passphrase.
-                    # The engine parks the message in SECRET_REQUIRED instead,
-                    # so once the user supplies the passphrase the SMP1 that
-                    # already arrived can be answered -- no restart, no second
-                    # round trip over I2P.
-                    #
-                    # What this does NOT do, and must never do, is arm input
-                    # capture.  Holding a message is a state in the SMP engine;
-                    # it does not decide what the user's next keystroke means.
-                    # The front end asks for consent first and only a local
-                    # answer opens the passphrase prompt -- see
-                    # otrv4plus_smpflow.py and docs/SECURITY_INVARIANTS.md INV-06.
-                    held = False
-                    try:
-                        if self.smp_guided_prompt:
-                            self.rust_smp.hold_smp1(bytes(tlv.value))
-                            held = True
-                    except Exception as _he:
-                        # An older core without hold_smp1, or a message it
-                        # would not park.  Fall back to the previous
-                        # behaviour rather than losing the run silently.
-                        self.logger.debug("hold_smp1 unavailable or refused")
-
-                    self.tracer.trace(
-                        self.peer,
-                        "SMP",
-                        "SMP1_RECEIVED",
-                        "SECRET_REQUIRED" if held else "NO_SECRET",
-                        "SMP1 held pending local passphrase" if held
-                        else "SMP1 received but no secret set - aborting",
-                    )
-
-                    if held:
-                        # No response goes out yet.  The peer waits while the
-                        # user is asked; if they decline or the request times
-                        # out, decline_held_smp1() sends the abort.
-                        self._smp_secret_required = True
-                        self._smp_progress_notify(
-                            0, 4,
-                            "Your peer asked to verify this session. A shared "
-                            "passphrase is needed to answer.",
-                            role=None, color="yellow",
-                        )
-                        return
-
-                    self._smp_progress_notify(
-                        0, 4,
-                        "SMP requested by peer, but no passphrase is stored "
-                        "for them. Run  /smp  to enter the passphrase you "
-                        "both agreed.",
-                        role=None, color="yellow",
-                    )
-                    self._queued_smp_response = self.encrypt_with_tlvs(
-                        "", [OTRv4TLV(OTRv4TLV.SMP_ABORT,
-                                      OTRv4TLV.SMP_ABORT_NO_SECRET)]
-                    )
-                    return
-                self._smp_progress_notify(
-                    1,
-                    4,
-                    "Challenge received - computing response (ML-KEM encaps + ML-DSA-87 + ZKP)…",
-                    color="yellow",
-                )
-                resp_bytes = self.rust_smp.process_smp1_generate_smp2(tlv.value)
-                out_type = OTRv4TLV.SMP_MSG_2
-                self.smp_step = 2
-                self._smp_progress_notify(2, 4, "Response computed - sending…", role="responder")
-
-            elif tlv.type == OTRv4TLV.SMP_MSG_2:
-                self.smp_step = 2
-                self._smp_progress_notify(
-                    2, 4, "Response received - verifying ML-DSA-87 + ZKP…", role="initiator"
-                )
-                resp_bytes = self.rust_smp.process_smp2_generate_smp3(tlv.value)
-                out_type = OTRv4TLV.SMP_MSG_3
-                self.smp_step = 3
-                self._smp_progress_notify(
-                    3,
-                    4,
-                    "PQ proof verified - sending confirmation (ML-DSA-87 + ZKP)…",
-                    role="initiator",
-                )
-
-            elif tlv.type == OTRv4TLV.SMP_MSG_3:
-                resp_bytes = self.rust_smp.process_smp3_generate_smp4(tlv.value)
-                out_type = OTRv4TLV.SMP_MSG_4
-                self.smp_step = 4
-                self._smp_progress_notify(4, 4, "Final step - sending verdict…", role="responder")
-
-                if self.rust_smp.is_verified():
-                    self.auto_smp_completed = True
-                    self.auto_smp_started = False
-                    self.security_level = UIConstants.SecurityLevel.SMP_VERIFIED
-                    self.tracer.trace(
-                        self.peer, "SMP", "VERIFIED", "STATE_UPDATED", "role=responder"
-                    )
-                    self._smp_progress_notify(
-                        4,
-                        4,
-                        "🔵✅ SMP VERIFIED - identity confirmed! (ML-KEM-1024 + ML-DSA-87 + ZKP)",
-                        role=None,
-                        color="blue",
-                        final=True,
-                    )
-                elif self.rust_smp.is_failed():
-                    self.auto_smp_started = False
-                    self.auto_smp_completed = False
-                    self.smp_step = 0
-                    self.tracer.trace(
-                        self.peer,
-                        "SMP",
-                        "FAILED",
-                        "STATE_UPDATED",
-                        "secrets did not match (responder)",
-                    )
-                    self._smp_progress_notify(
-                        0,
-                        4,
-                        "🔴❌ SMP FAILED - secrets did not match",
-                        role=None,
-                        color="red",
-                        final=True,
-                    )
-
-            elif tlv.type == OTRv4TLV.SMP_MSG_4:
-                verified = self.rust_smp.process_smp4(tlv.value)
-                self.smp_step = 4
-                if verified:
-                    self.auto_smp_completed = True
-                    self.auto_smp_started = False
-                    self.security_level = UIConstants.SecurityLevel.SMP_VERIFIED
-                    self.tracer.trace(
-                        self.peer,
-                        "SMP",
-                        "VERIFIED",
-                        "STATE_UPDATED",
-                        f"role={'initiator'if self .is_initiator else 'responder'}",
-                    )
-                    self._smp_progress_notify(
-                        4,
-                        4,
-                        "🔵✅ SMP VERIFIED - identity confirmed! (ML-KEM-1024 + ML-DSA-87 + ZKP)",
-                        role=None,
-                        color="blue",
-                        final=True,
-                    )
-                else:
-                    self.auto_smp_started = False
-                    self.auto_smp_completed = False
-                    self.smp_step = 0
-                    self.tracer.trace(
-                        self.peer, "SMP", "FAILED", "STATE_UPDATED", "secrets did not match"
-                    )
-                    self._smp_progress_notify(
-                        0,
-                        4,
-                        "🔴❌ SMP FAILED - secrets did not match",
-                        role=None,
-                        color="red",
-                        final=True,
-                    )
-                return
-
-            elif tlv.type == OTRv4TLV.SMP_ABORT and self.rust_smp.get_phase() == "VERIFIED":
-                # A finished run cannot be aborted. A stale or refused-run
-                # abort must not throw away a verification both sides reached.
-                self.tracer.trace(self.peer, "SMP", "ABORTED", "IGNORED",
-                                  "abort after verification ignored")
-            elif tlv.type == OTRv4TLV.SMP_ABORT:
-                self.rust_smp.abort()
-                self.auto_smp_started = False
-                self.auto_smp_completed = False
-                self.smp_step = 0
-                # The reason, if the peer sent one, only chooses the wording of
-                # a local line. It is peer-controlled text and is never trusted
-                # as a security predicate: either way the SMP session is over
-                # and nothing is verified.
-                reason_bytes = bytes(getattr(tlv, "value", b"") or b"")
-                no_secret = reason_bytes == OTRv4TLV.SMP_ABORT_NO_SECRET
-                declined = reason_bytes == OTRv4TLV.SMP_ABORT_DECLINED
-                self.tracer.trace(
-                    self.peer, "SMP", "ABORTED",
-                    "PEER_DECLINED" if declined
-                    else "PEER_NO_SECRET" if no_secret else "PEER_ABORT",
-                    "Remote peer declined the verification request" if declined
-                    else "Remote peer has no SMP secret configured" if no_secret
-                    else "Remote peer aborted SMP",
-                )
-                if declined:
-                    self._smp_progress_notify(
-                        0, 4,
-                        "SMP stopped: your peer declined the verification "
-                        "request. Nothing is verified, and this is not a "
-                        "wrong-passphrase failure.",
-                        role=None, color="yellow",
-                    )
-                elif no_secret:
-                    self._smp_progress_notify(
-                        0, 4,
-                        "SMP stopped: your peer has not stored the passphrase "
-                        "yet. Ask them to run  /smp-secret <secret>  and try "
-                        "again. This is not a wrong-passphrase failure.",
-                        role=None, color="yellow",
-                    )
-                else:
-                    self._smp_progress_notify(
-                        0, 4, "⚠ SMP aborted by remote peer", role=None, color="red"
-                    )
-                return
-
-        except Exception as e:
-            self.tracer.trace(self.peer, "ERROR", "SMP", f"0x{tlv .type :04x}", str(e)[:120])
-            if self.rust_smp:
-                self.rust_smp.abort()
-            self.auto_smp_started = False
-            self.auto_smp_completed = False
-            self.smp_step = 0
-            # A version mismatch is the one SMP failure that is NOT about the
-            # passphrase, and it is the whole reason SMP carries a version
-            # byte.  The generic handler truncates to 60 characters, which
-            # would cut the message off before it says what to do about it.
-            if _is_smp_version_mismatch(e):
-                self._smp_progress_notify(
-                    0, 4, SMP_VERSION_MISMATCH_HELP,
-                    role=None, color="yellow", final=True,
-                )
-            else:
-                self._smp_progress_notify(
-                    0, 4, f"❌ SMP error: {str (e )[:60 ]}", role=None, color="red"
-                )
-            return
-
-        if resp_bytes is not None and out_type is not None:
-            try:
-                self._queued_smp_response = self.encrypt_with_tlvs(
-                    "", [OTRv4TLV(out_type, bytes(resp_bytes))]
-                )
-            except Exception as e:
-                self.tracer.trace(self.peer, "ERROR", "SMP_RESP", "ENCRYPT", str(e)[:80])
-
-    _SMP_STEP_LABELS = {
-        1: "Sending challenge",
-        2: "Challenge sent → awaiting response",
-        3: "Response received → sending verification",
-        4: "Finalising",
-    }
-
-    def _smp_progress_notify(
-        self,
-        step: int,
-        total: int,
-        detail: str,
-        role: Optional[str] = None,
-        color: str = "yellow",
-        final: bool = False,
-    ) -> None:
-        """Emit a visible SMP progress line with dynamic ETA and block bar.
-
-        Each call produces one timestamped line like:
-
-            🔐 SMP [████████░░] 2/4 · 50% · ⏱ 0:02 elapsed · ETA ~0:03
-
-        Timing is derived from smp_start_time and per-step wall-clock
-        measurements accumulated in _smp_step_times.
-        """
-        now = time.time()
-
-        if not hasattr(self, "_smp_step_times"):
-            self._smp_step_times: list = []
-        if step > 0 and (not self._smp_step_times or self._smp_step_times[-1][0] != step):
-            self._smp_step_times.append((step, now))
-
-        t0 = getattr(self, "smp_start_time", 0) or now
-        elapsed = max(0.0, now - t0)
-
-        def _fmt(s: float) -> str:
-            return f"{int (s //60 )}:{int (s %60 ):02d}"
-
-        elapsed_str = _fmt(elapsed)
-        eta_str = ""
-        if step > 0 and elapsed > 0 and not final:
-            avg_per_step = elapsed / step
-            remaining = (total - step) * avg_per_step
-            if remaining > 0:
-                eta_str = f" · ETA ~{_fmt (remaining )}"
-
-        SEGS = total if total > 0 else 4
-        if step > 0 and total > 0:
-            seg_w = 3
-            filled = "█" * seg_w
-            empty_s = "░" * seg_w
-            partial = "▒" * seg_w
-            bar_segs = []
-            for i in range(SEGS):
-                if i < step - 1:
-                    bar_segs.append(filled)
-                elif i == step - 1:
-                    bar_segs.append(filled)
-                else:
-                    bar_segs.append(empty_s)
-            bar_body = " ".join(bar_segs)
-            pct = int((step / total) * 100)
-            bar = f"[{bar_body }]"
-            step_str = f"step {step }/{total }"
-            if final:
-                time_str = f" · ✓ {elapsed_str }"
-            elif elapsed > 5:
-                time_str = f" · {elapsed_str } elapsed{eta_str }"
-            else:
-                time_str = ""
-            label = f"🔐 SMP {bar } {step_str }{time_str } · {detail }"
-        else:
-            label = f"🔐 SMP · {detail }"
-
-        colored = colorize(label, color)
-
-        if self._smp_notify_cb is not None:
-            try:
-                self._smp_notify_cb(colored)
-            except Exception:
-                pass
-        elif self.tracer and self.tracer._emit_cb:
-            self.tracer._emit_cb(colored)
-
-        if final or step == 0:
-            self._smp_step_times = []
-
     def send_disconnect(self) -> Optional[str]:
         """End the session gracefully: the closing message(s) of
         close_with_revelation, the last carrying DISCONNECTED (L1). Returns
@@ -8053,451 +7291,6 @@ class EnhancedOTRSession:
             pass
 
         return ""
-
-    def start_smp(self, secret: str, question: Optional[str] = None) -> Optional[str]:
-        """Start SMP verification using the Rust SMP engine.
-
-        Generates SMP1, encrypts it, and returns the OTR message ready to send.
-        The secret is bound to the session (session_id + fingerprints) inside Rust.
-        """
-        if not self._acquire_lock():
-            raise RuntimeError("start_smp: could not acquire session lock (timeout)")
-        try:
-            if self.session_state != SessionState.ENCRYPTED:
-                raise RuntimeError(
-                    f"start_smp: session not encrypted (state={self .session_state !r })"
-                )
-            self.initialize_smp()
-            if self.rust_smp is None:
-                raise RuntimeError("start_smp: RustSMP is None after initialize_smp")
-            phase = self.rust_smp.get_phase()
-            if phase == "VERIFIED":
-                raise RuntimeError("start_smp: this session is already verified")
-            if phase not in ("IDLE", "FAILED", "ABORTED"):
-                raise RuntimeError(f"start_smp: SMP already in progress (phase={phase })")
-            if phase in ("FAILED", "ABORTED"):
-                # A new run after a failed or cancelled one. Rust keeps the
-                # cooldown and refuses once the attempt limit is spent.
-                self.rust_smp.restart_after_failure()
-
-            if secret:
-                self.set_smp_secret(secret)
-
-            if not self.rust_smp.check_secret_set():
-                raise RuntimeError(
-                    "start_smp: secret not set in Rust SMP engine - "
-                    "call set_smp_secret() first or pass secret explicitly"
-                )
-
-            smp1_bytes = self.rust_smp.generate_smp1(question)
-            self.smp_step = 1
-            self._smp_progress_notify(
-                1, 4, "Challenge sent - awaiting response (Rust ZKP)…", color="yellow"
-            )
-            return self.encrypt_with_tlvs("", [OTRv4TLV(OTRv4TLV.SMP_MSG_1, bytes(smp1_bytes))])
-        except Exception as e:
-            import traceback as _tb
-
-            msg = f"start_smp: Error: {e }"
-            self.logger.debug("start_smp FAILED")
-
-            raise RuntimeError(f"SMP start failed: {e }") from e
-        finally:
-            self._release_lock()
-
-    # ─── held SMP1: the responder-with-no-passphrase path ────────────────────
-    #
-    # Three methods, and the split between them is the security boundary.
-    # `smp_secret_required` is set by a REMOTE message arriving.  The other two
-    # are called only after the local user has answered a prompt.  Nothing here
-    # reads input; the front end owns that and hands down a result.
-
-    def smp_secret_required(self) -> bool:
-        """True while an SMP1 from the peer is parked awaiting a passphrase."""
-        if self.rust_smp is None:
-            return False
-        try:
-            return self.rust_smp.get_phase() == "SECRET_REQUIRED"
-        except Exception:
-            return False
-
-    def resume_held_smp1(self) -> Optional[str]:
-        """Answer the parked SMP1 now that a passphrase has been stored.
-
-        Returns the encrypted SMP2 to send, or raises.  The caller must have
-        called set_smp_secret() first -- the engine refuses otherwise, which is
-        the fail-closed half of "only local input can supply the secret".
-        """
-        if not self._acquire_lock():
-            raise RuntimeError("resume_held_smp1: could not acquire session lock")
-        try:
-            if self.rust_smp is None:
-                raise RuntimeError("no SMP engine")
-            # The engine is the authority on whether the message is still
-            # held; ask it before consuming so a resume that cannot succeed
-            # says so plainly rather than as a generic engine error.
-            if not self.rust_smp.has_held_smp1():
-                raise RuntimeError(
-                    "no SMP1 is being held for this session")
-            smp2 = self.rust_smp.resume_held_smp1_generate_smp2()
-            # Cleared only now.  Setting it before the call meant a failed
-            # resume left the session claiming no request was outstanding
-            # while the engine was still holding one.
-            self._smp_secret_required = False
-            self.smp_step = 2
-            self._smp_progress_notify(
-                2, 4, "Passphrase accepted - answering the challenge…",
-                role="responder",
-            )
-            return self.encrypt_with_tlvs(
-                "", [OTRv4TLV(OTRv4TLV.SMP_MSG_2, bytes(smp2))])
-        finally:
-            self._release_lock()
-
-    def abort_smp(self) -> Optional[str]:
-        """Cancel an SMP run in either direction, at any stage, and tell the peer.
-
-        The local user pressed Cancel. The Rust run is aborted, any parked
-        SMP1 is discarded, the bound passphrase is dropped from the vault, and
-        the returned OTR message carries SMP_ABORT so the peer stops waiting.
-        None when there is nothing to abort. An aborted run proves nothing,
-        so it leaves the session unverified.
-        """
-        if not self._acquire_lock():
-            return None
-        try:
-            if self.rust_smp is None:
-                return None
-            try:
-                self.rust_smp.abort()
-            except Exception:
-                self.logger.debug("rust_smp.abort failed")
-            try:
-                self.rust_smp.discard_held_smp1()
-            except Exception:
-                pass
-            if self.smp_vault is not None:
-                try:
-                    self.smp_vault.remove("smp_secret")
-                except Exception:
-                    pass
-            self._smp_secret_required = False
-            self.smp_step = 0
-            return self.encrypt_with_tlvs("", [OTRv4TLV(OTRv4TLV.SMP_ABORT, b"")])
-        finally:
-            self._release_lock()
-
-    def decline_held_smp1(self, reason: bytes = b"") -> Optional[str]:
-        """Drop the parked SMP1 and tell the peer.
-
-        Used for an explicit decline, for a consent request that timed out, and
-        for teardown while one was open.  Storing nothing is the point: a
-        declined request must leave no passphrase and no state behind.
-        """
-        if not self._acquire_lock():
-            return None
-        try:
-            if self.rust_smp is None:
-                return None
-            self._smp_secret_required = False
-            try:
-                self.rust_smp.discard_held_smp1()
-            except Exception:
-                self.logger.debug("discard_held_smp1 failed")
-            self.smp_step = 0
-            return self.encrypt_with_tlvs(
-                "", [OTRv4TLV(OTRv4TLV.SMP_ABORT,
-                              reason or OTRv4TLV.SMP_ABORT_DECLINED)])
-        finally:
-            self._release_lock()
-
-    def process_smp_message(self, data: bytes) -> Optional[str]:
-        """Process a raw SMP TLV (type+len+value) using the Rust engine.
-
-        Used by the SessionManager-level dispatch path.  For the session-level
-        TLV handler see _enh_handle_smp_tlv.
-        """
-        if not self._acquire_lock():
-            return None
-        try:
-            if len(data) < 4:
-                return None
-            self.initialize_smp()
-            tlv_type = struct.unpack_from("!H", data, 0)[0]
-            tlv_len = struct.unpack_from("!H", data, 2)[0]
-            tlv_val = data[4 : 4 + tlv_len]
-            out_type = None
-            resp = None
-            if tlv_type in (OTRv4TLV.SMP_MSG_1, OTRv4TLV.SMP_MSG_1Q):
-                if self.rust_smp.get_phase() in ("FAILED", "ABORTED"):
-                    self.rust_smp.restart_after_failure()
-                resp = self.rust_smp.process_smp1_generate_smp2(tlv_val)
-                out_type = OTRv4TLV.SMP_MSG_2
-            elif tlv_type == OTRv4TLV.SMP_MSG_2:
-                resp = self.rust_smp.process_smp2_generate_smp3(tlv_val)
-                out_type = OTRv4TLV.SMP_MSG_3
-            elif tlv_type == OTRv4TLV.SMP_MSG_3:
-                resp = self.rust_smp.process_smp3_generate_smp4(tlv_val)
-                out_type = OTRv4TLV.SMP_MSG_4
-
-                if self.rust_smp.is_verified():
-                    self.auto_smp_completed = True
-                    self.auto_smp_started = False
-                    self.security_level = UIConstants.SecurityLevel.SMP_VERIFIED
-                elif self.rust_smp.is_failed():
-                    self.auto_smp_started = False
-                    self.auto_smp_completed = False
-            elif tlv_type == OTRv4TLV.SMP_MSG_4:
-                verified = self.rust_smp.process_smp4(tlv_val)
-                if verified:
-                    self.auto_smp_completed = True
-                    self.auto_smp_started = False
-                    self.security_level = UIConstants.SecurityLevel.SMP_VERIFIED
-                    self.tracer.trace(
-                        self.peer, "SMP", "VERIFIED", "STATE_UPDATED", "role=initiator"
-                    )
-                    self._smp_progress_notify(
-                        4,
-                        4,
-                        "🔵✅ SMP VERIFIED - identity confirmed!",
-                        role=None,
-                        color="blue",
-                        final=True,
-                    )
-                else:
-                    self.auto_smp_started = False
-                    self.auto_smp_completed = False
-                    self.smp_step = 0
-                    self.tracer.trace(
-                        self.peer,
-                        "SMP",
-                        "FAILED",
-                        "STATE_UPDATED",
-                        "secrets did not match (initiator)",
-                    )
-                    self._smp_progress_notify(
-                        0,
-                        4,
-                        "🔴❌ SMP FAILED - secrets did not match",
-                        role=None,
-                        color="red",
-                        final=True,
-                    )
-                return None
-            elif tlv_type == OTRv4TLV.SMP_ABORT:
-                if self.rust_smp.get_phase() != "VERIFIED":
-                    self.rust_smp.abort()
-                return None
-            if resp is not None and out_type is not None:
-                return self.encrypt_with_tlvs("", [OTRv4TLV(out_type, bytes(resp))])
-            return None
-        except Exception as e:
-            import traceback as _tb
-
-            self.logger.debug("process_smp_message FAILED")
-            return None
-        finally:
-            self._release_lock()
-
-    def get_smp_status(self) -> Dict[str, Any]:
-        """Return SMP status from the Rust engine."""
-        if not self._acquire_lock():
-            return {
-                "state": "NONE",
-                "verified": False,
-                "failed": False,
-                "progress": "0/4",
-                "can_start_smp": False,
-                "secret_set": False,
-            }
-        try:
-            if self.rust_smp is None:
-                return {
-                    "state": "NONE",
-                    "verified": False,
-                    "failed": False,
-                    "progress": "0/4",
-                    "has_question": False,
-                    "question": "",
-                    "can_start_smp": self.session_state == SessionState.ENCRYPTED,
-                    "can_retry": False,
-                    "retry_count": 0,
-                    "expired": False,
-                    "secret_set": False,
-                }
-            phase = self.rust_smp.get_phase()
-            verified = self.rust_smp.is_verified()
-            failed = phase == "FAILED"
-            step_map = {
-                "IDLE": 0,
-                "AWAITING_MSG2": 1,
-                "AWAITING_MSG3": 2,
-                "AWAITING_MSG4": 3,
-                "VERIFIED": 4,
-                "FAILED": 0,
-            }
-            step = step_map.get(phase, 0)
-            return {
-                "state": phase,
-                "verified": verified or self.auto_smp_completed,
-                "failed": failed,
-                "failure_reason": "" if not failed else "secrets did not match",
-                "progress": f"{step }/4",
-                "has_question": False,
-                "question": "",
-                "can_start_smp": phase in ("IDLE", "FAILED")
-                and self.session_state == SessionState.ENCRYPTED,
-                "can_retry": failed,
-                "retry_count": 0,
-                "expired": False,
-                "secret_set": self.rust_smp.check_secret_set(),
-            }
-        except Exception as e:
-            self.logger.debug("get_smp_status FAILED")
-            return {
-                "state": "NONE",
-                "verified": False,
-                "failed": False,
-                "progress": "0/4",
-                "can_start_smp": self.session_state == SessionState.ENCRYPTED,
-            }
-        finally:
-            self._release_lock()
-
-    def get_smp_progress(self) -> Tuple[int, int]:
-        """Get SMP progress as (step, total_steps)."""
-        if self.rust_smp is None:
-            return (0, 4)
-        phase = self.rust_smp.get_phase()
-        step_map = {
-            "IDLE": 0,
-            "AWAITING_MSG2": 1,
-            "AWAITING_MSG3": 2,
-            "AWAITING_MSG4": 3,
-            "VERIFIED": 4,
-            "FAILED": 0,
-        }
-        return (step_map.get(phase, 0), 4)
-
-    def set_smp_secret(self, secret: str):
-        """Bind the SMP secret to the current session via the Rust vault.
-
-        Flow:
-          1. Encode secret to a bytearray (mutable, can be wiped).
-          2. Store bytes in RustSMPVault (Rust-owned, ZeroizeOnDrop).
-          3. Call rust_smp.set_secret_from_vault() - bytes never leave Rust
-             as a Python object on the SHAKE-256/HMAC path.
-          4. Overwrite the bytearray and delete it.
-          5. Set auto_smp_secret = True (flag only - plaintext is NOT stored).
-
-        Raises:
-            ValueError:   secret shorter than 8 characters.
-            RuntimeError: SMP protocol run already active (never rebind mid-run).
-        """
-        _MIN_LEN = 8
-        if len(secret) < _MIN_LEN:
-            raise ValueError(f"SMP secret must be at least {_MIN_LEN } characters.")
-
-        def _fill(vault):
-            raw = bytearray(secret.encode("utf-8"))
-            try:
-                # store_from_bytearray, not store(bytes(raw)).
-                #
-                # The bytearray exists so it can be wiped -- but `bytes(raw)`
-                # would make an immutable copy that nothing can overwrite.
-                # Handing the bytearray straight down means Rust copies it into
-                # a ZeroizeOnDrop entry and zeroes our buffer before returning.
-                vault.store_from_bytearray("smp_secret", raw)
-            finally:
-                # Belt and braces: store_from_bytearray already zeroed it, and
-                # this still runs if the call raised before reaching Rust.
-                for i in range(len(raw)):
-                    raw[i] = 0
-                del raw
-
-        self._bind_smp_secret(_fill)
-
-    def set_smp_secret_from_store(self, store, peer: str) -> bool:
-        """Bind `peer`'s passphrase from a Rust `SmpSecretStore`.
-
-        The auto-respond path. The passphrase goes store -> this session's
-        `RustSMPVault` -> `RustSMP` without becoming a Python object; there is
-        no way for this method to see it. Returns False when none is stored.
-        """
-        if not store.has(peer):
-            return False
-
-        def _fill(vault):
-            if not store.bind_into(peer, vault, "smp_secret"):
-                raise RuntimeError("the stored passphrase disappeared while binding")
-
-        self._bind_smp_secret(_fill)
-        return True
-
-    def _bind_smp_secret(self, fill) -> None:
-        """Phase checks, then `fill(vault)`, then bind the vault entry into SMP
-        with this session's id and both fingerprints. Shared by both setters."""
-        if not self._acquire_lock():
-            return
-        try:
-
-            if self.rust_smp is not None:
-                phase = self.rust_smp.get_phase()
-                # SECRET_REQUIRED is included deliberately: it means a peer's
-                # SMP1 is parked waiting for exactly this call.  The others are
-                # states with no run in flight.  AWAITING_MSG2/3/4 are not, and
-                # rebinding under those would change the secret mid-proof.
-                if phase not in ("IDLE", "FAILED", "VERIFIED", "ABORTED",
-                                 "SECRET_REQUIRED"):
-                    raise RuntimeError(
-                        f"Cannot rebind SMP secret while SMP is active "
-                        f"(current phase: {phase }). Abort the current run first."
-                    )
-            self.initialize_smp()
-            if self.rust_smp is None or self.smp_vault is None:
-                raise RuntimeError("Rust SMP engine not initialized")
-
-            sid = self.session_id or b""
-            local_fp = b""
-            try:
-                if self.dake_engine and self.dake_engine.client_profile:
-                    cp = self.dake_engine.client_profile
-
-                    if cp.identity_pub_bytes:
-                        local_fp = cp.identity_pub_bytes
-                    elif cp.identity_key:
-                        local_fp = bytes(cp.identity_key.public_bytes())
-            except Exception:
-                pass
-            remote_fp = self._remote_long_term_pub_bytes or b""
-
-            fill(self.smp_vault)
-            ok = self.rust_smp.set_secret_from_vault(
-                self.smp_vault, "smp_secret", sid, local_fp, remote_fp
-            )
-            if not ok:
-                raise RuntimeError("Vault key not found after store - internal error")
-
-            if not self.rust_smp.check_secret_set():
-                raise RuntimeError("Rust SMP secret not stored after set_secret_from_vault")
-
-            self.auto_smp_secret = True
-        finally:
-            self._release_lock()
-
-    def can_start_smp(self) -> bool:
-        """Check if SMP can be started."""
-        if not self._acquire_lock():
-            return False
-        try:
-            if self.session_state != SessionState.ENCRYPTED:
-                return False
-            if self.rust_smp is None:
-                return True
-            phase = self.rust_smp.get_phase()
-            return phase in ("IDLE", "FAILED")
-        finally:
-            self._release_lock()
 
     def get_state_summary(self) -> Dict[str, Any]:
         """Get comprehensive state summary"""
@@ -9183,8 +7976,16 @@ class SessionManager:
         return self.trust_db.add_trust(peer, fingerprint)
 
 
-class EnhancedSessionManager:
+class EnhancedSessionManager(ManagerDakeMixin, ManagerSmpMixin):
     """Session manager with opportunistic DAKE and secure key storage."""
+
+    # The refusal checks the DAKE handlers (otrv4plus_manager_dake.py) call.
+    # Kept here, beside the trust database they consult.
+    def _refused_old_protocol(self, peer: str, dake) -> bool:
+        return _refuse_old_protocol(self, peer, dake)
+
+    def _refused_pq_identity(self, peer: str, dake) -> bool:
+        return _refuse_pq_identity(self, peer, dake)
 
     def __init__(
         self,
@@ -9596,350 +8397,6 @@ class EnhancedSessionManager:
         session.smp_guided_prompt = getattr(
             self, "smp_guided_prompt", False)
         return session
-
-    @staticmethod
-    def _dake1_key(dake1_msg: str) -> bytes:
-        """What glare is decided on: the decoded DAKE1, compared as bytes."""
-        try:
-            return _safe_b64decode(dake1_msg[7:].strip())
-        except Exception:
-            return b""
-
-    def _reset_handshake(self, peer: str, session: "EnhancedOTRSession") -> None:
-        """Forget a half-finished handshake on `session`, zeroizing its engine."""
-        engine = self.dake_engines.pop(peer, None)
-        if engine is not None:
-            try:
-                engine.zeroize()
-            except Exception:
-                pass
-        self._answering_dake1.pop(peer, None)
-        session.session_state = SessionState.PLAINTEXT
-        if hasattr(session, "dake_state"):
-            session.dake_state = DAKEState.IDLE
-        session.dake_engine = None
-        self._sent_dake1.pop(peer, None)
-
-    def _handle_dake1(self, peer: str, dake1_msg: str) -> Optional[bytes]:
-        """Answer a DAKE1 -- in every state, which is what makes recovery work.
-
-        THE DEFECT THIS FIXES
-        ---------------------
-        A DAKE1 was answered only from PLAINTEXT, FAILED or FINISHED. In any
-        other state it was dropped, and each of those states is one a real
-        network produces (measured through two bridges, and reported from
-        handsets after a VPN switch):
-
-          * DAKE2 lost: the responder sat in DAKE_IN_PROGRESS waiting for a
-            DAKE3 that could never come, and refused the initiator's retry.
-          * DAKE3 lost: the initiator was ENCRYPTED, the responder waiting.
-            Neither side's retry was accepted by the other.
-          * Peer restarted: every launch is a new identity, so the restarted
-            peer starts from PLAINTEXT and sends DAKE1 -- to a side still
-            ENCRYPTED with the old keys, which refused it for good.
-
-        WHAT HAPPENS NOW, BY STATE
-        --------------------------
-          * Waiting for DAKE3 (responder): the new DAKE1 supersedes the old
-            run. That run's keys are zeroized and this one is answered.
-          * Waiting for DAKE2 (initiator), i.e. GLARE -- both sent DAKE1: the
-            two DAKE1s are compared as bytes. The side whose own DAKE1 is
-            greater keeps the initiator role and resends it; the other yields
-            and answers. Both run the same comparison on the same two values,
-            so exactly one yields. No JID is needed, which is why this lives
-            here and not in each client.
-          * ENCRYPTED: answered by a PENDING session. The live one keeps
-            encrypting and decrypting until DAKE3 verifies; only then is it
-            replaced, and its keys destroyed. There is no plaintext gap and a
-            DAKE1 that goes nowhere changes nothing. The replacement is a new
-            session: its SMP state starts unverified, so a verification never
-            carries over to keys it did not check.
-
-        The per-peer DAKE1 rate limit in `process_dake1` still applies in
-        every case, so none of this makes a DAKE1 flood any cheaper to send.
-        """
-        if len(self.sessions) >= getattr(self, "MAX_SESSIONS", 50) and peer not in self.sessions:
-            self.debug("session limit reached - dropping DAKE1")
-            return None
-        with self.lock:
-            # Looked at before anything is changed: `get_or_create_session`
-            # rewrites the role flag, and a live ENCRYPTED session's role must
-            # not move because somebody sent a DAKE1.
-            existing = self.sessions.get(peer)
-            if existing is not None and existing.session_state.name == "ENCRYPTED":
-                return self._answer_dake1_pending(peer, dake1_msg)
-            if existing is not None and existing.session_state.name == "DAKE_IN_PROGRESS":
-                session = existing
-            else:
-                session = self.get_or_create_session(peer, is_initiator=False)
-            state = session.session_state.name
-
-            if state == "DAKE_IN_PROGRESS":
-                ours = self._sent_dake1.get(peer)
-                if session.is_initiator and ours and peer not in self._pending_sessions:
-                    if self._dake1_key(ours) > self._dake1_key(dake1_msg):
-                        self.tracer.trace(peer, "DAKE", "DAKE1", "GLARE_KEEP",
-                                          "keeping initiator role; resending DAKE1")
-                        return ours.encode("utf-8")
-                    self.tracer.trace(peer, "DAKE", "DAKE1", "GLARE_YIELD",
-                                      "yielding initiator role")
-                else:
-                    self.tracer.trace(peer, "DAKE", "DAKE1", "RESTART",
-                                      "new DAKE1 supersedes the handshake in progress")
-                self._reset_handshake(peer, session)
-                session.is_initiator = False
-            elif state not in ("PLAINTEXT", "FAILED", "FINISHED"):
-                self.tracer.trace(peer, "ERROR", "DAKE1", "REJECTED",
-                                  f"session in state: {state }")
-                return None
-
-            if (
-                session.dake_engine is not None
-                and self._answering_dake1.get(peer) == self._dake1_key(dake1_msg)
-            ):
-                # Already answered. Restarting on a duplicate is what made a
-                # glare resend cross two runs and leave one side stranded.
-                self.tracer.trace(peer, "DAKE", "DAKE1", "DUPLICATE", "already answered")
-                return None
-            if (
-                session.session_state.name in ("FAILED", "FINISHED")
-                or session.dake_engine is not None
-            ):
-                self._reset_handshake(peer, session)
-            self._answering_dake1[peer] = self._dake1_key(dake1_msg)
-            dake_engine = session.initialize_dake(self.client_profile, explicit_initiator=False)
-            self.dake_engines[peer] = dake_engine
-
-            # `peer`, not the default. This is the live path -- both terminal
-            # clients and the Android bridge reach DAKE1 through
-            # EnhancedSessionManager -- and without the key every sender
-            # shared one allowance.
-            success = dake_engine.process_dake1(dake1_msg, peer)
-            if not success:
-                return None
-            if _refuse_old_protocol(self, peer, dake_engine):
-                self.dake_engines.pop(peer, None)
-                return None
-
-            dake2 = dake_engine.generate_dake2()
-            if dake2:
-                self.tracer.trace(peer, "DAKE", "DAKE1_PROCESSED", "DAKE2_READY", "")
-                return dake2.encode("utf-8")
-
-            return None
-
-    def _answer_dake1_pending(self, peer: str, dake1_msg: str) -> Optional[bytes]:
-        """Answer a DAKE1 on an ENCRYPTED session without touching it."""
-        previous = self._pending_sessions.pop(peer, None)
-        if previous is not None:
-            try:
-                previous.terminate("superseded by a newer DAKE1")
-            except Exception:
-                pass
-        engine = self.dake_engines.pop(peer, None)
-        if engine is not None:
-            try:
-                engine.zeroize()
-            except Exception:
-                pass
-        pending = self._new_session(peer, is_initiator=False)
-        dake_engine = pending.initialize_dake(self.client_profile, explicit_initiator=False)
-        if not dake_engine.process_dake1(dake1_msg, peer) or _refuse_old_protocol(
-                self, peer, dake_engine):
-            try:
-                pending.terminate("DAKE1 rejected")
-            except Exception:
-                pass
-            return None
-        dake2 = dake_engine.generate_dake2()
-        if not dake2:
-            return None
-        self._pending_sessions[peer] = pending
-        self.dake_engines[peer] = dake_engine
-        self.tracer.trace(peer, "DAKE", "DAKE1_PROCESSED", "PENDING_DAKE2_READY",
-                          "live session kept until the new handshake completes")
-        return dake2.encode("utf-8")
-
-    def _handle_dake2(self, peer: str, dake2_msg: str) -> Optional[bytes]:
-        """
-        Handle incoming DAKE2 (initiator side).
-        """
-        with self.lock:
-            if peer not in self.sessions:
-                self.tracer.trace(peer, "ERROR", "DAKE2", "NO_SESSION", "")
-                return None
-            session = self.sessions[peer]
-            dake_engine = self.dake_engines.get(peer)
-            if dake_engine is None:
-                self.tracer.trace(peer, "ERROR", "DAKE2", "NO_ENGINE", "")
-                return None
-            try:
-                if not dake_engine.process_dake2(dake2_msg):
-                    self.tracer.trace(peer, "ERROR", "DAKE2", "PROCESS_FAILED", "")
-                    return None
-                if _refuse_pq_identity(self, peer, dake_engine):
-                    self.dake_engines.pop(peer, None)
-                    return None
-
-                dake3_msg = dake_engine.generate_dake3()
-                if not dake3_msg:
-                    self.tracer.trace(peer, "ERROR", "DAKE3", "GEN_FAILED", "")
-                    return None
-
-                session_keys = dake_engine.get_session_keys()
-                if not session_keys:
-                    self.tracer.trace(peer, "ERROR", "DAKE2", "NO_KEYS", "")
-                    return None
-
-                session.session_id = session_keys.get("session_id") or secrets.token_bytes(32)
-                session.root_key = session_keys.get("root_key")
-                session._dake_chain_key_send = session_keys.get("chain_key_send")
-                session._dake_chain_key_recv = session_keys.get("chain_key_recv")
-                session._dake_brace_key = session_keys.get("brace_key")
-
-                session._dake_output = session_keys.get("_dake_output")
-
-                pub_key_data = session_keys.get("peer_long_term_pub")
-                if isinstance(pub_key_data, bytes):
-                    session._remote_long_term_pub_bytes = pub_key_data
-
-                    session.remote_long_term_pub = None
-                    self.tracer.trace(
-                        peer, "KEY", "PUBKEY", "PARSED", "Successfully parsed remote pubkey (bytes)"
-                    )
-                elif pub_key_data is not None:
-
-                    session.remote_long_term_pub = pub_key_data
-                    try:
-                        session._remote_long_term_pub_bytes = bytes(pub_key_data)
-                    except Exception as e:
-                        self.tracer.trace(peer, "ERROR", "PUBKEY", "BYTES_FAILED", str(e))
-                        session._remote_long_term_pub_bytes = None
-
-                self._establish_session(session, peer, "DAKE2→DAKE3 initiator")
-
-                self.dake_engines.pop(peer, None)
-                self._sent_dake1.pop(peer, None)
-                self.tracer.trace(peer, "DAKE", "COMPLETE", "INITIATOR_ENCRYPTED", "")
-                return dake3_msg.encode("utf-8")
-
-            except Exception as exc:
-                self.tracer.trace(peer, "ERROR", "DAKE2", "EXCEPTION", str(exc))
-                pass
-                return None
-
-    def _handle_dake3(self, peer: str, dake3_msg: str) -> Optional[bytes]:
-        """
-        Handle incoming DAKE3 (responder side).
-        """
-        with self.lock:
-            pending = self._pending_sessions.get(peer)
-            if peer not in self.sessions and pending is None:
-                self.tracer.trace(peer, "ERROR", "DAKE3", "NO_SESSION", "")
-                return None
-            session = pending if pending is not None else self.sessions[peer]
-            dake_engine = self.dake_engines.get(peer)
-            if dake_engine is None:
-                self.tracer.trace(peer, "ERROR", "DAKE3", "NO_ENGINE", "")
-                return None
-            try:
-                if not dake_engine.process_dake3(dake3_msg):
-                    self.tracer.trace(peer, "ERROR", "DAKE3", "PROCESS_FAILED", "")
-                    return None
-                if _refuse_pq_identity(self, peer, dake_engine):
-                    self.dake_engines.pop(peer, None)
-                    return None
-
-                session_keys = dake_engine.get_session_keys()
-                if not session_keys:
-                    self.tracer.trace(peer, "ERROR", "DAKE3", "NO_KEYS", "")
-                    return None
-
-                session.session_id = session_keys.get("session_id") or secrets.token_bytes(32)
-                session.root_key = session_keys.get("root_key")
-                session._dake_chain_key_send = session_keys.get("chain_key_send")
-                session._dake_chain_key_recv = session_keys.get("chain_key_recv")
-                session._dake_brace_key = session_keys.get("brace_key")
-
-                session._dake_output = session_keys.get("_dake_output")
-
-                pub_key_data = session_keys.get("peer_long_term_pub")
-                if isinstance(pub_key_data, bytes):
-                    session._remote_long_term_pub_bytes = pub_key_data
-
-                    session.remote_long_term_pub = None
-                    self.tracer.trace(
-                        peer, "KEY", "PUBKEY", "PARSED", "Successfully parsed remote pubkey (bytes)"
-                    )
-                elif pub_key_data is not None:
-
-                    session.remote_long_term_pub = pub_key_data
-                    try:
-                        session._remote_long_term_pub_bytes = bytes(pub_key_data)
-                    except Exception as e:
-                        self.tracer.trace(peer, "ERROR", "PUBKEY", "BYTES_FAILED", str(e))
-                        session._remote_long_term_pub_bytes = None
-
-                self._establish_session(session, peer, "DAKE3 responder")
-                self._answering_dake1.pop(peer, None)
-
-                if pending is not None:
-                    # The new handshake is complete and authenticated: only
-                    # now does it replace the live session, whose keys go.
-                    self._pending_sessions.pop(peer, None)
-                    old = self.sessions.get(peer)
-                    self.sessions[peer] = pending
-                    if old is not None and old is not pending:
-                        try:
-                            old.terminate("replaced by a completed DAKE")
-                        except Exception:
-                            pass
-                    self.tracer.trace(peer, "DAKE", "COMPLETE", "SESSION_REPLACED", "")
-
-                self.dake_engines.pop(peer, None)
-                self.tracer.trace(peer, "DAKE", "COMPLETE", "RESPONDER_ENCRYPTED", "")
-                return None
-
-            except Exception as exc:
-                self.tracer.trace(peer, "ERROR", "DAKE3", "EXCEPTION", str(exc))
-                pass
-                return None
-
-    def take_pq_refusal(self, peer: str) -> Optional[str]:
-        """The A2 refusal code for the last handshake with `peer`, once."""
-        return self.__dict__.get("pq_refusals", {}).pop(peer, None)
-
-    def _establish_session(self, session: "EnhancedOTRSession", peer: str, reason: str) -> None:
-        """
-        Drive EnhancedOTRSession from PLAINTEXT/DAKE_IN_PROGRESS → ENCRYPTED
-        and initialise the double ratchet.
-        """
-        if session.session_state == SessionState.PLAINTEXT:
-            try:
-                session.transition_session(
-                    SessionState.DAKE_IN_PROGRESS, f"{reason }: fast-path to DAKE_IN_PROGRESS"
-                )
-            except StateMachineError:
-                pass
-
-        if session.session_state == SessionState.DAKE_IN_PROGRESS:
-            try:
-                session.transition_session(SessionState.ENCRYPTED, reason)
-            except StateMachineError as e:
-                self.tracer.trace(peer, "ERROR", "ESTABLISH", "STATE_ERR", str(e))
-                session.session_state = SessionState.ENCRYPTED
-                session.security_level = UIConstants.SecurityLevel.ENCRYPTED
-        elif session.session_state == SessionState.ENCRYPTED:
-            pass
-        else:
-            session.session_state = SessionState.ENCRYPTED
-            session.security_level = UIConstants.SecurityLevel.ENCRYPTED
-
-        if session.ratchet is None:
-            try:
-                session._initialize_ratchet()
-            except Exception as e:
-                self.tracer.trace(peer, "ERROR", "RATCHET", "INIT_FAILED", str(e))
 
     def _handle_data_message(self, peer: str, data_msg: str) -> Optional[bytes]:
         """Decrypt a DATA message and return the human-readable text bytes.
@@ -10581,179 +9038,11 @@ class EnhancedSessionManager:
 
             return plaintext
 
-    def get_smp_progress(self, peer: str):
-        """Return (step, total) SMP progress tuple."""
-        with self.lock:
-            sess = self.sessions.get(peer)
-            if not sess:
-                return (0, 4)
-            try:
-                return sess.get_smp_progress()
-            except Exception:
-                return (0, 4)
-
-    def get_smp_status(self, peer: str) -> dict:
-        """Return SMP status dict."""
-        with self.lock:
-            sess = self.sessions.get(peer)
-            if not sess:
-                return {"state": "no_session", "verified": False, "failed": False}
-            try:
-                return sess.get_smp_status()
-            except Exception:
-                return {"state": "unknown", "verified": False, "failed": False}
-
-    def start_smp(self, peer: str, secret: str, question: str = "") -> Optional[str]:
-        """Start SMP verification on the session."""
-        with self.lock:
-            self._refuse_if_wiped()
-            sess = self.sessions.get(peer)
-            if not sess:
-                raise RuntimeError(f"start_smp: no session for {peer }")
-
-            return sess.start_smp(secret, question if question else None)
-
-    def process_smp_message(self, peer: str, data: bytes) -> Optional[str]:
-        """DEAD CODE - do not call.
-
-        SMP ingress runs exclusively through decrypt_message() → sess.decrypt_message()
-        → _enh_route_tlvs() → _enh_handle_smp_tlv().  Calling this method
-        directly would double-advance the Rust SMP state machine and cause
-        guaranteed ZKP verification failures.
-        """
-        raise RuntimeError(
-            "process_smp_message is disabled.  SMP messages are processed "
-            "automatically inside decrypt_message via _enh_handle_smp_tlv."
-        )
-
     # ─── held SMP1, manager level ────────────────────────────────────────────
-
-    def smp_secret_required(self, peer: str) -> bool:
-        with self.lock:
-            sess = self.sessions.get(peer)
-        return bool(sess is not None and sess.smp_secret_required())
-
-    def abort_smp(self, peer: str) -> Optional[str]:
-        """Cancel *peer*'s SMP run. Returns the SMP_ABORT message to send.
-
-        The Android bridge's Cancel called this for a year of tests against a
-        fake engine that had it; the real one did not, so Cancel raised
-        `smp_abort_unsupported` on a device.
-        """
-        with self.lock:
-            sess = self.sessions.get(peer)
-        if sess is None:
-            return None
-        return sess.abort_smp()
-
-    def resume_held_smp1(self, peer: str) -> Optional[str]:
-        """Answer a parked SMP1 for *peer*.  Returns the SMP2 to send."""
-        with self.lock:
-            sess = self.sessions.get(peer)
-        if sess is None:
-            raise RuntimeError(f"resume_held_smp1: no session for {peer}")
-        return sess.resume_held_smp1()
-
-    def decline_held_smp1(self, peer: str, reason: bytes = b"") -> Optional[str]:
-        """Drop a parked SMP1 for *peer*.  Returns the abort to send, if any."""
-        with self.lock:
-            sess = self.sessions.get(peer)
-        if sess is None:
-            return None
-        return sess.decline_held_smp1(reason)
-
-    def set_smp_secret(self, peer: str, secret: str) -> bool:
-        """Store SMP secret for peer in persistent storage AND bind it into
-        the active Rust SMP engine so the responder can answer SMP1 correctly.
-
-        Two-layer write:
-          1. smp_storage (file-backed) - survives restarts, read back on every
-             incoming DATA message by decrypt_message's pre-load guard.
-          2. session.set_smp_secret - pushes secret into RustSMP immediately
-             so any SMP1 that arrives before the next DATA message is handled.
-
-        The manager RLock is released before the Rust key-stretch (SHAKE-256
-        × 10k) to avoid blocking recv_loop or any concurrent session op for
-        the several hundred milliseconds the stretch can take.
-        """
-
-        try:
-            self.smp_storage.set_secret(peer, secret)
-        except Exception as _se:
-            self.logger.debug("set_smp_secret: storage write FAILED")
-
-        with self.lock:
-            sess = self.sessions.get(peer)
-
-        if sess is not None and hasattr(sess, "set_smp_secret"):
-            try:
-                sess.set_smp_secret(secret)
-            except Exception as _se:
-                self.logger.debug("set_smp_secret: session bind FAILED")
-        return True
-
-    def has_stored_smp_secret(self, peer: str) -> bool:
-        """Whether an auto-respond passphrase is stored for *peer*."""
-        return self.smp_storage.has_secret(peer)
-
-    def bind_stored_smp_secret(self, peer: str) -> bool:
-        """Bind *peer*'s stored auto-respond passphrase into its live session.
-
-        Store -> vault -> SMP inside Rust; the passphrase is never returned
-        to Python. False when none is stored or there is no session.
-        """
-        with self.lock:
-            self._refuse_if_wiped()
-            sess = self.sessions.get(peer)
-        if sess is None:
-            return False
-        return self.smp_storage.bind_into(peer, sess)
-
-    def start_smp_with_stored_secret(self, peer: str, question: str = "") -> Optional[str]:
-        """Start SMP using the stored passphrase. None when none is stored."""
-        if not self.bind_stored_smp_secret(peer):
-            return None
-        return self.start_smp(peer, "", question)
-
-    def bind_smp_secret(self, peer: str, secret: str) -> None:
-        """Bind an SMP secret to *peer*'s live session, and nothing else.
-
-        `set_smp_secret` is the terminal clients' AUTO-RESPOND setter: it also
-        writes the secret to `smp_storage` (a file, and a Python dict for the
-        life of the process), and the DATA/SMP handlers re-bind that stored
-        secret into every later session -- so a later SMP1 from the peer is
-        answered without anybody being asked. That is the feature on a
-        terminal. It is not acceptable for a one-off answer typed into a
-        dialog: the Android bridge used `set_smp_secret`, so answering one
-        challenge silently persisted the passphrase and pre-answered every
-        future one. This goes to the Rust vault only, and raises rather than
-        swallowing a failure.
-        """
-        with self.lock:
-            self._refuse_if_wiped()
-            sess = self.sessions.get(peer)
-        if sess is None:
-            raise RuntimeError("bind_smp_secret: no session for this peer")
-        sess.set_smp_secret(secret)
 
     def display_fingerprints(self, peer: str) -> str:
         """Return remote fingerprint string."""
         return self.get_peer_fingerprint(peer) or ""
-
-    def handle_dake1(self, peer: str, payload: str) -> Optional[str]:
-        result = self.handle_incoming_message(peer, payload)
-        if result and isinstance(result, (bytes, str)):
-            r = result if isinstance(result, str) else result.decode("utf-8", errors="replace")
-            return r if r.startswith("?OTRv4 ") else None
-        return None
-
-    def handle_dake2(self, peer: str, payload: str) -> Optional[str]:
-        return self.handle_dake1(peer, payload)
-
-    def handle_dake3(self, peer: str, payload: str) -> bool:
-        result = self.handle_incoming_message(peer, payload)
-        return self.has_session(peer)
-
 
 class Event:
     """Base event class"""

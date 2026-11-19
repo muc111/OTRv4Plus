@@ -169,7 +169,12 @@ tests use (Cargo feature `raw-key-test-api`, never in a release artifact):
 cd Rust && OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 cargo build --release \
     --features extension-module,raw-key-test-api
 cp target/release/libotrv4_core.so ../otrv4_core.so && cd ..
-OTRV4PLUS_ALLOW_RAW_KEY_TEST_API=1 python3.12 -m pytest -q
+python3.12 -m pytest -q
+# The variable is needed to BUILD the test core, not to run the suite: the
+# core says what it was built with (otrv4_core.TEST_FEATURES) and the
+# release guard stands down for a test build on a developer's machine. In a
+# CI pipeline a test build must be declared with the same variable, or the
+# guard fails; tests/README.md has the table.
 # Rebuild without the feature before running the client for real.
 # As above: CHANGELOG.md records the count per release (3360 passed,
 # 44 skipped, 1 xfailed at v10.30.0). Skips are environment-gated,
@@ -180,6 +185,24 @@ The skips are environment-gated (no audio device, no Termux:API, no live SAM
 bridge), not failures. Every suite lives under `tests/`; the four voice and
 MAC suites that used to sit at the top level (and that CI therefore never
 ran) moved there in October 2026.
+
+### The real-server tests
+
+`tests/test_real_prosody.py` signs the client the apps build in to a real
+Prosody, and runs `prosody/install-server-limits.sh` against one. It needs
+`prosody`, `prosodyctl` and `openssl` on PATH (`sudo apt-get install
+prosody`), and `ss` (iproute2) for the install-script test; without them it
+skips, and says which is missing. Nothing is installed or changed outside a
+temporary directory, and the server listens on a loopback port.
+
+- CI sets `OTRV4PLUS_REQUIRE_REAL_SERVER=1`, which turns a missing server
+  from a skip into a failure.
+- To run against another Prosody than the one on PATH (one built from
+  source, say), name the pair: `OTRV4PLUS_PROSODY=/path/bin/prosody
+  OTRV4PLUS_PROSODYCTL=/path/bin/prosodyctl`. Run with `-s` to see which
+  version a run was against.
+- If a Prosody of your own is running on the machine, the install-script
+  test stands down: it would be reading that server's sockets.
 
 ### A module must not end the process when imported
 

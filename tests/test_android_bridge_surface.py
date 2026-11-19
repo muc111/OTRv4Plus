@@ -26,6 +26,7 @@ import re
 import sys
 
 import pytest
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -162,7 +163,7 @@ class TestNoConflictingOverloads:
         reads as the button doing nothing -- the exact report that led to
         `addContact` being changed."""
         src = strip_comments(
-            dict(kotlin_files(BRIDGE_DIR))["ChaquopyOtrCore.kt"])
+            with_parts(os.path.join(BRIDGE_DIR, "ChaquopyOtrCore.kt")))
         for call in ("addContact", "removeContact", "answerSubscription"):
             match = re.search(
                 r"\bfun\s+%s\s*\([^)]*\)\s*:\s*([A-Za-z]+)" % call, src)

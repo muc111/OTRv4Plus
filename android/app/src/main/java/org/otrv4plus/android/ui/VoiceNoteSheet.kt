@@ -40,6 +40,11 @@ import org.otrv4plus.android.chat.ChatViewModel
 import org.otrv4plus.android.chat.VoiceNotes
 import org.otrv4plus.android.chat.VoiceSheet
 import org.otrv4plus.android.crypto.MicPermission
+import org.otrv4plus.android.chat.chooseVoice
+import org.otrv4plus.android.chat.closeVoiceSheet
+import org.otrv4plus.android.chat.sendVoiceNote
+import org.otrv4plus.android.chat.startVoiceNote
+import org.otrv4plus.android.chat.stopVoiceNote
 
 /**
  * Record a voice note in a synthetic voice (or your own), hear it, then send or discard.

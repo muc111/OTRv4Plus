@@ -27,6 +27,7 @@ KT = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
 
 pytest.importorskip("otrv4_")
 from android_bridge.app import OtrApp  # noqa: E402
+from kotlin_parts import with_parts  # noqa: E402
 
 
 def _returns_dicts(method) -> bool:
@@ -39,7 +40,7 @@ def _returns_dicts(method) -> bool:
 
 def _decoders():
     """(method name, the Kotlin text up to the end of its decode)."""
-    src = open(KT, encoding="utf-8").read()
+    src = with_parts(KT)
     for m in re.finditer(r'requireApp\(\)\.callAttr\("([a-z_]+)"', src):
         tail = src[m.end():m.end() + 1500]
         # The decode ends at the method's closing getOrDefault / blank line.
@@ -65,7 +66,7 @@ def test_a_dict_is_never_read_as_attributes(name, body):
 
 
 def test_the_two_that_were_broken_now_use_dict_get():
-    src = open(KT, encoding="utf-8").read()
+    src = with_parts(KT)
     t = src[src.index("fun transfers(): List<FileTransferView>"):]
     t = t[:t.index("getOrDefault")]
     assert 'row.callAttr("get", "path")' in t and 'row.callAttr("get", "state")' in t

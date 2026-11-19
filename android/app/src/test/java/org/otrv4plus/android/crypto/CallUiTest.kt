@@ -220,6 +220,10 @@ class CallUiTest {
         assertEquals(CallUi.Readiness.COLD, CallUi.Readiness.of("anything else"))
         assertEquals("Ready · 10 min", CallUi.readinessLabel(CallUi.Readiness.READY, 600))
         assertEquals("Ready · 1 min", CallUi.readinessLabel(CallUi.Readiness.READY, 5))
+        // Built but still settling: amber, with how long until green.
+        assertEquals("Preparing the call path… ready in 42 s",
+            CallUi.readinessLabel(CallUi.Readiness.WARMING, 42))
+        assertEquals("Preparing the call path…", CallUi.readinessLabel(CallUi.Readiness.WARMING))
         assertEquals(0xFF2E7D32, CallUi.readinessColour(CallUi.Readiness.READY))
         assertEquals(0xFFC62828, CallUi.readinessColour(CallUi.Readiness.COLD))
     }

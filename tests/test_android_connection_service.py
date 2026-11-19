@@ -23,6 +23,7 @@ import os
 import re
 
 import pytest
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ANDROID = os.path.join(ROOT, "android", "app", "src", "main")
@@ -30,8 +31,7 @@ JAVA = os.path.join(ANDROID, "java", "org", "otrv4plus", "android")
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def _code_only(text):
@@ -63,16 +63,35 @@ class TestTheManifestDeclaresIt:
         assert 'android:exported="false"' in block
 
     def test_it_declares_a_foreground_type(self, manifest):
-        """Required from API 34, and `dataSync` is the honest one: a long-lived
-        network session the user asked for. It is not a media, location or call
-        service and must not claim to be."""
+        """Required from API 34. `dataSync` is the session: a long-lived
+        network connection the user asked for. `microphone` is declared too
+        and claimed only while a call is under way (claimMicrophone): from
+        Android 11 a background app may use the microphone only from a
+        microphone-type foreground service, or a call with the screen locked
+        reads silence (audit 2026-11-14). Never media or location."""
         block = manifest[manifest.index("OtrConnectionService"):]
         block = block[:block.index("/>")]
-        assert 'android:foregroundServiceType="dataSync"' in block
+        assert 'android:foregroundServiceType="dataSync|microphone"' in block
+        assert "location" not in block and "mediaPlayback" not in block
+
+    def test_the_microphone_type_is_held_only_for_a_call(self, service):
+        claim = service[service.index("internal fun OtrConnectionService.claimMicrophone("):]
+        claim = claim[:claim.index("\n}\n")]
+        # Claimed once per call, inside runCatching: a refusal must never
+        # crash the service, and must not be retried every tick.
+        assert "micTried = true" in claim and "runCatching" in claim
+        assert "foregroundTypes(true)" in claim and "foregroundTypes(false)" in claim
+        types = service[service.index("private fun foregroundTypes("):]
+        types = types[:types.index("\n}\n")]
+        assert "FOREGROUND_SERVICE_TYPE_MICROPHONE" in types
+        assert "Build.VERSION_CODES.R" in types
+        # Driven by the drain loop, for 1:1 and group calls alike.
+        assert "claimMicrophone(chat.usingMicrophone())" in service
 
     def test_the_permissions_are_declared(self, manifest):
         for permission in ("FOREGROUND_SERVICE",
                            "FOREGROUND_SERVICE_DATA_SYNC",
+                           "FOREGROUND_SERVICE_MICROPHONE",
                            "POST_NOTIFICATIONS"):
             assert "android.permission.%s" % permission in manifest, permission
 
@@ -226,8 +245,8 @@ class TestNothingSensitiveLeaves:
     def test_the_notification_carries_no_identity(self, service):
         """It is visible on a locked screen. Who someone talks to is the thing
         this client protects."""
-        block = service[service.index("private fun buildNotification"):]
-        block = block[:block.index("private fun phaseText")]
+        block = service[service.index("internal fun OtrConnectionService.buildNotification"):]
+        block = block[:block.index("internal fun OtrConnectionService.phaseText")]
         for leak in ("jid", "status.jid", "peer", "server"):
             assert leak not in block, leak
 
@@ -330,8 +349,8 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
         form and hand `LoginProgress.problemToShow` a problem the user never
         caused."""
         code = _code_only(service)
-        idle = code[code.index("private fun idle()"):]
-        idle = idle[:idle.index("private fun createChannel")]
+        idle = code[code.index("internal fun OtrConnectionService.idle()"):]
+        idle = idle[:idle.index("internal fun OtrConnectionService.createChannel")]
         assert "LinkPhase.STOPPED" in idle
         assert "LinkPhase.FAILED" not in idle
 
@@ -339,8 +358,8 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
         """A persistent connection notification in the shade of somebody who
         has not signed in is a statement about work that is not happening."""
         code = _code_only(service)
-        idle = code[code.index("private fun idle()"):]
-        idle = idle[:idle.index("private fun createChannel")]
+        idle = code[code.index("internal fun OtrConnectionService.idle()"):]
+        idle = idle[:idle.index("internal fun OtrConnectionService.createChannel")]
         assert "stopForeground" in idle
 
     def test_opening_the_app_does_not_connect(self):

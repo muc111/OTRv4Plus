@@ -22,6 +22,7 @@ thread.
 
 from __future__ import annotations
 
+import base64
 import threading
 import time
 from dataclasses import dataclass
@@ -50,7 +51,7 @@ from otrv4plus_mode import OtrMode
 
 from .events import (
     CallState, ConnectionState, ConnectionStateChanged, ChatStateChanged,
-    ErrorOccurred, Event, EventSink, HistorySynced, MessageChanged,
+    ErrorOccurred, Event, EventSink, HistorySynced, MessageBlocked, MessageChanged,
     MessageDelivered, MessageDisplayed, MessageReceived, MessageSentElsewhere,
     OtrCapabilityChanged, QueuedSent, SecurityState, SessionStateChanged,
     SmpProgress, SmpState, security_state_from_level, smp_state_from_status,
@@ -426,6 +427,40 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         resource = text.split("/", 1)[1] if "/" in text else ""
         key = self.canonical_peer(text)
         self._presence.note(key + "/" + resource if resource else key, online, show)
+
+    def note_restricted(self, peer: str, stanza_id: str, kind: str) -> None:
+        """The server refused something we sent to [peer]: the server's
+        administrator has restricted this account (restrictions.py).
+
+        Told to the UI as MessageBlocked, and NOTHING IS RETRIED. What this
+        conversation still holds unsent (no session yet: while muted, the
+        handshake itself is refused) is dropped and reported as blocked too;
+        left queued, it would go out on its own once the restriction ended,
+        long after the person was told it was not sent."""
+        if self._wiped:
+            return
+        peer = self.canonical_peer(peer)
+        if not peer:
+            return
+        held = self._outbox.pop(peer, None) or []
+        self._emit(MessageBlocked(peer=peer, message_id=str(stanza_id or ""),
+                                  reason=str(kind or "")))
+        for body in held:
+            mid = str(getattr(body, "message_id", "") or "")
+            if mid and mid != stanza_id:
+                self._emit(MessageBlocked(peer=peer, message_id=mid,
+                                          reason=str(kind or "")))
+
+    def note_announcement(self, domain: str, body: str, timestamp: float) -> None:
+        """A message from our own server (an administrator's announcement):
+        shown in a conversation named for the server, and plaintext, as it
+        is (the server has no encrypted session with anyone). Source
+        "server", so the UI can show it as what it is."""
+        if self._wiped:
+            return
+        self._emit(MessageReceived(peer=str(domain), body=str(body),
+                                   timestamp=float(timestamp or 0.0),
+                                   message_id=None, source="server"))
 
     def note_presence_lost(self) -> None:
         """The stream went. Everything we knew about availability goes too.
@@ -935,6 +970,15 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         if after is not SecurityState.PLAINTEXT and before is SecurityState.PLAINTEXT:
             self._check_contact_pin(peer)
             started = self._hs_started.pop(peer, None) or self._handshake_seen.get(peer)
+            # Once per handshake: a frame handled inside another frame's
+            # handling (a DAKE3 sent back while the DAKE1 call is still on
+            # the stack) reaches here twice for the same session.
+            logged = self.__dict__.setdefault("_established_logged", {})
+            now = time.monotonic()
+            if now - logged.get(peer, -10.0) > 2.0:
+                logged[peer] = now
+                _TRACE.record("otr", "session_established", "info", jid=peer,
+                              seconds=(int(now - started) if started else None))
             if started:
                 took = max(1.0, time.monotonic() - started)
                 hist = self._hs_history.setdefault(peer, [])
@@ -1400,6 +1444,25 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         self._touch(peer)
         return self.SEND_ENCRYPTED
 
+    #: Handshake message types (OTRv4 section 4.2), by their first byte.
+    _DAKE_KINDS = {0x35: "dake1", 0x36: "dake2", 0x37: "dake3"}
+
+    @classmethod
+    def _dake_kind(cls, payload) -> Optional[str]:
+        """"dake1"/"dake2"/"dake3" for a whole handshake frame, else None.
+
+        Reads only the message-type byte, which is public framing: the
+        diagnostic report can then say which handshake step arrived, and
+        never anything a frame carries."""
+        if not isinstance(payload, str) or not payload.startswith(_fragment.OTR_PREFIX):
+            return None
+        head = payload[len(_fragment.OTR_PREFIX):len(_fragment.OTR_PREFIX) + 8]
+        try:
+            first = base64.b64decode(head.replace("-", "+").replace("_", "/"))[:1]
+        except Exception:
+            return None
+        return cls._DAKE_KINDS.get(first[0]) if first else None
+
     def receive_message(self, peer: str, payload: str, meta: Any = None) -> Optional[str]:
         """Feed an inbound frame to the engine; emit a MessageReceived if it was one.
 
@@ -1427,10 +1490,19 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
         # post-call reading would always find them equal.
         before = self.security_state(peer)
         before_smp = self.smp_state(peer)
+        # A handshake step that arrives, and what became of it, is in the
+        # diagnostic report: device report 2026-11-11 showed a DAKE1 sent and
+        # nothing after it, with no way to tell "no reply arrived" from "a
+        # reply arrived and failed".
+        kind = self._dake_kind(payload)
+        if kind:
+            _TRACE.record("otr", kind + "_received", "info", jid=peer)
         try:
             with _actions.receiving(self._on_meta_tlv):
                 result = self._engine.handle_incoming_message(peer, payload)
-        except Exception:
+        except Exception as exc:
+            _TRACE.record_exception("otr", "receive_failed", exc, jid=peer,
+                                    frame=kind or ("otr" if otr_in else "other"))
             self._emit(ErrorOccurred(peer=peer, code="decrypt_failed"))
             self._send_final_revelations()
             return None
@@ -1442,6 +1514,10 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
             self._report_pq_refusal(peer)
             # Protocol frame (DAKE/SMP), not user text: surface any state change.
             after = self.security_state(peer)
+            if kind and after == before:
+                # The engine refuses a bad handshake step by returning
+                # nothing (it logs only to its own tracer): the report says so.
+                _TRACE.record("otr", kind + "_not_accepted", "warning", jid=peer)
             if after != before:
                 self._emit(SessionStateChanged(peer=peer, security=after))
                 self._session_settled(peer, before, after)

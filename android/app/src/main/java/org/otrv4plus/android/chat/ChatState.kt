@@ -94,6 +94,7 @@ class ChatState(
         smpStates.clear()
         smpSteps.clear()
         sessionStates.clear()
+        verifiedAt.clear()
         capabilities.clear()
         chatStates.clear()
         discovery = null
@@ -409,12 +410,25 @@ class ChatState(
             // A poll is a read of the engine, but it may have been taken
             // before an event this side already applied. So it may END a
             // session (PLAINTEXT, a changed key) -- the fail-safe direction --
-            // but may not pull a verified session back to merely ENCRYPTED;
-            // that downgrade arrives as its own event when it is real.
+            // and may pull a verified session back to merely ENCRYPTED once
+            // the verification is older than VERIFIED_POLL_GRACE_MS.
+            //
+            // Not never. Device report 2026-11-11: after "Publish Chat Keys"
+            // and the new session that followed, the Chats list still said
+            // Verified while the conversation (which asks the engine) said
+            // to verify again. A downgrade that did not arrive as an event
+            // was refused from every poll after it, so "Verified" stayed for
+            // as long as the app ran -- the one claim this app must not make.
             val known = sessionStates[jid]
             val lagging = known == SecurityState.SMP_VERIFIED &&
-                contact.security == SecurityState.ENCRYPTED
-            if (!lagging) sessionStates[jid] = contact.security
+                contact.security == SecurityState.ENCRYPTED &&
+                (verifiedAt[jid]?.let { now() - it < VERIFIED_POLL_GRACE_MS } ?: false)
+            if (!lagging) {
+                sessionStates[jid] = contact.security
+                // Only a downgrade ends a run's VERIFIED: a run that has just
+                // finished may be recorded before its level's event arrives.
+                if (known == SecurityState.SMP_VERIFIED) invalidateStaleVerification(jid)
+            }
             if (contact.security == SecurityState.PLAINTEXT ||
                 contact.security == SecurityState.FINGERPRINT_MISMATCH) {
                 smpStates.remove(jid)
@@ -442,6 +456,9 @@ class ChatState(
             is OtrEvent.MessageReceived -> receive(event)
             // Ticks: never a notification.
             is OtrEvent.MessageDelivered -> { markDelivered(event.peer, event.messageId); false }
+            // Refused by the server (a restriction on this account): the
+            // bubble says "not sent", the conversation and the banner say why.
+            is OtrEvent.MessageBlocked -> { markBlocked(event); false }
             is OtrEvent.RoomMessageAcked -> { ackRoom(event); false }
             is OtrEvent.MessageDisplayed -> { markSeenUpTo(event.peer, event.messageId); false }
             // Written by us elsewhere: stored, never announced.
@@ -481,6 +498,7 @@ class ChatState(
             is OtrEvent.SessionChanged -> {
                 val peer = bare(event.peer)
                 sessionStates[peer] = event.security
+                if (event.security == SecurityState.SMP_VERIFIED) verifiedAt[peer] = now()
                 invalidateStaleVerification(peer)
                 false
             }
@@ -502,6 +520,7 @@ class ChatState(
             }
             is OtrEvent.SmpFinished -> {
                 smpStates[bare(event.peer)] = event.state
+                if (event.state == SmpState.VERIFIED) verifiedAt[bare(event.peer)] = now()
                 smpSteps.remove(bare(event.peer))
                 false
             }
@@ -735,6 +754,10 @@ class ChatState(
      */
     private val sessionStates = mutableMapOf<String, SecurityState>()
 
+    /** When each peer's verification last arrived as an EVENT (wall clock,
+     *  ms). Only to tell a poll taken just before it from a later one. */
+    private val verifiedAt = mutableMapOf<String, Long>()
+
     /** OTRv4Plus capability per bare JID, from the transport's events. */
     private val capabilities = mutableMapOf<String, String>()
 
@@ -844,6 +867,11 @@ class ChatState(
 
     /** Whether any call is in progress (ringing, connecting or live). */
     fun anyCall(): Boolean = callStates.values.any { it != CallState.IDLE && it != CallState.ENDED }
+
+    /** A call that needs the microphone: a 1:1 call under way, or a group
+     *  call we are in and have not paused. */
+    fun usingMicrophone(): Boolean =
+        anyCall() || groupCalls.values.any { it.inCall && !it.paused }
 
     /** Who is calling us right now (RINGING is only ever incoming), for a
      *  prompt that shows whichever screen is open. */
@@ -1126,6 +1154,12 @@ class ChatState(
         // in front of them. Either alone is not "they saw it".
         if (added) deleted.restore(jid)
         if (added && uiVisible && openConversation == jid) store.markRead(jid)
+        // An announcement from the server's administrator: in its own
+        // conversation (named for the server, plaintext, as it is), and on
+        // the banner, so it is seen without opening anything.
+        if (added && event.source == "server") {
+            note("Announcement from the server: " + event.body.take(ANNOUNCEMENT_BANNER_CHARS))
+        }
         // Something from while this device was away is history, not news:
         // stored, counted unread, but no sound or notification.
         return added && event.source != "archive"
@@ -1404,6 +1438,52 @@ class ChatState(
         return store.update(m.copy(sendState = SendState.DELIVERED))
     }
 
+    /**
+     * The server refused our message: its administrator restricted this
+     * account (muted, or file transfers stopped). The bubble becomes
+     * FAILED ("not sent", in red) -- never "sent" -- and nothing retries it.
+     * One line in the conversation says why (not one per refused stanza: a
+     * message in fragments, or a handshake, is refused many times over),
+     * and the app's banner says it wherever the user is.
+     */
+    fun markBlocked(event: OtrEvent.MessageBlocked): Boolean {
+        val jid = bare(event.peer)
+        if (jid.isEmpty()) return false
+        var changed = false
+        if (event.messageId.isNotEmpty()) {
+            store.messages(jid).firstOrNull { it.outgoing && it.wireId == event.messageId }
+                ?.let { m ->
+                    if (m.sendState != SendState.FAILED) {
+                        changed = store.update(m.copy(sendState = SendState.FAILED))
+                    }
+                }
+        }
+        // Held messages that never went out (no session while muted) are
+        // dropped by the bridge and reported here by id; anything still
+        // shown as on its way in this conversation is not.
+        for (m in store.messages(jid)) {
+            if (m.outgoing && m.sendState in setOf(SendState.SENDING, SendState.QUEUED)) {
+                changed = store.update(m.copy(sendState = SendState.FAILED)) || changed
+            }
+        }
+        val text = FailureText.restricted(event.reason)
+        val last = store.messages(jid).lastOrNull()
+        if (last == null || last.security != SecurityLabel.SYSTEM || last.body != text) {
+            val at = now()
+            changed = store.append(Message(
+                id = "restricted:${event.reason}:$at",
+                conversationId = jid,
+                body = text,
+                outgoing = false,
+                at = at,
+                sendState = SendState.NONE,
+                security = SecurityLabel.SYSTEM,
+            )) || changed
+        }
+        note(text)
+        return changed
+    }
+
     /** [peer] has seen our messages up to [wireId]: that one and every
      *  earlier one that went out are READ. */
     fun markSeenUpTo(peer: String, wireId: String): Boolean {
@@ -1587,6 +1667,15 @@ class ChatState(
     companion object {
         /** Most "asks to join" banners held at once. */
         const val MAX_ENTRY_REQUESTS = 20
+
+        /** How much of a server announcement the banner shows; the whole of it
+         *  is in the server's conversation. */
+        const val ANNOUNCEMENT_BANNER_CHARS = 300
+
+        /** How long after a verification event a roster poll reading
+         *  ENCRYPTED is taken as one read before it. A poll is applied before
+         *  the events of the same tick, so a few seconds covers it. */
+        const val VERIFIED_POLL_GRACE_MS = 15_000L
 
         /**
          * The bare JID, case-folded. One contact, one key.

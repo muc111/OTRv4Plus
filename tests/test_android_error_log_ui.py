@@ -21,6 +21,7 @@ import re
 import xml.etree.ElementTree as ET
 
 import pytest
+from kotlin_parts import with_parts  # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MAIN = os.path.join(ROOT, "android", "app", "src", "main")
@@ -28,8 +29,7 @@ JAVA = os.path.join(MAIN, "java", "org", "otrv4plus", "android")
 
 
 def _read(*parts):
-    with io.open(os.path.join(*parts), encoding="utf-8") as fh:
-        return fh.read()
+    return with_parts(os.path.join(*parts))
 
 
 def _code_only(text):
@@ -239,7 +239,7 @@ class TestTheServiceRecordsItsOwnLifecycle:
     def test_every_phase_change_goes_through_one_place(self, service):
         """So none can be made without being recorded."""
         code = _code_only(service)
-        body = code[code.index("private fun enter(next: LinkPhase"):]
+        body = code[code.index("internal fun enter(next: LinkPhase"):]
         # Anchored on CODE, not on a comment: `_code_only` strips comments,
         # so a docstring anchor is a substring that is not there.
         body = body[:body.index("var status: ConnectionStatus")]

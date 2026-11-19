@@ -71,7 +71,11 @@ I2PD_VERSION = b"3.0.0"
 #: PyO3 names that exist only when the core is built with a test/legacy
 #: feature. Their presence in the shipped .so means a gated API shipped.
 GATED_CORE_SYMBOLS = (b"get_session_keys", b"load_by_handle", b"expose_seed",
-                      b"legacy-dake-keys", b"test-only-kdf")
+                      b"legacy-dake-keys", b"test-only-kdf",
+                      # The core's own build label (Rust/src/lib.rs,
+                      # test_features): the name is compiled in only with
+                      # the feature.
+                      b"raw-key-test-api")
 
 #: A string literal that exists only in the debug variant's source set
 #: (src/debug/.../diag/DiagnosticsScreen.kt). Class names would not do: R8

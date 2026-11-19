@@ -273,6 +273,10 @@ except the one row in the next table.
 | Area | What to test | Since |
 |---|---|---|
 | Five-person group call | A secure group of five verified members (the maximum): one starts a call, the other four join; everyone hears everyone, and each phone's report shows four participants (\`peers=4\`) | rc.84 |
+| Sign-up and sign-in on a just-started built-in router | Force-stop the app, open it and create an account (or sign in) at once: the Connect screen counts down ("still joining the I2P network ... for up to 2:30 more") while the router finds the server (*router_too_new* in the report), instead of failing in a second, with no need to tap again | rc.197 |
+| Router log after a drop | When the connection drops on the built-in router, the report shows *log_after_drop* and the router's last warnings (no addresses), and *i2p_stream_ended* carries \`age_s\` and \`quiet_s\` | rc.195 |
+| Sign-in and sign-up with the server-proof check | Sign in to an existing account, and create a new one: both work as before. From rc.204 the app ends a sign-in when the server does not prove it knows the account. If either ends with "the server did not prove it knows this account", copy the line under the message (it starts \`[check=\` and holds no password, key or address): it says which check failed. On the debug APK, Share error log carries the same, with the step it happened at, under "Server checks" | rc.205 |
+| Restrictions from the admin panel | Mute an account: a message it sends shows **not sent** in red, the conversation and the banner say messaging is restricted, and nothing goes out later by itself. Suspend it: the app says the account is suspended and stops signing in. Maintenance: the app says so and tries again by itself. Send an announcement: every signed-in app shows it in a conversation named for the server, with a banner | rc.206 |
 
 ## ⚠️ Known limits
 
@@ -364,6 +368,15 @@ these where it can, but the server settings decide how well:
   destination it first reached and refuses a different one (X1). Wherever
   the certificate is not checked, the app signs in with SCRAM only, never a
   plain password.
+- **Settings that lock the apps out (rc.204 and later).** The app ends a
+  sign-in when the server does not prove it knows the account. Keep
+  \`default_iteration_count\` between 4096 and 2,000,000, and keep
+  \`SCRAM-SHA-1\` and \`SCRAM-SHA-1-PLUS\` out of
+  \`disable_sasl_mechanisms\`: on Prosody 13 the second makes every sign-in
+  fail as if the password were wrong. On the server,
+  \`bash prosody/install-server-limits.sh --check\` changes nothing, names
+  any of these, and says whether Prosody can be reached from outside
+  (\`docs/SERVER_HARDENING.md\`).
 - **Accounts live on the host name.** \`aliases\` is not a Prosody option:
   an account must be \`user@otrv4plus.i2p\`, not \`user@<b32>.b32.i2p\` (the
   app maps the latter for the built-in server).

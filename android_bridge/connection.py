@@ -400,6 +400,24 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
                 forget()
             self._fail(BANNED_CODE, text)
             return
+        if state == "restricted":
+            # The administrator ended the stream: signed out, account
+            # removed, or maintenance (restrictions.py). Reported with its
+            # code; whether to try again is the code's (ConnectProblem):
+            # maintenance is retried with the usual backoff, the others wait
+            # for the person.
+            closed = getattr(self._transport, "closed_by_admin", None) or ()
+            code, text = (tuple(closed) + ("", ""))[:2]
+            try:
+                self._app.note_presence_lost()
+            except Exception:
+                _log.warning("could not clear presence on a transport drop")
+            forget = getattr(self._app, "forget_rooms", None)
+            if forget is not None:
+                forget()
+            self._fail(code or "server_closed_connection",
+                       text or "The server's administrator ended the connection.")
+            return
         if state == "replaced":
             # Another sign-in of this account took the server's only slot
             # (transport.REPLACED_TEXT). A failure the user must act on, not
@@ -616,6 +634,14 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         rejected = getattr(self._app, "note_room_rejected", None)
         if bounced is not None and rejected is not None:
             bounced(rejected)
+        # Restrictions on this account (muted, no files) and announcements
+        # from the server's administrator (android_bridge/restrictions.py).
+        for setter, handler in (("set_restriction_handler", "note_restricted"),
+                                ("set_announcement_handler", "note_announcement")):
+            attach_to = getattr(self._transport, setter, None)
+            target = getattr(self._app, handler, None)
+            if attach_to is not None and target is not None:
+                attach_to(target)
         attach = getattr(self._transport, "set_room_handler", None)
         receive = getattr(self._app, "receive_room_message", None)
         if attach is not None and receive is not None:
@@ -1674,7 +1700,19 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
             "last": dict(self._last),
             "inputs": self.inputs(),
             "worker_alive": self._worker_alive(),
+            "router_wait": self._router_wait(),
         }
+
+    @staticmethod
+    def _router_wait() -> Dict[str, int]:
+        """While an attempt waits for a router too new to find the server:
+        how long so far and the most it will wait (the Connect screen's
+        countdown). Empty otherwise -- status() is plain data, never None."""
+        try:
+            from .transport import ROUTER_WAIT
+            return ROUTER_WAIT.state() or {}
+        except Exception:
+            return {}
 
     def _tls_mode(self) -> str:
         """What the transport actually settled on, or what it would settle on.

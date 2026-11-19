@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 195
+        versionCode = 207
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -94,7 +94,7 @@ android {
         // "untested" (owner, 2026-10-30): main holds the build tested on
         // phones and a laptop -- rc.194 since 2026-11-10 -- and every build
         // after it says "-untested" until it is tested too.
-        versionName = "0.7.0-experimental.rc.194+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.206-untested+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -343,13 +343,15 @@ chaquopy {
             install("otrv4_core")
             // PySocks: imported at module scope by otrv4+.py. Pure Python.
             install("PySocks==1.7.1")
-            // slixmpp: the XMPP transport. Pure Python, built from an sdist.
+            // slixmpp: the XMPP transport. Pure Python: a py3-none-any wheel that
+            // tools/fetch-apk-python.sh builds from the hash-checked sdist
+            // (Chaquopy 17's pip takes binary wheels only).
             install("slixmpp==1.17.0")
 
             // -- required by the above, and now named because of --no-deps ---
             //
             // slixmpp -> pyasn1, pyasn1-modules (both pure Python).
-            install("pyasn1==0.6.4")
+            install("pyasn1==0.6.5")
             install("pyasn1-modules==0.4.2")
 
             // -- deliberately absent -----------------------------------------
@@ -517,6 +519,12 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_identity.py",
             "otrv4plus_log.py",
             "otrv4plus_smpflow.py",
+            // Split out of otrv4+.py (2026-11-11), imported by it at module
+            // scope: its states, its TLV record and the session's SMP.
+            "otrv4plus_states.py",
+            "otrv4plus_tlv.py",
+            "otrv4plus_session_smp.py",
+            "otrv4plus_manager_dake.py",
             "otrv4plus_tip.py",
             "otrv4plus_trade.py",
             "otrv4plus_voice.py",

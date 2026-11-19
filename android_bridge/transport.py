@@ -65,6 +65,7 @@ from .transport_server import ServerMixin
 from .transport_welcome import WelcomeMixin
 from .settings import ConnectionProfile
 from .trace import TRACE as _TRACE
+from . import restrictions as _restrictions
 from .transport_base import _log, CONNECT_TIMEOUT, CALL_TIMEOUT, DEFAULT_C2S_PORT, TransportError  # noqa: F401
 from .transport_stream import _StreamWatch, _stream_failure_text, _tls_in_place
 
@@ -183,6 +184,37 @@ def _dialled_by_key(server: str) -> bool:
     return host.endswith(".b32.i2p") or bool(_address.shipped_server_address(host))
 
 
+class _RouterWait:
+    """Whether a connection attempt is waiting for a router too new to find
+    the server (I2PSAMConnection.lookup_key), since when, and for how long it
+    will wait at most: the Connect screen's countdown (owner, 2026-11-11).
+    One attempt runs at a time, so one instance serves the process."""
+
+    def __init__(self, clock=time.monotonic):
+        self._clock = clock
+        self._since: Optional[float] = None
+        self._limit = 0
+
+    def started(self, limit_s: int) -> None:
+        if self._since is None:
+            self._since = self._clock()
+        self._limit = max(0, int(limit_s))
+
+    def clear(self) -> None:
+        self._since = None
+        self._limit = 0
+
+    def state(self) -> Optional[Dict[str, int]]:
+        """{"waited_s", "limit_s"} while waiting, else None."""
+        since = self._since
+        if since is None:
+            return None
+        return {"waited_s": int(self._clock() - since), "limit_s": self._limit}
+
+
+ROUTER_WAIT = _RouterWait()
+
+
 def _sam_failure(exc: BaseException, server: str) -> "TransportError":
     """The TransportError for a failure opening the I2P stream, by layer
     (`otrv4+.py` `SamError`), so the user is not told to restart a router that
@@ -286,6 +318,13 @@ SCRAM_ONLY = frozenset({
     "SCRAM-SHA-256-PLUS", "SCRAM-SHA-256",
     "SCRAM-SHA-1-PLUS", "SCRAM-SHA-1",
 })
+
+
+from .xmlguard import REFUSED_EVENT  # noqa: E402
+# The code, the sentence and the line that says which check failed live in
+# transport_base, where registration (transport_registration.py) shares them.
+from .transport_base import (  # noqa: E402,F401
+    SERVER_NOT_PROVEN_CODE, SERVER_NOT_PROVEN_TEXT, server_not_proven_detail)
 
 
 def _restrict_to_scram(client) -> None:
@@ -841,6 +880,20 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         report carries, and remembers it for a timeout message."""
         _forwarder_log(message)
         text = str(message)
+        if "too new to find the server" in text:
+            # The router answered "not found" instantly: it has no peers to
+            # search with yet, and the lookup is asked again
+            # (I2PSAMConnection.lookup_key) rather than failing the attempt.
+            # ROUTER_WAIT gives the Connect screen its countdown.
+            import re
+            m = re.search(r"\((\d+)\)", text)
+            limit = re.search(r"limit=(\d+)", text)
+            ROUTER_WAIT.started(int(limit.group(1)) if limit else 0)
+            _TRACE.record("connection", "router_too_new", "info",
+                          retry=int(m.group(1)) if m else 0)
+            return
+        # Any other step: the router is past waiting (or a new attempt began).
+        ROUTER_WAIT.clear()
         if "opening SAM stream" in text:
             if "a failed attempt already built" in text:
                 # A retry on the held session (HeldSamSession): in a report,
@@ -875,7 +928,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
     def _stream_ended(self, text: str) -> None:
         import re
         m = re.search(r"ended by the (\w+): sent=(\d+) received=(\d+) "
-                      r"first=(\w+)", text)
+                      r"first=(\w+)(?: age=(\d+) quiet=(\d+))?", text)
         if not m:
             return
         by, sent, got, first = m.group(1), int(m.group(2)), int(m.group(3)), \
@@ -883,6 +936,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         verdict = ("silent" if by == "server" and got == 0
                    else first if first in ("tls", "other") else "")
         fields = dict(ended_by=by, sent=sent, received=got, first=first)
+        if m.group(5) is not None:
+            # Seconds the stream lived, and seconds of silence from the I2P
+            # side before it ended (device report 2026-11-10: ~11 minutes
+            # in, after ~95 s of silence -- the first tunnels' lifetime).
+            fields["age_s"] = int(m.group(5))
+            fields["quiet_s"] = int(m.group(6))
         if verdict:
             fields["meaning"] = self._STREAM_END_HINTS[verdict]
         _TRACE.record("connection", "i2p_stream_ended",
@@ -983,6 +1042,18 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
                 TransportError("auth_failed",
                                "the server rejected the account or password"))
 
+        def on_refused(_reason):
+            # xmlguard or sasl_hardening closed the stream: a DTD, an
+            # endless stanza, or a server that skipped SCRAM's proof. Fired
+            # before the close, so this is what the user is told rather than
+            # "the server closed the connection". The detail ends with the
+            # line that says which check failed and at which step.
+            detail = server_not_proven_detail(
+                self._route, "sign-in", getattr(self, "_progress", None))
+            if not started.done():
+                started.set_exception(TransportError(
+                    SERVER_NOT_PROVEN_CODE, detail))
+
         def on_no_auth(_event):
             # No mechanism this app allows was offered. Over I2P and Tor that
             # set is SCRAM only: a server (or an impostor) offering only
@@ -1027,6 +1098,14 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             if not started.done():
                 if _is_ban(cond, said):
                     started.set_exception(TransportError(BANNED_CODE, _ban_text(said)))
+                    return
+                # XMPP Guard: suspended, maintenance, signed out, removed
+                # (android_bridge/restrictions.py). The app's own sentence;
+                # the server's text is only matched, never shown.
+                restricted = _restrictions.of_stream_error(cond, said)
+                if restricted is not None:
+                    started.set_exception(TransportError(
+                        restricted.kind, restricted.text))
                     return
                 if _is_session_limit(cond, said):
                     # Signed in, refused at resource bind: the server allows
@@ -1085,6 +1164,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         client.add_event_handler("session_start", on_session)
         client.add_event_handler("failed_auth", on_failed)
         client.add_event_handler("no_auth", on_no_auth)
+        client.add_event_handler(REFUSED_EVENT, on_refused)
         watch = None
         if self._route.kind == _route_mod.CLEARNET_TLS:
             # Every address before giving up, and the stage named -- the same
@@ -1579,7 +1659,10 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             return await forward(
                 route.host, route.port or DEFAULT_C2S_PORT,
                 self._profile.sam_host, self._profile.sam_port, **extra)
-        except Exception as exc:
+        except BaseException as exc:
+            ROUTER_WAIT.clear()
+            if not isinstance(exc, Exception):
+                raise                                 # cancelled: as before
             self._emit_state("failed")
             from . import server_pins as _pins_mod
             if isinstance(exc, _pins_mod.DestinationChanged):
@@ -2315,15 +2398,25 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             cond = ""
         _TRACE.record("transport", "live_stream_error", "warning",
                       condition=cond or "unknown")
+        try:
+            said = str(stanza["text"] or "")
+        except Exception:
+            said = ""
         if cond == "conflict":
             self._replaced = True
-        elif cond == "policy-violation":
-            try:
-                said = str(stanza["text"] or "")
-            except Exception:
-                said = ""
-            if _is_ban(cond, said):
-                self._banned = _ban_text(said)
+        elif _is_ban(cond, said):
+            self._banned = _ban_text(said)
+        else:
+            restricted = _restrictions.of_stream_error(cond, said)
+            if restricted is None:
+                return
+            if restricted.kind == BANNED_CODE:
+                self._banned = restricted.text
+            else:
+                # Read by the controller while it handles "restricted".
+                self._closed_by_admin = (restricted.kind, restricted.text)
+            _TRACE.record("transport", "closed_by_admin", "warning",
+                          kind=restricted.kind)
 
     def _note_inbound(self, stanza):
         """Record that the stream delivered something. Returns it unchanged.
@@ -2365,12 +2458,73 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         to_room = sender in self._room_nicks
         _TRACE.record("rooms" if to_room else "chat", "message_rejected",
                       "warning", peer=sender, condition=cond[:40])
+        try:
+            restricted = _restrictions.of_stanza_error(
+                str(stanza["error"]["type"] or ""), cond,
+                str(stanza["error"]["text"] or ""))
+            stanza_id = str(stanza.get("id") or "")
+        except Exception:
+            restricted, stanza_id = None, ""
+        if restricted is not None:
+            # Muted, or file transfers stopped, by the server's administrator.
+            # The send is over: nothing here or in the engine retries it.
+            _TRACE.record("chat", "send_restricted", "warning",
+                          kind=restricted.kind, peer=sender)
+            handler = getattr(self, "_on_restricted", None)
+            if handler is not None:
+                try:
+                    handler(sender, stanza_id, restricted.kind)
+                except Exception:
+                    _log.warning("the restriction handler raised")
+            return
         handler = getattr(self, "_on_room_rejected", None)
         if to_room and handler is not None:
             try:
                 handler(sender, cond[:40])
             except Exception:
                 _log.warning("the room-rejected handler raised")
+
+    def set_restriction_handler(self, handler) -> None:
+        """`handler(peer, stanza_id, kind)` when the server refuses something
+        we sent because of a restriction on this account (restrictions.py)."""
+        self._on_restricted = handler
+
+    def set_announcement_handler(self, handler) -> None:
+        """`handler(domain, body, timestamp)` for a message from the server
+        itself (an administrator's announcement)."""
+        self._on_announcement = handler
+
+    #: An announcement longer than this is cut; XMPP Guard sends at most 500
+    #: characters, its notify 2000.
+    MAX_ANNOUNCEMENT = 4000
+
+    def _server_announcement(self, stanza) -> bool:
+        """True if [stanza] is a message from our own server's domain, and it
+        was handed to the announcement handler. Plaintext by nature: the
+        server has no OTR session with anyone. Never reaches the engine."""
+        try:
+            sender = str(stanza.get("from") or "")
+            domain = str(self._profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
+        except Exception:
+            return False
+        if not _restrictions.is_server_announcement(sender, domain):
+            return False
+        try:
+            kind = stanza.get("type") or "normal"
+            body = str(stanza.get("body") or "")
+        except Exception:
+            return True
+        if kind not in ("headline", "chat", "normal") or not body.strip():
+            return True                 # from the server, but nothing to show
+        body = body[:self.MAX_ANNOUNCEMENT]
+        _TRACE.record("chat", "server_announcement", "info", chars=len(body))
+        handler = getattr(self, "_on_announcement", None)
+        if handler is not None:
+            try:
+                handler(sender.lower(), body, time.time())
+            except Exception:
+                _log.warning("the announcement handler raised")
+        return True
 
     def _on_message(self, stanza) -> None:
         """Hand the body up, whatever it is.
@@ -2381,6 +2535,8 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         whether a payload is a DAKE frame, an SMP frame, ciphertext, or a
         plaintext message from someone with no session.
         """
+        if self._server_announcement(stanza):
+            return
         try:
             if stanza.get("type") not in ("chat", "normal", None, ""):
                 return
@@ -2430,6 +2586,13 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         if _fragment.is_fragment(body):
             body = self._reassembler.feed(peer, body)
             if body is None:
+                # The first part of a multi-part frame (a DAKE2 is ~11.7 KB)
+                # is in the report, counts only: a set that never completes
+                # shows as this line with no "_received" after it.
+                held = self._reassembler.progress(peer)
+                if held is not None and held[0] == 1:
+                    _TRACE.record("otr", "fragments_arriving", "info",
+                                  jid=peer, parts=held[1])
                 return
 
         try:
@@ -2647,6 +2810,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             self._emit_state("banned")
             self._banned = ""
             return
+        if getattr(self, "_closed_by_admin", None):
+            # Signed out, removed, or maintenance: `closed_by_admin` is read
+            # inside this call, as `banned_text` is above.
+            self._emit_state("restricted")
+            self._closed_by_admin = None
+            return
         self._emit_state("disconnected")
 
     def _emit_state(self, state: str) -> None:
@@ -2689,9 +2858,19 @@ def _default_client_factory():
     to import on a handset.
     """
     from slixmpp import ClientXMPP
+    from . import sasl_hardening
+    from .xmlguard import GuardedStream
+
+    # Before any client exists: the SASL handlers are bound when the client
+    # registers its plugins.
+    sasl_hardening.apply()
+
+    class GuardedClient(GuardedStream, ClientXMPP):
+        """slixmpp's client, with a DTD or an endless stanza refused before
+        the parser reads it (android_bridge/xmlguard.py)."""
 
     def factory(jid: str, password: str):
-        client = ClientXMPP(jid, password)
+        client = GuardedClient(jid, password)
         # STARTTLS, never direct TLS: the far end of a SAM stream is a normal
         # c2s port. This mirrors what the terminal client sets in main().
         if hasattr(client, "enable_direct_tls"):

@@ -329,10 +329,20 @@ class TestBurstRecovery:
 
 
 class TestHardCapIsBounded:
-    def test_the_cap_is_at_most_one_second(self):
+    def test_the_cap_is_at_most_two_seconds(self):
         # Not a target -- the point past which a burst is discarded rather
-        # than queued. Two seconds of stale audio is worse than losing it.
-        assert voice.VOICE_JITTER_MAX * voice.VOICE_FRAME_MS <= 1000
+        # than queued. 1 s until rc.201, when the burst after a tunnel stall
+        # overflowing it was what threw words away; the pauses between words
+        # are shed first now, so a deep buffer comes down without losing any.
+        assert voice.VOICE_JITTER_MAX * voice.VOICE_FRAME_MS <= 2000
+
+    def test_speech_is_given_up_before_the_cap_is_reached(self):
+        # The shedder starts dropping words at SPEECH_SHED_EXCESS above the
+        # shed line; that must come before the hard cap, or the cap -- which
+        # cannot choose what it drops as well -- would decide instead.
+        from otrv4plus_voice_jitter import SPEECH_SHED_EXCESS
+        assert (voice.VOICE_JITTER_DRIFT_HIGH + voice.VOICE_JITTER_SHED_MARGIN
+                + SPEECH_SHED_EXCESS) < voice.VOICE_JITTER_MAX
 
     def test_the_cap_is_above_the_shed_threshold(self):
         assert voice.VOICE_JITTER_MAX > (voice.VOICE_JITTER_DRIFT_HIGH

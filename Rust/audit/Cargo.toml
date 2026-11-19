@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
 # Differential tests for the post-quantum primitives the core ships
 # (audit 2026-09). Not part of any build; nothing depends on it.
 #
@@ -23,8 +26,8 @@ license = "AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial"
 pqcrypto-mlkem  = "=0.1.1"
 pqcrypto-mldsa  = "=0.1.2"
 pqcrypto-traits = "0.3"
-ml-kem = "=0.3.2"
-ml-dsa = "=0.1.1"
+ml-kem = "=0.3.4"
+ml-dsa = "=0.1.2"
 rand   = "0.8"
 # NIST ACVP vectors (tests/acvp_*.rs): JSON, hex, and SHA3-256 of large
 # expected outputs. sha3 0.12 is the version the core already locks.

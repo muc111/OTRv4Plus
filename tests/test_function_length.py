@@ -17,9 +17,6 @@ LIMIT = 200
 
 #: (file, qualified name) -> ceiling, with why it is still long.
 CEILING = {
-    # SMP protocol handling: left whole on purpose, not restructured without
-    # a reason in the protocol itself.
-    ("client/otrv4+.py", "EnhancedOTRSession._enh_handle_smp_tlv"): 386,
     # The server load test: one async run whose callbacks share its state.
     ("client/otrv4plus_stresstest.py", "run"): 313,
 }

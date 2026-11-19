@@ -602,10 +602,10 @@ class TestTheSessionMethodItself:
     @pytest.fixture(scope="class")
     def source():
         import ast
-        import os
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        with open(os.path.join(root, "client", "otrv4+.py"), encoding="utf-8") as fh:
-            tree = ast.parse(fh.read())
+        from source_of import engine_source
+        # The engine and the modules split out of it (the session's SMP
+        # methods are in otrv4plus_session_smp.py since 2026-11-11).
+        tree = ast.parse(engine_source())
         for node in ast.walk(tree):
             if (isinstance(node, ast.FunctionDef)
                     and node.name == "resume_held_smp1"

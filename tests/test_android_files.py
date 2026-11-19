@@ -52,6 +52,7 @@ from android_bridge.app import OtrApp, Transport                  # noqa: E402
 from android_bridge.events import SecurityState, SmpState         # noqa: E402
 from android_bridge.files import FileOutcome, is_file_signal      # noqa: E402
 from source_of import conversation_screen_source  # noqa: E402
+from kotlin_parts import with_parts  # noqa: E402
 
 SECRET = "a shared secret we both know"
 
@@ -490,9 +491,7 @@ MANIFEST = os.path.join(
 
 
 def _kt(*parts):
-    import io
-    with io.open(os.path.join(ANDROID, *parts), encoding="utf-8") as handle:
-        return handle.read()
+    return with_parts(os.path.join(ANDROID, *parts))
 
 
 class TestTheTwoSidesAgreeOnTheCodes:
@@ -830,16 +829,16 @@ class TestTheMetadataChoiceOnAndroid:
         assert "model.sendFile(" not in picker
 
     def test_dismissing_the_question_sends_nothing(self, model):
-        body = model[model.index("fun cancelMetadata()"):]
-        body = body[:body.index("\n    }")]
+        body = model[model.index("fun ChatViewModel.cancelMetadata()"):]
+        body = body[:body.index("\n}")]
         assert "sendFile(" not in body, (
             "dismissing the metadata question sends the file anyway")
         assert "discardStaged(" in body, (
             "a dismissed file's staged copy is left in the cache")
 
     def test_the_staged_copy_is_deleted_after_sending(self, model):
-        body = model[model.index("private fun sendFile("):]
-        body = body[:body.index("private fun discardStaged(")]
+        body = model[model.index("private fun ChatViewModel.sendFile("):]
+        body = body[:body.index("private fun ChatViewModel.discardStaged(")]
         assert "discardStaged(path)" in body
 
     def test_the_core_passes_the_choice_through(self):

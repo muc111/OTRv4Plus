@@ -244,11 +244,10 @@ class TestTheDakeOutputLifecycleStaysInbound:
     @staticmethod
     def _call_graph():
         import ast
-        import pathlib
-        path = pathlib.Path(__file__).resolve().parent.parent / "client" / "otrv4+.py"
-        if not path.is_file():
-            pytest.skip("engine source not present")
-        source = path.read_text(encoding="utf-8")
+        from source_of import engine_source
+        # The engine and the modules split out of it (the DAKE handlers are in
+        # otrv4plus_manager_dake.py since 2026-11-11).
+        source = engine_source()
         tree = ast.parse(source)
         bodies = {}
         for node in ast.walk(tree):
@@ -302,12 +301,9 @@ class TestTheDakeOutputLifecycleStaysInbound:
         anyone later transitions to ESTABLISHED from an outbound path, this
         fails and the thread affinity of _dake_output has to be rechecked.
         """
-        import pathlib
         import re
-        path = pathlib.Path(__file__).resolve().parent.parent / "client" / "otrv4+.py"
-        if not path.is_file():
-            pytest.skip("engine source not present")
-        source = path.read_text(encoding="utf-8")
+        from source_of import engine_source
+        source = engine_source()
         sites = [line.strip() for line in source.split("\n")
                  if "transition_dake(" in line
                  and not line.strip().startswith("def ")]

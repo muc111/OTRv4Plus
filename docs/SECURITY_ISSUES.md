@@ -792,9 +792,10 @@ boundary; the seed never enters Python. Uses the existing AES-256-GCM and
 structural security claim, and the additional work is small and additive.
 
 `android_bridge/identity.py` is written so this is a swap: `IdentityKeyStore`
-is the interface, and the package ships no concrete implementation. The test
-double in `tests/test_android_identity.py` uses Option A and is explicitly
-marked development/test only.
+is the interface, and the package ships no concrete implementation.
+(Update 2026-11-11: Option B was adopted as `RustSealedIdentityKeyStore`, and
+`tests/test_android_identity.py` now runs against it; its Option A test
+double, which never ran because B1 gated out seed injection, is deleted.)
 
 ---
 
