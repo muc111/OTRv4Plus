@@ -1226,6 +1226,9 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         # Carbons on, then the archive since this device last looked
         # (android_bridge.sync). In the background: nothing waits for it.
         self._start_sync()
+        # What the server's administrator has restricted on this account,
+        # where the server can say (restrictions.py). In the background.
+        self._start_restrictions_query()
 
     # -- keepalive ------------------------------------------------------------
 
@@ -2488,6 +2491,54 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         """`handler(peer, stanza_id, kind)` when the server refuses something
         we sent because of a restriction on this account (restrictions.py)."""
         self._on_restricted = handler
+
+    def set_account_restrictions_handler(self, handler) -> None:
+        """`handler(found)` with restrictions.parse_query's answer, once per
+        sign-in, from a server that answers the restriction query."""
+        self._on_account_restrictions = handler
+
+    def _start_restrictions_query(self) -> None:
+        loop = getattr(self, "_loop", None)
+        if loop is None or getattr(self, "_on_account_restrictions", None) is None:
+            return
+        try:
+            if self._on_loop_thread():
+                loop.create_task(self._query_restrictions())
+            else:
+                asyncio.run_coroutine_threadsafe(self._query_restrictions(), loop)
+        except Exception:
+            _log.warning("could not ask about account restrictions")
+
+    async def _query_restrictions(self) -> None:
+        """Ask our own server what it restricts on this account. A server
+        without the query answers with an error, or not at all: quietly
+        nothing. It never holds up anything else."""
+        import xml.etree.ElementTree as ET
+        client = self._client
+        try:
+            domain = str(self._profile.jid).rsplit("@", 1)[-1].split("/", 1)[0]
+            iq = client.Iq()
+            iq["type"] = "get"
+            iq["to"] = domain
+            iq.append(ET.Element("{%s}query" % _restrictions.QUERY_NS))
+            reply = await iq.send(timeout=60)
+            query = reply.xml.find("{%s}query" % _restrictions.QUERY_NS)
+        except Exception:
+            return
+        if query is None:
+            return
+        found = _restrictions.parse_query(query)
+        _TRACE.record("connection", "account_restrictions", "info",
+                      muted=found["muted"] is not None,
+                      no_files=found["no_files"] is not None,
+                      files_disabled=found["files_disabled"],
+                      maintenance=found["maintenance"] is not None)
+        handler = getattr(self, "_on_account_restrictions", None)
+        if handler is not None:
+            try:
+                handler(found)
+            except Exception:
+                _log.warning("the account-restrictions handler raised")
 
     def set_announcement_handler(self, handler) -> None:
         """`handler(domain, body, timestamp)` for a message from the server

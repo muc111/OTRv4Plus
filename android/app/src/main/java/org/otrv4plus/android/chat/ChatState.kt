@@ -280,6 +280,14 @@ class ChatState(
         notice = message
     }
 
+    /**
+     * What the server's administrator restricts on this account, in a
+     * sentence, as the server last answered ("" when nothing, or when the
+     * server does not answer the restriction query). For the profile screen.
+     */
+    var accountRestriction: String = ""
+        private set
+
     fun dismissNotice() {
         notice = null
     }
@@ -459,6 +467,13 @@ class ChatState(
             // Refused by the server (a restriction on this account): the
             // bubble says "not sent", the conversation and the banner say why.
             is OtrEvent.MessageBlocked -> { markBlocked(event); false }
+            // At sign-in, from a server that answers the restriction query:
+            // on the profile screen, and on the banner when it says anything.
+            is OtrEvent.AccountRestricted -> {
+                accountRestriction = event.text
+                if (event.text.isNotEmpty()) note(event.text)
+                false
+            }
             is OtrEvent.RoomMessageAcked -> { ackRoom(event); false }
             is OtrEvent.MessageDisplayed -> { markSeenUpTo(event.peer, event.messageId); false }
             // Written by us elsewhere: stored, never announced.
@@ -1332,6 +1347,42 @@ class ChatState(
     }
 
     /**
+     * Whether [m] can be sent again: our own one-to-one message that did not
+     * go (refused by the server, or the send failed). Rooms have their own
+     * send path and are not offered this.
+     */
+    fun canRetry(m: Message): Boolean =
+        m.outgoing && m.sendState == SendState.FAILED && m.security != SecurityLabel.SYSTEM &&
+            !isRoom(m.conversationId) && !isServerConversation(m.conversationId) && canSend()
+
+    /**
+     * Send [m] again, only because the person asked: the same bubble goes
+     * back to "sending" with a new wire id (so its receipt, or a second
+     * refusal, matches this attempt), and is returned for the caller to send
+     * as [beginSend]'s result is. Null when it cannot be retried.
+     */
+    fun beginRetry(m: Message): Message? {
+        if (!canRetry(m)) return null
+        val current = store.messages(m.conversationId).firstOrNull { it.id == m.id } ?: return null
+        if (current.sendState != SendState.FAILED) return null
+        val again = current.copy(wireId = MessageId.newWireId(), sendState = SendState.SENDING)
+        return if (store.update(again)) again else null
+    }
+
+    /**
+     * The conversation that holds announcements from this account's own
+     * server (a bare domain, android_bridge/restrictions.py). The server has
+     * no encrypted session with anyone, and this app never sends a 1:1
+     * message unencrypted, so nothing typed here could be sent: the screen
+     * shows no message box for it.
+     */
+    fun isServerConversation(jid: String): Boolean {
+        val id = bare(jid)
+        val own = account.bareJid.substringAfter('@', "")
+        return id.isNotEmpty() && '@' !in id && own.isNotEmpty() && id == own.lowercase()
+    }
+
+    /**
      * Begin sending the draft for [jid]: validate it, clear it, and record the
      * optimistic message.
      *
@@ -1361,6 +1412,7 @@ class ChatState(
         // deliberately NOT cleared on this path -- the user's text stays in
         // the box rather than vanishing into a message that cannot go.
         if (!canSend()) return null
+        if (isServerConversation(jid)) return null
         drafts[jid] = ""
         ++outgoingSequence
         val wireId = MessageId.newWireId()

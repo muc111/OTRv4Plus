@@ -171,8 +171,8 @@ screens as the `desktop-screens` artifact.
 
 ## Versions
 
-Compose Multiplatform 1.7.3 with Kotlin 2.0.21, the same Kotlin as the
-Android app.
+Compose Multiplatform 1.7.3 with Kotlin 2.4.21, the same Kotlin as the
+Android app (2.4.20 fixed CVE-2026-53914 in the Kotlin Gradle plugin).
 
 Two repositories are used:
 

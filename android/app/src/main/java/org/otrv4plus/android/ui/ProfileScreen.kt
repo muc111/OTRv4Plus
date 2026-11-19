@@ -140,6 +140,11 @@ fun ProfileScreen(
             }
         }
         if (own) {
+            // Muted, files stopped, maintenance: as the server answered.
+            model.accountRestriction().takeIf { it.isNotEmpty() }?.let {
+                Text(it, style = MaterialTheme.typography.bodyMedium,
+                     color = MaterialTheme.colorScheme.error)
+            }
             model.avatarStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
             Text(
                 "Your picture is scaled to 96 × 96 and saved again as a plain " +

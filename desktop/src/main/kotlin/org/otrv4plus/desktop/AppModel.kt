@@ -489,6 +489,29 @@ class AppModel(
         }
     }
 
+    /** See [ChatState.canRetry]. */
+    fun canRetry(m: Message): Boolean = chat.canRetry(m)
+
+    /** See [ChatState.isServerConversation]. */
+    fun isServerConversation(jid: String): Boolean = chat.isServerConversation(jid)
+
+    /** Send a message that did not go, again: only when the person clicks Retry. */
+    fun retry(m: Message) {
+        val message = chat.beginRetry(m) ?: return
+        changed()
+        ui.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (message.replyTo.isNotEmpty())
+                        core.sendReply(message.conversationId, message.body, message.wireId, message.replyTo)
+                    else core.sendUserText(message.conversationId, message.body, message.wireId)
+                }.getOrDefault(SendOutcome.FAILED)
+            }
+            chat.completeSend(message, outcome)
+            changed()
+        }
+    }
+
     fun send(jid: String) {
         editing?.let { target ->
             if (target.conversationId == ChatState.bare(jid)) {

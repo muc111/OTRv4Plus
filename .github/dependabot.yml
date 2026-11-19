@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# Dependency updates, opened as pull requests against `dev` (never `main`,
+# which holds the build tested on devices). Weekly, grouped, and capped, so
+# updates arrive as a few reviewable PRs rather than a stream.
+#
+# Every PR runs the full CI (python.yml has no path filter; android.yml and
+# desktop.yml watch their Gradle files). Nothing here merges anything.
+#
+# Security advisories against a locked Rust crate are also reported by
+# rust-audit.yml, which fails until each is fixed or ignored with a reason.
+version: 2
+updates:
+  # The Android app: AGP, AndroidX, Compose, Kotlin, Chaquopy.
+  - package-ecosystem: gradle
+    directory: /android
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: tuesday
+    open-pull-requests-limit: 5
+    groups:
+      androidx:
+        patterns: ["androidx.*"]
+      kotlin:
+        patterns: ["org.jetbrains.kotlin*", "org.jetbrains.kotlinx*"]
+      compose:
+        patterns: ["org.jetbrains.compose*"]
+
+  # The desktop app (Compose Desktop).
+  - package-ecosystem: gradle
+    directory: /desktop
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: tuesday
+    open-pull-requests-limit: 3
+    groups:
+      kotlin-and-compose:
+        patterns: ["org.jetbrains.*"]
+
+  # The Rust core and the MLS crate. Grouped per crate: a bump in one
+  # crypto dependency is reviewed with the rest of its lock file.
+  - package-ecosystem: cargo
+    directory: /Rust
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: tuesday
+    open-pull-requests-limit: 3
+    groups:
+      rust-core:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /Rust/mls
+    target-branch: dev
+    schedule:
+      interval: weekly
+      day: tuesday
+    open-pull-requests-limit: 2
+    groups:
+      rust-mls:
+        patterns: ["*"]
+
+  # The actions the workflows use (checkout, setup-*, cache, upload).
+  - package-ecosystem: github-actions
+    directory: /
+    target-branch: dev
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]

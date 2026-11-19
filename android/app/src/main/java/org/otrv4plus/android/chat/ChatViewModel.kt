@@ -1377,6 +1377,34 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /** See [ChatState.canRetry]. */
+    fun canRetry(m: Message): Boolean { observe(); return state?.canRetry(m) ?: false }
+
+    /** See [ChatState.accountRestriction]. */
+    fun accountRestriction(): String { observe(); return state?.accountRestriction.orEmpty() }
+
+    /** See [ChatState.isServerConversation]. */
+    fun isServerConversation(jid: String): Boolean = state?.isServerConversation(jid) ?: false
+
+    /** Send a message that did not go, again: only when the person taps Retry. */
+    fun retry(m: Message) {
+        val core = this.core ?: return
+        val state = this.state ?: return
+        val message = state.beginRetry(m) ?: return
+        revision++
+        viewModelScope.launch {
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
+                    if (message.replyTo.isNotEmpty())
+                        core.sendReply(message.conversationId, message.body, message.wireId, message.replyTo)
+                    else core.sendUserText(message.conversationId, message.body, message.wireId)
+                }.getOrDefault(SendOutcome.FAILED)
+            }
+            state.completeSend(message, outcome)
+            revision++
+        }
+    }
+
     // -- reply, correct, delete for everyone, react (otrv4plus_actions) --------
 
     /** The message the next send replies to, shown above the composer. */

@@ -637,7 +637,9 @@ class ConnectionController(RoomsControlMixin, GroupsControlMixin, ProfileControl
         # Restrictions on this account (muted, no files) and announcements
         # from the server's administrator (android_bridge/restrictions.py).
         for setter, handler in (("set_restriction_handler", "note_restricted"),
-                                ("set_announcement_handler", "note_announcement")):
+                                ("set_announcement_handler", "note_announcement"),
+                                ("set_account_restrictions_handler",
+                                 "note_account_restrictions")):
             attach_to = getattr(self._transport, setter, None)
             target = getattr(self._app, handler, None)
             if attach_to is not None and target is not None:

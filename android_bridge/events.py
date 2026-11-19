@@ -41,6 +41,7 @@ __all__ = [
     "GroupInvite", "GroupChanged", "GroupEntryRequested",
     "MessageSentElsewhere", "MessageDisplayed", "ChatStateChanged", "HistorySynced",
     "MessageChanged", "RoomMessageAcked", "KeysPublished", "MessageBlocked",
+    "AccountRestricted",
 ]
 
 
@@ -338,6 +339,19 @@ class MessageBlocked(Event):
 
     message_id: str = ""
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class AccountRestricted(Event):
+    """What the server's administrator restricts on this account, as the
+    server answered the restriction query at sign-in (restrictions.py).
+    `text` is the app's sentence, "" when nothing is restricted. The until
+    fields are unix times, 0 for "until lifted", -1 for "not restricted"."""
+
+    text: str = ""
+    muted_until: int = -1
+    no_files_until: int = -1
+    files_disabled: bool = False
 
 
 @dataclass(frozen=True)

@@ -137,7 +137,15 @@ fun ConversationPane(model: AppModel, jid: String) {
             if (secure) GroupBar(model, jid)
             FileOffers(model, jid)
             Messages(model, jid, isRoom, Modifier.weight(1f))
-            Composer(model, jid, isRoom, c.security, onLocation = { locationOpen = true })
+            // The server's own conversation (announcements) takes no reply.
+            if (model.isServerConversation(jid)) {
+                Text("Announcements from your server's administrator. Replies cannot be sent here.",
+                     style = MaterialTheme.typography.labelSmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     modifier = Modifier.padding(12.dp))
+            } else {
+                Composer(model, jid, isRoom, c.security, onLocation = { locationOpen = true })
+            }
         }
         if (secure && showMembers) {
             VerticalDivider()
@@ -579,6 +587,12 @@ private fun Bubble(m: Message, isRoom: Boolean, model: AppModel) {
                 }
                 Spacer(Modifier.width(4.dp))
                 if (model.canAct(m)) BubbleActions(m, model)
+                // Sent again only when the person asks.
+                if (model.canRetry(m)) {
+                    TextButton(onClick = { model.retry(m) }) {
+                        Text("Retry", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
                 Text(timeFormat.format(Date(m.at)) + (if (m.edited) " · edited" else "") + when (m.sendState) {
                     SendState.SENDING -> " · sending"
                     SendState.QUEUED -> " · queued until encrypted"

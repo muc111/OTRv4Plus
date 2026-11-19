@@ -406,3 +406,98 @@ def test_the_terminal_client_says_so_too():
     handler = xmpp[xmpp.index("    def _on_message(self, msg):"):]
     assert handler.index("is_server_announcement") < handler.index(
         'if msg["type"] not in ("chat", "normal"):')
+
+
+# ── the restriction query (server: XMPP Guard with the query patch) ─────────
+
+def _query(*children):
+    import xml.etree.ElementTree as ET
+    q = ET.Element("{%s}query" % R.QUERY_NS)
+    for tag, until in children:
+        el = ET.SubElement(q, "{%s}%s" % (R.QUERY_NS, tag))
+        if until is not None:
+            el.set("until", until)
+    return q
+
+
+def test_the_answer_is_read_as_the_server_states_it():
+    found = R.parse_query(_query(("muted", "0"), ("no-files", "1900000000"),
+                                 ("files-disabled", None), ("maintenance", "0"),
+                                 ("something-new", "5")))
+    assert found == {"muted": 0, "no_files": 1900000000,
+                     "files_disabled": True, "maintenance": 0}
+    assert R.parse_query(_query()) == {"muted": None, "no_files": None,
+                                       "files_disabled": False, "maintenance": None}
+    assert R.parse_query(None)["muted"] is None
+
+
+@pytest.mark.parametrize("until,read", [("-5", 0), ("soon", 0), ("9" * 20, 0),
+                                        (" 42 ", 42)])
+def test_a_time_that_is_not_one_is_until_lifted(until, read):
+    assert R.parse_query(_query(("muted", until)))["muted"] == read
+
+
+def test_the_sentence_says_what_and_until_when():
+    assert R.summary(R.parse_query(_query())) == ""
+    said = R.summary(R.parse_query(_query(("muted", "0"), ("no-files", "1900000000"))))
+    assert said.startswith("Your account is temporarily restricted")
+    assert "messaging is restricted until the administrator lifts it" in said
+    assert "file transfers are restricted until 2030-03-17 17:46 UTC" in said
+    assert "disabled on this server" in R.summary(
+        R.parse_query(_query(("files-disabled", None))))
+
+
+def test_the_query_is_asked_at_sign_in_and_reaches_the_screen(app):
+    from android_bridge.events import AccountRestricted
+    source = _read(ROOT, "android_bridge", "transport.py")
+    session = source[source.index("        self._start_sync()\n"):][:400]
+    assert "self._start_restrictions_query()" in session
+    assert '"set_account_restrictions_handler"' in _read(ROOT, "android_bridge", "connection.py")
+    a, sink = app
+    a.note_account_restrictions({"muted": 0, "no_files": None,
+                                 "files_disabled": True, "maintenance": None})
+    (event,) = sink.of(AccountRestricted)
+    assert event.muted_until == 0 and event.no_files_until == -1
+    assert event.files_disabled is True and "messaging is restricted" in event.text
+
+
+def test_both_apps_show_it():
+    for source in (_read(KT, "bridge", "ChaquopyEvents.kt"),
+                   _read(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus",
+                         "desktop", "engine", "DesktopCore.kt")):
+        assert '"AccountRestricted" -> OtrEvent.AccountRestricted(' in " ".join(source.split()) \
+            or '"AccountRestricted" ->' in source
+    state = _read(KT, "chat", "ChatState.kt")
+    assert "accountRestriction = event.text" in state
+    assert "model.accountRestriction()" in _read(KT, "ui", "ProfileScreen.kt")
+    assert "model.chat.accountRestriction" in _read(
+        ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus", "desktop", "ui", "Profile.kt")
+
+
+# ── retry, and the server's conversation ────────────────────────────────────
+
+def test_a_failed_message_is_sent_again_only_when_asked_and_in_place():
+    state = _read(KT, "chat", "ChatState.kt")
+    retry = state[state.index("fun beginRetry("):]
+    retry = retry[:retry.index("\n    }\n")]
+    assert "MessageId.newWireId()" in retry, "a new wire id: its receipt matches this try"
+    assert "sendState = SendState.SENDING" in retry
+    assert "store.update(again)" in retry, "the same bubble, not a second one"
+    can = state[state.index("fun canRetry("):][:400]
+    for rule in ("m.outgoing", "SendState.FAILED", "!isRoom(", "!isServerConversation("):
+        assert rule in can
+    for ui in (_read(KT, "ui", "ConversationScreen.kt"),
+               _read(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus",
+                     "desktop", "ui", "ConversationPane.kt")):
+        assert "model.canRetry(" in ui and "model.retry(" in ui
+
+
+def test_nothing_is_typed_into_the_servers_conversation():
+    state = _read(KT, "chat", "ChatState.kt")
+    begin = state[state.index("fun beginSend("):][:1200]
+    assert "if (isServerConversation(jid)) return null" in begin
+    for ui in (_read(KT, "ui", "ConversationScreen.kt"),
+               _read(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus",
+                     "desktop", "ui", "ConversationPane.kt")):
+        assert "model.isServerConversation(jid)" in ui
+        assert "Replies cannot be sent here." in ui

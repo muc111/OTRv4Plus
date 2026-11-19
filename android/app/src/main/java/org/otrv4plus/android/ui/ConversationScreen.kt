@@ -143,7 +143,15 @@ fun ConversationScreen(
             )
         },
         bottomBar = {
-            Composer(
+            // The server's own conversation (its administrator's
+            // announcements) takes no reply: nothing typed there could be
+            // sent, so no box is offered.
+            if (model.isServerConversation(jid)) {
+                Text(SERVER_CONVERSATION_LINE,
+                     style = MaterialTheme.typography.labelSmall,
+                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                     modifier = Modifier.padding(12.dp))
+            } else Composer(
                 draft = model.draft(jid),
                 // A secure group still being set up sends nothing (the
                 // engine refuses too): said here rather than "not connected".
@@ -526,11 +534,23 @@ internal fun Bubble(message: Message, model: ChatViewModel, onOpenChat: ((String
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                // Sent again only when the person asks: nothing retries a
+                // message the server refused by itself.
+                if (model.canRetry(message)) {
+                    TextButton(onClick = { model.retry(message) },
+                               contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                        Text("Retry", style = MaterialTheme.typography.labelSmall)
+                    }
+                }
                 if (model.canAct(message)) MessageActions(message, model, onOpenChat)
             }
         }
     }
 }
+
+/** Under the server's announcements, where the message box would be. */
+internal const val SERVER_CONVERSATION_LINE =
+    "Announcements from your server's administrator. Replies cannot be sent here."
 
 /** The quick reactions offered on every message, as in other messengers. */
 internal val QUICK_REACTIONS = listOf("\uD83D\uDC4D", "\u2764\uFE0F", "\uD83D\uDE02",

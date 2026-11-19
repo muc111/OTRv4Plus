@@ -70,6 +70,12 @@ jobs:
           fetch-depth: 0
       - name: New files carry the header, and the right one
         run: python3 .github/scripts/check-licence-headers.py
+      # Every licence named has its text in LICENSES/, and none is idle
+      # (docs/LICENCE_TEXTS.md). Pinned, so a new rule cannot fail a push.
+      - name: REUSE compliance
+        run: |
+          python3 -m pip install --quiet "reuse==6.3.0"
+          reuse lint
 
   tests:
     name: The suite that asserts the protocol rules

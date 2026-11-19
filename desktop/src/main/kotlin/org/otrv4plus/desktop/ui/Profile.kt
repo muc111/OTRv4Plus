@@ -71,6 +71,10 @@ fun ProfileSection(model: AppModel) {
         }
     }
     Spacer(Modifier.padding(4.dp))
+    // Muted, files stopped, maintenance: as the server answered at sign-in.
+    model.chat.accountRestriction.takeIf { it.isNotEmpty() }?.let {
+        Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
+    }
     Text("Your profile is public: the server and anyone who asks can read it.",
          style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     for (f in model.profileFields) {

@@ -673,6 +673,9 @@ class DesktopCore(private val engine: Engine) : OtrCore {
                 "MessageDelivered" -> OtrEvent.MessageDelivered(str("peer"), str("message_id"))
                 "MessageBlocked" -> OtrEvent.MessageBlocked(
                     str("peer"), str("message_id"), str("reason"))
+                "AccountRestricted" -> OtrEvent.AccountRestricted(
+                    str("text"), e["muted_until"].asLong(), e["no_files_until"].asLong(),
+                    flag("files_disabled"))
                 "CallStateChanged" -> OtrEvent.CallChanged(
                     str("peer"), CallState.fromName(str("state")), int("duration_seconds"))
                 "SubscriptionRequested" -> OtrEvent.SubscriptionRequested(

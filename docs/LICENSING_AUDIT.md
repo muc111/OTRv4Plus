@@ -395,7 +395,7 @@ PSF licence notice must appear in the app's attribution screen.
 |---|---|---|---|---|
 | Chaquopy Gradle plugin + runtime | 16.0.0 | **MIT** | bundled (plugin + runtime in APK) | **Yes** |
 | Android Gradle Plugin | 8.7.3 | Apache-2.0 | build tool, not shipped | Yes |
-| Kotlin stdlib / compiler | 2.0.21 | Apache-2.0 | stdlib bundled | Yes |
+| Kotlin stdlib / compiler | 2.4.21 | Apache-2.0 | stdlib bundled | Yes |
 | AndroidX Core KTX | 1.15.0 | Apache-2.0 | bundled | Yes |
 | AndroidX Lifecycle | 2.8.7 | Apache-2.0 | bundled | Yes |
 | AndroidX Activity Compose | 1.9.3 | Apache-2.0 | bundled | Yes |
@@ -435,8 +435,8 @@ commit. The OpenSSL question this section used to leave open is settled:
 the build links OpenSSL **3.x**, which is Apache-2.0, not the 1.x
 OpenSSL/SSLeay licence. All three are permissive and attribution-only, so
 **the router does not constrain the project's licensing** in either
-direction. Their notices and full licence texts (`LICENSES/BSL-1.0.txt` is
-new) are in `NOTICE` §4, which the APK carries and the licences screen shows.
+direction. Their notices and full licence texts (`third_party/licences/BSL-1.0.txt`
+is new) are in `NOTICE` §4, which the APK carries and the licences screen shows.
 
 i2pd runs as its own process and talks to the app only over the SAM socket on
 loopback; it is not linked into any of this project's code.

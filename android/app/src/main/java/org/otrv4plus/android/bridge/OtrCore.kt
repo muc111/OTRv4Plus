@@ -1058,6 +1058,15 @@ sealed interface OtrEvent {
     data class MessageBlocked(val peer: String, val messageId: String,
                               val reason: String) : OtrEvent
 
+    /**
+     * What the server's administrator restricts on this account, as the
+     * server answered at sign-in (android_bridge/restrictions.py). [text] is
+     * the sentence to show, "" when nothing is restricted. Times are unix
+     * seconds, 0 for "until lifted", -1 for "not restricted".
+     */
+    data class AccountRestricted(val text: String, val mutedUntil: Long,
+                                 val noFilesUntil: Long, val filesDisabled: Boolean) : OtrEvent
+
     /** [peer] has seen our messages up to [messageId] (XEP-0333). */
     data class MessageDisplayed(val peer: String, val messageId: String) : OtrEvent
 

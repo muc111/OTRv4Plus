@@ -51,7 +51,7 @@ from otrv4plus_mode import OtrMode
 
 from .events import (
     CallState, ConnectionState, ConnectionStateChanged, ChatStateChanged,
-    ErrorOccurred, Event, EventSink, HistorySynced, MessageBlocked, MessageChanged,
+    AccountRestricted, ErrorOccurred, Event, EventSink, HistorySynced, MessageBlocked, MessageChanged,
     MessageDelivered, MessageDisplayed, MessageReceived, MessageSentElsewhere,
     OtrCapabilityChanged, QueuedSent, SecurityState, SessionStateChanged,
     SmpProgress, SmpState, security_state_from_level, smp_state_from_status,
@@ -450,6 +450,22 @@ class OtrApp(RoomChatMixin, SmpMixin, CallsMixin, FilesMixin, WipeMixin, Deniabl
             if mid and mid != stanza_id:
                 self._emit(MessageBlocked(peer=peer, message_id=mid,
                                           reason=str(kind or "")))
+
+    def note_account_restrictions(self, found: dict) -> None:
+        """The server's answer to the restriction query (restrictions.py),
+        for the profile screen and, when something is restricted, the
+        banner."""
+        if self._wiped:
+            return
+        from . import restrictions as _restrictions
+
+        def until(key):
+            value = found.get(key)
+            return -1 if value is None else int(value)
+        self._emit(AccountRestricted(
+            peer="", text=_restrictions.summary(found),
+            muted_until=until("muted"), no_files_until=until("no_files"),
+            files_disabled=bool(found.get("files_disabled"))))
 
     def note_announcement(self, domain: str, body: str, timestamp: float) -> None:
         """A message from our own server (an administrator's announcement):

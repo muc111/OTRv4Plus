@@ -1,0 +1,12 @@
+LicenseRef-OTRv4Plus-Legal
+
+This identifier marks the documents that are themselves the terms under which
+OTRv4+ is offered or contributed to: LICENSE, LICENSE-COMMERCIAL.md, CLA.md,
+CONTRACTOR-IP.md and NOTICE.
+
+They are not licensed for modification. Anyone may copy and distribute them
+verbatim, as the licences they carry require, but changing them is not
+permitted. A modified copy is not the licence, agreement or notice it was
+taken from, and must not be presented as one.
+
+Copyright (C) 2025-2026 muc111

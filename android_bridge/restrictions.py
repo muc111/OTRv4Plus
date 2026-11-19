@@ -150,3 +150,78 @@ def is_server_announcement(sender: str, own_domain: str) -> bool:
     s = str(sender or "").strip().lower()
     d = str(own_domain or "").strip().lower()
     return bool(s) and bool(d) and s == d and "@" not in s and "/" not in s
+
+
+# ── asking the server (XMPP Guard with the restriction query) ───────────────
+#
+#   <iq type='get' to='DOMAIN'><query xmlns='xmppguard:restrictions'/></iq>
+#
+# answered, by a server that has it, with one child per restriction in force
+# on THIS account (until = unix time, 0 = until lifted):
+#
+#   <query xmlns='xmppguard:restrictions'>
+#     <muted until='...'/> <no-files until='...'/> <files-disabled/>
+#     <maintenance until='...'/>
+#   </query>
+#
+# A server without it answers with an error, or not at all: nothing is shown.
+
+QUERY_NS = "xmppguard:restrictions"
+
+#: Latest "until" taken as a time: anything past this is not one.
+_MAX_UNTIL = 2 ** 40
+
+
+def _until(value) -> int:
+    try:
+        n = int(str(value).strip())
+    except Exception:
+        return 0
+    return n if 0 <= n < _MAX_UNTIL else 0
+
+
+def parse_query(query) -> dict:
+    """What a `query` element says, as
+    {"muted": until|None, "no_files": until|None, "files_disabled": bool,
+     "maintenance": until|None}. `query` is an ElementTree element (or None:
+    nothing known). Unknown children are ignored."""
+    found = {"muted": None, "no_files": None, "files_disabled": False,
+             "maintenance": None}
+    if query is None:
+        return found
+    for child in list(query):
+        tag = str(getattr(child, "tag", "")).rsplit("}", 1)[-1]
+        if tag == "muted":
+            found["muted"] = _until(child.get("until"))
+        elif tag == "no-files":
+            found["no_files"] = _until(child.get("until"))
+        elif tag == "files-disabled":
+            found["files_disabled"] = True
+        elif tag == "maintenance":
+            found["maintenance"] = _until(child.get("until"))
+    return found
+
+
+def _when(until: int) -> str:
+    import time as _time
+    if not until:
+        return "until the administrator lifts it"
+    return "until " + _time.strftime("%Y-%m-%d %H:%M UTC", _time.gmtime(until))
+
+
+def summary(found: dict) -> str:
+    """One sentence for the screen, or "" when nothing is restricted."""
+    parts = []
+    if found.get("muted") is not None:
+        parts.append("messaging is restricted %s" % _when(found["muted"]))
+    if found.get("no_files") is not None:
+        parts.append("file transfers are restricted %s" % _when(found["no_files"]))
+    elif found.get("files_disabled"):
+        parts.append("file transfers are disabled on this server")
+    if found.get("maintenance") is not None:
+        parts.append("the server is in maintenance mode")
+    if not parts:
+        return ""
+    text = "; ".join(parts)
+    return ("Your account is temporarily restricted by the server's "
+            "administrator: " + text + ".")

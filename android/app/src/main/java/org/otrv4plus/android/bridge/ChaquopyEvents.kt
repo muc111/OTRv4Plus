@@ -108,6 +108,14 @@ internal object ChaquopyEvents {
             "MessageBlocked" ->
                 OtrEvent.MessageBlocked(str("peer"), str("message_id"), str("reason"))
 
+            // The server's answer to the restriction query at sign-in.
+            "AccountRestricted" ->
+                OtrEvent.AccountRestricted(
+                    str("text"),
+                    item.callAttr("get", "muted_until")?.toLong() ?: -1L,
+                    item.callAttr("get", "no_files_until")?.toLong() ?: -1L,
+                    flag("files_disabled"))
+
             "CallStateChanged" ->
                 OtrEvent.CallChanged(
                     str("peer"), CallState.fromName(str("state")),

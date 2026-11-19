@@ -1,0 +1,9 @@
+LicenseRef-OTRv4Plus-NoLicense
+
+This identifier marks material for which no copyright and no licence is
+asserted: the AI-generated placeholder artwork, icon.png and the launcher
+icons derived from it. See docs/ASSETS.md.
+
+No licence is granted for it here because the project claims no rights in it
+to grant. It is not offered under the software licence or the documentation
+licence, and it is expected to be replaced.

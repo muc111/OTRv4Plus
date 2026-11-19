@@ -72,7 +72,7 @@ path = [
     "docs/FEATURES.md",
     "docs/FILE_TRANSFER_TEST_PLAN.md",
     "docs/GROUP_CRYPTO_AUDIT.md",
-    "LICENSES/README.md",
+    "docs/LICENCE_TEXTS.md",
     "LICENSING.md",
     "docs/LICENSING_AUDIT.md",
     "docs/MAC_FIX_REVIEW.md",
@@ -180,7 +180,7 @@ SPDX-License-Identifier = "MIT"
 
 # Third-party material: its own terms.
 [[annotations]]
-path = ["third_party/**", "LICENSES/*.txt"]
+path = ["third_party/**"]
 precedence = "override"
 SPDX-FileCopyrightText = "see each file"
 SPDX-License-Identifier = "LicenseRef-OTRv4Plus-ThirdParty"

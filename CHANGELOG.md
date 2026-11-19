@@ -4,7 +4,32 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.206-untested — 2026-11-17 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.207-untested — 2026-11-19 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194; rc.206, on `main`, is being
+tested now, and this one builds on it.
+
+- **"Not sent" has a Retry button.** A message the server refused (for
+  example while your account was muted) can be sent again with one tap,
+  on Android and desktop. Nothing is retried by itself: the button is
+  yours, it appears only on your own failed message, and only while the
+  conversation can send. A retry goes out as a new message, so the server
+  sees it as one.
+- **The server's conversation is read-only.** Announcements arrive in a
+  conversation named for your server; its message box is replaced by a
+  line saying replies cannot be sent there, instead of a box whose
+  messages went nowhere.
+- **Restrictions are known at sign-in.** On a server that offers it, the
+  app asks after sign-in whether your account is muted or its file
+  transfers are stopped, and your profile says so (with the end time when
+  there is one), instead of finding out from the first refused message. A
+  server that does not answer changes nothing.
+- **Build toolchain: Kotlin 2.4.21** in both apps, for CVE-2026-53914 (the
+  Kotlin Gradle plugin's build cache; it affected builds, not the app).
+- **Dependency updates are proposed automatically** (Dependabot, weekly, to
+  `dev`), and the repository passes the REUSE licence check, now run in CI.
+
+## Android 0.7.0-experimental.rc.206-untested — 2026-11-17 — on `main`, superseded by rc.207
 
 The last build tested on devices is rc.194, on `main`; this one has not
 been on a device. What the apps show when the server's administrator

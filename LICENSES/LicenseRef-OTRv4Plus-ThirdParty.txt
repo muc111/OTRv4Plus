@@ -1,0 +1,10 @@
+LicenseRef-OTRv4Plus-ThirdParty
+
+This identifier marks third-party material kept in this repository under
+its authors' own terms: the directories under third_party/, each of which
+carries its component's own licence file, and the full licence texts in
+third_party/licences/ that NOTICE reproduces for bundled components.
+
+Nothing marked with it is licensed by this project. Each component's terms
+are stated in that component's own licence file and in NOTICE; see
+docs/LICENSING_AUDIT.md for which component uses which.

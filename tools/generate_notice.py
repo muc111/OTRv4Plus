@@ -27,6 +27,8 @@ CRATE = os.path.join(ROOT, "Rust")
 
 #: Where cargo unpacks crate sources, so their LICENSE files can be read for
 #: the actual copyright holders rather than guessed from the author field.
+# Where the repository keeps licence texts, searched in order (see licence_text).
+LICENCE_TEXT_DIRS = ("LICENSES", os.path.join("third_party", "licences"))
 REGISTRY_SRC = os.path.expanduser(
     "~/.cargo/registry/src")
 
@@ -164,15 +166,19 @@ def exception_text(spdx_id):
 
 
 def licence_text(spdx_id):
-    """The full text for one licence: the repository's LICENSES/ first (REUSE
-    layout, so the NOTICE is the same wherever it is generated), then the
-    local SPDX crate corpus."""
-    vendored = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "LICENSES", spdx_id + ".txt")
-    if os.path.isfile(vendored):
-        with open(vendored, encoding="utf-8") as fh:
-            return fh.read().strip()
+    """The full text for one licence: the repository's copies first, so the
+    NOTICE is the same wherever it is generated, then the local SPDX crate
+    corpus. LICENSES/ holds the texts this repository's own files are under
+    (REUSE layout); third_party/licences/ holds those only bundled
+    components use, which REUSE would otherwise report as unused."""
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for directory in LICENCE_TEXT_DIRS:
+        vendored = os.path.join(root, directory, spdx_id + ".txt")
+        if os.path.isfile(vendored):
+            with open(vendored, encoding="utf-8") as fh:
+                return fh.read().strip()
     return _spdx_text("licenses", spdx_id)
+
 
 
 def _spdx_text(kind, spdx_id):

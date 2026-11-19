@@ -14,7 +14,7 @@ artwork, and they are not all under the same terms. This file is the map.
 | **Documentation and specifications** — every Markdown document listed under *documentation* in `REUSE.toml`, including `README.md`, `docs/SPEC.md`, `docs/SPEC_GROUP.md`, `SECURITY.md`, the design and audit documents, test plans and changelogs; and the README screenshots | [`CC-BY-SA-4.0`](LICENSES/CC-BY-SA-4.0.txt) | Chosen by the author on 2026-09-24. |
 | **Code in documentation** — snippets, commands and examples inside those documents | `CC-BY-SA-4.0` **and also** the software licence | So a snippet copied from a document into the codebase does not import a second licence into it. |
 | **Legal instruments** — `LICENSE`, `LICENSE-COMMERCIAL.md`, `CLA.md`, `CONTRACTOR-IP.md` | Not licensed for modification; reproduce them verbatim | They are the terms themselves. Relicensing a licence is not a thing. |
-| **Licence texts** — `LICENSES/*.txt` | Their own terms (the SPDX-published texts) | `LICENSES/README.md` |
+| **Licence texts** — `LICENSES/*.txt`, `third_party/licences/*.txt` | Their own terms (the SPDX-published texts) | [`docs/LICENCE_TEXTS.md`](docs/LICENCE_TEXTS.md) |
 | **Third-party material** — Rust crates, Python packages and Android libraries bundled in a build, the I2P router in the APK (i2pd, with OpenSSL and Boost), and `third_party/` | Each component's own licence | [`NOTICE`](NOTICE), [`docs/LICENSING_AUDIT.md`](docs/LICENSING_AUDIT.md) |
 | **Artwork** — `icon.png` and the launcher icons derived from it | **No licence asserted.** AI-generated placeholder | [`docs/ASSETS.md`](docs/ASSETS.md) |
 
