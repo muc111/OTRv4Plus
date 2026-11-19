@@ -21,7 +21,7 @@ never enabled is not in the shipped artifact and is not attributed here.
 
 
 ----------------------------------------------------------------------------
-1. Rust crates compiled into otrv4_core (115)
+1. Rust crates compiled into otrv4_core (109)
 ----------------------------------------------------------------------------
 
 aead 0.6.1
@@ -245,11 +245,6 @@ ctutils 0.4.8
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2025-2026 The RustCrypto Project Developers
 
-dashmap 6.2.1
-    Licence: MIT
-    Source:  https://github.com/xacrimon/dashmap
-    Copyright (c) 2019 Acrimon
-
 der 0.8.3
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
@@ -362,14 +357,6 @@ hash2curve 0.14.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2024 RustCrypto Developers
 
-hashbrown 0.14.5
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rust-lang/hashbrown
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2016 Amanieu d'Antras
-
 heck 0.5.0
     Offered: MIT OR Apache-2.0
     Taken:   MIT
@@ -434,14 +421,6 @@ libc 0.2.191
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) The Rust Project Developers
-
-lock_api 0.4.14
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/Amanieu/parking_lot
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2016 The Rust Project Developers
 
 log 0.4.35
     Offered: MIT OR Apache-2.0
@@ -526,14 +505,6 @@ opusic-sys 0.5.6
     Licence: BSD-3-Clause
     Source:  https://github.com/DoumanAsh/opusic-sys
     Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
-
-parking_lot_core 0.9.12
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/Amanieu/parking_lot
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2016 The Rust Project Developers
 
 password-hash 0.5.0
     Offered: MIT OR Apache-2.0
@@ -682,14 +653,6 @@ rayon-core 1.13.0
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2010 The Rust Project Developers
 
-scopeguard 1.2.0
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/bluss/scopeguard
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2016-2019 Ulrik Sverdrup "bluss" and scopeguard developers
-
 sec1 0.8.1
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
@@ -772,14 +735,6 @@ signature 3.0.0
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2018-2026 RustCrypto Developers
-
-smallvec 1.16.5
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/servo/rust-smallvec
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2018 The Servo Project Developers
 
 spki 0.8.1
     Offered: Apache-2.0 OR MIT

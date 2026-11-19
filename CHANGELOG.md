@@ -29,6 +29,9 @@ tested now, and this one builds on it.
   The desktop app stays on 2.0.21 for now: Kotlin 2.4 refuses the setting
   its screens rely on to redraw, and changing how they redraw needs trying
   on a desktop first.
+- **One unused Rust dependency removed** (`dashmap`, and the five crates
+  only it pulled in). Nothing used it; Rust 1.100 warns about it, and the
+  desktop installer refuses a build with warnings.
 - **Dependency updates are proposed automatically** (Dependabot, weekly, to
   `dev`), and the repository passes the REUSE licence check, now run in CI.
 

@@ -343,7 +343,6 @@ because the answer changes what the Android layer may be.
 | `crypto-bigint` | 0.5 | Apache-2.0 OR MIT | direct, static | attribution |
 | `zeroize` | 1.8 | Apache-2.0 OR MIT | direct, static | attribution |
 | `pyo3` | 0.24 | Apache-2.0 OR MIT | direct, static | attribution |
-| `dashmap` | 5.5 | MIT | direct, static | attribution |
 
 **Note on `r-efi`** (`Apache-2.0 OR LGPL-2.1-or-later OR MIT`): a disjunctive
 licence — the recipient chooses. Selecting Apache-2.0 or MIT avoids LGPL
