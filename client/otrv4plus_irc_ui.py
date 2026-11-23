@@ -8,6 +8,7 @@ A mixin of OTRv4IRCClient (otrv4plus_irc.py); the methods moved here
 unchanged."""
 import gc
 import otrv4plus as _engine
+import otrv4plus_debug as _debug
 import otrv4plus_tty as _tty
 import shutil
 import sys
@@ -439,11 +440,11 @@ class IrcUiMixin:
             self.show_status_panel()
         elif cmd == "debug":
 
-            _engine.DEBUG_MODE = not _engine.DEBUG_MODE
+            _debug.FLAGS.debug = not _debug.FLAGS.debug
             if hasattr(self, "logger") and hasattr(self.logger, "set_debug"):
-                self.logger.set_debug(_engine.DEBUG_MODE)
-            self.add_message("system", f"Debug: {'ON'if _engine.DEBUG_MODE else 'OFF'}")
-            if _engine.DEBUG_MODE and "debug" not in self.panel_manager.panels:
+                self.logger.set_debug(_debug.FLAGS.debug)
+            self.add_message("system", f"Debug: {'ON'if _debug.FLAGS.debug else 'OFF'}")
+            if _debug.FLAGS.debug and "debug" not in self.panel_manager.panels:
                 self.panel_manager.add_panel("debug", "debug")
         elif cmd == "version":
             self.add_message("system", f"Version: {VERSION }")

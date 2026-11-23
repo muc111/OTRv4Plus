@@ -1097,7 +1097,7 @@ class OTRv4DataMessage:
                 return False
             return bool(mac_key.verify(self.auth_region(), self.mac))
         except (TypeError, ValueError, AttributeError) as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print("[OTRv4DataMessage] MAC verification failed")
             return False
         except Exception:
@@ -1419,8 +1419,9 @@ if not hasattr(hashlib, "sha3_512"):
         "FATAL: SHA3-512 is required by OTRv4 §3.2 but is unavailable in "
         "this Python build.  Please upgrade to Python ≥ 3.6 with SHA3 support."
     )
-DEBUG_MODE = "--debug" in sys.argv or "-d" in sys.argv
-SMP_DEBUG = DEBUG_MODE or "--smp-debug" in sys.argv
+# The debug switches are otrv4plus_debug.FLAGS (DEBUG_MODE and SMP_DEBUG
+# below still read them).
+import otrv4plus_debug as _debug  # noqa: E402
 TEST_MODE = "--test" in sys.argv
 
 from otrv4plus_tty import IS_TERMUX, TERMINAL_HEIGHT, TERMINAL_WIDTH  # noqa: E402,F401
@@ -1524,11 +1525,16 @@ _TTY_FIELDS = {
 }
 
 
+#: The debug switches' old names, read from otrv4plus_debug.FLAGS.
+_FLAG_FIELDS = {"DEBUG_MODE": "debug", "SMP_DEBUG": "smp"}
+
+
 def __getattr__(name):
-    field = _TTY_FIELDS.get(name)
-    if field is None:
-        raise AttributeError("module %r has no attribute %r" % (__name__, name))
-    return getattr(_tty.TTY, field)
+    if name in _TTY_FIELDS:
+        return getattr(_tty.TTY, _TTY_FIELDS[name])
+    if name in _FLAG_FIELDS:
+        return getattr(_debug.FLAGS, _FLAG_FIELDS[name])
+    raise AttributeError("module %r has no attribute %r" % (__name__, name))
 
 
 @dataclass
@@ -1779,7 +1785,7 @@ class OTRTracer:
     """
 
     def __init__(self, enabled: bool = True, logger: Optional[OTRLogger] = None):
-        self.enabled = enabled or DEBUG_MODE
+        self.enabled = enabled or _debug.FLAGS.debug
         self.logger = logger
         self.peer_states: Dict[str, Dict[str, Any]] = {}
         self.lock = threading.RLock()
@@ -1840,7 +1846,7 @@ class OTRTracer:
 
             if self._emit_cb:
                 self._emit_cb(colored_msg)
-                if details and DEBUG_MODE:
+                if details and _debug.FLAGS.debug:
                     for k, v in details.items():
                         if k not in ("secret", "key", "nonce", "private", "password"):
                             self._emit_cb(f"  {k }: {v }")
@@ -1944,7 +1950,7 @@ class SecureMemory:
 
     def _log_mlock_failure(self, reason: str):
         """Log mlock failure without exposing sensitive info"""
-        if DEBUG_MODE:
+        if _debug.FLAGS.debug:
             print(f"[SecureMemory] Warning: {reason } - memory not locked")
 
     def zeroize(self):
@@ -1978,14 +1984,14 @@ class SecureMemory:
                     if hasattr(self._libc, "munlock"):
                         self._libc.munlock(buf_addr, buf_size)
                 except (OSError, AttributeError, Exception) as e:
-                    if DEBUG_MODE:
+                    if _debug.FLAGS.debug:
                         print("[SecureMemory] munlock failed")
                 self._locked = False
 
             self._buffer = None
 
         except Exception as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print("[SecureMemory] zeroize error")
             raise
         finally:
@@ -2145,7 +2151,7 @@ class ClientProfile:
         self.identity_pub_bytes = bytes(self.identity_key.public_bytes())
         self.prekey_pub_bytes = bytes(self.prekey.public_bytes())
 
-        if DEBUG_MODE:
+        if _debug.FLAGS.debug:
             import sys as _sys
 
             _sys.stderr.write(
@@ -2226,7 +2232,7 @@ class ClientProfile:
                     f"ClientProfile.encode() produced {len (result )} bytes, "
                     f"expected {expected }. OTRConstants key-size mismatch."
                 )
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print(f"[ClientProfile] encode() → {len (result )} bytes ✅ (🦀 Rust handle)")
             return result
         except (ValueError, TypeError, AttributeError) as e:
@@ -2343,7 +2349,7 @@ class ClientProfile:
             profile.identity_pub_bytes = identity_pub_bytes
             profile.prekey_pub_bytes = prekey_pub_bytes
 
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print(
                     f"[ClientProfile] ✅ Strict decode OK - sig verified, expires {time .ctime (expires )}"
                 )
@@ -2381,7 +2387,7 @@ class ClientProfile:
             groups = [hex_str[i : i + 8] for i in range(0, 128, 8)]
             return " ".join(groups)
         except (AttributeError, TypeError, ValueError) as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print("[ClientProfile] Error getting fingerprint")
             return ""
         except Exception:
@@ -2395,7 +2401,7 @@ class ClientProfile:
                 return False
             return hmac.compare_digest(actual.encode("utf-8"), fingerprint.encode("utf-8"))
         except (TypeError, AttributeError, ValueError) as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print("[ClientProfile] Fingerprint verification failed")
             return False
         except Exception:
@@ -2416,7 +2422,7 @@ class ClientProfile:
             fp_bytes = hashlib.sha3_512(prekey_pub).digest()
             return fp_bytes.hex().upper()
         except (AttributeError, TypeError, ValueError) as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print("[ClientProfile] Error getting prekey fingerprint")
             return ""
         except Exception:
@@ -2434,7 +2440,7 @@ class ClientProfile:
             self.expires = self.created + self.VALIDITY_SECONDS
             self.signature = None
         except Exception as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print(f"[ClientProfile] Renew failed: {e }")
 
 
@@ -4095,7 +4101,7 @@ class TrustDatabase:
                 os.chmod(_tmp_path2, 0o600)
                 os.replace(_tmp_path2, self.db_path)
             except (IOError, OSError, PermissionError) as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"[TrustDatabase] Error saving: {e }")
                 if _tmp_path2:
                     try:
@@ -4103,7 +4109,7 @@ class TrustDatabase:
                     except Exception:
                         pass
             except Exception as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"[TrustDatabase] Unexpected error saving: {e }")
                 try:
                     os.unlink(f.name)
@@ -4289,11 +4295,11 @@ class TrustDatabase:
                     return True
                 return False
             except (KeyError, AttributeError) as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"[TrustDatabase] Error removing trust: {e }")
                 return False
             except Exception as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"[TrustDatabase] Unexpected error removing trust: {e }")
                 return False
 
@@ -5495,7 +5501,7 @@ class SessionManager:
                 self.pending_dakes[peer] = dake
                 return dake1
             except Exception as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"Failed to start session: {e }")
                 return None
         finally:
@@ -5523,7 +5529,7 @@ class SessionManager:
                     self.pending_dakes[peer] = dake
                     return dake2
             except Exception as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"Failed to handle DAKE1: {e }")
             return None
         finally:
@@ -5550,7 +5556,7 @@ class SessionManager:
                     session = EnhancedOTRSession(
                         peer=peer,
                         is_initiator=True,
-                        tracer=OTRTracer(enabled=DEBUG_MODE),
+                        tracer=OTRTracer(enabled=_debug.FLAGS.debug),
                         logger=self.logger,
                     )
                     if getattr(self, "smp_notify_factory", None):
@@ -5571,7 +5577,7 @@ class SessionManager:
 
                     return dake3
             except Exception as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"Failed to handle DAKE2: {e }")
                 del self.pending_dakes[peer]
             return None
@@ -5597,7 +5603,7 @@ class SessionManager:
                     session = EnhancedOTRSession(
                         peer=peer,
                         is_initiator=False,
-                        tracer=OTRTracer(enabled=DEBUG_MODE),
+                        tracer=OTRTracer(enabled=_debug.FLAGS.debug),
                         logger=self.logger,
                     )
                     if getattr(self, "smp_notify_factory", None):
@@ -5617,7 +5623,7 @@ class SessionManager:
                     del self.pending_dakes[peer]
                     return True
             except Exception as e:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"Failed to handle DAKE3: {e }")
                 del self.pending_dakes[peer]
             return False
@@ -5651,7 +5657,7 @@ class SessionManager:
             session = self.sessions[peer]
             return session.encrypt_message(plaintext)
         except Exception as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print(f"Encryption failed: {e }")
             return None
 
@@ -5753,7 +5759,7 @@ class SessionManager:
                 return session.process_smp_message(smp_tlv)
 
         except Exception as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print("SMP message processing failed")
 
         return None
@@ -5867,7 +5873,7 @@ class SessionManager:
             if hasattr(session, "process_auto_smp_response"):
                 return session.process_auto_smp_response(smp_tlv)
         except Exception as e:
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print("Auto-SMP processing failed")
         return None
 
@@ -7222,7 +7228,7 @@ class OTRFragmentBuffer:
             state["parts"][idx] = chunk
             state["last_ts"] = now
 
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 _c = getattr(__import__("builtins"), "_active_client", None)
                 if _c:
                     _c._emit("debug", "[OTRFragment] fragment received")
@@ -7248,7 +7254,7 @@ class OTRFragmentBuffer:
             combined = "".join(payload_parts)
             self._buffers.pop(key, None)
 
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 _c = getattr(__import__("builtins"), "_active_client", None)
                 if _c:
                     _c._emit(
@@ -7292,7 +7298,7 @@ class OTRFragmentBuffer:
         if len(self._buffers) > self.max_total_senders:
             oldest = sorted(self._buffers.items(), key=lambda x: x[1].get("first_ts", 0))
             for key, _ in oldest[: len(self._buffers) - self.max_total_senders]:
-                if DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     _emit_line(
                         f"[fragment] buffer evict: too many senders, dropping {key [0 ]}/{key [1 ]}"
                     )
@@ -7309,7 +7315,7 @@ class OTRFragmentBuffer:
             if state is None:
                 continue
             got = len(state.get("parts", {}))
-            if DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 _emit_line(
                     f"[fragment] timeout: {sender_nick } {got }/{frag_total } frags - type /otr {sender_nick } to retry"
                 )
@@ -7407,7 +7413,7 @@ class OTRMessageFragmenter:
             frag = f"?OTRv4|{stag_hex }|{rtag_hex }|{k_str }|{n_str }|{chunk }."
             fragments.append(frag)
 
-        if DEBUG_MODE:
+        if _debug.FLAGS.debug:
             _c = getattr(__import__("builtins"), "_active_client", None)
             _msg = f"[OTRMessageFragmenter] {len (fragments )} frags from {len (payload )} chars"
             if _c:
@@ -7482,7 +7488,7 @@ class DebugLogger:
 
     def __init__(self, debug_panel: Optional[DebugPanel] = None):
         self.debug_panel = debug_panel
-        self.enabled = DEBUG_MODE
+        self.enabled = _debug.FLAGS.debug
 
     def log(self, component: str, method: str, message: str, data: Optional[dict] = None):
         """Log debug message from any component"""

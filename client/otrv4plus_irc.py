@@ -10,7 +10,7 @@ none of this any more.
 
 Values the engine changes while it runs (debug flags, the prompt and
 scrollback state, Termux detection) are read and written as attributes of
-the engine module, `_engine.DEBUG_MODE`, so both sides see one value.
+the engine module, `_debug.FLAGS.debug`, so both sides see one value.
 """
 import atexit
 import concurrent.futures
@@ -33,6 +33,7 @@ import time
 from typing import Callable, Dict, List, Optional, Set
 
 import otrv4plus as _engine
+import otrv4plus_debug as _debug
 import otrv4plus_tty as _tty
 from otrv4plus import (  # noqa: F401
     EnhancedSessionManager, EventHandler, I2PSAMConnection, IRCConstants,
@@ -183,11 +184,11 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
         self.headless = False
         self.test_runner = None
 
-        self.debug_panel_name = "debug" if _engine.DEBUG_MODE else None
-        if _engine.DEBUG_MODE:
+        self.debug_panel_name = "debug" if _debug.FLAGS.debug else None
+        if _debug.FLAGS.debug:
             self.panel_manager.add_panel("debug", "debug")
 
-        self.tracer = OTRTracer(enabled=_engine.DEBUG_MODE, logger=self.logger)
+        self.tracer = OTRTracer(enabled=_debug.FLAGS.debug, logger=self.logger)
         self.tracer.set_emit_callback(lambda msg: self._emit("debug", msg))
         self.session_manager.tracer = self.tracer
 
@@ -217,7 +218,7 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
 
     def debug(self, message: str, data: Optional[dict] = None):
         """Route debug output to the debug panel only - never to raw stdout."""
-        if not _engine.DEBUG_MODE:
+        if not _debug.FLAGS.debug:
             return
         msg = message
         if data:
@@ -236,7 +237,7 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
 
         Termux scrollback is the history - we never clear the screen.
         """
-        if panel == "debug" and not _engine.DEBUG_MODE:
+        if panel == "debug" and not _debug.FLAGS.debug:
             return
 
         if panel not in self.panel_manager.panels:
@@ -2774,11 +2775,11 @@ Type /help mode for IRC user modes (+g, +i, etc).
 
     if "--debug" in sys.argv or "-d" in sys.argv:
 
-        _engine.DEBUG_MODE = True
+        _debug.FLAGS.debug = True
 
     if "--smp-debug" in sys.argv:
 
-        _engine.SMP_DEBUG = True
+        _debug.FLAGS.smp = True
 
     for i, arg in enumerate(sys.argv):
         if arg in ("--server", "-s") and i + 1 < len(sys.argv):
@@ -2861,10 +2862,10 @@ def _remove_legacy_files():
         try:
             if os.path.exists(_orphan):
                 _secure_file_destroy(_orphan)
-                if _engine.DEBUG_MODE:
+                if _debug.FLAGS.debug:
                     print(f"[startup] overwrote and removed legacy file: {_orphan }")
         except Exception as _e:
-            if _engine.DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print(f"[startup] could not destroy legacy file {_orphan }: {_e }")
 
     _legacy_keys_dir = os.path.expanduser("~/.otrv4_keys")
@@ -2882,10 +2883,10 @@ def _remove_legacy_files():
                 _shutil.rmtree(_legacy_keys_dir, ignore_errors=True)
             except Exception:
                 pass
-            if _engine.DEBUG_MODE:
+            if _debug.FLAGS.debug:
                 print(f"[startup] removed legacy directory: {_legacy_keys_dir }")
     except Exception as _e:
-        if _engine.DEBUG_MODE:
+        if _debug.FLAGS.debug:
             print(f"[startup] could not remove legacy keys dir: {_e }")
 
 
@@ -2916,7 +2917,7 @@ def _print_banner(config):
     safe_print(f"Auth    : {colorize (_auth_disp ,'cyan')}")
     safe_print(f"Channel : {colorize (config .channel ,'cyan')}")
     safe_print(
-        f"Debug   : {colorize ('ON'if _engine.DEBUG_MODE else 'OFF','green'if _engine.DEBUG_MODE else 'dim')}"
+        f"Debug   : {colorize ('ON'if _debug.FLAGS.debug else 'OFF','green'if _debug.FLAGS.debug else 'dim')}"
     )
     _rt_label = "🦀 Rust (zeroize-on-drop)" if RUST_RATCHET_AVAILABLE else "❌ NOT INSTALLED"
     safe_print(f"Ratchet : {colorize (_rt_label ,'green'if RUST_RATCHET_AVAILABLE else 'red')}")
@@ -3186,7 +3187,7 @@ def main():
     config.test_mode = TEST_MODE
     config.i2p_proxy = (NetworkConstants.I2P_PROXY_HOST, NetworkConstants.I2P_PROXY_PORT)
     config.tor_proxy = (NetworkConstants.TOR_PROXY_HOST, NetworkConstants.TOR_PROXY_PORT)
-    config.log_level = "DEBUG" if _engine.DEBUG_MODE else "INFO"
+    config.log_level = "DEBUG" if _debug.FLAGS.debug else "INFO"
     config.dake_timeout = 120.0
     config.fragment_timeout = 120.0
     config.heartbeat_interval = 60
