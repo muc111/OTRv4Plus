@@ -17,6 +17,8 @@ import re
 import sys
 import time
 
+from otrv4plus_sanitise import sanitise as _sanitise_text
+
 #: The engine's colour function; the client sets it at import (the engine is
 #: not imported here). Plain text until then.
 _colorize = lambda s, c: s  # noqa: E731
@@ -33,16 +35,9 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 
 
 def _sanitise(text, max_len: int = 1024) -> str:
-    """Strip ANSI/OSC/CSI escape sequences and control characters from
-    untrusted data (peer JIDs, plaintext bodies, decrypted OTR payloads)
-    before writing to the terminal."""
-    text = str(text)
-    text = re.sub(r"\x1b[P\]X^_][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
-    text = re.sub(r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]", "", text)
-    text = re.sub(r"\x1b[\x20-\x2f][\x30-\x7e]", "", text)
-    text = re.sub(r"\x1b.", "", text, flags=re.DOTALL)
-    text = re.sub(r"[\x00-\x08\x0a-\x1f\x7f\x80-\x9f]", "", text)
-    return text[:max_len]
+    """Untrusted text made safe to print (otrv4plus_sanitise), with this
+    client's longer default cap."""
+    return _sanitise_text(text, max_len)
 
 
 # --------------------------------------------------------------------------

@@ -1437,32 +1437,9 @@ except Exception:
     TERMINAL_HEIGHT = 24
 
 
-def _sanitise(text: str, max_len: int = 512) -> str:
-    """Strip ANSI escape sequences and non-printable control characters from
-    untrusted IRC data (nicks, topics, messages, reasons) before display.
-    Prevents terminal escape injection and OSC title-hijack from malicious
-    servers or peers.
-
-    Strips (in order):
-      1. OSC/DCS/PM/APC sequences  \x1b[P]X^_] ... (BEL or ST terminator)
-      2. CSI sequences              \x1b[ ... final-byte
-      3. Two-char Fe escapes        \x1b <any single char>
-      4. mIRC/IRC colour codes      \x03 [fg[,bg]] … \x03
-      5. Remaining C0/C1 controls   (\x00-\x1f, \x7f, \x80-\x9f)
-    """
-
-    text = re.sub(r"\x1b[P\]X\^_][^\x07\x1b]*(?:\x07|\x1b\\)", "", text)
-
-    text = re.sub(r"\x1b\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]", "", text)
-
-    text = re.sub(r"\x1b[\x20-\x2f][\x30-\x7e]", "", text)
-
-    text = re.sub(r"\x1b.", "", text, flags=re.DOTALL)
-
-    text = re.sub(r"\x03(?:\d{1,2}(?:,\d{1,2})?)?", "", text)
-
-    text = re.sub(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f\x80-\x9f]", "", text)
-    return text[:max_len]
+# Untrusted text on the terminal: one implementation, shared with the XMPP
+# client (otrv4plus_sanitise says what it removes and why).
+from otrv4plus_sanitise import sanitise as _sanitise  # noqa: E402
 
 
 def _redact_secret(text: str, secret) -> str:

@@ -60,6 +60,7 @@ on:
       - "client/otrv4+.py"
       - "client/otrv4plus_address.py"
       - "client/otrv4plus_i2p.py"
+      - "client/otrv4plus_sanitise.py"
       - "client/otrv4plus_admin.py"
       - "client/otrv4plus_alias.py"
       - "client/otrv4plus_audio.py"
