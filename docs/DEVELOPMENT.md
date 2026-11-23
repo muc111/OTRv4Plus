@@ -24,14 +24,33 @@ OTRv4+ has two layers:
    `ZeroizeOnDrop` and is never exposed to Python as `bytes`.
 
 2. **Python orchestration (`client/`)** — the engine, `otrv4+.py` (OTR
-   sessions, the DAKE and SMP state machines, fragment reassembly, the
-   terminal UI widgets), and the two terminal clients built on it:
-   `otrv4plus_irc.py` (IRC; `python otrv4+.py` starts it) and
+   sessions, the DAKE and SMP adapters over the Rust core, trust storage),
+   the modules split out of it (below), and the two terminal clients built
+   on it: `otrv4plus_irc.py` (IRC; `python otrv4+.py` starts it) and
    `otrv4plus_xmpp.py` with the `otrv4plus_xmpp_*.py` modules its class is
    mixed from. None of it holds private key material; every crypto operation
    is delegated to the Rust core.
 
-The Rust crate is roughly 3,500–4,000 lines across:
+   `otrv4+.py` re-exports every name it used to define, so
+   `otrv4+.I2PSAMConnection` and the like still work. A test that patches
+   one of these patches the module that owns it (`otr._i2p`, `otr._panels`),
+   and terminal state is changed on `otrv4plus_tty.TTY`, never through the
+   old module-level names.
+
+   | Module | What it holds |
+   |---|---|
+   | `otrv4plus_states.py` | Session and DAKE states, UI constants, colours |
+   | `otrv4plus_tlv.py` | The TLV record |
+   | `otrv4plus_wire.py` | The data message on the wire, instance tags, TLV handlers |
+   | `otrv4plus_session_smp.py`, `otrv4plus_manager_dake.py` | The SMP and DAKE mixins of the session and its manager |
+   | `otrv4plus_i2p.py` | I2P short names and the SAM v3.1 client |
+   | `otrv4plus_tty.py` | The raw-mode terminal: input line, prompt, scrollback; its state is one object, `TTY`, and the hooks a client registers on it |
+   | `otrv4plus_panels.py` | The full-screen UI: tabs, panels, pager, the debug panel |
+   | `otrv4plus_sanitise.py` | The one filter for untrusted text before it reaches a terminal |
+   | `otrv4plus_irc_fragment.py` | The IRC fragment format (`?OTRv4|...`) |
+   | `otrv4plus_config.py`, `otrv4plus_logging.py`, `otrv4plus_debug.py` | Settings, the log and protocol trace, the debug switches (`FLAGS`) |
+
+The Rust core (`Rust/src`) is about 18,000 lines, including tests, across:
 
 | File | Responsibility |
 |---|---|
@@ -46,6 +65,7 @@ The Rust crate is roughly 3,500–4,000 lines across:
 | `kdf.rs` | SHAKE-256 KDF, HMAC-SHA3-512, fingerprints |
 | `key_handles.rs` | Opaque Ed448 / X448 key handles |
 | `secure_mem.rs` | `SecretBytes` / `SecretVec`, constant-time compare |
+| `os_random.rs` | The only source of secret randomness: the OS CSPRNG |
 | `header.rs`, `error.rs`, `aead.rs` | Wire headers, error types |
 | `test_vectors.rs` | RFC 8032 / 7748 / FIPS KAT build-time gates |
 

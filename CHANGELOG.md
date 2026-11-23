@@ -34,9 +34,21 @@ this one builds on it. Dependency upgrades; nothing on screen changes.
 - **Android test libraries:** kotlinx-coroutines-test 1.11.0, Robolectric
   4.18.1 (tests only, not in the APK). The APK's build-only `setuptools`
   is 84.2.1.
-- **Terminal client code split up:** the I2P naming and SAM connection
-  code is its own module (`otrv4plus_i2p.py`), out of `otrv4+.py`.
-  Nothing it does changes.
+- **Terminal clients: PgUp no longer freezes the screen.** Page Up and
+  Page Down ran while holding the lock the screen redraw also takes, so in
+  the full-screen view, and in paused line mode, the terminal hung. In the
+  IRC client's full-screen view (`/tui`) they also did nothing before
+  that: the view registered its scrolling where the keyboard never looked.
+- **Terminal clients: Backspace in the middle of a hidden passphrase**
+  showed the rest of it in clear. It shows dots, like every other redraw.
+- **Terminal client code split up.** `otrv4+.py` goes from 9,555 lines to
+  about 6,300: I2P, the terminal input line, the full-screen panels, the
+  IRC fragment format, the data message's wire format, settings, logging
+  and the debug switches are each their own module
+  (`docs/DEVELOPMENT.md` lists them). The terminal's state is one object
+  instead of fifteen globals, and nothing is passed between modules
+  through Python's `builtins` any more. Nothing the clients do changes,
+  apart from the fixes above.
 - **Not changed, on purpose:** the Opus codec (a codec update is reviewed
   on its own), `maturin` (the phone build depends on its exact behaviour),
   and the desktop app's Kotlin (on hold, see rc.207). AndroidX and the
