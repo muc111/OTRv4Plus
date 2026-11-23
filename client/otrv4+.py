@@ -1423,18 +1423,7 @@ DEBUG_MODE = "--debug" in sys.argv or "-d" in sys.argv
 SMP_DEBUG = DEBUG_MODE or "--smp-debug" in sys.argv
 TEST_MODE = "--test" in sys.argv
 
-global IS_TERMUX
-IS_TERMUX = "ANDROID_ROOT" in os.environ or "TERMUX_VERSION" in os.environ
-
-try:
-    terminal_size = shutil.get_terminal_size(fallback=(80, 24))
-    TERMINAL_WIDTH = terminal_size.columns
-    TERMINAL_HEIGHT = terminal_size.lines
-    if IS_TERMUX and TERMINAL_WIDTH < 40:
-        TERMINAL_WIDTH = 80
-except Exception:
-    TERMINAL_WIDTH = 80
-    TERMINAL_HEIGHT = 24
+from otrv4plus_tty import IS_TERMUX, TERMINAL_HEIGHT, TERMINAL_WIDTH  # noqa: E402,F401
 
 
 # Untrusted text on the terminal: one implementation, shared with the XMPP
@@ -1511,521 +1500,35 @@ def colorize_username(username: str) -> str:
     return colorize(username, color)
 
 
-_print_lock = threading.Lock()
-
-_current_prompt: str = ""
-
-_input_buffer: List[str] = []
-
-#: Render the input line as dots instead of characters.
-#:
-#: The SMP passphrase is a shared secret and was being echoed like any
-#: command: onto the terminal, into scrollback, and into any `script` capture
-#: of the session. It reached a bug report that way. Set while a passphrase is
-#: being typed; every redraw path below asks _display_buffer() rather than
-#: joining the buffer itself, so a new redraw site cannot quietly leak it.
-_mask_input: bool = False
-
-
-def set_input_mask(on: bool) -> None:
-    """Hide or show what is typed on the input line."""
-    global _mask_input
-    _mask_input = bool(on)
-
-
-def _display_buffer() -> str:
-    """What the input line should SHOW. Never what it should submit."""
-    if _mask_input:
-        return "\u2022" * len(_input_buffer)
-    return "".join(_input_buffer)
-
-
-_input_pos: int = 0
-
-_raw_mode_active = False
-_stdin_fd: int = -1
-_orig_termios = None
-
-
-def _setup_raw_mode() -> bool:
-    """Disable canonical mode and echo on stdin.  Returns True on success."""
-    global _raw_mode_active, _stdin_fd, _orig_termios
-    if not sys.stdin.isatty():
-        return False
-    try:
-        import termios as _tm
-
-        _stdin_fd = sys.stdin.fileno()
-        _orig_termios = _tm.tcgetattr(_stdin_fd)
-        new = _tm.tcgetattr(_stdin_fd)
-
-        new[3] &= ~(_tm.ECHO | _tm.ICANON | _tm.ECHOE | _tm.ECHOK | _tm.ECHONL)
-
-        new[6][_tm.VMIN] = 1
-        new[6][_tm.VTIME] = 0
-        _tm.tcsetattr(_stdin_fd, _tm.TCSADRAIN, new)
-        _raw_mode_active = True
-        return True
-    except Exception:
-        return False
-
-
-def _restore_terminal() -> None:
-    """Restore the original terminal settings saved by _setup_raw_mode()."""
-    global _raw_mode_active
-    if _raw_mode_active and _stdin_fd >= 0 and _orig_termios is not None:
-        try:
-            import termios as _tm
-
-            _tm.tcsetattr(_stdin_fd, _tm.TCSADRAIN, _orig_termios)
-        except Exception:
-            pass
-        _raw_mode_active = False
-
-
-def _read_one_char() -> Optional[str]:
-    """Read one character from stdin (handles UTF-8 multi-byte).
-
-    Returns the character, or None on EOF.
-    Uses os.read() to bypass Python's buffered I/O.
-    """
-    b = os.read(_stdin_fd, 1)
-    if not b:
-        return None
-    byte = b[0]
-    if byte < 0x80:
-        return chr(byte)
-    if byte < 0xC0:
-        return None
-    remaining = 1 if byte < 0xE0 else 2 if byte < 0xF0 else 3
-    data = b
-    for _ in range(remaining):
-        b2 = os.read(_stdin_fd, 1)
-        if not b2:
-            break
-        data += b2
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-
-
-def _consume_escape_seq() -> None:
-    """Read ANSI escape sequence; handle arrow/home/end keys."""
-    global _input_pos, _scroll_locked, _scroll_pos
-    try:
-        r, _, _ = select.select([_stdin_fd], [], [], 0.05)
-        if not r:
-            return
-        b2 = os.read(_stdin_fd, 1)
-        if not b2:
-            return
-        if b2 in (b"[", b"O"):
-            seq = b""
-            while True:
-                r2, _, _ = select.select([_stdin_fd], [], [], 0.05)
-                if not r2:
-                    break
-                b3 = os.read(_stdin_fd, 1)
-                if not b3:
-                    break
-                seq += b3
-                if 0x40 <= b3[0] <= 0x7E:
-                    break
-            with _print_lock:
-                n = len(_input_buffer)
-                if seq == b"D":
-                    if _input_pos > 0:
-                        _input_pos -= 1
-                        sys.stdout.write("\x1b[D")
-                        sys.stdout.flush()
-                elif seq == b"C":
-                    if _input_pos < n:
-                        _input_pos += 1
-                        sys.stdout.write("\x1b[C")
-                        sys.stdout.flush()
-                elif seq in (b"H", b"1~"):
-                    if _input_pos > 0:
-                        sys.stdout.write(f"\x1b[{_input_pos }D")
-                        _input_pos = 0
-                        sys.stdout.flush()
-                elif seq in (b"F", b"4~"):
-                    if _input_pos < n:
-                        sys.stdout.write(f"\x1b[{n -_input_pos }C")
-                        _input_pos = n
-                        sys.stdout.flush()
-                elif seq == b"5~":  # PgUp
-                    _page = max(1, shutil.get_terminal_size(fallback=(80, 20)).lines - 3)
-                    if _TUI_SCROLL_CALLBACK is not None:
-                        _TUI_SCROLL_CALLBACK("pgup", _page)
-                    else:
-                        if not _scroll_locked:
-                            _scroll_locked = True
-                        _scroll_pos = min(_scroll_pos + _page, len(_scroll_history))
-                        _show_scrollback(_scroll_pos, _page)
-                elif seq == b"6~":  # PgDn
-                    _page = max(1, shutil.get_terminal_size(fallback=(80, 20)).lines - 3)
-                    if _TUI_SCROLL_CALLBACK is not None:
-                        _TUI_SCROLL_CALLBACK("pgdn", _page)
-                    else:
-                        _scroll_pos = max(0, _scroll_pos - _page)
-                        if _scroll_pos == 0:
-                            _scroll_locked = False
-                            _scroll_unlock()
-                        else:
-                            _show_scrollback(_scroll_pos, _page)
-    except Exception:
-        pass
-
-
-_EOF_SENTINEL = object()
-
-
-def _handle_input_char(ch: str):
-    """Process one keystroke, updating _input_buffer and echoing to stdout."""
-    global _input_pos, _scroll_locked, _scroll_pos
-
-    if ch == "\r" or ch == "\n":
-        with _print_lock:
-            line = "".join(_input_buffer)
-            _input_buffer.clear()
-            _input_pos = 0
-            _ansi_strip = re.compile(r"\x1b\[[0-9;]*m")
-            _vis_prompt = _ansi_strip.sub("", _current_prompt)
-            _total = len(_vis_prompt) + len(line)
-            _tw = TERMINAL_WIDTH if TERMINAL_WIDTH > 0 else 80
-            _lines = max(1, (_total + _tw - 1) // _tw)
-            if _lines > 1:
-                sys.stdout.write(f"\033[{_lines -1 }A")
-            sys.stdout.write("\r")
-            for _ in range(_lines):
-                sys.stdout.write("\033[2K\n")
-            sys.stdout.write(f"\033[{_lines }A\r")
-            sys.stdout.flush()
-        return line
-
-    if ch == "\x04":
-        with _print_lock:
-            if not _input_buffer:
-                return _EOF_SENTINEL
-        return None
-
-    if ch == "\x15":
-        with _print_lock:
-            _input_buffer.clear()
-            _input_pos = 0
-            sys.stdout.write("\r\033[2K" + _current_prompt)
-            sys.stdout.flush()
-        return None
-
-    if ch == "\x17":
-        with _print_lock:
-            while _input_buffer and _input_buffer[-1] == " ":
-                _input_buffer.pop()
-            while _input_buffer and _input_buffer[-1] != " ":
-                _input_buffer.pop()
-            _input_pos = len(_input_buffer)
-            sys.stdout.write("\r\033[2K" + _current_prompt + _display_buffer())
-            sys.stdout.flush()
-        return None
-
-    if ch in ("\x7f", "\x08"):
-        with _print_lock:
-            if _input_buffer and _input_pos > 0:
-                del _input_buffer[_input_pos - 1]
-                _input_pos -= 1
-                after = "".join(_input_buffer[_input_pos:])
-                sys.stdout.write(f"\x1b[D{after } \x1b[{len (after )+1 }D")
-                sys.stdout.flush()
-        return None
-    # Ctrl+B / Ctrl+F — TUI panel scroll (like `less`; work on Termux software keyboard)
-    if ch in ("\x02", "\x06"):  # Ctrl+B = scroll up, Ctrl+F = scroll down
-        if _TUI_SCROLL_CALLBACK is not None:
-            _page = max(1, shutil.get_terminal_size(fallback=(80, 20)).lines - 3)
-            _TUI_SCROLL_CALLBACK("pgup" if ch == "\x02" else "pgdn", _page)
-            return None
-    if ch in ("\x13", "\x10"):  # Ctrl+S or Ctrl+P - scroll lock toggle (non-TUI)
-        if _scroll_locked:
-            _scroll_pos = 0
-            _scroll_unlock()
-        else:
-            _scroll_locked = True
-            with _print_lock:
-                sys.stdout.write("\r\033[2K")
-                sys.stdout.write(
-                    "\x1b[33m[PAUSED - PgUp/PgDn to scroll, Ctrl+P or Ctrl+S to resume]\x1b[0m\n"
-                )
-                sys.stdout.flush()
-        return None
-
-    if ch == "\x1b":
-        _consume_escape_seq()
-        return None
-
-    if ch == "\t":
-        return None
-
-    if ch >= " ":
-        with _print_lock:
-            _input_buffer.insert(_input_pos, ch)
-            _input_pos += 1
-            _shown = "\u2022" if _mask_input else ch
-            if _input_pos == len(_input_buffer):
-                sys.stdout.write(_shown)
-            else:
-                _after_raw = "".join(_input_buffer[_input_pos:])
-                after = ("\u2022" * len(_after_raw)) if _mask_input else _after_raw
-                sys.stdout.write(f"{_shown }{after }\x1b[{len (after )}D")
-            sys.stdout.flush()
-        try:
-            _c = getattr(__import__("builtins"), "_active_client", None)
-            if _c:
-                _ap = _c.panel_manager.active_panel
-                _pp = _c.panel_manager.panels.get(_ap)
-                if _pp and _pp.panel_type == "private":
-                    _c.send_raw(f"@+typing=active TAGMSG {_ap }")
-        except Exception:
-            pass
-        return None
-
-    return None
-
-
-def _set_prompt(prompt: str) -> None:
-    """Write a prompt string, preserving the user's typed text."""
-    global _current_prompt
-    with _print_lock:
-        buf = _display_buffer()
-        if _current_prompt or buf:
-            sys.stdout.write("\x1b[1G\x1b[2K")
-        _current_prompt = prompt
-        sys.stdout.write(prompt + buf)
-        sys.stdout.flush()
-
-
-_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-
-
-def _visible_len(text: str) -> int:
-    """Return the visible character count, ignoring ANSI colour codes."""
-    return len(_ANSI_RE.sub("", text))
-
-
-def _truncate_visible(text: str, width: int) -> str:
-    """Truncate to *width* visible columns, keeping ANSI codes intact.
-
-    Truncating by len() would count the escape bytes as visible characters,
-    so a coloured line gets cut far too early -- and, worse, loses its reset
-    sequence, bleeding the colour into everything printed afterwards.  The
-    reset is re-appended here for that reason.
-    """
-    if width <= 0 or _visible_len(text) <= width:
-        return text
-    out = []
-    seen = 0
-    i = 0
-    while i < len(text) and seen < width:
-        m = _ANSI_RE.match(text, i)
-        if m:
-            out.append(m.group(0))
-            i = m.end()
-            continue
-        out.append(text[i])
-        seen += 1
-        i += 1
-    return "".join(out) + UIConstants.COLORS["reset"]
-
-
-def _word_wrap(text: str, width: int) -> str:
-    """Word-wrap text at *width* visible columns, preserving ANSI codes.
-
-    The first line uses the full width.  Continuation lines are indented
-    to align with the message body (detected by finding the first '] '
-    in the visible text - the end of the timestamp+tag prefix).
-
-    If the text fits in one line, it is returned unchanged.
-    """
-    if width < 20 or _visible_len(text) <= width:
-        return text
-
-    vis = _ANSI_RE.sub("", text)
-    _bracket_end = vis.find("] ")
-    if _bracket_end != -1 and _bracket_end < width // 2:
-        indent = _bracket_end + 2
-    else:
-        indent = 4
-
-    indent_str = " " * indent
-
-    parts = _ANSI_RE.split(text)
-    codes = _ANSI_RE.findall(text)
-
-    tokens = []
-    for i, part in enumerate(parts):
-        if part:
-            tokens.append((part, False))
-        if i < len(codes):
-            tokens.append((codes[i], True))
-
-    lines = []
-    current_line = ""
-    current_vis = 0
-    first_line = True
-
-    for token_str, is_ansi in tokens:
-        if is_ansi:
-            current_line += token_str
-            continue
-
-        words = token_str.split(" ")
-        for wi, word in enumerate(words):
-
-            if wi > 0:
-
-                space_fits = current_vis + 1 + len(word) <= width
-                if current_vis > 0 and not space_fits and len(word) > 0:
-
-                    lines.append(current_line)
-                    current_line = indent_str + word if not first_line else indent_str + word
-                    first_line = False
-                    current_vis = indent + len(word)
-                else:
-                    current_line += " " + word
-                    current_vis += 1 + len(word)
-            else:
-
-                if current_vis + len(word) > width and current_vis > 0:
-                    lines.append(current_line)
-                    current_line = indent_str + word
-                    first_line = False
-                    current_vis = indent + len(word)
-                else:
-                    current_line += word
-                    current_vis += len(word)
-
-    if current_line:
-        lines.append(current_line)
-
-    return "\n".join(lines)
-
-
-_scroll_locked = False
-_scroll_buffer: deque = deque(maxlen=500)
-_scroll_pos: int = 0
-_scroll_history: list = []
-_TUI_SCROLL_CALLBACK = None  # set by TUI client; receives ("pgup"|"pgdn", page)
-
-
-def _emit_line(text: str) -> None:
-    """Print a message line from any thread, preserving user input.
-
-    Word-wraps at TERMINAL_WIDTH so words are never split mid-word.
-    Clears the current terminal line (prompt + typed text), writes the
-    message, then restores the prompt and the user's in-progress buffer
-    so their typing is never lost or corrupted.
-
-    When scroll lock is active, messages are buffered instead of printed.
-    """
-    global _scroll_locked
-    wrapped = _word_wrap(text, TERMINAL_WIDTH)
-
-    if _scroll_locked:
-        _scroll_buffer.append(wrapped)
-
-        with _print_lock:
-            buf = _display_buffer()
-            sys.stdout.write("\r\033[2K")
-            sys.stdout.write(
-                f"\033[33m[PAUSED - {len (_scroll_buffer )} buffered]\033[0m "
-                + _current_prompt
-                + buf
-            )
-            sys.stdout.flush()
-        return
-
-    try:
-        with _print_lock:
-            buf = _display_buffer()
-            sys.stdout.write("\r\x1b[2K")
-            sys.stdout.write(wrapped + "\n")
-            _scroll_history.append(wrapped)
-            if len(_scroll_history) > 500:
-                _scroll_history.pop(0)
-            if _current_prompt or buf:
-                sys.stdout.write(_current_prompt + buf)
-            sys.stdout.flush()
-    except (RuntimeError, ValueError, OSError):
-        pass
-
-
-def _show_scrollback(pos: int, page: int) -> None:
-    with _print_lock:
-        try:
-            rows = shutil.get_terminal_size(fallback=(80, 24)).lines
-            body_h = max(1, rows - 3)
-            total = len(_scroll_history)
-            end = min(total, max(0, total - pos + page))
-            start = max(0, end - body_h)
-            shown = _scroll_history[start:end]
-            sys.stdout.write("\033[2J\033[H")
-            for ln in shown:
-                sys.stdout.write(ln + "\n")
-            _pct = int(100 * end / max(1, total))
-            sys.stdout.write(
-                colorize(f"── SCROLL [{_pct }%] PgUp=back PgDn=fwd Ctrl+P/S=live ──", "yellow")
-                + "\n"
-            )
-            sys.stdout.write(_current_prompt + _display_buffer())
-            sys.stdout.flush()
-        except Exception:
-            pass
-
-
-def _scroll_unlock() -> None:
-    """Flush all buffered messages and resume live display."""
-    global _scroll_locked
-    _scroll_locked = False
-    with _print_lock:
-        sys.stdout.write("\r\033[2K")
-        while _scroll_buffer:
-            sys.stdout.write(_scroll_buffer.popleft() + "\n")
-        buf = _display_buffer()
-        if _current_prompt or buf:
-            sys.stdout.write(_current_prompt + buf)
-        sys.stdout.flush()
-
-
-_display_queue: deque = deque()
-
-
-def _flush_display_queue() -> None:
-    """Flush any queued messages to stdout (cooked-mode fallback only)."""
-    if not _display_queue:
-        return
-    with _print_lock:
-        buf = _display_buffer()
-        sys.stdout.write("\r\033[2K")
-        while _display_queue:
-            sys.stdout.write(_display_queue.popleft() + "\n")
-        if _current_prompt or buf:
-            sys.stdout.write(_current_prompt + buf)
-        sys.stdout.flush()
-
-
-def safe_print(*args, **kwargs):
-    """Thread-safe print with flush, preserving user input in raw mode."""
-    kwargs["flush"] = True
-    try:
-        with _print_lock:
-            buf = _display_buffer()
-            if (_current_prompt or buf) and _raw_mode_active:
-                sys.stdout.write("\x1b[1G\x1b[2K")
-            print(*args, **kwargs)
-            if (_current_prompt or buf) and _raw_mode_active:
-                sys.stdout.write(_current_prompt + buf)
-                sys.stdout.flush()
-    except (RuntimeError, ValueError, OSError):
-        pass
+# The raw-mode terminal (input line, prompt, scrollback) is otrv4plus_tty;
+# its state is one object, otrv4plus_tty.TTY.
+import otrv4plus_tty as _tty  # noqa: E402
+from otrv4plus_tty import (  # noqa: E402,F401  (re-exported for callers)
+    _ANSI_RE, _EOF_SENTINEL, _consume_escape_seq, _display_buffer, _emit_line,
+    _flush_display_queue, _handle_input_char, _read_one_char,
+    _restore_terminal, _scroll_unlock, _set_prompt, _setup_raw_mode,
+    _show_scrollback, _truncate_visible, _visible_len, _word_wrap,
+    safe_print, set_input_mask)
+
+#: The terminal state's old module-level names, still readable here
+#: (`otrv4+._mask_input`). Assign to `otrv4plus_tty.TTY` instead: a name
+#: assigned on this module would shadow the real value without changing it.
+_TTY_FIELDS = {
+    "_print_lock": "lock", "_current_prompt": "prompt",
+    "_input_buffer": "buffer", "_input_pos": "pos", "_mask_input": "masked",
+    "_raw_mode_active": "raw", "_stdin_fd": "fd",
+    "_orig_termios": "saved_termios", "_scroll_locked": "paused",
+    "_scroll_buffer": "held", "_scroll_pos": "scroll_pos",
+    "_scroll_history": "history", "_TUI_SCROLL_CALLBACK": "scroll_callback",
+    "_display_queue": "queue",
+}
+
+
+def __getattr__(name):
+    field = _TTY_FIELDS.get(name)
+    if field is None:
+        raise AttributeError("module %r has no attribute %r" % (__name__, name))
+    return getattr(_tty.TTY, field)
 
 
 @dataclass
@@ -5015,9 +4518,9 @@ class Pager:
                     _keys += "   [1-%d] /otr" % len(choices)
                 safe_print(colorize(_keys, "dim"), end="  ", flush=True)
                 try:
-                    if _raw_mode_active:
+                    if _tty.TTY.raw:
 
-                        b = os.read(_stdin_fd, 1)
+                        b = os.read(_tty.TTY.fd, 1)
                         ch = chr(b[0]).lower() if b else "q"
                         sys.stdout.write("\n")
                         sys.stdout.flush()
@@ -5042,15 +4545,14 @@ class Pager:
                 import select as _sel
 
                 while True:
-                    r2, _, _ = _sel.select([_stdin_fd], [], [], 0.05)
+                    r2, _, _ = _sel.select([_tty.TTY.fd], [], [], 0.05)
                     if not r2:
                         break
-                    os.read(_stdin_fd, 64)
+                    os.read(_tty.TTY.fd, 64)
             except Exception:
                 pass
-            global _input_pos
-            _input_buffer.clear()
-            _input_pos = 0
+            _tty.TTY.buffer.clear()
+            _tty.TTY.pos = 0
             _flush_display_queue()
             try:
                 _cr = getattr(__import__("builtins"), "_active_client", None)
@@ -5117,7 +4619,7 @@ class Screen:
 
     def _input_line(self) -> str:
         buf = _display_buffer()
-        return (_current_prompt or "") + buf
+        return (_tty.TTY.prompt or "") + buf
 
     def _chrome(self, tabs):
         return 1 + len(tabs) + 1
@@ -5126,7 +4628,7 @@ class Screen:
         return self.rows - 1 - (len(tabs) - 1 - i)
 
     def redraw_full(self) -> None:
-        with _print_lock:
+        with _tty.TTY.lock:
             self._measure()
             tabs = self._tabbar_lines()
             body_h = max(1, self.rows - self._chrome(tabs))
@@ -5149,7 +4651,7 @@ class Screen:
             sys.stdout.flush()
 
     def redraw_body(self) -> None:
-        with _print_lock:
+        with _tty.TTY.lock:
             self._measure()
             tabs = self._tabbar_lines()
             body_h = max(1, self.rows - self._chrome(tabs))
@@ -5169,17 +4671,17 @@ class Screen:
             _input_r = self.rows
             _buf = _display_buffer()
             out.append(f"\033[{_input_r };1H\033[2K")
-            out.append((_current_prompt or "") + _buf)
+            out.append((_tty.TTY.prompt or "") + _buf)
             out.append("\0338")
             out.append(f"\033[{_input_r };1H")
-            _vis = len(_ANSI_RE.sub("", (_current_prompt or "") + _buf))
+            _vis = len(_ANSI_RE.sub("", (_tty.TTY.prompt or "") + _buf))
             if _vis > 0:
                 out.append(f"\033[{_vis +1 }G")
             sys.stdout.write("".join(out))
             sys.stdout.flush()
 
     def redraw_tabbar(self) -> None:
-        with _print_lock:
+        with _tty.TTY.lock:
             self._measure()
             tabs = self._tabbar_lines()
             out = ["\0337"]

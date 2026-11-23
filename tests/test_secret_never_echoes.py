@@ -64,7 +64,7 @@ class TestTheEngineCanHideIt:
         """
         src = irc_and_engine_source()
         lines = [l.strip() for l in src.split("\n")
-                 if '"".join(_input_buffer)' in l]
+                 if '"".join(TTY.buffer)' in l]
         # Exactly two are legitimate: the submit, which must return the real
         # text, and _display_buffer's own unmasked branch.
         assert len(lines) == 2, (
@@ -79,9 +79,9 @@ class TestTheEngineCanHideIt:
     def test_the_character_echo_is_masked_too(self):
         """Redraws are not the only way a character reaches the terminal."""
         src = irc_and_engine_source()
-        i = src.index("if _input_pos == len(_input_buffer):")
+        i = src.index("if TTY.pos == len(TTY.buffer):")
         window = src[i - 300:i + 400]
-        assert "_mask_input" in window, (
+        assert "TTY.masked" in window, (
             "the per-keystroke echo does not consult the mask, so every "
             "character is printed as it is typed")
 

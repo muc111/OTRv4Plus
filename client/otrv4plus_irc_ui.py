@@ -8,6 +8,7 @@ A mixin of OTRv4IRCClient (otrv4plus_irc.py); the methods moved here
 unchanged."""
 import gc
 import otrv4plus as _engine
+import otrv4plus_tty as _tty
 import shutil
 import sys
 import time
@@ -69,13 +70,11 @@ class IrcUiMixin:
 
         _switched_panel = self.panel_manager.panels.get(name)
         if _switched_panel:
-            _engine._scroll_history.clear()
+            _tty.TTY.history.clear()
             for _e in _switched_panel.history:
                 _m = _e.get("message", "").strip()
                 if _m:
-                    _engine._scroll_history.append(_m)
-            if len(_engine._scroll_history) > 500:
-                _engine._scroll_history = _engine._scroll_history[-500:]
+                    _tty.TTY.remember(_m)
         if getattr(self, "_tui_enabled", False) and self._screen is not None:
             self._screen.scroll_offset = 0
             self._screen.redraw_full()
@@ -375,12 +374,12 @@ class IrcUiMixin:
                     self._screen = Screen(self)
                 self._screen.scroll_offset = 0
                 _scr = self._screen
-                globals()["_TUI_SCROLL_CALLBACK"] = lambda d, p, s=_scr: (
+                _tty.TTY.scroll_callback = lambda d, p, s=_scr: (
                     s.scroll_up(p) if d == "pgup" else s.scroll_down(p)
                 )
                 self._screen.redraw_full()
             else:
-                globals()["_TUI_SCROLL_CALLBACK"] = None
+                _tty.TTY.scroll_callback = None
                 with _print_lock:
                     sys.stdout.write("\033[2J\033[H")
                     sys.stdout.flush()
@@ -455,7 +454,7 @@ class IrcUiMixin:
             )
         elif cmd == "pause":
 
-            _engine._scroll_locked = True
+            _tty.TTY.paused = True
             self.add_message("system", colorize("⏸ Scroll paused - /resume to continue", "yellow"))
         elif cmd == "resume":
             _scroll_unlock()
@@ -598,7 +597,7 @@ class IrcUiMixin:
             if ch and ch.startswith("#"):
                 self.names_data[ch] = []
                 if not hasattr(self, "_otrv4_users"):
-                    self._otrv4_users: Dict[str, bool] = {}
+                    self._otrv4_users: dict[str, bool] = {}
                 if not hasattr(self, "_names_total"):
                     self._names_total = {}
                 self._names_total.pop(ch, None)

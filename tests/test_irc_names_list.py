@@ -648,7 +648,7 @@ class TestSelectingAUserStartsOtr:
     def test_the_pager_returns_the_chosen_entry(self, monkeypatch):
         keys = iter(["2"])
         monkeypatch.setattr(otr, "safe_print", lambda *a, **k: None)
-        monkeypatch.setattr(otr, "_raw_mode_active", False)
+        monkeypatch.setattr(otr._tty.TTY, "raw", False)
         monkeypatch.setattr(sys, "stdin",
                             type("S", (), {"readline": lambda self: next(keys)})())
         got = otr.Pager(lines_per_page=50).display(
@@ -657,7 +657,7 @@ class TestSelectingAUserStartsOtr:
 
     def test_quitting_returns_nothing(self, monkeypatch):
         monkeypatch.setattr(otr, "safe_print", lambda *a, **k: None)
-        monkeypatch.setattr(otr, "_raw_mode_active", False)
+        monkeypatch.setattr(otr._tty.TTY, "raw", False)
         monkeypatch.setattr(sys, "stdin",
                             type("S", (), {"readline": lambda self: "q"})())
         assert otr.Pager(lines_per_page=50).display(

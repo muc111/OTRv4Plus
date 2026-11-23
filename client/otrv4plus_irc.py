@@ -33,6 +33,7 @@ import time
 from typing import Callable, Dict, List, Optional, Set
 
 import otrv4plus as _engine
+import otrv4plus_tty as _tty
 from otrv4plus import (  # noqa: F401
     EnhancedSessionManager, EventHandler, I2PSAMConnection, IRCConstants,
     MessageRouter, NetworkConstants, OTRConfig, OTRConstants,
@@ -493,6 +494,13 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
             self._smp_executor.submit(_do_decrypt)
         except RuntimeError:
             _do_decrypt()
+
+    def note_typing(self) -> None:
+        """A key was typed: tell the peer of a private chat (IRCv3 typing)."""
+        name = self.panel_manager.active_panel
+        panel = self.panel_manager.panels.get(name)
+        if panel and panel.panel_type == "private":
+            self.send_raw(f"@+typing=active TAGMSG {name}")
 
     def _display_plaintext(self, sender: str, target: str, message: str):
         """Show a plaintext PRIVMSG in the right panel.
@@ -3017,7 +3025,7 @@ def _run_input_loop(client, _select):
         _use_raw = _setup_raw_mode()
         if _use_raw:
             atexit.register(_restore_terminal)
-        _fd = _engine._stdin_fd if _use_raw else sys.stdin.fileno()
+        _fd = _tty.TTY.fd if _use_raw else sys.stdin.fileno()
 
         def _read_line_raw() -> Optional[str]:
             """Read one char in raw mode.
@@ -3034,7 +3042,7 @@ def _run_input_loop(client, _select):
             """Read a full line in cooked mode (fallback for non-TTY)."""
 
             line = sys.stdin.readline()
-            _engine._current_prompt = ""
+            _tty.TTY.prompt = ""
             _flush_display_queue()
             if not line:
                 return _EOF_SENTINEL
@@ -3193,6 +3201,7 @@ def main():
     import builtins as _b
 
     _b._active_client = client
+    _tty.TTY.on_keypress = client.note_typing
 
     if not client.connect():
         _fail_net = NetworkConstants.detect(config.server)

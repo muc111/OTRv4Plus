@@ -14,6 +14,7 @@ import sys
 import time
 
 import otrv4plus_term as _term
+import otrv4plus_tty as _tty
 
 # The engine's TUI pieces; set by bind_engine().
 _otr = None
@@ -344,7 +345,7 @@ class TuiMixin:
         # Wire Page Up/Down into the TUI screen scroll
         try:
             scr = self._screen
-            _otr._TUI_SCROLL_CALLBACK = lambda d, p, s=scr: (
+            _tty.TTY.scroll_callback = lambda d, p, s=scr: (
                 s.scroll_up(p) if d == "pgup" else s.scroll_down(p)
             )
         except Exception:
@@ -394,7 +395,7 @@ class TuiMixin:
         self._tui_enabled = False
         _term._ACTIVE_TUI_CLIENT = None
         try:
-            _otr._TUI_SCROLL_CALLBACK = None
+            _tty.TTY.scroll_callback = None
         except Exception:
             pass
         try:
