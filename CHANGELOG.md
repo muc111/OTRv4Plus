@@ -9,6 +9,15 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 The last build tested on devices is rc.194; rc.207 is not yet tested, and
 this one builds on it. Dependency upgrades; nothing on screen changes.
 
+- **Terminal IRC client: a peer could fake a line of the client's own
+  output.** A message containing a line break printed the rest as a line
+  of its own, so it could look like `[otr] SMP verified`; a carriage
+  return could overwrite the start of the line, sender included. This
+  worked inside an encrypted session too. The IRC and XMPP terminal
+  clients had separate copies of the filter that cleans peer text, and
+  the IRC copy let both through. There is one filter now, used by both:
+  line breaks become a space. The Android and desktop apps were not
+  affected.
 - **One source of randomness for every key.** Keys, nonces, salts and the
   secret numbers SMP uses now all come from one small module that asks the
   operating system, instead of three different libraries' ways of asking
@@ -25,6 +34,9 @@ this one builds on it. Dependency upgrades; nothing on screen changes.
 - **Android test libraries:** kotlinx-coroutines-test 1.11.0, Robolectric
   4.18.1 (tests only, not in the APK). The APK's build-only `setuptools`
   is 84.2.1.
+- **Terminal client code split up:** the I2P naming and SAM connection
+  code is its own module (`otrv4plus_i2p.py`), out of `otrv4+.py`.
+  Nothing it does changes.
 - **Not changed, on purpose:** the Opus codec (a codec update is reviewed
   on its own), `maturin` (the phone build depends on its exact behaviour),
   and the desktop app's Kotlin (on hold, see rc.207). AndroidX and the
