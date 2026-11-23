@@ -105,7 +105,7 @@ class TestSubstitution:
 
     def test_a_short_name_is_substituted(self, monkeypatch, capsys):
         path = _hosts("otrv4plus.i2p = %s\n" % B32)
-        monkeypatch.setattr(otr, "i2p_hosts_path", lambda: path)
+        monkeypatch.setattr(otr._i2p, "i2p_hosts_path", lambda: path)
         host, source = otr.I2PSAMConnection._apply_i2p_alias("otrv4plus.i2p")
         assert host == B32
         assert source == path
@@ -117,14 +117,14 @@ class TestSubstitution:
         """The security-relevant one.  A local file must not be able to
         redirect an address the user typed out in full."""
         path = _hosts("%s = %s\n" % (B32, OTHER_B32))
-        monkeypatch.setattr(otr, "i2p_hosts_path", lambda: path)
+        monkeypatch.setattr(otr._i2p, "i2p_hosts_path", lambda: path)
         host, source = otr.I2PSAMConnection._apply_i2p_alias(B32)
         assert host == B32, "an alias redirected a fully-specified b32 address"
         assert source is None
 
     def test_an_unknown_name_is_passed_through_to_the_router(self, monkeypatch):
         """The router's own address book still gets its chance."""
-        monkeypatch.setattr(otr, "i2p_hosts_path", lambda: "/no/such/file")
+        monkeypatch.setattr(otr._i2p, "i2p_hosts_path", lambda: "/no/such/file")
         host, source = otr.I2PSAMConnection._apply_i2p_alias("stats.i2p")
         assert host == "stats.i2p"
         assert source is None
@@ -359,7 +359,7 @@ class TestShippedDefaults:
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
         import unittest.mock as _mock
-        with _mock.patch.object(otr, "i2p_hosts_defaults_path", lambda: defaults):
+        with _mock.patch.object(otr._i2p, "i2p_hosts_defaults_path", lambda: defaults):
             assert otr.remember_i2p_alias(name, dest, path) == ""
         assert not os.path.exists(path)
 

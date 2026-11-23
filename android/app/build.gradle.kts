@@ -434,6 +434,8 @@ val syncPythonSources by tasks.registering(Copy::class) {
             //   print(sorted(seen))
             //   EOF
             "otrv4plus_address.py",
+            // I2P: SAM client and short-name aliases, split out of otrv4+.py.
+            "otrv4plus_i2p.py",
             "otrv4plus_admin.py",
             // N1: the process-wide egress rule (sys.addaudithook), imported
             // by android_bridge.connection at module scope.

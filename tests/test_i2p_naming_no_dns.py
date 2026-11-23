@@ -164,8 +164,8 @@ def aliases(monkeypatch):
         fh.write("known-only-locally.i2p = %s\n" % B32)
     defaults = os.path.join(d, "defaults")
     open(defaults, "w").close()
-    monkeypatch.setattr(otr, "i2p_hosts_path", lambda: user)
-    monkeypatch.setattr(otr, "i2p_hosts_defaults_path", lambda: defaults)
+    monkeypatch.setattr(otr._i2p, "i2p_hosts_path", lambda: user)
+    monkeypatch.setattr(otr._i2p, "i2p_hosts_defaults_path", lambda: defaults)
     return user
 
 
@@ -239,7 +239,7 @@ class TestB32:
         user = os.path.join(d, "hosts")
         with open(user, "w") as fh:          # an attempt to redirect a b32
             fh.write("%s = %s\n" % (B32, "e" * 52 + ".b32.i2p"))
-        monkeypatch.setattr(otr, "i2p_hosts_path", lambda: user)
+        monkeypatch.setattr(otr._i2p, "i2p_hosts_path", lambda: user)
         fake = FakeSam(names={B32: DEST})
         _sam(fake).connect(B32).close()
         assert fake.looked_up() == [B32]
