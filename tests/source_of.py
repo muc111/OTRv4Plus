@@ -40,7 +40,8 @@ ENGINE_PARTS = ["otrv4plus_states.py", "otrv4plus_tlv.py",
                 "otrv4plus_session_smp.py", "otrv4plus_manager_dake.py",
                 "otrv4plus_tty.py", "otrv4plus_i2p.py",
                 "otrv4plus_sanitise.py", "otrv4plus_panels.py",
-                "otrv4plus_debug.py", "otrv4plus_irc_fragment.py"]
+                "otrv4plus_debug.py", "otrv4plus_irc_fragment.py",
+                "otrv4plus_config.py", "otrv4plus_logging.py"]
 
 
 def engine_source() -> str:

@@ -29,6 +29,7 @@ import threading
 from collections import deque
 from typing import Callable, List, Optional
 
+from otrv4plus_sanitise import sanitise as _sanitise
 from otrv4plus_states import UIConstants, colorize
 
 #: Termux, where a narrow width report is usually wrong (see TERMINAL_WIDTH).
@@ -588,3 +589,41 @@ def safe_print(*args, **kwargs):
                 sys.stdout.flush()
     except (RuntimeError, ValueError, OSError):
         pass
+
+
+def colorize_username(username: str) -> str:
+    """Colorize username - FNV-1a hash for colour, italic for server/bot nicks.
+
+    Rules matching the screenshot aesthetic:
+      - IRC server names (contain a '.') → dim italic dark_cyan
+      - Service bots (ChanServ, NickServ, etc.) → dim italic dark_magenta
+      - Normal users → one of 12 bright colours based on FNV-1a hash
+    """
+    if not username:
+        return ""
+
+    username = _sanitise(username, 64)
+    if not username:
+        return ""
+    R = UIConstants.COLORS["reset"]
+    DI = UIConstants.COLORS["dim_italic"]
+    if "." in username and not username.startswith("#"):
+        return f"{DI }{UIConstants .COLORS ['dark_cyan']}{username }{R }"
+    _services = (
+        "chanserv",
+        "nickserv",
+        "memoserv",
+        "operserv",
+        "botserv",
+        "hostserv",
+        "groupserv",
+        "global",
+        "alis",
+    )
+    if username.lower() in _services:
+        return f"{DI }{UIConstants .COLORS ['dark_magenta']}{username }{R }"
+    h = 2166136261
+    for c in username:
+        h = ((h ^ ord(c)) * 16777619) & 0xFFFFFFFF
+    color = UIConstants.USERNAME_COLORS[h % len(UIConstants.USERNAME_COLORS)]
+    return colorize(username, color)

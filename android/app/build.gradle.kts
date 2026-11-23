@@ -446,6 +446,9 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_debug.py",
             // The IRC fragment format (imported by otrv4+.py).
             "otrv4plus_irc_fragment.py",
+            // Settings, and the log and protocol trace.
+            "otrv4plus_config.py",
+            "otrv4plus_logging.py",
             "otrv4plus_admin.py",
             // N1: the process-wide egress rule (sys.addaudithook), imported
             // by android_bridge.connection at module scope.
