@@ -4,7 +4,34 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.207-untested — 2026-11-19 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.208-untested — 2026-11-23 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194; rc.207 is not yet tested, and
+this one builds on it. Dependency upgrades; nothing on screen changes.
+
+- **One source of randomness for every key.** Keys, nonces, salts and the
+  secret numbers SMP uses now all come from one small module that asks the
+  operating system, instead of three different libraries' ways of asking
+  it, spread over sixteen files. What they get is the same: the system's
+  own generator, and the app stops rather than continuing if there is
+  none.
+- **SMP draws its secret numbers itself.** The big-number library dropped
+  the helper SMP used, so the draw is now a few lines in SMP, uniform over
+  the whole range with no bias, and tested.
+- **Rust libraries upgraded:** `rand` 0.10, `getrandom` 0.4, `argon2` 0.6,
+  `num-bigint` 0.5, and every lock file to the latest compatible patch
+  releases. The app now ships nine fewer Rust crates (109 to 100): a whole older
+  generation of the random-number and hashing libraries is gone.
+- **Android test libraries:** kotlinx-coroutines-test 1.11.0, Robolectric
+  4.18.1 (tests only, not in the APK). The APK's build-only `setuptools`
+  is 84.2.1.
+- **Not changed, on purpose:** the Opus codec (a codec update is reviewed
+  on its own), `maturin` (the phone build depends on its exact behaviour),
+  and the desktop app's Kotlin (on hold, see rc.207). AndroidX and the
+  Android build plugin are left to the dependency-update pull requests,
+  which start once this reaches `main`.
+
+## Android 0.7.0-experimental.rc.207-untested — 2026-11-19 — on `dev`, superseded by rc.208
 
 The last build tested on devices is rc.194; rc.206, on `main`, is being
 tested now, and this one builds on it.

@@ -37,7 +37,7 @@ android {
         // devices. Left at 26, with the biometric path feature-detected.
         minSdk = 26
         targetSdk = 35
-        versionCode = 208
+        versionCode = 209
         // rc.3 -> rc.4: capability-gated automatic OTRv4+ (XEP-0030/0115,
         // per resource), one People list with server discovery where
         // Prosody offers it, file phases/ETA/three-way metadata choice and
@@ -94,7 +94,7 @@ android {
         // "untested" (owner, 2026-10-30): main holds the build tested on
         // phones and a laptop -- rc.194 since 2026-11-10 -- and every build
         // after it says "-untested" until it is tested too.
-        versionName = "0.7.0-experimental.rc.207-untested+core.$rustCoreVersion"
+        versionName = "0.7.0-experimental.rc.208-untested+core.$rustCoreVersion"
 
         // Which build this is, surfaced in the diagnostic report.
         //
@@ -918,12 +918,12 @@ dependencies {
     // nothing from Android, so its tests run as plain JVM unit tests.
     testImplementation("org.jetbrains.kotlin:kotlin-test")
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit")
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.11.0")
     if (renderScreens) {
         // Robolectric draws the real Compose screens on the JVM; ui-test
         // captures them. Test-only, and only with -Pscreens: the shipped
         // runtime classpaths (and the licence guard over them) are unchanged.
-        testImplementation("org.robolectric:robolectric:4.14.1")
+        testImplementation("org.robolectric:robolectric:4.18.1")
         testImplementation(composeBom)
         testImplementation("androidx.compose.ui:ui-test-junit4")
         debugImplementation("androidx.compose.ui:ui-test-manifest")

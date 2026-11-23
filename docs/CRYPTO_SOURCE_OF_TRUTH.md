@@ -51,7 +51,7 @@ not retain (`android_bridge/app.py`, `bind_smp_secret`).
 | File-transfer keys and chunk AEAD | `aes-gcm`, `sha3` (via `kdf.rs`) | `filetransfer.rs` | handles, envelopes, ciphertext |
 | Identity sealing (Termux XMPP only) | `aes-gcm` | `identity.rs`, `at_rest.rs` (`FileDek`) | sealed record bytes; the DEK is a Rust `FileDek` |
 | At-rest SMP auto-respond store (Termux) | `aes-gcm`, `sha3`, `argon2` (legacy files only) | `at_rest.rs` (`SmpSecretStore`) | booleans and peer names; no passphrase getter |
-| Randomness for keys | `rand`, `rand_core`, `getrandom` | all of the above (`OsRng`) | — |
+| Randomness for keys | `getrandom` (the OS CSPRNG) | `os_random.rs`, the only source every module above draws from (`fill`, `try_fill`); `rand` is used only for the voice masks' non-secret pitch and formant draws, seeded from it | — |
 | Zeroisation | `zeroize` | `secure_mem.rs` (`SecretBytes`) and every key type | explicit `zeroize()` / `discard()` methods |
 
 There is no second implementation of any of these in shipped code. The last
