@@ -70,7 +70,7 @@ class TestThePagerPrintsItsLines:
 
     def test_every_line_reaches_the_output(self, monkeypatch):
         printed = []
-        monkeypatch.setattr(otr, "safe_print",
+        monkeypatch.setattr(otr._panels, "safe_print",
                             lambda *a, **k: printed.append(a[0] if a else ""))
         otr.Pager(lines_per_page=50).display(["alpha", "beta", "gamma"],
                                              "Header")
@@ -80,7 +80,7 @@ class TestThePagerPrintsItsLines:
 
     def test_the_header_carries_the_count(self, monkeypatch):
         printed = []
-        monkeypatch.setattr(otr, "safe_print",
+        monkeypatch.setattr(otr._panels, "safe_print",
                             lambda *a, **k: printed.append(a[0] if a else ""))
         otr.Pager(lines_per_page=50).display(["x"], "Users in #i2p-chat (97)")
         assert any("Users in #i2p-chat (97)" in ln for ln in plain(printed))
@@ -647,7 +647,7 @@ class TestSelectingAUserStartsOtr:
 
     def test_the_pager_returns_the_chosen_entry(self, monkeypatch):
         keys = iter(["2"])
-        monkeypatch.setattr(otr, "safe_print", lambda *a, **k: None)
+        monkeypatch.setattr(otr._panels, "safe_print", lambda *a, **k: None)
         monkeypatch.setattr(otr._tty.TTY, "raw", False)
         monkeypatch.setattr(sys, "stdin",
                             type("S", (), {"readline": lambda self: next(keys)})())
@@ -656,7 +656,7 @@ class TestSelectingAUserStartsOtr:
         assert got == "bob"
 
     def test_quitting_returns_nothing(self, monkeypatch):
-        monkeypatch.setattr(otr, "safe_print", lambda *a, **k: None)
+        monkeypatch.setattr(otr._panels, "safe_print", lambda *a, **k: None)
         monkeypatch.setattr(otr._tty.TTY, "raw", False)
         monkeypatch.setattr(sys, "stdin",
                             type("S", (), {"readline": lambda self: "q"})())
@@ -665,7 +665,7 @@ class TestSelectingAUserStartsOtr:
 
     def test_a_page_without_choices_behaves_as_before(self, monkeypatch):
         """Callers that ignore the return value must be unaffected."""
-        monkeypatch.setattr(otr, "safe_print", lambda *a, **k: None)
+        monkeypatch.setattr(otr._panels, "safe_print", lambda *a, **k: None)
         assert otr.Pager(lines_per_page=50).display(["a"], "H") is None
 
 

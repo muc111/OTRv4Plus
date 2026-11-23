@@ -44,6 +44,9 @@ except Exception:
     TERMINAL_WIDTH = 80
     TERMINAL_HEIGHT = 24
 
+#: How times are shown in the terminal clients.
+TIMESTAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 #: Returned by _handle_input_char for Ctrl-D on an empty line.
 _EOF_SENTINEL = object()
 

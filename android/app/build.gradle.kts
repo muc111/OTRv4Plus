@@ -440,6 +440,8 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_sanitise.py",
             // The raw-mode terminal: input line, prompt, scrollback.
             "otrv4plus_tty.py",
+            // The full-screen UI: tabs, panels, pager.
+            "otrv4plus_panels.py",
             "otrv4plus_admin.py",
             // N1: the process-wide egress rule (sys.addaudithook), imported
             // by android_bridge.connection at module scope.
