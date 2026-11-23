@@ -181,7 +181,50 @@ def test_nothing_writes_the_state_through_old_names():
     assert not offenders, "\n".join(offenders)
 
 
-def test_the_irc_client_registers_its_typing_hook():
+def test_the_irc_client_registers_its_hooks():
     src = open(os.path.join(ROOT, "client", "otrv4plus_irc.py"), encoding="utf-8").read()
-    assert "_tty.TTY.on_keypress = client.note_typing" in src
-    assert "def note_typing(self)" in src
+    assert "client.attach_terminal()" in src
+    for hook in ("on_keypress", "debug_sink", "refresh_prompt", "redraw"):
+        assert "_tty.TTY.%s = " % hook in src, hook
+
+
+def test_debug_lines_go_to_the_sink_when_there_is_one(clean_line):
+    got = []
+    tty.debug_line("one")                      # no sink: printed
+    assert "one" in clean_line.readouterr().out
+    TTY.debug_sink = got.append
+    try:
+        tty.debug_line("two")
+        assert got == ["two"] and "two" not in clean_line.readouterr().out
+    finally:
+        TTY.debug_sink = None
+
+
+def test_a_failing_hook_does_not_break_the_caller():
+    def boom():
+        raise RuntimeError("hook failed")
+    saved = TTY.refresh_prompt, TTY.redraw
+    TTY.refresh_prompt = TTY.redraw = boom
+    try:
+        tty.refresh_prompt()
+        tty.redraw()
+    finally:
+        TTY.refresh_prompt, TTY.redraw = saved
+
+
+def test_no_terminal_client_module_keeps_state_in_builtins():
+    """`builtins._active_client` was how the engine reached the IRC client;
+    the hooks on TTY replace it."""
+    import re
+    client = os.path.join(ROOT, "client")
+    pattern = re.compile(r"__import__\(\s*[\"']builtins[\"']\s*\)|\b_b\.\w+\s*=")
+    offenders = []
+    for name in sorted(os.listdir(client)):
+        path = os.path.join(client, name)
+        if (name.startswith("otrv4plus_irc") or name in (
+                "otrv4+.py", "otrv4plus_tty.py", "otrv4plus_panels.py")) \
+                and name.endswith(".py") and not os.path.islink(path):
+            for n, line in enumerate(open(path, encoding="utf-8"), 1):
+                if pattern.search(line):
+                    offenders.append("%s:%d: %s" % (name, n, line.strip()))
+    assert not offenders, "\n".join(offenders)

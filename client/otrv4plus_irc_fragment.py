@@ -20,7 +20,7 @@ from typing import Dict, List, Optional
 
 import otrv4plus_debug as _debug
 from otrv4plus_states import UIConstants
-from otrv4plus_tty import _emit_line, _set_prompt
+from otrv4plus_tty import _emit_line, _set_prompt, debug_line, refresh_prompt
 
 
 class OTRFragmentBuffer:
@@ -159,11 +159,7 @@ class OTRFragmentBuffer:
             state["last_ts"] = now
 
             if _debug.FLAGS.debug:
-                _c = getattr(__import__("builtins"), "_active_client", None)
-                if _c:
-                    _c._emit("debug", "[OTRFragment] fragment received")
-                else:
-                    _emit_line(f"[OTRFragment] {idx }/{total } for {sender }")
+                debug_line(f"[OTRFragment] {idx}/{total} for {sender}")
 
             if total > 1:
                 try:
@@ -185,20 +181,8 @@ class OTRFragmentBuffer:
             self._buffers.pop(key, None)
 
             if _debug.FLAGS.debug:
-                _c = getattr(__import__("builtins"), "_active_client", None)
-                if _c:
-                    _c._emit(
-                        "debug", "[OTRFragment] fragment reassembled"
-                    )
-                else:
-                    _emit_line(f"[OTRFragment] reassembled {len (combined )} chars from {sender }")
-
-            try:
-                _cr = getattr(__import__("builtins"), "_active_client", None)
-                if _cr and _cr._prompt_refresh_cb:
-                    _cr._prompt_refresh_cb()
-            except Exception:
-                pass
+                debug_line(f"[OTRFragment] reassembled {len(combined)} chars from {sender}")
+            refresh_prompt()
             return f"?OTRv4 {combined }"
 
         return None
@@ -344,12 +328,7 @@ class OTRMessageFragmenter:
             fragments.append(frag)
 
         if _debug.FLAGS.debug:
-            _c = getattr(__import__("builtins"), "_active_client", None)
-            _msg = f"[OTRMessageFragmenter] {len (fragments )} frags from {len (payload )} chars"
-            if _c:
-                _c._emit("debug", _msg)
-            else:
-                _emit_line(_msg)
+            debug_line(f"[OTRMessageFragmenter] {len(fragments)} frags from {len(payload)} chars")
 
         return fragments
 

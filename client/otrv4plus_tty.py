@@ -83,9 +83,17 @@ class TerminalLine:
         #: A full-screen UI, when one is up, scrolls itself: it gets
         #: ("pgup" | "pgdn", lines) instead of the line-mode scrollback.
         self.scroll_callback: Optional[Callable[[str, int], None]] = None
-        #: Called after a printable key is typed (the IRC client sends a
-        #: typing notification from it).
+        #: Hooks a client registers at start (the IRC client does; the XMPP
+        #: client prints through otrv4plus_term instead). Each is optional.
+        #: After a printable key is typed (IRC: a typing notification).
         self.on_keypress: Optional[Callable[[], None]] = None
+        #: Where a debug line goes instead of the terminal (IRC: the debug
+        #: panel).
+        self.debug_sink: Optional[Callable[[str], None]] = None
+        #: Redraw the prompt after something printed over it.
+        self.refresh_prompt: Optional[Callable[[], None]] = None
+        #: Redraw everything after a full-screen interruption (the pager).
+        self.redraw: Optional[Callable[[], None]] = None
         #: Lines waiting for _flush_display_queue (cooked-mode fallback).
         self.queue: deque = deque()
 
@@ -96,6 +104,30 @@ class TerminalLine:
 
 
 TTY = TerminalLine()
+
+
+def debug_line(text: str) -> None:
+    """A debug line: to the client's debug panel if it has one, else printed."""
+    if TTY.debug_sink is not None:
+        TTY.debug_sink(text)
+    else:
+        _emit_line(text)
+
+
+def _call_hook(hook) -> None:
+    if hook is not None:
+        try:
+            hook()
+        except Exception:
+            pass
+
+
+def refresh_prompt() -> None:
+    _call_hook(TTY.refresh_prompt)
+
+
+def redraw() -> None:
+    _call_hook(TTY.redraw)
 
 
 def _page_lines() -> int:

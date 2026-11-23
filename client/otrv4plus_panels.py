@@ -258,14 +258,7 @@ class Pager:
             _tty.TTY.buffer.clear()
             _tty.TTY.pos = 0
             _flush_display_queue()
-            try:
-                _cr = getattr(__import__("builtins"), "_active_client", None)
-                if _cr and getattr(_cr, "_tui_enabled", False) and _cr._screen:
-                    _cr._screen.redraw_full()
-                elif _cr and _cr._prompt_refresh_cb:
-                    _cr._prompt_refresh_cb()
-            except Exception:
-                pass
+            _tty.redraw()
         return chosen
 
 

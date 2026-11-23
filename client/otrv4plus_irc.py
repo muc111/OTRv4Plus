@@ -35,6 +35,12 @@ from typing import Callable, Dict, List, Optional, Set
 import otrv4plus as _engine
 import otrv4plus_debug as _debug
 import otrv4plus_tty as _tty
+
+#: The client main() started, for the exit handler (None until then).
+_running_client = None
+#: Why the client is closing, said again after the exit purge (None if
+#: there is nothing to repeat).
+_exit_notice = None
 from otrv4plus import (  # noqa: F401
     EnhancedSessionManager, EventHandler, I2PSAMConnection, IRCConstants,
     MessageRouter, NetworkConstants, OTRConfig, OTRConstants,
@@ -495,6 +501,24 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
             self._smp_executor.submit(_do_decrypt)
         except RuntimeError:
             _do_decrypt()
+
+    def attach_terminal(self) -> None:
+        """Register this client's hooks on the raw-mode terminal."""
+        _tty.TTY.on_keypress = self.note_typing
+        _tty.TTY.debug_sink = lambda text: self._emit("debug", text)
+        _tty.TTY.refresh_prompt = self._refresh_prompt
+        _tty.TTY.redraw = self._redraw_after_pager
+
+    def _refresh_prompt(self) -> None:
+        refresh = getattr(self, "_prompt_refresh_cb", None)
+        if refresh is not None:
+            refresh()
+
+    def _redraw_after_pager(self) -> None:
+        if getattr(self, "_tui_enabled", False) and getattr(self, "_screen", None) is not None:
+            self._screen.redraw_full()
+        else:
+            self._refresh_prompt()
 
     def note_typing(self) -> None:
         """A key was typed: tell the peer of a private chat (IRCv3 typing)."""
@@ -3199,10 +3223,9 @@ def main():
         return code
 
     client = EnhancedOTRv4IRCClient(config)
-    import builtins as _b
-
-    _b._active_client = client
-    _tty.TTY.on_keypress = client.note_typing
+    global _running_client
+    _running_client = client
+    client.attach_terminal()
 
     if not client.connect():
         _fail_net = NetworkConstants.detect(config.server)
@@ -3228,7 +3251,8 @@ def main():
         # this reason with it: on Termux only "Clean shutdown" was left and the
         # client seemed to close for no reason (owner report, 2026-10-24).
         # Nothing private was ever shown, so the purge repeats the reason.
-        _b._exit_notice = _notice
+        global _exit_notice
+        _exit_notice = _notice
         return 1
 
     client.start_auto_smp_monitor()
@@ -3273,7 +3297,7 @@ def run():
         terminal for the next person to hold the handset.  Idempotent -- a
         second purge over empty panels does nothing.
         """
-        client = getattr(__import__("builtins"), "_active_client", None)
+        client = _running_client
         if client is not None:
             try:
                 client._purge_scrollback("process exit", announce=False)
@@ -3281,7 +3305,7 @@ def run():
                 pass
         # Why the client is closing, said again after the wipe (which only
         # happens on a terminal; a pipe or log already has it once).
-        notice = getattr(__import__("builtins"), "_exit_notice", None)
+        notice = _exit_notice
         if notice and sys.stdout.isatty():
             safe_print(notice)
         safe_print(colorize("\nClean shutdown", "green"))
