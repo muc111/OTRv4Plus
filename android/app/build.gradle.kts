@@ -444,6 +444,8 @@ val syncPythonSources by tasks.registering(Copy::class) {
             "otrv4plus_panels.py",
             // The terminal clients' debug switches.
             "otrv4plus_debug.py",
+            // The IRC fragment format (imported by otrv4+.py).
+            "otrv4plus_irc_fragment.py",
             "otrv4plus_admin.py",
             // N1: the process-wide egress rule (sys.addaudithook), imported
             // by android_bridge.connection at module scope.

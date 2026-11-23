@@ -13,6 +13,7 @@
 Moved out of otrv4+.py, which re-exports every class. Everything here
 prints through otrv4plus_tty, so the input line survives a redraw.
 """
+import json
 import os
 import shutil
 import sys
@@ -20,6 +21,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Set
 
+import otrv4plus_debug as _debug
 import otrv4plus_tty as _tty
 from otrv4plus_states import UIConstants, colorize
 from otrv4plus_tty import (
@@ -731,3 +733,78 @@ class PanelManager:
                 cb()
         except Exception:
             pass
+
+
+class DebugPanel(ChatPanel):
+    """Enhanced panel for debugging with detailed OTR/SMP logging"""
+
+    def __init__(self, name: str):
+        super().__init__(name, "debug")
+        self.debug_level = "FULL"
+        self.categories = {
+            "OTR": True,
+            "SMP": True,
+            "DAKE": True,
+            "RATCHET": True,
+            "NETWORK": True,
+            "SECURITY": True,
+            "TRUST": True,
+            "FINGERPRINT": True,
+            "UI": True,
+        }
+        self.max_debug_lines = 50000
+
+    def log(self, category: str, message: str, data: Optional[dict] = None):
+        """Log debug message with category"""
+        if not self.categories.get(category, False):
+            return
+
+        # `%f` is a datetime directive, not a strftime one: time.strftime
+        # left it verbatim, so [:-3] was trimming "%f" off and every debug
+        # line read "12:34:56." with nothing after the dot.
+        import datetime as _dt_module
+        timestamp = _dt_module.datetime.now().strftime(TIMESTAMP_FORMAT + ".%f")[:-3]
+        colored_cat = colorize(category, "magenta")
+        msg = f"[{timestamp }] [{colored_cat }] {message }"
+
+        if data:
+            data_str = json.dumps(data, default=str)[:200]
+            if len(json.dumps(data, default=str)) > 200:
+                data_str += "..."
+            msg += f" | {data_str }"
+
+        self.add_message(msg)
+
+        if len(self.history) > self.max_debug_lines:
+            self.history = self.history[-self.max_debug_lines :]
+
+    def set_category(self, category: str, enabled: bool):
+        """Enable/disable debug category"""
+        self.categories[category] = enabled
+
+    def toggle_category(self, category: str):
+        """Toggle debug category"""
+        self.categories[category] = not self.categories.get(category, False)
+        return self.categories[category]
+
+
+class DebugLogger:
+    """Centralized debug logger for all components"""
+
+    def __init__(self, debug_panel: Optional[DebugPanel] = None):
+        self.debug_panel = debug_panel
+        self.enabled = _debug.FLAGS.debug
+
+    def log(self, component: str, method: str, message: str, data: Optional[dict] = None):
+        """Log debug message from any component"""
+        if not self.enabled:
+            return
+
+        full_message = f"{component }.{method }: {message }"
+
+        if self.debug_panel:
+            self.debug_panel.log(component, full_message, data)
+        else:
+            print(f"[DEBUG] [{component }] {full_message }")
+            if data:
+                print(f"  Data: {data }")

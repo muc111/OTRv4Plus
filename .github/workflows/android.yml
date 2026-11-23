@@ -64,6 +64,7 @@ on:
       - "client/otrv4plus_tty.py"
       - "client/otrv4plus_panels.py"
       - "client/otrv4plus_debug.py"
+      - "client/otrv4plus_irc_fragment.py"
       - "client/otrv4plus_admin.py"
       - "client/otrv4plus_alias.py"
       - "client/otrv4plus_audio.py"
