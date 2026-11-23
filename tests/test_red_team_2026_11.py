@@ -19,14 +19,17 @@ def _read(*parts):
 def test_the_sam_session_name_cannot_be_guessed():
     """SAM has no login and any program on the machine can reach its port;
     the session name is all that stops one attaching to our session."""
-    engine = _read("client", "otrv4+.py")
+    # The SAM client is client/otrv4plus_i2p.py (split out of otrv4+.py);
+    # the weak-name check below covers both files.
+    engine = _read("client", "otrv4plus_i2p.py")
     assert re.search(r"SAM_SESSION_ID_BYTES\s*=\s*16\b", engine)
     names = re.findall(r'self\._session_id\s*=\s*f"otrv4plus_\{([^}]*)\}"',
                        engine)
     assert len(names) == 2
     for made in names:
         assert "SAM_SESSION_ID_BYTES" in made and "secrets" in made
-    assert "token_hex (4 )" not in engine and "token_hex(4)" not in engine
+    for text in (engine, _read("client", "otrv4+.py")):
+        assert "token_hex (4 )" not in text and "token_hex(4)" not in text
 
 
 def test_the_built_in_router_opens_nothing_but_sam_on_loopback():
