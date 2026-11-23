@@ -449,6 +449,8 @@ val syncPythonSources by tasks.registering(Copy::class) {
             // Settings, and the log and protocol trace.
             "otrv4plus_config.py",
             "otrv4plus_logging.py",
+            // The data message's wire format and TLV handlers.
+            "otrv4plus_wire.py",
             "otrv4plus_admin.py",
             // N1: the process-wide egress rule (sys.addaudithook), imported
             // by android_bridge.connection at module scope.
