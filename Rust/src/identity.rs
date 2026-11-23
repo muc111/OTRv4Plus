@@ -62,7 +62,6 @@ use pyo3::exceptions::PyValueError;
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use rand_core::{OsRng, RngCore};
 use zeroize::Zeroizing;
 
 use crate::key_handles::{Ed448KeyHandle, X448KeyHandle};
@@ -127,7 +126,7 @@ pub fn seal_identity<'py>(
     plaintext.extend_from_slice(priv_bytes);
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    crate::os_random::fill(&mut nonce_bytes);
     // `Nonce::from`, not `from_slice`: the latter is deprecated in the
     // generic-array the tree now resolves, and it panics on a wrong length
     // rather than failing to compile.  Here the array is already the right
@@ -225,7 +224,7 @@ pub fn create_sealed_identity<'py>(
     plaintext.extend_from_slice(x448.expose_priv_slice());
 
     let mut nonce_bytes = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce_bytes);
+    crate::os_random::fill(&mut nonce_bytes);
     // `Nonce::from`, not `from_slice`: the latter is deprecated in the
     // generic-array the tree now resolves, and it panics on a wrong length
     // rather than failing to compile.  Here the array is already the right

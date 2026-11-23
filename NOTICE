@@ -21,7 +21,7 @@ never enabled is not in the shipped artifact and is not attributed here.
 
 
 ----------------------------------------------------------------------------
-1. Rust crates compiled into otrv4_core (109)
+1. Rust crates compiled into otrv4_core (100)
 ----------------------------------------------------------------------------
 
 aead 0.6.1
@@ -50,13 +50,13 @@ aes-gcm 0.11.1
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2019-2026 The RustCrypto Project Developers
 
-argon2 0.5.3
+argon2 0.6.0
     Offered: MIT OR Apache-2.0
     Taken:   MIT
-    Source:  https://github.com/RustCrypto/password-hashes/tree/master/argon2
+    Source:  https://github.com/RustCrypto/password-hashes
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2021-2024 The RustCrypto Project Developers
+    Copyright (c) 2021-2026 The RustCrypto Project Developers
 
 base16ct 1.0.0
     Offered: Apache-2.0 OR MIT
@@ -81,22 +81,15 @@ bitvec 1.1.1
     Source:  https://github.com/bitvecto-rs/bitvec
     Copyright (c) 2018 myrrlyn (Alexander Payne)
 
-blake2 0.10.6
+blake2 0.11.0
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/RustCrypto/hashes
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2015-2016 The blake2-rfc Developers, Cesar Barros
+    Copyright (c) 2017-2026 The RustCrypto Project Developers
     Copyright (c) 2017 Artyom Pavlov
-
-block-buffer 0.10.4
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/RustCrypto/utils
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2018-2019 The RustCrypto Project Developers
+    Copyright (c) 2015-2016 The blake2-rfc Developers, Cesar Barros
 
 block-buffer 0.12.1
     Offered: MIT OR Apache-2.0
@@ -113,6 +106,14 @@ cfg-if 1.0.5
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2014 Alex Crichton
+
+chacha20 0.10.2
+    Offered: MIT OR Apache-2.0
+    Taken:   MIT
+    Source:  https://github.com/RustCrypto/stream-ciphers
+    copyright notice that is included in or attached to the work
+    copyright license to reproduce, prepare Derivative Works of,
+    Copyright (c) 2019-2026 The RustCrypto Project Developers
 
 ciborium 0.2.2
     Licence: Apache-2.0
@@ -164,14 +165,6 @@ cpubits 0.1.1
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2023-2026 The RustCrypto Project Developers
 
-cpufeatures 0.2.17
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/RustCrypto/utils
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2020-2025 The RustCrypto Project Developers
-
 cpufeatures 0.3.1
     Offered: MIT OR Apache-2.0
     Taken:   MIT
@@ -212,14 +205,6 @@ crypto-bigint 0.7.11
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2021-2026 The RustCrypto Project Developers
 
-crypto-common 0.1.7
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/RustCrypto/traits
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2021 RustCrypto Developers
-
 crypto-common 0.2.2
     Offered: MIT OR Apache-2.0
     Taken:   MIT
@@ -252,14 +237,6 @@ der 0.8.3
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2020-2026 The RustCrypto Project Developers
-
-digest 0.10.7
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/RustCrypto/traits
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2017 Artyom Pavlov
 
 digest 0.11.3
     Offered: MIT OR Apache-2.0
@@ -303,20 +280,6 @@ funty 2.0.0
     Licence: MIT
     Source:  https://github.com/myrrlyn/funty
     Copyright (c) 2020 myrrlyn (Alexander Payne)
-
-generic-array 0.14.7
-    Licence: MIT
-    Source:  https://github.com/fizyk20/generic-array.git
-    Copyright (c) 2015 Bartłomiej Kamiński
-
-getrandom 0.2.17
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rust-random/getrandom
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2018-2024 The rust-random Project Developers
-    Copyright (c) 2014 The Rust Project Developers
 
 getrandom 0.4.3
     Offered: MIT OR Apache-2.0
@@ -455,7 +418,7 @@ module-lattice 0.2.4
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2024-2026 RustCrypto Developers
 
-num-bigint 0.4.8
+num-bigint 0.5.1
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-num/num-bigint
@@ -506,14 +469,6 @@ opusic-sys 0.5.6
     Source:  https://github.com/DoumanAsh/opusic-sys
     Copyright 2001-2023 Xiph.Org, Skype Limited, Octasic,
 
-password-hash 0.5.0
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/RustCrypto/traits/tree/master/password-hash
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright (c) 2020-2023 RustCrypto Developers
-
 pem-rfc7468 1.0.0
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
@@ -537,15 +492,6 @@ polyval 0.7.3
     copyright notice that is included in or attached to the work
     copyright license to reproduce, prepare Derivative Works of,
     Copyright (c) 2019-2026 The RustCrypto Project Developers
-
-ppv-lite86 0.2.21
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/cryptocorrosion/cryptocorrosion
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright 2019 The CryptoCorrosion Contributors
-    Copyright (c) 2019 The CryptoCorrosion Contributors
 
 proc-macro2 1.0.107
     Offered: MIT OR Apache-2.0
@@ -602,25 +548,7 @@ radium 0.7.0
     Source:  https://github.com/bitvecto-rs/radium
     Copyright (c) 2019 kneecaw (Nika Layzell)
 
-rand 0.8.8
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rust-random/rand
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright 2018 Developers of the Rand project
-    Copyright (c) 2014 The Rust Project Developers
-
-rand_chacha 0.3.1
-    Offered: MIT OR Apache-2.0
-    Taken:   MIT
-    Source:  https://github.com/rust-random/rand
-    copyright notice that is included in or attached to the work
-    copyright license to reproduce, prepare Derivative Works of,
-    Copyright 2018 Developers of the Rand project
-    Copyright (c) 2014 The Rust Project Developers
-
-rand_core 0.6.4
+rand 0.10.4
     Offered: MIT OR Apache-2.0
     Taken:   MIT
     Source:  https://github.com/rust-random/rand
@@ -838,7 +766,7 @@ wyz 0.5.1
     Source:  https://github.com/myrrlyn/wyz
     Copyright (c) 2018 myrrlyn (Alexander Payne)
 
-zerocopy 0.8.63
+zerocopy 0.8.64
     Offered: BSD-2-Clause OR Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/google/zerocopy
@@ -848,7 +776,7 @@ zerocopy 0.8.63
     Copyright 2019 The Fuchsia Authors.
     copyright notice, this list of conditions and the following disclaimer
 
-zerocopy-derive 0.8.63
+zerocopy-derive 0.8.64
     Offered: BSD-2-Clause OR Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/google/zerocopy
@@ -858,7 +786,7 @@ zerocopy-derive 0.8.63
     Copyright 2019 The Fuchsia Authors.
     copyright notice, this list of conditions and the following disclaimer
 
-zeroize 1.9.1
+zeroize 1.9.2
     Offered: Apache-2.0 OR MIT
     Taken:   MIT
     Source:  https://github.com/RustCrypto/utils

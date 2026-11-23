@@ -69,8 +69,8 @@
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use rand::rngs::{OsRng, StdRng};
-use rand::{Rng, RngCore, SeedableRng};
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use std::f64::consts::PI;
 use zeroize::Zeroize;
 
@@ -128,25 +128,25 @@ struct Params {
 }
 
 fn draw(mode: Mode, rng: &mut StdRng) -> Params {
-    let alpha = if rng.gen_bool(0.5) {
-        rng.gen_range(0.72..0.84)
+    let alpha = if rng.random_bool(0.5) {
+        rng.random_range(0.72..0.84)
     } else {
-        rng.gen_range(1.14..1.26)
+        rng.random_range(1.14..1.26)
     };
     // rc.77: a little narrower than before (0.70..0.84 / 1.20..1.45): the
     // extremes sounded like a cartoon, and the warped envelope now moves the
     // voice more than the pitch has to.
-    let pitch = if rng.gen_bool(0.5) {
-        rng.gen_range(0.74..0.86)
+    let pitch = if rng.random_bool(0.5) {
+        rng.random_range(0.74..0.86)
     } else {
-        rng.gen_range(1.18..1.38)
+        rng.random_range(1.18..1.38)
     };
-    let scale = rng.gen_range(0.94..1.16);
-    let gamma = rng.gen_range(0.975..0.99);
-    let rate = rng.gen_range(0.92..1.08);
-    let f0 = rng.gen_range(95.0..185.0);
-    let drift = rng.gen_range(0.0..(2.0 * PI));
-    let warp = if rng.gen_bool(0.5) { 1.0 } else { -1.0 } * rng.gen_range(0.08..0.16);
+    let scale = rng.random_range(0.94..1.16);
+    let gamma = rng.random_range(0.975..0.99);
+    let rate = rng.random_range(0.92..1.08);
+    let f0 = rng.random_range(95.0..185.0);
+    let drift = rng.random_range(0.0..(2.0 * PI));
+    let warp = if rng.random_bool(0.5) { 1.0 } else { -1.0 } * rng.random_range(0.08..0.16);
     match mode {
         Mode::Natural => Params { alpha: 1.0, scale: 1.0, gamma: 1.0, pitch: 1.0, rate: 1.0, f0, drift, warp: 0.0 },
         _ => Params { alpha, scale, gamma, pitch, rate, f0, drift, warp },
@@ -446,7 +446,7 @@ fn synthetic_source(e: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64> {
         } else {
             0.0
         };
-        let noise: f64 = rng.gen_range(-1.0..1.0) * 1.7;
+        let noise: f64 = rng.random_range(-1.0..1.0) * 1.7;
         *sample = g * (v * (0.92 * pulse + 0.08 * noise) + (1.0 - v) * noise);
     }
     out
@@ -821,7 +821,7 @@ fn synthetic_excitation(x: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64
         phase += f0 / RATE as f64;
         let pulse = if phase >= 1.0 {
             phase -= 1.0;
-            jitter = 1.0 + rng.gen_range(-0.012..0.012);
+            jitter = 1.0 + rng.random_range(-0.012..0.012);
             1.0
         } else {
             0.0
@@ -830,7 +830,7 @@ fn synthetic_excitation(x: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64
         // Two one-pole low-passes at ~3 kHz: harmonics below, breath above.
         lp1 = (1.0 - c) * glottal + c * lp1;
         lp2 = (1.0 - c) * lp1 + c * lp2;
-        let noise: f64 = rng.gen_range(-1.0..1.0) * 0.3;
+        let noise: f64 = rng.random_range(-1.0..1.0) * 0.3;
         nlp1 = (1.0 - c) * noise + c * nlp1;
         nlp2 = (1.0 - c) * nlp1 + c * nlp2;
         let breath = noise - nlp2;
@@ -857,8 +857,8 @@ fn spectral_mask(x: &[f64], params: &Params, rng: &mut StdRng) -> Vec<f64> {
     let frames_n = original.len().min(carrier.len());
     let knot = (RATE as usize / 4) / SH; // frames per 0.25 s
     let knots = frames_n / knot.max(1) + 2;
-    let path_a: Vec<f64> = (0..knots).map(|_| rng.gen_range(-1.0..1.0)).collect();
-    let path_w: Vec<f64> = (0..knots).map(|_| rng.gen_range(-1.0..1.0)).collect();
+    let path_a: Vec<f64> = (0..knots).map(|_| rng.random_range(-1.0..1.0)).collect();
+    let path_w: Vec<f64> = (0..knots).map(|_| rng.random_range(-1.0..1.0)).collect();
     let along = |path: &[f64], fi: usize| -> f64 {
         let pos = fi as f64 / knot.max(1) as f64;
         let i = (pos as usize).min(path.len() - 2);
@@ -1038,7 +1038,7 @@ fn mask_with(pcm: &[u8], rate: u32, mode: Mode, seed: Option<[u8; 32]>) -> Resul
             // Fail closed: a note is refused, never masked with weak or
             // predictable settings, if the OS cannot supply randomness.
             let mut s = [0u8; 32];
-            OsRng.try_fill_bytes(&mut s).map_err(|_| "no system randomness")?;
+            crate::os_random::try_fill(&mut s).map_err(|_| "no system randomness")?;
             s
         }
     };

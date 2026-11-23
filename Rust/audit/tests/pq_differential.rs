@@ -6,7 +6,7 @@
 
 use pqcrypto_traits::kem::{Ciphertext as _, PublicKey as _, SecretKey as _, SharedSecret as _};
 use pqcrypto_traits::sign::{DetachedSignature as _, PublicKey as _, SecretKey as _};
-use rand::RngCore;
+use rand::Rng;
 
 const ROUNDS: usize = 64;
 
@@ -47,7 +47,7 @@ mod kem {
             let ek = EncapsulationKey::<MlKem1024>::new(&Array::try_from(pk.as_bytes()).unwrap())
                 .expect("valid ek");
             let mut m = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut m);
+            rand::rng().fill_bytes(&mut m);
             let (ct, ss) = ek.encapsulate_deterministic(&Array::from(m));
             let pq_ct = pq::Ciphertext::from_bytes(ct.as_slice()).expect("ct");
             assert_eq!(pq::decapsulate(&pq_ct, &sk).as_bytes(), ss.as_slice());
@@ -59,7 +59,7 @@ mod kem {
     /// key, or one of them is not implementing the standard.
     #[test]
     fn implicit_rejection_agrees() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for _ in 0..ROUNDS {
             let (pk, sk) = pq::keypair();
             let (ss, ct) = pq::encapsulate(&pk);
@@ -105,7 +105,7 @@ mod sig {
 
     #[test]
     fn pqclean_signs_rustcrypto_verifies() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for n in 0..ROUNDS {
             let (pk, sk) = pq::keypair();
             let mut msg = vec![0u8; n * 7];
@@ -121,7 +121,7 @@ mod sig {
 
     #[test]
     fn rustcrypto_signs_pqclean_verifies() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         for n in 0..ROUNDS {
             let (pk, sk) = pq::keypair();
             let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(
@@ -137,7 +137,7 @@ mod sig {
 
     #[test]
     fn tampered_signatures_are_refused_by_both() {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let (pk, sk) = pq::keypair();
         let msg = b"OTRv4Plus audit";
         let sig = pq::detached_sign(msg, &sk);

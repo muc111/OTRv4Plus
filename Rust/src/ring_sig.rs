@@ -64,7 +64,6 @@ use ed448_goldilocks_plus::{
     Scalar, EdwardsPoint, CompressedEdwardsY, WideScalarBytes,
     elliptic_curve::group::Group,
 };
-use rand::{RngCore, rngs::OsRng};
 
 use shake::Shake256;
 use sha3::digest::{Update, ExtendableOutput, XofReader};
@@ -226,7 +225,7 @@ fn derive_ephemeral_scalar(seed: &[u8], msg: &[u8]) -> Scalar {
 
     // Fresh hedging randomness.
     let mut rnd = [0u8; 32];
-    OsRng.fill_bytes(&mut rnd);
+    crate::os_random::fill(&mut rnd);
 
     // t1 = wide-reduce SHAKE256(domain ‖ prefix ‖ rnd ‖ msg) mod Q.
     // Reduce the full 114-byte (912-bit) output so the scalar is uniform
@@ -398,7 +397,7 @@ fn random_scalar() -> Scalar {
     // bias is negligible (Q is 446 bits in a 448-bit field; the bias
     // is at most ~2^-446).
     let mut wide = [0u8; 114];
-    OsRng.fill_bytes(&mut wide);
+    crate::os_random::fill(&mut wide);
     let arr = WideScalarBytes::from(wide);
     let s = Scalar::from_bytes_mod_order_wide(&arr);
     wide.zeroize();

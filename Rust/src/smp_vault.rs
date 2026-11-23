@@ -16,8 +16,6 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 // Not gated: store_from_bytearray is the production secret-input path.
 use pyo3::types::PyByteArray;
-use rand::rngs::OsRng;
-use rand::RngCore;
 
 // ── SecretEntry ──────────────────────────────────────────────────────────────
 #[derive(Zeroize, ZeroizeOnDrop)]
@@ -55,7 +53,7 @@ impl HandleRegistry {
     fn issue(&mut self, name: &str) -> u64 {
         if let Some(&h) = self.reverse.get(name) { return h; }
         let handle = loop {
-            let h = OsRng.next_u64();
+            let h = crate::os_random::u64();
             if h != 0 && !self.forward.contains_key(&h) { break h; }
         };
         self.forward.insert(handle, name.to_string());

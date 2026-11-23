@@ -14,7 +14,7 @@
 //!   cd Rust/audit && cargo test --release --test timing_dudect -- --ignored --nocapture --test-threads=1
 //!
 //! A clean run is evidence, not proof, of constant time; see the report.
-use rand::{Rng, RngCore};
+use rand::{Rng, RngExt};
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -30,8 +30,8 @@ fn welch_t(a: &[f64], b: &[f64]) -> f64 {
 /// Time `op` on inputs from `class(c)` for random classes; return max |t|
 /// over a few crop percentiles, as dudect does.
 fn measure<I, P: FnMut(bool) -> I, O: FnMut(&I)>(mut prepare: P, mut op: O, n: usize) -> f64 {
-    let mut rng = rand::thread_rng();
-    let classes: Vec<bool> = (0..n).map(|_| rng.gen()).collect();
+    let mut rng = rand::rng();
+    let classes: Vec<bool> = (0..n).map(|_| rng.random()).collect();
     let inputs: Vec<I> = classes.iter().map(|c| prepare(*c)).collect();
     let mut t = vec![0f64; n];
     for i in 0..n {
@@ -109,7 +109,7 @@ fn ring_sign_fixed_vs_random_secret() {
     let t = measure(
         |c| {
             let mut s = [0u8; 57];
-            if c { s = fixed } else { rand::thread_rng().fill_bytes(&mut s) }
+            if c { s = fixed } else { rand::rng().fill_bytes(&mut s) }
             let a1 = otrv4_core::ring_sig::public_key_from_seed(&s);
             (s, a1)
         },

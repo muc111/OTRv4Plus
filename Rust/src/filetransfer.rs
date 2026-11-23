@@ -213,7 +213,7 @@ impl PyFileSender {
         // retrospectively yield the file key of a completed transfer beyond
         // what the envelope already gives.
         let mut raw = [0u8; KEY_LEN];
-        getrandom::getrandom(&mut raw)
+        crate::os_random::try_fill(&mut raw)
             .map_err(|_| PyRuntimeError::new_err(
                 "file transfer: system RNG unavailable"))?;
         let file_key = SecretBytes::<32>::new(raw);
@@ -221,7 +221,7 @@ impl PyFileSender {
 
         let wrap = derive_wrap_key(extra_sym_key, &transfer_id)?;
         let mut nonce = [0u8; NONCE_LEN];
-        getrandom::getrandom(&mut nonce)
+        crate::os_random::try_fill(&mut nonce)
             .map_err(|_| PyRuntimeError::new_err(
                 "file transfer: system RNG unavailable"))?;
         let aad = envelope_aad(&transfer_id).map_err(PyValueError::new_err)?;
@@ -498,7 +498,7 @@ impl PyFileReceiver {
 #[pyfunction]
 pub fn file_transfer_new_id<'py>(py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
     let mut id = [0u8; TRANSFER_ID_LEN];
-    getrandom::getrandom(&mut id)
+    crate::os_random::try_fill(&mut id)
         .map_err(|_| PyRuntimeError::new_err("file transfer: system RNG unavailable"))?;
     Ok(PyBytes::new(py, &id))
 }

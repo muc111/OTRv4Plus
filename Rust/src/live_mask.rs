@@ -51,8 +51,8 @@ use std::sync::atomic::{AtomicI8, Ordering};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use rand::rngs::OsRng;
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{RngExt, SeedableRng};
 use zeroize::Zeroize;
 
 use crate::voice_mask::fft;
@@ -89,12 +89,12 @@ struct Draws {
 
 impl Draws {
     fn new() -> Self {
-        let mut rng = OsRng;
+        let mut rng = StdRng::from_seed(crate::os_random::bytes::<32>());
         Draws {
-            semitones: rng.gen_range(4.5..6.5),
-            up_formant: rng.gen_range(1.12..1.20),
-            down_formant: rng.gen_range(0.83..0.89),
-            alpha: rng.gen_range(0.95..1.05),
+            semitones: rng.random_range(4.5..6.5),
+            up_formant: rng.random_range(1.12..1.20),
+            down_formant: rng.random_range(0.83..0.89),
+            alpha: rng.random_range(0.95..1.05),
         }
     }
 }

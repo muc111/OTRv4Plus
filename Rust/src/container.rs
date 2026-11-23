@@ -58,7 +58,6 @@ use hkdf::Hkdf;
 use pyo3::exceptions::{PyOSError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
-use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
@@ -241,7 +240,7 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
 
 fn tmp_beside(dst: &Path) -> PathBuf {
     let mut rnd = [0u8; 6];
-    OsRng.fill_bytes(&mut rnd);
+    crate::os_random::fill(&mut rnd);
     let name = format!(
         ".{}.{}.part",
         dst.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
@@ -275,8 +274,8 @@ fn seal_stream(mut input: impl Read, length: u64, dst: &Path, key: &KeySource, c
     }
     let mut salt = [0u8; 16];
     let mut prefix = [0u8; 8];
-    OsRng.fill_bytes(&mut salt);
-    OsRng.fill_bytes(&mut prefix);
+    crate::os_random::fill(&mut salt);
+    crate::os_random::fill(&mut prefix);
     let header = Header {
         source: match key { KeySource::Device(_) => SOURCE_DEVICE, KeySource::Passphrase(_) => SOURCE_PASSPHRASE },
         chunk,
@@ -519,7 +518,7 @@ impl RunKey {
     #[new]
     fn new() -> Self {
         let mut k = Zeroizing::new([0u8; 32]);
-        OsRng.fill_bytes(&mut k[..]);
+        crate::os_random::fill(&mut k[..]);
         Self { key: Some(crate::secure_mem::SecretBytes::new(*k)) }
     }
 
@@ -556,7 +555,7 @@ impl RunSealedWriter {
     fn new(key: PyRef<'_, RunKey>, path: &str) -> PyResult<Self> {
         let cipher = key.cipher()?;
         let mut prefix = [0u8; 8];
-        OsRng.fill_bytes(&mut prefix);
+        crate::os_random::fill(&mut prefix);
         let mut file = create_private(Path::new(path)).map_err(py_err)?;
         file.write_all(RUN_MAGIC).and_then(|_| file.write_all(&prefix))
             .map_err(|e| PyOSError::new_err(e.to_string()))?;
@@ -755,7 +754,7 @@ mod tests {
 
     fn tmpdir() -> PathBuf {
         let mut r = [0u8; 8];
-        OsRng.fill_bytes(&mut r);
+        crate::os_random::fill(&mut r);
         let d = std::env::temp_dir().join(format!("otrv-test-{}", r.iter().map(|b| format!("{b:02x}")).collect::<String>()));
         fs::create_dir_all(&d).unwrap();
         d

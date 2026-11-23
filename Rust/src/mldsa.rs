@@ -54,7 +54,7 @@ const MLDSA_PK_LEN: usize = 2592;
 /// key are wiped too.
 pub(crate) fn raw_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
     let mut seed = Zeroizing::new(B32::default());
-    getrandom::getrandom(seed.as_mut_slice()).expect("OS CSPRNG for ML-DSA key generation");
+    crate::os_random::try_fill(seed.as_mut_slice()).expect("OS CSPRNG for ML-DSA key generation");
     let esk = ExpandedSigningKey::<MlDsa87>::from_seed(&seed);
     let pk = esk.verifying_key().encode().as_slice().to_vec();
     let expanded = Zeroizing::new(esk.to_expanded());
@@ -70,7 +70,7 @@ pub(crate) fn sign_hedged(esk: &ExpandedSigningKey<MlDsa87>, msg: &[u8])
     -> Option<Signature<MlDsa87>>
 {
     let mut rnd = Zeroizing::new(B32::default());
-    getrandom::getrandom(rnd.as_mut_slice()).ok()?;
+    crate::os_random::try_fill(rnd.as_mut_slice()).ok()?;
     Some(esk.sign_internal(&[&[0u8], &[0u8], msg], &rnd))
 }
 
@@ -227,14 +227,13 @@ fn mldsa_aad(version: u8, key_id: u32) -> Vec<u8> {
 impl MlDsa87KeyHandle {
     pub(crate) fn seal(&self, dek: &[u8], key_id: u32) -> Result<Vec<u8>, &'static str> {
         use aes_gcm::aead::{Aead, KeyInit, Payload};
-        use rand_core::{OsRng, RngCore};
         let secret = self.secret.as_ref().ok_or("ML-DSA-87 signing key has been destroyed")?;
         let cipher = aes_gcm::Aes256Gcm::new_from_slice(dek).map_err(|_| "bad key")?;
         let mut plain = zeroize::Zeroizing::new(Vec::with_capacity(MLDSA_SK_LEN + MLDSA_PK_LEN));
         plain.extend_from_slice(secret.expose());
         plain.extend_from_slice(&self.public);
         let mut nonce = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce);
+        crate::os_random::fill(&mut nonce);
         let aad = mldsa_aad(MLDSA_RECORD_VERSION, key_id);
         let ct = cipher
             .encrypt(&aes_gcm::Nonce::from(nonce), Payload { msg: &plain, aad: &aad })

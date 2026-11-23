@@ -298,7 +298,7 @@ fn encap(kem: Kem, pk_r: &[u8]) -> Result<(Zeroizing<Vec<u8>>, Vec<u8>), HpkeErr
             }
             let (pk_x448, pk_mlkem) = pk_r.split_at(X448_BYTES);
             let mut eph = Zeroizing::new([0u8; X448_BYTES]);
-            getrandom::getrandom(&mut eph[..]).map_err(|_| HpkeError::InvalidInput)?;
+            getrandom::fill(&mut eph[..]).map_err(|_| HpkeError::InvalidInput)?;
             let ct_x448 = x448_public(&eph[..])?;
             let ss_x448 = x448_dh(&eph[..], pk_x448)?;
             let (ss_mlkem, ct_mlkem) = mlkem_encap(pk_mlkem)?;

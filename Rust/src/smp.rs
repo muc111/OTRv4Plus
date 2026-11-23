@@ -77,7 +77,6 @@ use sha3::digest::Update;
 // SimpleHmac: hmac 0.13's Hmac needs a block-level core sha3 0.12 no longer
 // exposes; SimpleHmac is the same HMAC (RFC 2104) over any Digest.
 use hmac::{KeyInit, Mac, SimpleHmac as Hmac};
-use rand::rngs::OsRng;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -837,10 +836,28 @@ impl SmpState {
         }
     }
 
+    /// A secret exponent, uniform in [2, q) where q is [`SMP_ORDER`].
+    ///
+    /// Rejection sampling over exactly the bit length of q - 2: a draw below
+    /// q - 2 is kept and shifted up by 2, anything else is drawn again. No
+    /// reduction, so no modulo bias. The top bit of q - 2 is set, so each
+    /// draw is kept with probability above 1/2. The raw bytes are wiped
+    /// whether the draw is kept or not.
     fn random_exponent() -> SecretVec {
-        use num_bigint::RandBigInt;
-        let v = OsRng.gen_biguint_range(&num_bigint::BigUint::from(2u8), &SMP_ORDER);
-        SecretVec::from_slice(&Self::fixed_bytes(&v, SMP_SCALAR_BYTES))
+        use num_bigint::BigUint;
+        static SPAN: LazyLock<BigUint> = LazyLock::new(|| &*SMP_ORDER - 2u8);
+        let bits = SPAN.bits() as usize;
+        let mut raw = zeroize::Zeroizing::new(vec![0u8; bits.div_ceil(8)]);
+        let spare_bits = raw.len() * 8 - bits;
+        loop {
+            crate::os_random::fill(&mut raw);
+            raw[0] &= 0xff >> spare_bits;
+            let draw = BigUint::from_bytes_be(&raw);
+            if draw < *SPAN {
+                let exponent = draw + 2u8;
+                return SecretVec::from_slice(&Self::fixed_bytes(&exponent, SMP_SCALAR_BYTES));
+            }
+        }
     }
 
     // ─── wire encode / decode ────────────────────────────────────────────────
@@ -1951,6 +1968,20 @@ impl PySmp {
 mod tests {
     use super::*;
 
+    #[test]
+    fn random_exponents_are_in_range_and_distinct() {
+        use num_bigint::BigUint;
+        let two = BigUint::from(2u8);
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..64 {
+            let e = SmpState::random_exponent();
+            assert_eq!(e.expose().len(), SMP_SCALAR_BYTES);
+            let v = BigUint::from_bytes_be(e.expose());
+            assert!(v >= two && v < *SMP_ORDER);
+            assert!(seen.insert(e.expose().to_vec()), "a repeated exponent");
+        }
+    }
+
     // ── Review F2 (2026-11-11): the constant-time response is the old one ────
     /// The `num_bigint` formula `zkp_response` replaced, kept here as the
     /// reference the wire format must still match.
@@ -1962,7 +1993,6 @@ mod tests {
 
     #[test]
     fn constant_time_response_matches_the_old_one_byte_for_byte() {
-        use rand::RngCore;
         let q = SMP_ORDER.to_bytes_be();
         let q_minus_1 = (&*SMP_ORDER - 1u8).to_bytes_be();
         let ones = vec![0xFFu8; 384];
@@ -1970,7 +2000,7 @@ mod tests {
         let mut edge: Vec<Vec<u8>> = vec![zero.clone(), vec![1], q.clone(), q_minus_1.clone(), ones.clone(), vec![0u8; 384]];
         for _ in 0..60 {
             let mut v = vec![0u8; 384];
-            OsRng.fill_bytes(&mut v);
+            crate::os_random::fill(&mut v);
             edge.push(v);
         }
         // c is a challenge: always reduced mod q.
@@ -1978,7 +2008,7 @@ mod tests {
             .into_iter()
             .chain((0..5).map(|_| {
                 let mut h = [0u8; 64];
-                OsRng.fill_bytes(&mut h);
+                crate::os_random::fill(&mut h);
                 (num_bigint::BigUint::from_bytes_be(&h) % &*SMP_ORDER).to_bytes_be()
             }))
             .collect();
@@ -1993,10 +2023,9 @@ mod tests {
 
     #[test]
     fn the_secret_scalar_is_the_padded_binding_as_before() {
-        use rand::RngCore;
         for _ in 0..50 {
             let mut binding = [0u8; 64];
-            OsRng.fill_bytes(&mut binding);
+            crate::os_random::fill(&mut binding);
             let old = SmpState::fixed_bytes(
                 &(num_bigint::BigUint::from_bytes_be(&binding) % &*SMP_ORDER), SMP_SCALAR_BYTES);
             let mut new = vec![0u8; SMP_SCALAR_BYTES];

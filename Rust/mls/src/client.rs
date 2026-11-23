@@ -1096,7 +1096,7 @@ impl MlsClient {
         let key = state_key(dek)?;
         let cipher = Aes256Gcm::new_from_slice(&key[..]).map_err(|_| MlsError::Failed("key"))?;
         let mut nonce = [0u8; 12];
-        getrandom::getrandom(&mut nonce).map_err(|_| MlsError::Failed("randomness"))?;
+        getrandom::fill(&mut nonce).map_err(|_| MlsError::Failed("randomness"))?;
         let aad = state_aad(context);
         let ct = cipher.encrypt(&Nonce::try_from(&nonce[..]).expect("a 12-byte AES-GCM nonce"), Payload { msg: &plain, aad: &aad })
             .map_err(|_| MlsError::Failed("seal"))?;
@@ -1747,7 +1747,7 @@ mod f4_containment_tests {
         let prov = include_str!("provider.rs");
         let gen = &prov[prov.find("pub fn generate_for(").unwrap()..];
         let gen = &gen[..gen.find("\n    }\n").unwrap()];
-        assert!(gen.contains("mldsa87_keypair()") && gen.contains("getrandom::getrandom"));
+        assert!(gen.contains("mldsa87_keypair()") && gen.contains("getrandom::fill"));
         // And behaviourally: three rotations, four unrelated keys.
         let (mut a, mut b) = (MlsClient::new(b"alice"), MlsClient::new(b"bob"));
         group_of(G, &mut a, &mut [&mut b]);

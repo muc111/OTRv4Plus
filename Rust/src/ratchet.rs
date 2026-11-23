@@ -12,8 +12,6 @@ use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use aes_gcm::aead::Aead;
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, ZeroizeOnDrop};
-use rand::rngs::OsRng;
-use rand::RngCore;
 
 use crate::kdf::{kdf_chain, kdf_root, kdf_brace_rotate, kdf_mkmac, mkmac_fingerprint};
 use crate::header::{RatchetHeader, RatchetError};
@@ -560,7 +558,7 @@ impl DoubleRatchet {
         let aad = self.aad(&header_bytes, &item);
 
         let mut nonce_bytes = [0u8; 12];
-        OsRng.fill_bytes(&mut nonce_bytes);
+        crate::os_random::fill(&mut nonce_bytes);
 
         let cipher = Aes256Gcm::new_from_slice(&enc_key)
             .map_err(|e| RatchetError::Protocol(format!("AES key error: {e}")))?;

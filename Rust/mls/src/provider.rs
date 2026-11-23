@@ -143,7 +143,7 @@ fn aes256(alg: AeadType, key: &[u8], nonce: &[u8]) -> Result<Aes256Gcm, CryptoEr
 #[allow(deprecated)] // `to_expanded` gives the 4896-byte PQClean-compatible form
 fn mldsa87_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
     let mut seed = Zeroizing::new(B32::default());
-    getrandom::getrandom(seed.as_mut_slice()).expect("OS CSPRNG for ML-DSA key generation");
+    getrandom::fill(seed.as_mut_slice()).expect("OS CSPRNG for ML-DSA key generation");
     let esk = ExpandedSigningKey::<MlDsa87>::from_seed(&seed);
     let pk = esk.verifying_key().encode().as_slice().to_vec();
     let expanded = Zeroizing::new(esk.to_expanded());
@@ -160,7 +160,7 @@ pub(crate) fn mldsa87_sign(secret: &[u8], data: &[u8]) -> Result<Vec<u8>, Crypto
         Zeroizing::new(secret.try_into().map_err(|_| CryptoError::InvalidLength)?);
     let esk = ExpandedSigningKey::<MlDsa87>::from_expanded(&enc);
     let mut rnd = Zeroizing::new(B32::default());
-    getrandom::getrandom(rnd.as_mut_slice()).map_err(|_| CryptoError::InsufficientRandomness)?;
+    getrandom::fill(rnd.as_mut_slice()).map_err(|_| CryptoError::InsufficientRandomness)?;
     let sig = esk.sign_internal(&[&[0u8], &[0u8], data], &rnd);
     Ok(sig.encode().as_slice().to_vec())
 }
@@ -499,13 +499,13 @@ impl OpenMlsRand for CoreCrypto {
 
     fn random_array<const N: usize>(&self) -> Result<[u8; N], Self::Error> {
         let mut out = [0u8; N];
-        getrandom::getrandom(&mut out).map_err(|_| RandomnessError)?;
+        getrandom::fill(&mut out).map_err(|_| RandomnessError)?;
         Ok(out)
     }
 
     fn random_vec(&self, len: usize) -> Result<Vec<u8>, Self::Error> {
         let mut out = vec![0u8; len];
-        getrandom::getrandom(&mut out).map_err(|_| RandomnessError)?;
+        getrandom::fill(&mut out).map_err(|_| RandomnessError)?;
         Ok(out)
     }
 }
@@ -583,7 +583,7 @@ impl SignatureKeyPair {
             }),
             COMPOSITE => {
                 let mut seed = Zeroizing::new([0u8; ED448_SEED_BYTES]);
-                getrandom::getrandom(&mut seed[..])
+                getrandom::fill(&mut seed[..])
                     .map_err(|_| CryptoError::InsufficientRandomness)?;
                 let ed_pk = ed448_key(&seed[..])?.verifying_key().to_bytes();
                 let mut public = Vec::with_capacity(COMPOSITE_PUBLIC_KEY_BYTES);

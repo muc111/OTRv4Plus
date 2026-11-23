@@ -15,6 +15,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 
 pub mod error;
+pub mod os_random;        // the one source of secret randomness: the OS CSPRNG
 pub mod secure_mem;
 pub mod kdf;
 pub mod header;

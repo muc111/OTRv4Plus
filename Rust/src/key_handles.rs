@@ -37,7 +37,6 @@ use ed448_goldilocks_plus::{
     Signature,
 };
 // ed448-goldilocks-plus 0.18 no longer re-exports rand_core 0.6's OsRng.
-use rand::{RngCore, rngs::OsRng};
 
 use zeroize::Zeroize;
 use std::convert::TryFrom;
@@ -204,7 +203,7 @@ impl Ed448KeyHandle {
 #[pyfunction]
 pub fn generate_ed448_keypair() -> PyResult<Ed448KeyHandle> {
     let mut seed = [0u8; 57];
-    OsRng.fill_bytes(&mut seed);
+    crate::os_random::fill(&mut seed);
 
     let signing_key = SigningKey::try_from(&seed[..])
         .map_err(|e| PyValueError::new_err(format!(
@@ -410,7 +409,7 @@ impl X448KeyHandle {
 #[pyfunction]
 pub fn generate_x448_keypair() -> PyResult<X448KeyHandle> {
     let mut priv_arr = [0u8; 56];
-    OsRng.fill_bytes(&mut priv_arr);
+    crate::os_random::fill(&mut priv_arr);
 
     let pub_arr: [u8; 56] = crate::rfc7748::public_key(&priv_arr);
 

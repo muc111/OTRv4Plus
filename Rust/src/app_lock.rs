@@ -44,7 +44,6 @@ use hkdf::Hkdf;
 use pyo3::exceptions::{PyRuntimeError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyByteArray, PyBytes, PyDict};
-use rand_core::{OsRng, RngCore};
 use sha2::Sha512;
 use zeroize::Zeroizing;
 
@@ -190,7 +189,7 @@ pub fn seal_record(header: &Header, kek: &SecretBytes<KEY_LEN>, dek: &SecretByte
     let head = header.encode();
     let cipher = Aes256Gcm::new_from_slice(kek.expose_slice()).map_err(|_| "bad KEK")?;
     let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
+    crate::os_random::fill(&mut nonce);
     let ct = cipher
         .encrypt(&Nonce::from(nonce), Payload { msg: dek.expose_slice(), aad: &head })
         .map_err(|_| "wrap failed")?;
@@ -235,7 +234,7 @@ fn vault_aad(name: &[u8]) -> Vec<u8> {
 
 pub fn vault_seal(dek: &SecretBytes<KEY_LEN>, name: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, &'static str> {
     let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
+    crate::os_random::fill(&mut nonce);
     let ct = vault_cipher(dek)
         .encrypt(&Nonce::from(nonce), Payload { msg: plaintext, aad: &vault_aad(name) })
         .map_err(|_| "seal failed")?;
@@ -332,7 +331,7 @@ fn rt(e: &'static str) -> PyErr {
 #[pyfunction]
 pub fn app_lock_new_salt(py: Python<'_>) -> Py<PyBytes> {
     let mut salt = [0u8; SALT_LEN];
-    OsRng.fill_bytes(&mut salt);
+    crate::os_random::fill(&mut salt);
     PyBytes::new(py, &salt).unbind()
 }
 
@@ -367,7 +366,7 @@ pub fn app_lock_enrol(
     }
     let header = make_header(pass.is_some(), salt, t, m_kib, p)?;
     let mut fresh = Zeroizing::new([0u8; KEY_LEN]);
-    OsRng.fill_bytes(&mut fresh[..]);
+    crate::os_random::fill(&mut fresh[..]);
     let dek = SecretBytes::new(*fresh);
     let record = py.detach(|| -> Result<Vec<u8>, &'static str> {
         let kek = derive_kek(&header, pass.as_deref().map(|v| &v[..]), &hw)?;

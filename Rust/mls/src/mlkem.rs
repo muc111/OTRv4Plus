@@ -44,7 +44,7 @@ pub fn keypair_from_seed(seed: &[u8]) -> Option<(Vec<u8>, Zeroizing<Vec<u8>>)> {
 pub fn encapsulate(pk: &[u8]) -> Option<(Zeroizing<Vec<u8>>, Vec<u8>)> {
     let key = EncapsulationKey::<MlKem1024>::new(&Array::try_from(pk).ok()?).ok()?;
     let mut m = Zeroizing::new(B32::default());
-    getrandom::getrandom(m.as_mut_slice()).ok()?;
+    getrandom::fill(m.as_mut_slice()).ok()?;
     let (ct, ss) = key.encapsulate_deterministic(&m);
     let ss = Zeroizing::new(ss);
     Some((Zeroizing::new(ss.as_slice().to_vec()), ct.as_slice().to_vec()))

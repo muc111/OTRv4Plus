@@ -783,9 +783,8 @@ impl PyVoiceKex {
     #[new]
     #[pyo3(signature = (with_kem = false))]
     fn new(with_kem: bool) -> PyResult<Self> {
-        use rand::RngCore;
         let mut sk = [0u8; 56];
-        rand::rngs::OsRng.fill_bytes(&mut sk);
+        crate::os_random::fill(&mut sk);
 
         let pub_bytes: [u8; 56] = crate::rfc7748::public_key(&sk);
 

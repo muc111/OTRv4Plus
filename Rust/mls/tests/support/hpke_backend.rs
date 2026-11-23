@@ -39,7 +39,7 @@ impl Zeroize for OsPrng {
 }
 
 fn os_fill(dst: &mut [u8]) {
-    getrandom::getrandom(dst).expect("the operating system supplied no randomness");
+    getrandom::fill(dst).expect("the operating system supplied no randomness");
 }
 
 impl rand_core_hpke::TryRng for OsPrng {

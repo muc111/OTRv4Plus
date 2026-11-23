@@ -883,7 +883,7 @@ impl DakeState {
     }
 
     fn generate_x448_ephemeral() -> Result<(SecretBytes<56>, [u8; X448_PUB_SIZE])> {
-        let mut bytes=[0u8;56]; getrandom::getrandom(&mut bytes).map_err(|_| OtrError::Internal)?;
+        let mut bytes=[0u8;56]; crate::os_random::try_fill(&mut bytes).map_err(|_| OtrError::Internal)?;
         let public = crate::rfc7748::public_key(&bytes);
         let secret = SecretBytes::new(bytes);
         zeroize::Zeroize::zeroize(&mut bytes); // Copy: the move above left this copy behind

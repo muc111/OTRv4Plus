@@ -69,7 +69,7 @@ const MLKEM_DK_SIZE: usize = 3168;
 /// intermediate copy (seed, encoded key) is wiped too.
 pub(crate) fn raw_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
     let mut seed = Zeroizing::new([0u8; 64]);
-    getrandom::getrandom(&mut seed[..]).expect("OS CSPRNG for ML-KEM key generation");
+    crate::os_random::try_fill(&mut seed[..]).expect("OS CSPRNG for ML-KEM key generation");
     let dk = DecapsulationKey::<MlKem1024>::from_seed(Array::from(*seed));
     let ek = dk.encapsulation_key().to_bytes().as_slice().to_vec();
     #[allow(deprecated)]
@@ -84,7 +84,7 @@ pub(crate) fn raw_keypair() -> (Vec<u8>, Zeroizing<Vec<u8>>) {
 pub(crate) fn raw_encapsulate(ek: &[u8]) -> Option<(Vec<u8>, Zeroizing<Vec<u8>>)> {
     let key = EncapsulationKey::<MlKem1024>::new(&Array::try_from(ek).ok()?).ok()?;
     let mut m = Zeroizing::new(B32::default());
-    getrandom::getrandom(m.as_mut_slice()).ok()?;
+    crate::os_random::try_fill(m.as_mut_slice()).ok()?;
     let (ct, ss) = key.encapsulate_deterministic(&m);
     let ss = Zeroizing::new(ss);
     Some((ct.as_slice().to_vec(), Zeroizing::new(ss.as_slice().to_vec())))

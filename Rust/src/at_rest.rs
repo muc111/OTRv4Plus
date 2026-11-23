@@ -45,7 +45,6 @@ use pyo3::types::{PyByteArray, PyBytes, PyString};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
-use rand_core::{OsRng, RngCore};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::kdf::{kdf_secret, usage};
@@ -90,7 +89,7 @@ fn kek_cipher() -> Result<Option<Aes256Gcm>, String> {
 
 fn wrap_key(cipher: &Aes256Gcm, key: &[u8]) -> Result<Vec<u8>, String> {
     let mut nonce = [0u8; NONCE_LEN];
-    OsRng.fill_bytes(&mut nonce);
+    crate::os_random::fill(&mut nonce);
     let ct = cipher
         .encrypt(&Nonce::from(nonce), Payload { msg: key, aad: WRAP_MAGIC })
         .map_err(|_| "key wrap failed".to_string())?;
@@ -224,7 +223,7 @@ fn create_key_file(path: &Path) -> std::io::Result<SecretBytes<KEY_LEN>> {
         opts.mode(0o600);
     }
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
-    OsRng.fill_bytes(&mut key[..]);
+    crate::os_random::fill(&mut key[..]);
     let on_disk: Zeroizing<Vec<u8>> = match kek_cipher().map_err(std::io::Error::other)? {
         Some(cipher) => Zeroizing::new(wrap_key(&cipher, &key[..]).map_err(std::io::Error::other)?),
         None => Zeroizing::new(key.to_vec()),
@@ -255,7 +254,7 @@ fn load_or_create_key(path: &Path) -> PyResult<SecretBytes<KEY_LEN>> {
 fn write_atomically(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let mut suffix = [0u8; 8];
-    OsRng.fill_bytes(&mut suffix);
+    crate::os_random::fill(&mut suffix);
     let tmp = dir.join(format!(
         ".{}.{}.tmp",
         path.file_name().and_then(|n| n.to_str()).unwrap_or("store"),
@@ -652,7 +651,7 @@ impl SmpSecretStore {
         let cipher = Aes256Gcm::new_from_slice(key.expose_slice())
             .map_err(|_| PyValueError::new_err("invalid store key"))?;
         let mut nonce = [0u8; NONCE_LEN];
-        OsRng.fill_bytes(&mut nonce);
+        crate::os_random::fill(&mut nonce);
         let mut aad = STORE_MAGIC.to_vec();
         aad.extend_from_slice(STORE_AAD);
         let ct = cipher
@@ -806,7 +805,7 @@ pub(crate) mod tests {
 
     fn tmp_key_path(tag: &str) -> PathBuf {
         let mut r = [0u8; 8];
-        OsRng.fill_bytes(&mut r);
+        crate::os_random::fill(&mut r);
         std::env::temp_dir().join(format!("kek-{}-{}", tag, r.iter().map(|b| format!("{:02x}", b)).collect::<String>())).join("k.dek")
     }
 
