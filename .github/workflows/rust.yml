@@ -66,6 +66,8 @@ jobs:
           python-version: "3.12"
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - uses: actions/cache@v4
         with:
@@ -82,3 +84,9 @@ jobs:
 
       - name: With group chat (the `mls` feature the apps are built with)
         run: cargo test --release --locked --features mls
+
+      # Clippy, every target, warnings as errors: the same zero-warnings rule
+      # desktop/install.sh applies to the compiler. A new stable toolchain can
+      # add a lint; fix the code, do not silence the lint without a reason.
+      - name: Clippy (core and group chat)
+        run: cargo clippy --release --locked --all-targets --features mls -- -D warnings
