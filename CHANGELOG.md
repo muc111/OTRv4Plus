@@ -4,7 +4,28 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.208-untested — 2026-11-23 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.209-untested — 2026-11-27 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194; rc.207 and rc.208 are not yet
+tested, and this one builds on them. Code quality and CI only: nothing on
+screen changes.
+
+- **The Python code is lint-clean, and CI keeps it so.** 61 unused imports,
+  37 unused variables and 10 empty f-strings are gone. One import was
+  load-bearing by accident: the terminal client's log rotation worked only
+  because another module happened to load the code it needed first.
+- **Rust: Clippy runs in CI**, warnings as errors, on the core and the
+  group-chat crate. Both were already clean.
+- **Android: the Kotlin warnings that were only noise are fixed** (redundant
+  casts and `!!`, and a Python-style docstring left in a Kotlin test). Two
+  deprecated Android constants (the call notification's icon and sound
+  type) are left for a change that can be tried on a phone.
+- **CI is less likely to fail for reasons that are not the code.** Maven
+  Central had been refusing the build machines (too many requests): builds
+  on `dev` now keep their downloaded dependencies, and an obsolete run on a
+  work branch is cancelled by the next push.
+
+## Android 0.7.0-experimental.rc.208-untested — 2026-11-23 — on `dev`, superseded by rc.209
 
 The last build tested on devices is rc.194; rc.207 is not yet tested, and
 this one builds on it. Dependency upgrades; nothing on screen changes.
