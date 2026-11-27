@@ -5,7 +5,7 @@
 A mixin of OTRv4PlusXMPP (otrv4plus_xmpp.py), which it is only ever used
 as. The form logic itself is otrv4plus_admin.py; this is the part that
 talks to the server and to the person at the terminal."""
-import asyncio
+import otrv4plus_tasks as _tasks
 
 import otrv4plus_admin as _admin
 from otrv4plus_term import print, _sanitise  # noqa: A004 (the client's print)
@@ -156,7 +156,7 @@ class AdminMixin:
             return
         field = form.current()
         if field is None:
-            asyncio.ensure_future(self._admin_submit())
+            _tasks.spawn(self._admin_submit())
             return
         print("[admin] %s" % field.prompt())
         # Hidden input for a password field, on the same mechanism the SMP
@@ -174,7 +174,7 @@ class AdminMixin:
             return
         if line.strip().lower() in ("/cancel", "/abort"):
             print("[admin] cancelled — nothing was sent")
-            asyncio.ensure_future(self._admin_cancel())
+            _tasks.spawn(self._admin_cancel())
             return
         try:
             form.answer(line)

@@ -41,6 +41,7 @@ log line or a diagnostic report, so `__repr__` is written by hand and
 from __future__ import annotations
 
 import asyncio
+import otrv4plus_tasks as _tasks
 import concurrent.futures as _futures
 import threading
 import time
@@ -1770,7 +1771,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             # old hash; the re-broadcast corrects it.
             result = caps.update_caps()
             if asyncio.iscoroutine(result) or asyncio.isfuture(result):
-                asyncio.ensure_future(result)
+                _tasks.spawn(result)
         except Exception:
             # Without XEP-0115 peers still find the feature by asking our
             # disco#info directly; they only lose the cache.
@@ -2503,7 +2504,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             return
         try:
             if self._on_loop_thread():
-                loop.create_task(self._query_restrictions())
+                _tasks.spawn(self._query_restrictions(), loop=loop)
             else:
                 asyncio.run_coroutine_threadsafe(self._query_restrictions(), loop)
         except Exception:
@@ -2707,7 +2708,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         if self._caps.presence_available(full, ver, priority):
             self._notify_capability(bare)          # CHECKING
             try:
-                asyncio.ensure_future(self._query_caps(full))
+                _tasks.spawn(self._query_caps(full))
             except Exception:
                 self._caps.disco_failed(full)
                 self._notify_capability(bare)

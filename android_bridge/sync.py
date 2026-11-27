@@ -32,6 +32,7 @@ traffic are never handed to anything.
 from __future__ import annotations
 
 import asyncio
+import otrv4plus_tasks as _tasks
 import logging
 import os
 import time
@@ -386,7 +387,7 @@ class SyncMixin:
             return
         try:
             if self._on_loop_thread():
-                loop.create_task(self._sync_after_session())
+                _tasks.spawn(self._sync_after_session(), loop=loop)
             else:
                 asyncio.run_coroutine_threadsafe(self._sync_after_session(), loop)
         except Exception:

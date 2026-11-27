@@ -8,6 +8,7 @@ format, what is stripped) is avatar.py; the profile fields are profile.py."""
 from __future__ import annotations
 
 import asyncio
+import otrv4plus_tasks as _tasks
 from typing import Dict
 
 import otrv4plus_muc as _muc
@@ -69,7 +70,7 @@ class AvatarMixin:
             return
         wanted = self._avatars.note_metadata(jid, infos)
         if wanted:
-            asyncio.ensure_future(self._fetch_avatar(jid, wanted))
+            _tasks.spawn(self._fetch_avatar(jid, wanted))
 
     async def _fetch_avatar(self, jid: str, avatar_id: str) -> None:
         try:

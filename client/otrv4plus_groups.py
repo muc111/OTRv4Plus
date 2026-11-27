@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import asyncio
+import otrv4plus_tasks as _tasks
 import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -502,7 +503,7 @@ class TermuxGroups:
                     p("[group call %s] %s is calling: joining (you are both "
                       "verified). /pause to mute yourself, /hangup to leave."
                       % (ev.peer[:64], caller))
-                    asyncio.ensure_future(self._call(ev.peer, start=False))
+                    _tasks.spawn(self._call(ev.peer, start=False))
                 else:
                     # A bare y/n answers it (owner, 2026-10-14: "less typing").
                     self._ask("call", ev.peer)
@@ -1398,11 +1399,11 @@ class TermuxGroups:
             else:
                 self.files.decline(self._prompt_file)
         elif kind == "invite":
-            asyncio.ensure_future(self.command(
+            _tasks.spawn(self.command(
                 "%s %s" % ("accept" if yes else "decline", room)))
         elif kind == "call":
             if yes:
-                asyncio.ensure_future(self._call(room, start=False))
+                _tasks.spawn(self._call(room, start=False))
             else:
                 self._print("[group call %s] not joining; /group answer %s "
                             "while it still rings" % (room[:64], room[:64]))

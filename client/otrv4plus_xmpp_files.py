@@ -8,6 +8,7 @@ keys are otrv4plus_filetransfer.py; this is the `/sendfile`, `/voice` and
 the quick y/n answers files and calls share."""
 import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import asyncio
+import otrv4plus_tasks as _tasks
 import os
 import time
 
@@ -108,7 +109,7 @@ class FilesMixin:
                 sent = max(1, self._file_fragments_sent)
                 await asyncio.sleep(sent / _FILE_FRAGMENTS_PER_SEC)
 
-        asyncio.ensure_future(_run())
+        _tasks.spawn(_run())
 
     def _file_peer_verified(self, peer: str) -> bool:
         """File transfer requires the same cryptographic gate voice does.
@@ -205,13 +206,13 @@ class FilesMixin:
                         pass
 
             def go(strip: bool):
-                asyncio.ensure_future(self._offer_file(
+                _tasks.spawn(self._offer_file(
                     peer, chosen, strip, group=group, picked=not path,
                     discard=discard))
 
             self.confirm_metadata(chosen, go, on_cancel=discard)
 
-        asyncio.ensure_future(_run())
+        _tasks.spawn(_run())
 
     def _cmd_voice(self, peer, args: str) -> None:
         """/voice [synthetic|natural] -- record (synthetic by default); /voice again (or
@@ -312,7 +313,7 @@ class FilesMixin:
                 except OSError:
                     pass
 
-            asyncio.ensure_future(self._offer_file(
+            _tasks.spawn(self._offer_file(
                 peer, path, False, group=group, picked=False, discard=discard))
         else:
             print("usage: /voice [synthetic|natural] | stop | play | send | cancel")

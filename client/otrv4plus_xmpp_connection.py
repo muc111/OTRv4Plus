@@ -7,6 +7,7 @@ the server is dead (and, as importantly, when it is merely slow over I2P),
 asks again for a refused password, and reconnects with backoff through a
 fresh Tor or I2P forwarder."""
 import asyncio
+import otrv4plus_tasks as _tasks
 import os
 import secrets
 import sys
@@ -166,7 +167,7 @@ class ConnectionMixin:
             result = self.disconnect()
             # slixmpp returns a coroutine here in some versions.
             if asyncio.iscoroutine(result):
-                asyncio.ensure_future(result)
+                _tasks.spawn(result)
         except Exception as exc:
             print("[keepalive] disconnect failed: %s" % _sanitise(str(exc), 80))
 

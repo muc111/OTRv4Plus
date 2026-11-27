@@ -148,6 +148,7 @@ if __name__ == "__main__":
 
 import argparse
 import asyncio
+import otrv4plus_tasks as _tasks
 import builtins
 import collections
 import getpass
@@ -1185,7 +1186,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
         # terminal that never joined it was never shown (device report,
         # 2026-10-27). In the background: an I2P round trip per step.
         if getattr(self, "_join_welcome", False):
-            asyncio.ensure_future(self._welcome_join())
+            _tasks.spawn(self._welcome_join())
         # Initialize voice call manager now that we have an event loop
         if self._voice_manager is None:
             self._voice_manager = VoiceCallManager(
@@ -1248,7 +1249,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
         # (otrv4plus_termsync): installed once, then synced in the background.
         try:
             self._ts_install()
-            asyncio.ensure_future(self._ts_after_session())
+            _tasks.spawn(self._ts_after_session())
         except Exception:
             pass
         if self.peer:
@@ -1530,7 +1531,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
             # OTR processing (especially SMP) can run multi-minute 3072-bit DH
             # computations that BLOCK. Offload to a thread to keep the asyncio
             # event loop free so keepalive and network stay responsive.
-            asyncio.ensure_future(self._handle_otr_in_async(peer, body))
+            _tasks.spawn(self._handle_otr_in_async(peer, body))
         elif body.startswith(VoiceCallManager.CALL_PREFIX):
             # Call control is only legitimate inside the OTR channel. Arriving
             # as plaintext it is either an outdated client or an attempt to
@@ -1705,8 +1706,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
                 # incoming call" while the caller waits.
                 if text.startswith(VoiceCallManager.CALL_PREFIX):
                     if self._voice_manager is not None:
-                        asyncio.ensure_future(
-                            self._voice_manager.handle_signal(peer, text))
+                        _tasks.spawn(self._voice_manager.handle_signal(peer, text))
                     else:
                         print("[voice] call signal received before the voice "
                               "subsystem was ready — ignoring")
@@ -2760,7 +2760,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
                 print(f"[roster] removed {jid}")
             except Exception as e:
                 print(f"[roster] remove error: {e}")
-        asyncio.ensure_future(_do())
+        _tasks.spawn(_do())
 
     def accept_subscription(self, jid):
         """Approve a pending subscription request."""
@@ -2817,7 +2817,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
                 print(f"[ping] {_sanitise(jid, 128)}: timeout (30s)")
             except Exception as e:
                 print(f"[ping] {_sanitise(jid, 128)}: failed ({e})")
-        asyncio.ensure_future(_do())
+        _tasks.spawn(_do())
 
     # -------------------------------------------------------------------------
     # Status and help
@@ -3157,7 +3157,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
             if groups is None:
                 print("[group] secure groups are unavailable in this install")
             else:
-                asyncio.ensure_future(groups.command(lstrip[len("/group"):].strip()))
+                _tasks.spawn(groups.command(lstrip[len("/group"):].strip()))
             return True
 
         # --- L1: publish this session's MAC keys and start afresh ---
@@ -3369,7 +3369,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
         elif lstrip == "/admin" or lstrip.startswith("/admin "):
             parts = lstrip.split(None, 1)
             arg = parts[1].strip() if len(parts) > 1 else ""
-            asyncio.ensure_future(self._cmd_admin(arg))
+            _tasks.spawn(self._cmd_admin(arg))
         else:
             return False
         return True
@@ -3414,7 +3414,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
             if peer and self._voice_manager:
                 if self._voice_blocked_by_tofu(peer):
                     return True
-                asyncio.ensure_future(self._voice_manager.start_call(peer))
+                _tasks.spawn(self._voice_manager.start_call(peer))
             elif not self._voice_manager:
                 print("[voice] not initialized — connect first")
             else:
@@ -3424,19 +3424,19 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
             if jid and self._voice_manager:
                 if self._voice_blocked_by_tofu(jid):
                     return True
-                asyncio.ensure_future(self._voice_manager.start_call(jid))
+                _tasks.spawn(self._voice_manager.start_call(jid))
             else:
                 print("usage: /call <jid>")
         elif lstrip == "/answer":
             if peer and self._voice_manager:
                 if self._voice_blocked_by_tofu(peer):
                     return True
-                asyncio.ensure_future(self._voice_manager.answer_call(peer))
+                _tasks.spawn(self._voice_manager.answer_call(peer))
             else:
                 print("[voice] no incoming call")
         elif lstrip == "/reject":
             if peer and self._voice_manager:
-                asyncio.ensure_future(self._voice_manager.reject_call(peer))
+                _tasks.spawn(self._voice_manager.reject_call(peer))
         elif lstrip == "/hangup" and getattr(getattr(self, "_groups", None),
                                              "in_call", lambda: False)():
             self._groups._hangup()
@@ -3453,7 +3453,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
                 target = peer if self._voice_manager.has_active_call(peer) \
                     else self._voice_manager.any_active_peer()
                 if target:
-                    asyncio.ensure_future(self._voice_manager.end_call(target))
+                    _tasks.spawn(self._voice_manager.end_call(target))
                 else:
                     print("[voice] no active call")
             else:
@@ -3495,7 +3495,7 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
             threading.Thread(target=_probe, name="audio-probe",
                              daemon=True).start()
         elif lstrip == "/audiotest":
-            asyncio.ensure_future(_termux._audio_selftest_async(voice_available))
+            _tasks.spawn(_termux._audio_selftest_async(voice_available))
         elif lstrip in ("/mask", "/mask on", "/mask off"):
             # "Mask my voice": live calls, 1:1 and group, at once
             # (otrv4plus_audio.LiveMasker; Rust live_mask.rs).

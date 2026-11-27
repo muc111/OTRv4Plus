@@ -9,6 +9,7 @@ action names, who may change what -- is the app's (`OtrApp`), with
 from __future__ import annotations
 
 import asyncio
+import otrv4plus_tasks as _tasks
 import logging
 import xml.etree.ElementTree as ET
 from typing import List, Optional
@@ -59,7 +60,7 @@ class RoomSyncMixin:
             return
         try:
             if self._on_loop_thread():
-                loop.create_task(self._room_catch_up(room))
+                _tasks.spawn(self._room_catch_up(room), loop=loop)
             else:
                 asyncio.run_coroutine_threadsafe(self._room_catch_up(room), loop)
         except Exception:

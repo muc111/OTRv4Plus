@@ -57,6 +57,7 @@ from __future__ import annotations
 import otrv4plus_repo  # noqa: F401  (android_bridge importable from client/)
 import argparse
 import asyncio
+import otrv4plus_tasks as _tasks
 import base64
 import csv
 import getpass
@@ -898,9 +899,9 @@ async def run(args) -> int:
                             wl.ok(time.time() - t0)
                         except Exception:
                             wl.failed += 1
-                    asyncio.ensure_future(one())
+                    _tasks.spawn(one())
                     await asyncio.sleep(gap)
-            asyncio.ensure_future(into_welcome())
+            _tasks.spawn(into_welcome())
         with open(csv_path, "w", newline="") as fh:
             writer = None
             while time.time() < end:

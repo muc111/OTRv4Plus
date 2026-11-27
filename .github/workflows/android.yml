@@ -68,6 +68,7 @@ on:
       - "client/otrv4plus_config.py"
       - "client/otrv4plus_logging.py"
       - "client/otrv4plus_wire.py"
+      - "client/otrv4plus_tasks.py"
       - "client/otrv4plus_admin.py"
       - "client/otrv4plus_alias.py"
       - "client/otrv4plus_audio.py"

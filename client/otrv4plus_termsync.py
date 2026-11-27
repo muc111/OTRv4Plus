@@ -24,6 +24,7 @@ __init__ (the test doubles), and nothing here touches key material.
 from __future__ import annotations
 
 import asyncio
+import otrv4plus_tasks as _tasks
 import collections
 import os
 import sys
@@ -341,7 +342,7 @@ class TermSyncMixin:
             if self._tsync()["blocking"]:
                 try:
                     asyncio.get_running_loop()
-                    asyncio.ensure_future(self._ts_block_server(
+                    _tasks.spawn(self._ts_block_server(
                         word, jid.split("/", 1)[0].lower(), report))
                 except RuntimeError:
                     pass                   # no loop (a test): this session only

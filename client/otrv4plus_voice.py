@@ -156,6 +156,7 @@ Not claimed:
 from __future__ import annotations
 
 import asyncio
+import otrv4plus_tasks as _tasks
 import hashlib
 import hmac
 import os
@@ -3357,7 +3358,7 @@ class VoiceCallManager:
                                  CallState.KEY_CONFIRMING,
                                  CallState.MEDIA_CONNECTING):
                 _print("[voice] no answer from %s — cancelling" % _san(peer, 64))
-                asyncio.ensure_future(self.end_call(peer))
+                _tasks.spawn(self.end_call(peer))
 
         self._timeouts[peer] = self.loop.call_later(self.INVITE_TIMEOUT, _expire)
 
@@ -3800,9 +3801,9 @@ class VoiceCallManager:
         # callback, so the manager's own loop is the only correct one and
         # naming it removes any dependence on a current-loop lookup.
         if verb == "answer":
-            self.loop.create_task(self.answer_call(peer))
+            _tasks.spawn(self.answer_call(peer), loop=self.loop)
         else:
-            self.loop.create_task(self.reject_call(peer))
+            _tasks.spawn(self.reject_call(peer), loop=self.loop)
 
     async def _on_accept(self, peer: str, fields) -> None:
         if len(fields) != 4:
@@ -4508,7 +4509,7 @@ class VoiceCallManager:
             return
         _print("[voice] call with %s lost: %s"
                % (_san(peer, 64), _san(why, 80)))
-        asyncio.ensure_future(self.end_call(peer, notify_peer=True))
+        _tasks.spawn(self.end_call(peer, notify_peer=True))
 
     # -- teardown ---------------------------------------------------------
 
