@@ -4,7 +4,22 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.209-untested — 2026-11-27 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.210-untested — 2026-11-27 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194; rc.207 to rc.209 are not yet
+tested, and this one builds on them.
+
+- **Background work can no longer vanish half way.** The clients started
+  37 pieces of background work (sending a file, joining the Welcome room,
+  the call signalling, the Android sync loop and others) without keeping
+  hold of them, and Python is free to discard such work before it
+  finishes. Each is now held until it is done, and one that fails is
+  logged by name, with the kind of error but never its text, which may
+  carry a peer's data.
+- **Tests:** files the tests read are closed when read, and the test
+  fixtures are declared in the order the next pytest release requires.
+
+## Android 0.7.0-experimental.rc.209-untested — 2026-11-27 — on `dev`, superseded by rc.210
 
 The last build tested on devices is rc.194; rc.207 and rc.208 are not yet
 tested, and this one builds on them. Code quality and CI only: nothing on
