@@ -56,7 +56,7 @@ class EncryptionLauncherTest {
 
         override suspend fun encrypt(
             conversation: ConversationRef,
-            body: String,
+            plaintext: String,
         ) = EncryptionOutcome.encrypted("ct", EncryptionState.ACTIVE)
 
         override suspend fun decrypt(

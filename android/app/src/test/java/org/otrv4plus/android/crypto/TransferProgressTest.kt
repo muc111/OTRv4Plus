@@ -51,7 +51,7 @@ class TransferProgressTest {
         var r = m.sample("a", 10_000, 100_000, 1_000)
         r = m.sample("a", 20_000, 100_000, 2_000)
         assertNotNull(r.bytesPerSecond)
-        assertEquals(10_000.0, r.bytesPerSecond!!, 1.0)
+        assertEquals(10_000.0, r.bytesPerSecond, 1.0)
         assertEquals(8L, r.etaSeconds)
         assertTrue(r.text().contains("ETA 8 s"), r.text())
     }
@@ -66,7 +66,7 @@ class TransferProgressTest {
         // too here, so check a third step pulls further toward the new rate.
         val r2 = m.sample("a", 120_000, 1_000_000, 3_000)
         assertTrue(r2.bytesPerSecond!! < r.bytesPerSecond!!)
-        assertTrue(r2.bytesPerSecond!! < 120_000.0 / 3.0 + 1)
+        assertTrue(r2.bytesPerSecond < 120_000.0 / 3.0 + 1)
     }
 
     @Test

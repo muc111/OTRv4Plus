@@ -60,7 +60,7 @@ class CallUiTest {
         val result = offer(SecurityState.ENCRYPTED, "no audio backend")
         assertTrue(result is CallUi.Offer.Unavailable)
         assertEquals("no audio backend",
-            (result as CallUi.Offer.Unavailable).reason)
+            result.reason)
     }
 
     @Test

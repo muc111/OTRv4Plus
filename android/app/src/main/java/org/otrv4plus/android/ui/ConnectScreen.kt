@@ -129,7 +129,7 @@ fun ConnectScreen(
     // further use for it here. The ViewModel never keeps a copy.
     fun logIn() {
         if (!canSubmit) return
-        model.connect(target!!.jid, password, target.server)
+        model.connect(target.jid, password, target.server)
         password = ""
     }
 
@@ -169,7 +169,7 @@ fun ConnectScreen(
                 style = MaterialTheme.typography.bodyMedium,
             )
             if (BuildConfig.DEV_DIAGNOSTICS) {
-                init?.failureCode?.let { StatusRow("Failure", it) }
+                init.failureCode?.let { StatusRow("Failure", it) }
                 Button(onClick = onOpenDiagnostics) { Text("Open diagnostics") }
             }
             return@Column

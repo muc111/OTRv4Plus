@@ -69,8 +69,8 @@ class SignInTest {
 
     @Test
     fun `a full address still routes through the chosen server`() {
-        """A virtual host and a destination are different things; one server
-           can front several hosts."""
+        // A virtual host and a destination are different things; one server
+        // can front several hosts.
         val target = SignIn.resolve("alice@vhost.i2p", custom, "server.i2p")
         assertEquals("alice@vhost.i2p", target?.jid)
         assertEquals("server.i2p", target?.server)

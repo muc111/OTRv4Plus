@@ -60,7 +60,7 @@ class RoomPasswordTest {
     fun `a room the list marks as protected is asked about before joining`() {
         val p = RoomPassword.beforeJoin("club@conference.otrv4plus.i2p", "alice", needsPassword = true)
         assertNotNull(p)
-        assertFalse(p!!.retry)
+        assertFalse(p.retry)
         assertNull(RoomPassword.beforeJoin("open@conference.otrv4plus.i2p", "alice", needsPassword = false))
     }
 

@@ -23,7 +23,7 @@ class MetadataChoiceTest {
     fun `a photo carrying metadata is asked about`() {
         val next = MetadataChoice.next(finding(true, true, 216))
         assertTrue(next is MetadataChoice.Next.Ask)
-        assertTrue("216 bytes" in (next as MetadataChoice.Next.Ask).question)
+        assertTrue("216 bytes" in next.question)
     }
 
     @Test
@@ -39,7 +39,7 @@ class MetadataChoiceTest {
         assertTrue(next is MetadataChoice.Next.SendUnchecked,
             "an uncheckable file was sent silently, which reads as clean")
         assertTrue("cannot check" in
-            (next as MetadataChoice.Next.SendUnchecked).notice)
+            next.notice)
     }
 
     @Test

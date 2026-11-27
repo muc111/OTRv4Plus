@@ -439,7 +439,7 @@ class AttemptThrottleTest {
         repeat(4) { t.recordFailure() }
         val blocked = t.check()
         assertTrue(blocked is AttemptThrottle.Decision.Blocked)
-        assertEquals(1_000, (blocked as AttemptThrottle.Decision.Blocked).retryAfterMillis)
+        assertEquals(1_000, blocked.retryAfterMillis)
         clock.advance(1_000)
         assertEquals(AttemptThrottle.Decision.Allowed, t.check())
     }
