@@ -163,6 +163,11 @@ jobs:
             https://dl.google.com/android/repository/repository2-3.xml
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+        # Write the dependency cache on main and dev, not only on the default
+        # branch: dev builds downloading everything again is what got Maven
+        # Central answering 429 Too Many Requests.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
 
       - name: Accept SDK licences
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
@@ -472,6 +477,11 @@ jobs:
           fi
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+        # Write the dependency cache on main and dev, not only on the default
+        # branch: dev builds downloading everything again is what got Maven
+        # Central answering 429 Too Many Requests.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
 
       - name: Accept SDK licences
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
@@ -621,6 +631,11 @@ jobs:
           merge-multiple: true
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+        # Write the dependency cache on main and dev, not only on the default
+        # branch: dev builds downloading everything again is what got Maven
+        # Central answering 429 Too Many Requests.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
 
       - name: Accept SDK licences
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
@@ -721,6 +736,11 @@ jobs:
             exit 1
           fi
       - uses: gradle/actions/setup-gradle@v4
+        with:
+        # Write the dependency cache on main and dev, not only on the default
+        # branch: dev builds downloading everything again is what got Maven
+        # Central answering 429 Too Many Requests.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
 
       - name: Accept SDK licences
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
@@ -774,6 +794,11 @@ jobs:
         run: sh tools/fetch-apk-python.sh
 
       - uses: gradle/actions/setup-gradle@v4
+        with:
+        # Write the dependency cache on main and dev, not only on the default
+        # branch: dev builds downloading everything again is what got Maven
+        # Central answering 429 Too Many Requests.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
 
       - name: Accept SDK licences
         run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
