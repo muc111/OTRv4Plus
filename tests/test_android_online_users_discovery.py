@@ -109,9 +109,9 @@ class OfferingDisco(FakeDisco):
 def with_commands(disco, commands):
     t, made = build(disco=disco)
     client = made["client"]
-    client.plugins["xep_0050"] = commands
+    client.plugin["xep_0050"] = commands
     real_forms = stanza(PROSODY_FORM)[1]
-    client.plugins["xep_0004"] = real_forms.plugin["xep_0004"]
+    client.plugin["xep_0004"] = real_forms.plugin["xep_0004"]
     return t, made
 
 
@@ -166,7 +166,7 @@ class TestNothingIsInvented:
         assert value["mechanism"] == "none"
         assert value["users"] == []
         assert commands.sent == [], "ran a command the server did not offer"
-        assert made["client"]["xep_0030"].nodes_asked == [
+        assert made["client"].plugin["xep_0030"].nodes_asked == [
             XmppTransport.COMMANDS_NODE]
 
     def test_a_refusal_is_a_code_not_a_list(self):

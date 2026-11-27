@@ -183,6 +183,11 @@ class _Client(dict):
         self.sent = []
         self.boundjid = types.SimpleNamespace(resource="me", bare=ALICE)
 
+    @property
+    def plugin(self):
+        """slixmpp's plugin table: this fake is one."""
+        return self
+
     def send_message(self, mto=None, mbody=None, mtype=None):
         self.sent.append((str(mto), mbody))
 
@@ -273,11 +278,11 @@ class TestTheWire:
 
     def test_we_advertise_the_feature(self):
         t = _transport({})
-        t._client["xep_0115"] = types.SimpleNamespace(
+        t._client.plugin["xep_0115"] = types.SimpleNamespace(
             caps_node="", update_caps=lambda **kw: None)
         t._advertise(t._client)
         assert caps.FEATURE in t._client.disco.features
-        assert t._client["xep_0115"].caps_node == caps.CAPS_NODE
+        assert t._client.plugin["xep_0115"].caps_node == caps.CAPS_NODE
 
 
 # -- the app, with two real engines -----------------------------------------------

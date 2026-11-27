@@ -153,7 +153,7 @@ class TestTheRoomIsDiscoveredNeverGuessed:
         assert view["room"] == ROOM
         assert view["anonymity"] == W.NON_ANONYMOUS
         assert view["public"] and view["persistent"]
-        assert made["client"]["xep_0045"].joined[0][0] == ROOM
+        assert made["client"].plugin["xep_0045"].joined[0][0] == ROOM
 
     def test_absent_room_is_reported_and_nothing_is_joined(self):
         t, made = build(disco(rooms=[("general@" + MUC, None, "General")]))
@@ -163,7 +163,7 @@ class TestTheRoomIsDiscoveredNeverGuessed:
             t.close()
         assert view["state"] == W.NOT_FOUND
         assert view["room"] == "" and view["people"] == []
-        assert made["client"]["xep_0045"].joined == []
+        assert made["client"].plugin["xep_0045"].joined == []
 
     def test_a_similar_name_is_not_the_welcome_room(self):
         t, made = build(disco(rooms=[
@@ -173,7 +173,7 @@ class TestTheRoomIsDiscoveredNeverGuessed:
             assert run_flow(t)["state"] == W.NOT_FOUND
         finally:
             t.close()
-        assert made["client"]["xep_0045"].joined == []
+        assert made["client"].plugin["xep_0045"].joined == []
 
     def test_two_rooms_with_the_name_are_refused_not_picked(self):
         t, made = build(disco(rooms=[(ROOM, None, W.ROOM_NAME),
@@ -182,7 +182,7 @@ class TestTheRoomIsDiscoveredNeverGuessed:
             assert run_flow(t)["state"] == W.AMBIGUOUS
         finally:
             t.close()
-        assert made["client"]["xep_0045"].joined == []
+        assert made["client"].plugin["xep_0045"].joined == []
 
     def test_rooms_of_a_non_muc_service_are_ignored(self):
         t, _ = build(disco(rooms=[],
@@ -445,7 +445,7 @@ class TestAddingAndPending:
 def _forms(made):
     real = slixmpp.ClientXMPP("a@b.i2p", "pw")
     real.register_plugin("xep_0004")
-    made["client"].plugins["xep_0004"] = real.plugin["xep_0004"]
+    made["client"].plugin["xep_0004"] = real.plugin["xep_0004"]
 
 
 class ConfigMuc(RosterMuc):
@@ -532,7 +532,7 @@ class TestCreatingTheWelcomeRoom:
         finally:
             t.close()
         assert code == "ok" and value["created"] is False
-        assert made["client"]["xep_0045"].configured == []
+        assert made["client"].plugin["xep_0045"].configured == []
 
     def test_an_address_used_by_another_room_is_never_taken_over(self):
         d, state, created = created_disco()
@@ -589,7 +589,7 @@ class TestTheProjectServerGetsItsWelcomeRoom:
         finally:
             t.close()
         assert view["state"] == W.JOINED
-        assert made["client"]["xep_0045"].configured == []
+        assert made["client"].plugin["xep_0045"].configured == []
 
     def test_a_room_another_client_just_made_is_joined(self):
         d, state, created = created_disco()

@@ -94,7 +94,6 @@ class FakeClient:
         self.password = password
         self.outcome = outcome
         self.handlers = {}
-        self.plugins = {}
         self.connected_to = None
         self.aborted = False
         self.ssl_context = None
@@ -104,10 +103,7 @@ class FakeClient:
         self.handlers.setdefault(name, []).append(fn)
 
     def register_plugin(self, name):
-        self.plugins[name] = Plugin()
-
-    def __getitem__(self, name):
-        return self.plugins[name]
+        self.plugin[name] = Plugin()
 
     def Iq(self):
         return FakeIq(self.outcome)
@@ -204,7 +200,7 @@ class TestThePluginIsEnabledBeforeTheStreamIsUp:
         t, made = build(Outcome())
         try:
             t.register_account()
-            assert "xep_0077" in made["client"].plugins
+            assert "xep_0077" in made["client"].plugin
         finally:
             t.close()
 
@@ -212,7 +208,7 @@ class TestThePluginIsEnabledBeforeTheStreamIsUp:
         t, made = build(Outcome())
         try:
             t.register_account()
-            assert made["client"].plugins["xep_0077"].create_account is True
+            assert made["client"].plugin["xep_0077"].create_account is True
         finally:
             t.close()
 
@@ -223,7 +219,7 @@ class TestThePluginIsEnabledBeforeTheStreamIsUp:
         t, made = build(Outcome())
         try:
             t.register_account()
-            assert made["client"].plugins["xep_0077"].force_registration is True
+            assert made["client"].plugin["xep_0077"].force_registration is True
         finally:
             t.close()
 

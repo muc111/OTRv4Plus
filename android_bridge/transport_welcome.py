@@ -78,11 +78,11 @@ class WelcomeMixin:
                 self._welcome.not_found(reason)
                 _TRACE.record("welcome", reason, "info")
                 return
-            info = await self._client["xep_0030"].get_info(
+            info = await self._client.plugin["xep_0030"].get_info(
                 jid=room, timeout=CALL_TIMEOUT)
             features = [str(f) for f in info["disco_info"]["features"]]
             self._welcome.joining(room, features, nick)
-            muc = self._client["xep_0045"]
+            muc = self._client.plugin["xep_0045"]
             try:
                 await self._join_muc(room, nick)
             except Exception as exc:
@@ -130,7 +130,7 @@ class WelcomeMixin:
         return self._room_call(self._create_welcome(nick))
 
     async def _create_welcome(self, nick: str):
-        disco = self._client["xep_0030"]
+        disco = self._client.plugin["xep_0030"]
         services = await self._discover_services()
         muc_services = [s for s in services if s.get("category") == "conference"]
         if not muc_services:
@@ -156,9 +156,9 @@ class WelcomeMixin:
             raise TransportError(
                 "welcome_address_taken",
                 "a room already uses that address under another name")
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
         await self._join_muc(room, nick)
-        form = self._client["xep_0004"].make_form(ftype="submit")
+        form = self._client.plugin["xep_0004"].make_form(ftype="submit")
         form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
         for var, ftype, value in _welcome.ROOM_CONFIG:
             form.add_field(var=var, ftype=ftype, value=value)

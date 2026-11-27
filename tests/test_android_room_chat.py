@@ -171,7 +171,7 @@ def _stanza(nick, body, stamp=None):
 
 def _transport(muc):
     t = XmppTransport.__new__(XmppTransport)
-    t._client = {"xep_0045": muc}
+    t._client = types.SimpleNamespace(plugin={"xep_0045": muc})
     got = []
     t._on_room_message = lambda *a: got.append(a)
     return t, got

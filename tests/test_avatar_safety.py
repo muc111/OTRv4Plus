@@ -15,6 +15,7 @@ import os
 import random
 import struct
 import sys
+import types
 import zlib
 
 import pytest
@@ -334,7 +335,7 @@ class TestTheTransport:
         t = T.XmppTransport.__new__(T.XmppTransport)
         t._avatars = A.AvatarBook()
         plugin = Plugin()
-        t._client = {"xep_0084": plugin}
+        t._client = types.SimpleNamespace(plugin={"xep_0084": plugin})
         return t, plugin, asyncio
 
     def _announce(self, t, infos):

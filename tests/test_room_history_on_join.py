@@ -69,6 +69,11 @@ class _Client(dict):
     def add_event_handler(self, *_a): pass
     def del_event_handler(self, *_a): pass
 
+    @property
+    def plugin(self):
+        """slixmpp's plugin table: this fake is one."""
+        return self
+
 
 class _Sink:
     def __init__(self):

@@ -4,7 +4,7 @@
 
 WHAT WAS MISSING
 ----------------
-Neither `xep_0030` nor `xep_0045` was registered on the client. `client["xep_0045"]`
+Neither `xep_0030` nor `xep_0045` was registered on the client. `client.plugin["xep_0045"]`
 on a client that has not registered it raises, so there was nothing behind a
 rooms screen at all -- and discovery had no way to find the MUC service, which
 is conventionally `conference.<domain>` and conventionally is not.
@@ -150,15 +150,15 @@ class FakeBoundJid:
 class FakeClient:
     def __init__(self, jid, password, *, disco=None, muc_plugin=None):
         self.plugin = sasl_plugins()
+        self.plugin.update({
+            "xep_0030": disco if disco is not None else FakeDisco(),
+            "xep_0045": muc_plugin if muc_plugin is not None else FakeMuc(),
+            "xep_0004": FakeForms(),
+        })
         self.jid = jid
         self.password = password
         self.boundjid = FakeBoundJid()
         self.handlers = {}
-        self.plugins = {
-            "xep_0030": disco if disco is not None else FakeDisco(),
-            "xep_0045": muc_plugin if muc_plugin is not None else FakeMuc(),
-            "xep_0004": FakeForms(),
-        }
         self.registered = []
 
     def add_event_handler(self, name, fn):
@@ -166,9 +166,6 @@ class FakeClient:
 
     def register_plugin(self, name):
         self.registered.append(name)
-
-    def __getitem__(self, name):
-        return self.plugins[name]
 
     def connect(self, host=None, port=None):
         for fn in list(self.handlers.get("session_start", [])):
@@ -323,7 +320,7 @@ class TestDiscoveringWhatTheServerHosts:
         t, made = build(disco=self._disco())
         try:
             t.discover_services()
-            assert "otrv4plus.i2p" in made["client"]["xep_0030"].asked
+            assert "otrv4plus.i2p" in made["client"].plugin["xep_0030"].asked
         finally:
             t.close()
 
@@ -553,7 +550,7 @@ class TestSecureGroupRooms:
         room = FakeMuc()
         t, _ = build(muc=room)
         try:
-            t._client.plugins["xep_0004"] = _Forms()
+            t._client.plugin["xep_0004"] = _Forms()
             t.persist_room = lambda r: r == ROOM.lower()
             assert t.create_room(ROOM, NICK)[0] == "ok"
             fields = room.configured[0][1].get("fields", {})
@@ -567,7 +564,7 @@ class TestSecureGroupRooms:
         room = FakeMuc()
         t, _ = build(muc=room)
         try:
-            t._client.plugins["xep_0004"] = _Forms()
+            t._client.plugin["xep_0004"] = _Forms()
             t.persist_room = lambda r: False
             t.create_room(ROOM, NICK)
             fields = room.configured[0][1]["fields"]
@@ -587,7 +584,7 @@ class TestSecureGroupRooms:
         room = Recreates()
         t, _ = build(muc=room)
         try:
-            t._client.plugins["xep_0004"] = _Forms()
+            t._client.plugin["xep_0004"] = _Forms()
             t.persist_room = lambda r: True
             assert t.join_room(ROOM, NICK)[0] == "ok"
             assert room.configured and room.configured[0][0] == ROOM
@@ -818,8 +815,8 @@ class TestOtherSessionsOfOurAccount:
     def test_an_admin_ends_only_the_other_sessions_by_full_jid(self):
         t, made = self._build()
         commands = FakeCommands()
-        made["client"].plugins["xep_0050"] = commands
-        made["client"].plugins["xep_0004"] = _Forms()
+        made["client"].plugin["xep_0050"] = commands
+        made["client"].plugin["xep_0004"] = _Forms()
         try:
             t._presence(_Presence(JID + "/laptop"), True)
             t._presence(_Presence(JID + "/tablet"), True)
@@ -837,7 +834,7 @@ class TestOtherSessionsOfOurAccount:
     def test_nothing_to_end_sends_nothing(self):
         t, made = self._build()
         commands = FakeCommands()
-        made["client"].plugins["xep_0050"] = commands
+        made["client"].plugin["xep_0050"] = commands
         try:
             assert t.end_other_sessions()[2] == 0
             assert commands.submitted == []
@@ -846,8 +843,8 @@ class TestOtherSessionsOfOurAccount:
 
     def test_a_refusal_is_reported_and_keeps_the_warning(self):
         t, made = self._build()
-        made["client"].plugins["xep_0050"] = FakeCommands(refuse=True)
-        made["client"].plugins["xep_0004"] = _Forms()
+        made["client"].plugin["xep_0050"] = FakeCommands(refuse=True)
+        made["client"].plugin["xep_0004"] = _Forms()
         try:
             t._presence(_Presence(JID + "/laptop"), True)
             code, _d, ended = t.end_other_sessions()

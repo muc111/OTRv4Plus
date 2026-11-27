@@ -438,10 +438,10 @@ async def _online(c, host: str, port: int, timeout: float = 60.0,
 
 async def _command(c, node: str, fields: Dict[str, object]) -> None:
     domain = c.boundjid.domain
-    cmds = c["xep_0050"]
+    cmds = c.plugin["xep_0050"]
     first = await cmds.send_command(domain, node, action="execute", timeout=60)
     form = first["command"]["form"]
-    submit = c["xep_0004"].make_form(ftype="submit")
+    submit = c.plugin["xep_0004"].make_form(ftype="submit")
     for var, field in form.get_fields().items():
         if var in fields:
             submit.add_field(var=var, ftype=field["type"], value=fields[var])
@@ -599,7 +599,7 @@ async def _sweep_leftover_rooms(c, muc: str, say) -> int:
     is touched and the run says so. Server admins own every room, so the
     admin account may destroy them."""
     try:
-        first = await c["xep_0050"].send_command(c.boundjid.domain, LIST_ROOMS,
+        first = await c.plugin["xep_0050"].send_command(c.boundjid.domain, LIST_ROOMS,
                                                  action="execute", timeout=60)
         field = first["command"]["form"].get_fields().get("rooms")
         lines = field["value"] if field is not None else []
@@ -618,7 +618,7 @@ async def _sweep_leftover_rooms(c, muc: str, say) -> int:
     stale = _stale_stress_rooms(rooms, muc)
     for jid in stale:
         try:
-            await c["xep_0045"].destroy(jid, "left over from an earlier stress test",
+            await c.plugin["xep_0045"].destroy(jid, "left over from an earlier stress test",
                                         timeout=30)
         except Exception as exc:
             say("[stress] could not destroy %s: %s" % (jid, _why(exc)))
@@ -650,7 +650,7 @@ def _raise_open_files(users: int, say) -> None:
 
 
 async def _is_admin(c) -> bool:
-    items = await c["xep_0030"].get_items(jid=c.boundjid.domain, node=COMMANDS_NODE,
+    items = await c.plugin["xep_0030"].get_items(jid=c.boundjid.domain, node=COMMANDS_NODE,
                                           timeout=60)
     return any(str(node) == ADMIN_ADD for _j, node, _n in items["disco_items"].get_items())
 
@@ -661,7 +661,7 @@ WELCOME_NAME = "OTRv4Plus Welcome"   # android_bridge.welcome.ROOM_NAME
 async def _welcome_room(c, muc: str) -> str:
     """The Welcome room on [muc], found the way the apps find it: listed,
     with exactly the app's name. Never created here."""
-    items = await c["xep_0030"].get_items(jid=muc, timeout=60)
+    items = await c.plugin["xep_0030"].get_items(jid=muc, timeout=60)
     found = sorted({str(jid).split("/")[0].lower()
                     for jid, _node, name in items["disco_items"].get_items()
                     if str(name or "").strip() == WELCOME_NAME})
@@ -695,10 +695,10 @@ class WelcomeLoad:
 
 
 async def _muc_service(c) -> str:
-    items = await c["xep_0030"].get_items(jid=c.boundjid.domain, timeout=60)
+    items = await c.plugin["xep_0030"].get_items(jid=c.boundjid.domain, timeout=60)
     for jid, _node, _name in items["disco_items"].get_items():
         try:
-            info = await c["xep_0030"].get_info(jid=jid, timeout=30)
+            info = await c.plugin["xep_0030"].get_info(jid=jid, timeout=30)
             for cat, typ, _l, _n in info["disco_info"]["identities"]:
                 if cat == "conference" and typ == "text":
                     return str(jid)
@@ -843,19 +843,19 @@ async def run(args) -> int:
                 c = _client(bot.jid, pw, args.host)
                 wire(bot, c)
                 await _online(c, args.host, args.port)
-                await c["xep_0045"].join_muc_wait(bot.room, Swarm.nick(bot), timeout=60)
+                await c.plugin["xep_0045"].join_muc_wait(bot.room, Swarm.nick(bot), timeout=60)
                 if create:
                     # A new room is locked until its creator submits a
                     # configuration: the empty form takes the defaults.
                     # Not persistent, whatever the server's default: the
                     # room should go when the run does (it is also
                     # destroyed at the end; this covers a killed run).
-                    form = c["xep_0004"].make_form(ftype="submit")
+                    form = c.plugin["xep_0004"].make_form(ftype="submit")
                     form.add_field(var="FORM_TYPE", ftype="hidden",
                                    value="http://jabber.org/protocol/muc#roomconfig")
                     form.add_field(var="muc#roomconfig_persistentroom",
                                    ftype="boolean", value=False)
-                    await c["xep_0045"].set_room_config(bot.room, form, timeout=60)
+                    await c.plugin["xep_0045"].set_room_config(bot.room, form, timeout=60)
                 clients[bot.jid] = c
         pw_of = dict(creds)
         await asyncio.gather(*(bring_up(sw.owner, pw_of[sw.owner.jid], create=True)
@@ -895,7 +895,7 @@ async def run(args) -> int:
                     async def one(c=c, b=b):
                         t0 = time.time()
                         try:
-                            await c["xep_0045"].join_muc_wait(welcome, Swarm.nick(b), timeout=180)
+                            await c.plugin["xep_0045"].join_muc_wait(welcome, Swarm.nick(b), timeout=180)
                             wl.ok(time.time() - t0)
                         except Exception:
                             wl.failed += 1
@@ -968,7 +968,7 @@ async def run(args) -> int:
                 if c is None:
                     continue
                 try:
-                    await c["xep_0045"].destroy(sw.room, "stress test finished",
+                    await c.plugin["xep_0045"].destroy(sw.room, "stress test finished",
                                                 timeout=30)
                 except Exception as exc:
                     say("[stress] could not destroy %s: %s" % (sw.room, _why(exc)))

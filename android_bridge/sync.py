@@ -244,7 +244,7 @@ class SyncMixin:
     def _csi(self):
         client = getattr(self, "_client", None)
         try:
-            plugin = client["xep_0352"]
+            plugin = client.plugin["xep_0352"]
             return plugin if getattr(plugin, "enabled", False) else None
         except Exception:
             return None
@@ -395,7 +395,7 @@ class SyncMixin:
 
     async def _features(self, jid: str) -> List[str]:
         try:
-            info = await self._client["xep_0030"].get_info(jid=jid, timeout=60)
+            info = await self._client.plugin["xep_0030"].get_info(jid=jid, timeout=60)
             return [str(f) for f in info["disco_info"]["features"]]
         except Exception:
             return []

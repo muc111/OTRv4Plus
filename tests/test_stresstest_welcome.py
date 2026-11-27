@@ -5,6 +5,7 @@ presence fan-out (every join is told to everyone already there)."""
 import asyncio
 import os
 import sys
+import types
 
 import pytest
 
@@ -49,7 +50,7 @@ class _Disco:
 
 
 def _client(rows):
-    return {"xep_0030": _Disco(rows)}
+    return types.SimpleNamespace(plugin={"xep_0030": _Disco(rows)})
 
 
 def test_the_room_is_found_by_its_exact_name_and_never_guessed():

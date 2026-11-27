@@ -34,7 +34,7 @@ SECRET = "correct horse battery staple"
 def real_forms(client):
     real = slixmpp.ClientXMPP("a@b.i2p", "pw")
     real.register_plugin("xep_0004")
-    client.plugins["xep_0004"] = real.plugin["xep_0004"]
+    client.plugin["xep_0004"] = real.plugin["xep_0004"]
 
 
 def protected_disco(applied=True):

@@ -171,7 +171,7 @@ class RoomsMixin:
         want = str(room).split("/", 1)[0].lower()
         mine = getattr(self, "_room_nicks", {}).get(want)
         try:
-            table = self._client["xep_0045"].our_nicks
+            table = self._client.plugin["xep_0045"].our_nicks
         except Exception:
             return mine or ""
 
@@ -289,7 +289,7 @@ class RoomsMixin:
         return self._room_call(self._room_occupants(room))
 
     async def _room_occupants(self, room: str):
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
         order = {_muc.MODERATOR: 0, _muc.PARTICIPANT: 1, _muc.VISITOR: 2}
         people = []
         for nick in list(muc.get_roster(room) or []):
@@ -329,7 +329,7 @@ class RoomsMixin:
     ROOM_INFO_TIMEOUT = 8
 
     async def _discover_rooms(self, service: str):
-        disco = self._client["xep_0030"]
+        disco = self._client.plugin["xep_0030"]
         items = await disco.get_items(jid=service, timeout=CALL_TIMEOUT)
         rooms = [{"jid": str(jid), "name": str(name or ""), "occupants": None,
                   "secure": False, "claims_secure": False, "password": False}
@@ -379,7 +379,7 @@ class RoomsMixin:
         return self._room_call(self._join_room(room, nick, password))
 
     async def _join_room(self, room: str, nick: str, password: str):
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
         # ALREADY IN IT. A join presence from an account that is already an
         # occupant is, to the service, a presence update: Prosody runs its
         # password check only for a NEW occupant, so it succeeds with no
@@ -406,7 +406,7 @@ class RoomsMixin:
 
     async def _room_wants_password(self, room: str) -> bool:
         try:
-            info = await self._client["xep_0030"].get_info(
+            info = await self._client.plugin["xep_0030"].get_info(
                 jid=room, timeout=CALL_TIMEOUT)
             return "muc_passwordprotected" in {
                 str(f) for f in info["disco_info"]["features"]}
@@ -423,7 +423,7 @@ class RoomsMixin:
         room's error presence is caught here as well, and raised as the
         PresenceError slixmpp would have raised.
         """
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
         loop = asyncio.get_event_loop()
         refused = loop.create_future()
         bare = str(room).split("/", 1)[0].lower()
@@ -502,7 +502,7 @@ class RoomsMixin:
         that ignores or refuses the field says nothing about it."""
         persistent = False
         try:
-            info = await self._client["xep_0030"].get_info(
+            info = await self._client.plugin["xep_0030"].get_info(
                 jid=room, timeout=CALL_TIMEOUT)
             persistent = "muc_persistent" in {
                 str(f) for f in info["disco_info"]["features"]}
@@ -518,7 +518,7 @@ class RoomsMixin:
                     pass
 
     def _persistent_form(self, room: str):
-        form = self._client["xep_0004"].make_form(ftype="submit")
+        form = self._client.plugin["xep_0004"].make_form(ftype="submit")
         persist = self.persist_room
         try:
             wanted = bool(persist is not None and persist(str(room).lower()))
@@ -545,7 +545,7 @@ class RoomsMixin:
         """Submit the configuration of a room we just created; a service that
         refuses persistence still gets the defaults, so the room is never
         left locked."""
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
         if form is None:
             form, wanted = self._persistent_form(room)
         else:
@@ -557,7 +557,7 @@ class RoomsMixin:
             # description) still gets the plain defaults: the room is never
             # left locked, and never fails to exist over a listing setting.
             await muc.set_room_config(
-                room, self._client["xep_0004"].make_form(ftype="submit"),
+                room, self._client.plugin["xep_0004"].make_form(ftype="submit"),
                 timeout=CALL_TIMEOUT)
         if wanted:
             await self._check_persistent(room)
@@ -613,7 +613,7 @@ class RoomsMixin:
             self._end_join(room, ok)
 
     async def _create_room_held(self, room: str, nick: str, password: str = ""):
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
         await muc.join_muc_wait(room, nick, timeout=CONNECT_TIMEOUT)
         # The empty form. `set_room_config` with a form carrying no fields is
         # the "accept the defaults" submission §10.1.2 describes. A secure
@@ -632,7 +632,7 @@ class RoomsMixin:
                 # Refused over a listing or keeping field: the password is
                 # what must not be lost, so it goes again on its own (and is
                 # read back below either way).
-                form = self._client["xep_0004"].make_form(ftype="submit")
+                form = self._client.plugin["xep_0004"].make_form(ftype="submit")
                 form.add_field(var="FORM_TYPE", ftype="hidden", value=self.ROOMCONFIG)
                 form.add_field(var="muc#roomconfig_passwordprotectedroom",
                                ftype="boolean", value=True)
@@ -651,7 +651,7 @@ class RoomsMixin:
         if password:
             protected = False
             try:
-                info = await self._client["xep_0030"].get_info(
+                info = await self._client.plugin["xep_0030"].get_info(
                     jid=room, timeout=CALL_TIMEOUT)
                 protected = "muc_passwordprotected" in {
                     str(f) for f in info["disco_info"]["features"]}
@@ -673,7 +673,7 @@ class RoomsMixin:
         return self._room_call(self._leave_room(room, nick))
 
     async def _leave_room(self, room: str, nick: str):
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
         # No nickname from the caller -- "Delete and leave" on the chat list,
         # which never saw the join -- means the one this session joined with.
         # Not joined this session: there is no presence to withdraw, and the
@@ -705,6 +705,6 @@ class RoomsMixin:
         return self._room_call(self._destroy_room(room, reason))
 
     async def _destroy_room(self, room: str, reason: str):
-        await self._client["xep_0045"].destroy(room, reason=reason,
+        await self._client.plugin["xep_0045"].destroy(room, reason=reason,
                                                timeout=CALL_TIMEOUT)
         return {}

@@ -1380,7 +1380,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         if client is None:
             return False
         try:
-            ping = client["xep_0199"]
+            ping = client.plugin["xep_0199"]
         except Exception:
             # The plugin is not loaded, so there is no round trip to make.
             # Reporting "alive" is right: this must not manufacture a
@@ -1759,12 +1759,12 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
     def _advertise(self, client) -> None:
         """Add the OTRv4Plus feature to our disco#info (and so our caps)."""
         try:
-            client["xep_0030"].add_feature(_caps.FEATURE)
+            client.plugin["xep_0030"].add_feature(_caps.FEATURE)
         except Exception:
             _log.warning("could not advertise OTRv4Plus in service discovery")
             return
         try:
-            caps = client["xep_0115"]
+            caps = client.plugin["xep_0115"]
             caps.caps_node = _caps.CAPS_NODE
             # Async: it computes the new hash and, with broadcast, sends our
             # presence again carrying it. The first presence may carry the
@@ -1790,7 +1790,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         """Ask one resource's disco#info whether it speaks OTRv4Plus."""
         bare = _caps.split_jid(full_jid)[0]
         try:
-            info = await self._client["xep_0030"].get_info(
+            info = await self._client.plugin["xep_0030"].get_info(
                 jid=full_jid, timeout=CALL_TIMEOUT)
             features = [str(f) for f in info["disco_info"]["features"]]
             self._caps.disco_result(full_jid, features)
@@ -1883,7 +1883,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             queue = getattr(client, "waiting_queue", None)
             if queue is not None:
                 await asyncio.wait_for(queue.join(), budget)
-            ping = client["xep_0199"]
+            ping = client.plugin["xep_0199"]
             return bool(await _ping.round_trip(
                 ping, client.boundjid.host, max(0.1, deadline - loop.time())))
         except _CANCELLED:
@@ -2223,7 +2223,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
         return self._room_call(self._discover_services())
 
     async def _discover_services(self):
-        disco = self._client["xep_0030"]
+        disco = self._client.plugin["xep_0030"]
         domain = str(self._client.boundjid.domain)
         items = await disco.get_items(jid=domain, timeout=CALL_TIMEOUT)
         out = []
@@ -2289,7 +2289,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
     async def _discover_online_users(self):
         client = self._client
         domain = str(client.boundjid.domain)
-        items = await client["xep_0030"].get_items(
+        items = await client.plugin["xep_0030"].get_items(
             jid=domain, node=self.COMMANDS_NODE, timeout=CALL_TIMEOUT)
         offered = [str(node) for _jid, node, _name in
                    items["disco_items"].get_items()]
@@ -2300,7 +2300,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
 
     async def _run_online_users_command(self, domain: str):
         """Execute the XEP-0133 command; submit its form with its own defaults."""
-        commands = self._client["xep_0050"]
+        commands = self._client.plugin["xep_0050"]
         first = await commands.send_command(
             domain, self.ONLINE_USERS_NODE, action="execute",
             timeout=CALL_TIMEOUT)
@@ -2309,7 +2309,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             return users
         # A form to fill: accept its defaults (Prosody asks for max_items).
         form = first["command"]["form"]
-        submit = self._client["xep_0004"].make_form(ftype="submit")
+        submit = self._client.plugin["xep_0004"].make_form(ftype="submit")
         for var, field in form.get_fields().items():
             value = field["value"]
             if var == "max_items":
@@ -2742,7 +2742,7 @@ class XmppTransport(SyncMixin, AccountSyncMixin, RoomSyncMixin, RoomsMixin,
             bare = str(stanza["from"]).split("/", 1)[0]
             if self._welcome.is_room(bare):
                 return True
-            joined = self._client["xep_0045"].get_joined_rooms()
+            joined = self._client.plugin["xep_0045"].get_joined_rooms()
             return bare in {str(r) for r in (joined or ())}
         except Exception:
             return False
@@ -2940,7 +2940,7 @@ def _default_client_factory():
             _log.warning("could not register xep_0199; the keepalive will "
                          "fall back to whitespace only")
         # Service discovery and rooms. NEITHER WAS REGISTERED, which is why
-        # there was nothing behind a rooms screen: `client["xep_0045"]` on a
+        # there was nothing behind a rooms screen: `client.plugin["xep_0045"]` on a
         # client that has not registered it raises, and discovery had no way
         # to find the MUC service at all.
         #

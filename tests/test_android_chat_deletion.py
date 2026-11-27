@@ -58,6 +58,11 @@ class _Client(dict):
         super().__init__(plugins)
         self.boundjid = types.SimpleNamespace(bare=bare, domain="example.test")
 
+    @property
+    def plugin(self):
+        """slixmpp's plugin table: this fake is one."""
+        return self
+
 
 def test_an_archive_and_retraction_are_reported():
     t, disco, _ = _transport(["urn:xmpp:mam:2", "urn:xmpp:message-retract:1",

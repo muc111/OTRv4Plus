@@ -201,7 +201,7 @@ def _enable_registration(client) -> None:
     instead, which is the failure this whole path exists to avoid.
     """
     client.register_plugin("xep_0077")
-    plugin = client["xep_0077"]
+    plugin = client.plugin["xep_0077"]
     plugin.create_account = True
     plugin.force_registration = True
 
@@ -638,7 +638,7 @@ class RegistrationMixin:
 
         localpart = _localpart(self._profile.jid)
         try:
-            submit = client["xep_0004"].make_form(ftype="submit")
+            submit = client.plugin["xep_0004"].make_form(ftype="submit")
             # Reply to the server's OWN form: echo the hidden fields, put the
             # answer in the answer field, and fill username/password wherever
             # the form declared them (ejabberd puts them in the form; others
@@ -709,7 +709,7 @@ class RegistrationMixin:
         leave a silent wait for the timeout. Wrapped so its failure ends the
         attempt with its own code."""
         try:
-            plugin = client["xep_0077"]
+            plugin = client.plugin["xep_0077"]
             original = plugin.get_registration
         except Exception:
             return

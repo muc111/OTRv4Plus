@@ -139,13 +139,9 @@ class _FakeIq:
 class _FakeClient:
     def __init__(self, send_exc=None):
         self._x4 = _Xep0004()
+        self.plugin = {"xep_0004": self._x4}
         self.sent = []
         self.send_exc = send_exc
-
-    def __getitem__(self, key):
-        if key == "xep_0004":
-            return self._x4
-        raise KeyError(key)
 
     def Iq(self):
         return _FakeIq(self)

@@ -49,7 +49,7 @@ class ServerMixin:
 
     async def _archive_support(self, jid: str):
         target = jid or str(self._client.boundjid.bare)
-        info = await self._client["xep_0030"].get_info(
+        info = await self._client.plugin["xep_0030"].get_info(
             jid=target, timeout=CALL_TIMEOUT)
         found = {"mam": False, "retract": False, "moderate": False}
         for feature in info["disco_info"]["features"]:
@@ -105,7 +105,7 @@ class ServerMixin:
         return (code, detail, False)
 
     async def _ask_server_admin(self) -> bool:
-        disco = self._client["xep_0030"]
+        disco = self._client.plugin["xep_0030"]
         domain = str(self._client.boundjid.domain)
         items = await disco.get_items(jid=domain,
                                       node="http://jabber.org/protocol/commands",
@@ -148,7 +148,7 @@ class ServerMixin:
     async def _moderation(self, op, account, days, reason):
         client = self._client
         domain = str(client.boundjid.domain)
-        items = await client["xep_0030"].get_items(
+        items = await client.plugin["xep_0030"].get_items(
             jid=domain, node=self.COMMANDS_NODE, timeout=CALL_TIMEOUT)
         offered = {str(node) for _jid, node, _name in items["disco_items"].get_items()}
         node = self.MODERATION_NS + {"status": "ban-status", "ban": "ban-user",
@@ -199,13 +199,13 @@ class ServerMixin:
     async def _run_command(self, domain, node, values):
         """Execute an ad-hoc command; fill its form from `values` (None: no
         form expected) and complete it."""
-        commands = self._client["xep_0050"]
+        commands = self._client.plugin["xep_0050"]
         first = await commands.send_command(domain, node, action="execute",
                                             timeout=CALL_TIMEOUT)
         if values is None or first["command"]["status"] == "completed":
             return first
         form = first["command"]["form"]
-        submit = self._client["xep_0004"].make_form(ftype="submit")
+        submit = self._client.plugin["xep_0004"].make_form(ftype="submit")
         for var, field in form.get_fields().items():
             if not var:
                 continue
@@ -379,12 +379,12 @@ class ServerMixin:
     async def _end_sessions(self, targets: "list[str]") -> int:
         client = self._client
         domain = str(client.boundjid.domain)
-        commands = client["xep_0050"]
+        commands = client.plugin["xep_0050"]
         first = await commands.send_command(
             domain, self.END_SESSION_NODE, action="execute",
             timeout=CALL_TIMEOUT)
         form = first["command"]["form"]
-        submit = client["xep_0004"].make_form(ftype="submit")
+        submit = client.plugin["xep_0004"].make_form(ftype="submit")
         for var, field in form.get_fields().items():
             if var == "accountjids":
                 submit.add_field(var=var, ftype="jid-multi", value=targets)
@@ -402,7 +402,7 @@ class ServerMixin:
     def joined_rooms(self) -> "tuple[str, str, list]":
         """The rooms this session is in, as slixmpp has them."""
         try:
-            rooms = self._client["xep_0045"].get_joined_rooms()
+            rooms = self._client.plugin["xep_0045"].get_joined_rooms()
             return ("ok", _muc.CODES["ok"], [str(r) for r in rooms])
         except Exception as exc:
             code, detail = _muc.classify(exc)
@@ -415,7 +415,7 @@ class ServerMixin:
         different questions -- see `otrv4plus_muc` -- and an owner who joined
         as a visitor cannot speak.
         """
-        muc = self._client["xep_0045"]
+        muc = self._client.plugin["xep_0045"]
 
         def prop(name):
             try:

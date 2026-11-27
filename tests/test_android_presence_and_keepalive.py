@@ -118,10 +118,7 @@ class FakeClient:
         self.aborts = 0
         self.boundjid = FakeBoundJid()
         self.client_roster = {}
-        self._plugins = {"xep_0199": ping if ping is not None else FakePing()}
-
-    def __getitem__(self, key):
-        return self._plugins[key]
+        self.plugin["xep_0199"] = ping if ping is not None else FakePing()
 
     def add_event_handler(self, name, fn):
         self.handlers.setdefault(name, []).append(fn)
@@ -368,7 +365,7 @@ class TestTheKeepalive:
         monkeypatch.setattr(transport_module, "KEEPALIVE_PING_S", 0.0)
         monkeypatch.setattr(transport_module, "KEEPALIVE_QUIET_S", 0.0)
         transport, made = build()
-        made["client"]._plugins.clear()
+        del made["client"].plugin["xep_0199"]
         time.sleep(0.2)
         assert not made["client"].stopped, (
             "a missing plugin was reported as a dead stream")

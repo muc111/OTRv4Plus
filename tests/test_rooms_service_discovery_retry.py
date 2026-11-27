@@ -38,6 +38,11 @@ class _Disco:
 class _Client(dict):
     boundjid = type("J", (), {"domain": "x.i2p"})()
 
+    @property
+    def plugin(self):
+        """slixmpp's plugin table: this fake is one."""
+        return self
+
 
 def _discover(lose):
     t = XmppTransport.__new__(XmppTransport)

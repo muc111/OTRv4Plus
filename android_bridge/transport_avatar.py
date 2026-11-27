@@ -74,7 +74,7 @@ class AvatarMixin:
 
     async def _fetch_avatar(self, jid: str, avatar_id: str) -> None:
         try:
-            iq = await self._client["xep_0084"].retrieve_avatar(
+            iq = await self._client.plugin["xep_0084"].retrieve_avatar(
                 jid, avatar_id, timeout=CALL_TIMEOUT)
             el = next(iq.xml.iter(self._AVATAR_DATA), None)
             text = (el.text or "") if el is not None else ""
@@ -168,7 +168,7 @@ class AvatarMixin:
 
     async def _publish_avatar(self, png: bytes, w: int, h: int) -> None:
         import hashlib
-        plugin = self._client["xep_0084"]
+        plugin = self._client.plugin["xep_0084"]
         # XEP-0084: the id IS the SHA-1 of the image -- a name, not security.
         avatar_id = hashlib.sha1(png, usedforsecurity=False).hexdigest()
         try:
@@ -230,4 +230,4 @@ class AvatarMixin:
         self._avatars.forget(self._profile.jid)
 
     async def _remove_avatar(self) -> None:
-        await self._client["xep_0084"].stop(timeout=CALL_TIMEOUT)
+        await self._client.plugin["xep_0084"].stop(timeout=CALL_TIMEOUT)
