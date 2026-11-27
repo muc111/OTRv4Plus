@@ -610,7 +610,9 @@ def test_a_specific_address_of_this_machine_is_never_printed(tmp_path, hidden):
     everything = "".join(done.stdout + done.stderr
                          for done in (looked, applied, again))
     assert ADDRESS4 not in everything
-    assert ADDRESS6 not in everything and "2001" not in everything
+    # Not even its first group. "2001:" and not "2001": the backup is named
+    # by the time (bak-YYYYmmdd-HHMMSS), which says 2001 at 20:01.
+    assert ADDRESS6 not in everything and "2001:" not in everything
     # What is needed to act is still there: which ports, and which line.
     assert "(an address of this machine):5222" in looked.stdout
     assert "(an address of this machine):5269" in looked.stdout
