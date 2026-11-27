@@ -4,7 +4,18 @@ OTRv4+ post-quantum messaging client. Solo dev project. AI-assisted (Claude). Ea
 
 ---
 
-## Android 0.7.0-experimental.rc.210-untested — 2026-11-27 — on `dev`, not yet tested
+## Android 0.7.0-experimental.rc.211-untested — 2026-11-27 — on `dev`, not yet tested
+
+The last build tested on devices is rc.194; rc.207 to rc.210 are not yet
+tested, and this one builds on them.
+
+- **Ready for the next slixmpp.** The app reached the XMPP library's
+  plugins (rooms, service discovery, forms, avatars, ping, account
+  creation) in a way slixmpp 1.17 deprecates and will remove. It uses the
+  supported way now, which behaves the same for every plugin the app
+  loads.
+
+## Android 0.7.0-experimental.rc.210-untested — 2026-11-27 — on `dev`, superseded by rc.211
 
 The last build tested on devices is rc.194; rc.207 to rc.209 are not yet
 tested, and this one builds on them.
