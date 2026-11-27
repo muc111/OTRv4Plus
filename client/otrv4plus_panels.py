@@ -58,7 +58,6 @@ class TabBar:
             return []
 
         tabs = []
-        total_width = 0
         max_tabs_width = self.terminal_width - 10
 
         for panel_name, panel in panels.items():
@@ -280,7 +279,7 @@ class Screen:
 
     def _sep(self) -> str:
         if self.scroll_offset > 0:
-            tag = f" ↑ scrolled — PgDn to resume · PgUp for more "
+            tag = " ↑ scrolled — PgDn to resume · PgUp for more "
             pad = max(0, self.cols - len(tag))
             left = colorize("-" * (pad // 2), "dim")
             right = colorize("-" * (pad - pad // 2), "dim")

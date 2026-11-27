@@ -53,7 +53,7 @@ if _otr_dir not in sys.path:
 from otrv4_ import (
     EnhancedSessionManager, OTRConfig, NullLogger,
     OTRFragmentBuffer, OTRMessageFragmenter,
-    UIConstants, SessionState,
+    UIConstants,
 )
 
 # ── Globals ──────────────────────────────────────────────────────────

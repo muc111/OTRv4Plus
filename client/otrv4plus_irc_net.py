@@ -358,7 +358,7 @@ class IrcNetMixin:
 
         else:
 
-            net_type_actual = self.setup_proxy(net_type)
+            self.setup_proxy(net_type)
             tls_label = " TLS" if use_tls else ""
             self.add_message(
                 "system",
@@ -423,7 +423,7 @@ class IrcNetMixin:
                     if line:
                         try:
                             self.handle_message(line)
-                        except Exception as exc:
+                        except Exception:
                             self.debug("handle_message error")
             except socket.timeout:
                 now = time.time()

@@ -35,7 +35,7 @@ class IrcPacingMixin:
                     self.logger.network_message("OUT", "SERVER", "RAW", len(message))
                     self.debug("send")
                     return True
-        except Exception as exc:
+        except Exception:
             self.debug("send_raw failed")
             self.running = False
         return False

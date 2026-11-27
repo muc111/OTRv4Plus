@@ -155,7 +155,6 @@ class ProfileControlMixin:
     def profile_get_json(self, jid: str = "") -> Dict[str, Any]:
         """{ok, code, detail, value: JSON object of fields}. `jid` empty =
         our own. Everything in `value` has been sanitised."""
-        import json
         transport = self._transport
         if transport is None or not hasattr(transport, "get_profile"):
             return {"ok": False, "code": "not_connected",
@@ -173,7 +172,6 @@ class ProfileControlMixin:
     def profile_set_json(self, text: str) -> Dict[str, Any]:
         """Publish our profile from a JSON object of fields. Returns what was
         published (sanitised), as JSON."""
-        import json
         transport = self._transport
         if transport is None or not hasattr(transport, "set_profile"):
             return {"ok": False, "code": "not_connected",

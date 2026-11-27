@@ -169,7 +169,7 @@ from otrv4plus_tunnels import (  # noqa: F401  (re-exported: android_bridge, voi
     start_i2p_sam_forwarder, start_tor_socks_forwarder, _ossl_cleanse,
     _pipe_read_exact, _pipe_write_all, _sam_open, _sam_parse, _sam_read_line,
     _sam_release)
-from otrv4plus_host import TERMUX_PREFIX, _which, _xmpp_state_path, _run
+from otrv4plus_host import TERMUX_PREFIX, _which, _xmpp_state_path
 from otrv4plus_termsync import TermSyncMixin as _TermSyncMixin
 from otrv4plus_xmpp_admin import AdminMixin as _AdminMixin
 import otrv4plus_xmpp_tui as _tui
@@ -190,7 +190,7 @@ def _live_item(client, msg):
         return _sync_mod.parse_message(msg.xml, client._ts_own(), "live")
     except Exception:
         return None
-import otrv4plus_caps as _caps
+import otrv4plus_caps as _caps  # noqa: F401  (tests reach it as otrv4plus_xmpp._caps)
 import otrv4plus_coreapi as _coreapi
 import otrv4plus_fragment as _frag
 from otrv4plus_mode import OtrMode as _OtrMode
@@ -617,7 +617,6 @@ except ImportError:
         """Without the android_bridge package there is no stream guard."""
 
 try:
-    import otrv4plus_admin as _admin
     from otrv4plus_log import ChannelLogManager as _ChannelLogManager
     _LOG_AVAILABLE = True
 except ImportError:
@@ -1175,7 +1174,6 @@ class OTRv4PlusXMPP(_GuardedStream, _TermSyncMixin, _ConnectionMixin,
         # confirm this resource speaks the protocol before it sends a DAKE.
         # See otrv4plus_caps; the identifier must match on both clients.
         try:
-            import otrv4plus_caps as _caps
             self.plugin["xep_0030"].add_feature(_caps.FEATURE)
             self.plugin["xep_0115"].caps_node = _caps.CAPS_NODE
             await self.plugin["xep_0115"].update_caps(broadcast=False)

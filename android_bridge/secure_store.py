@@ -58,7 +58,6 @@ from __future__ import annotations
 import abc
 import os
 import struct
-from typing import Optional
 
 __all__ = [
     "SealedStore",

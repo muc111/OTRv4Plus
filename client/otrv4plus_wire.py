@@ -413,7 +413,7 @@ class OTRv4DataMessage:
             if len(self.mac) != self.MAC_LEN:
                 return False
             return bool(mac_key.verify(self.auth_region(), self.mac))
-        except (TypeError, ValueError, AttributeError) as e:
+        except (TypeError, ValueError, AttributeError):
             if _debug.FLAGS.debug:
                 print("[OTRv4DataMessage] MAC verification failed")
             return False

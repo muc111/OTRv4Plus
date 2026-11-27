@@ -51,14 +51,13 @@ import os
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import otrv4plus_fragment as _fragment
 import otrv4plus_muc as _muc
 from android_bridge.events import (ErrorOccurred, FileTransferChanged,
                                    GroupChanged, GroupInvite, KeysPublished,
                                    RoomMessageReceived, SecurityState,
                                    security_state_from_level)
 from android_bridge.groups import (ROOM_PREFIX, SIGNAL_PREFIX, GroupError,
-                                   SecureGroups, is_group_signal, is_room_frame)
+                                   SecureGroups, is_group_signal)
 
 __all__ = ["TermuxGroups", "HELP", "is_group_signal", "ROOM_PREFIX",
            "SIGNAL_PREFIX"]

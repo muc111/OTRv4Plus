@@ -22,17 +22,12 @@ import json
 import os
 import re
 import resource
-import secrets
-import shutil
 import socket
-import struct
 import sys
-import textwrap
 import threading
 import time
 from typing import Callable, Dict, List, Optional, Set
 
-import otrv4plus as _engine
 import otrv4plus_debug as _debug
 import otrv4plus_tty as _tty
 
@@ -402,7 +397,7 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
 
         try:
             complete = self.fragment_buffers[sender].add_fragment(sender, fragment)
-        except ValueError as exc:
+        except ValueError:
             self.debug("fragment error")
             return
         if complete:
@@ -494,7 +489,7 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
                     sender, *self.session_manager.get_smp_progress(sender)
                 )
 
-            except Exception as exc:
+            except Exception:
                 self.debug("data decrypt error")
 
         try:
@@ -674,7 +669,7 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
                     del self.smp_schedule_timers[peer]
                     try:
                         self._fire_auto_smp(peer)
-                    except Exception as exc:
+                    except Exception:
                         self.debug("auto_smp error")
                 time.sleep(1)
 
@@ -780,7 +775,7 @@ class OTRv4IRCClient(IrcNetMixin, IrcPacingMixin, IrcProtocolMixin, IrcUiMixin):
         if dake_msg and should_send:
             self.send_otr_message(nick, dake_msg)
             self.add_message(
-                nick, colorize(f"🔑 DAKE1 → sent - waiting for response…", "bold_cyan")
+                nick, colorize("🔑 DAKE1 → sent - waiting for response…", "bold_cyan")
             )
 
     def shutdown(self):
@@ -1609,7 +1604,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                     self.session_manager.trust_fingerprint(peer, remote_fp)
                 else:
                     self.session_manager.trust_db.add_trust(peer, remote_fp)
-            except Exception as exc:
+            except Exception:
                 self.debug("trust save error")
 
         self._finish_trust(peer, trusted=trusted, remote_fp=remote_fp, is_initiator=is_initiator)
@@ -2019,7 +2014,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
             OTRv4IRCClient.handle_message(self, line)
 
-        except Exception as exc:
+        except Exception:
             self.debug("handle_message error")
 
     def process_incoming_otr_message(self, sender: str, message: str):
@@ -2059,7 +2054,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 self.process_dake3(sender, message)
             elif msg_type == OTRConstants.MESSAGE_TYPE_DATA:
                 self._handle_data_message(sender, message)
-        except Exception as exc:
+        except Exception:
             self.debug("process_incoming_otr error")
 
     def handle_chat_message(self, msg: str):
@@ -2131,11 +2126,6 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
 
         elif cmd == "trust" and len(parts) > 1:
             peer = parts[1]
-            sec = (
-                self.session_manager.get_security_level(peer)
-                if self.session_manager.has_session(peer)
-                else UIConstants.SecurityLevel.ENCRYPTED
-            )
             remote_fp = self._get_remote_fp(peer)
 
             if remote_fp:
@@ -2515,7 +2505,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                         fp = fp_bytes.hex().upper()
                         self.debug("_get_remote_fp: fingerprint obtained")
                         return fp
-                    except Exception as e:
+                    except Exception:
                         self.debug("_get_remote_fp: conversion failed")
 
                 if (
@@ -2527,10 +2517,10 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                         fp = fp_bytes.hex().upper()
                         self.debug("_get_remote_fp: fingerprint obtained")
                         return fp
-                    except Exception as e:
+                    except Exception:
                         self.debug("_get_remote_fp: stored conversion failed")
 
-        except Exception as e:
+        except Exception:
             self.debug("_get_remote_fp error")
 
         self.debug("_get_remote_fp: no fingerprint found")
@@ -2750,7 +2740,7 @@ class EnhancedOTRv4IRCClient(OTRv4IRCClient):
                 if failed:
                     status += f" ({failed } fallback)"
                 self.add_message("system", colorize(status, "green"))
-        except Exception as e:
+        except Exception:
             self.add_message("system", colorize("⚠ Wipe incomplete", "yellow"))
 
 
@@ -3165,7 +3155,7 @@ def _run_input_loop(client, _select):
                     pass
                 _print_prompt(client)
 
-    except Exception as exc:
+    except Exception:
         try:
             safe_print(colorize("⚠ Critical error (attempting recovery)", "yellow"))
             while True:

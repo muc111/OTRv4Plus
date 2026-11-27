@@ -48,7 +48,7 @@ from __future__ import annotations
 
 import threading
 from collections import OrderedDict
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Tuple
 
 __all__ = ["UNKNOWN", "ONLINE", "OFFLINE", "STATES", "PresenceBook"]
 

@@ -65,7 +65,6 @@ import json
 import random
 import secrets
 import ssl
-import statistics
 import sys
 import time
 from typing import Callable, Dict, List, Optional

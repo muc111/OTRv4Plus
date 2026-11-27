@@ -8,15 +8,8 @@ Split out of otrv4plus_voice.py, which re-exports every name here.
 """
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import hmac
 import os
-import secrets
 import socket as _socket
-import struct
-import threading
-import time
 
 import otrv4plus_audio as _audio
 

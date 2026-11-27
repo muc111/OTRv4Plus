@@ -524,7 +524,6 @@ class SessionSmpMixin:
             seg_w = 3
             filled = "█" * seg_w
             empty_s = "░" * seg_w
-            partial = "▒" * seg_w
             bar_segs = []
             for i in range(SEGS):
                 if i < step - 1:
@@ -534,7 +533,6 @@ class SessionSmpMixin:
                 else:
                     bar_segs.append(empty_s)
             bar_body = " ".join(bar_segs)
-            pct = int((step / total) * 100)
             bar = f"[{bar_body }]"
             step_str = f"step {step }/{total }"
             if final:
@@ -602,9 +600,6 @@ class SessionSmpMixin:
             )
             return self.encrypt_with_tlvs("", [OTRv4TLV(OTRv4TLV.SMP_MSG_1, bytes(smp1_bytes))])
         except Exception as e:
-            import traceback as _tb
-
-            msg = f"start_smp: Error: {e }"
             self.logger.debug("start_smp FAILED")
 
             raise RuntimeError(f"SMP start failed: {e }") from e
@@ -797,8 +792,7 @@ class SessionSmpMixin:
             if resp is not None and out_type is not None:
                 return self.encrypt_with_tlvs("", [OTRv4TLV(out_type, bytes(resp))])
             return None
-        except Exception as e:
-            import traceback as _tb
+        except Exception:
 
             self.logger.debug("process_smp_message FAILED")
             return None
@@ -858,7 +852,7 @@ class SessionSmpMixin:
                 "expired": False,
                 "secret_set": self.rust_smp.check_secret_set(),
             }
-        except Exception as e:
+        except Exception:
             self.logger.debug("get_smp_status FAILED")
             return {
                 "state": "NONE",

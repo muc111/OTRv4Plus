@@ -22,7 +22,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 from .events import ErrorOccurred, GroupChanged
 from .trace import TRACE as _TRACE

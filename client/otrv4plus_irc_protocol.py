@@ -169,7 +169,7 @@ class IrcProtocolMixin:
                 if family(command, sender, prefix, params, trailing, _tags):
                     return
 
-        except Exception as exc:
+        except Exception:
             self.debug("handle_message error")
 
     def _on_chat(self, command, sender, prefix, params, trailing, _tags):
@@ -439,7 +439,7 @@ class IrcProtocolMixin:
                 if family(code, params, trailing):
                     return
             self._rpl_other(code, params, trailing)
-        except Exception as exc:
+        except Exception:
             self.debug("numeric reply error")
 
     def _rpl_auth(self, code, params, trailing):
@@ -593,7 +593,7 @@ class IrcProtocolMixin:
             if _who_real and _who_real.startswith("0 "):
                 _who_real = _who_real[2:]
             if not hasattr(self, "_otrv4_users"):
-                self._otrv4_users: Dict[str, bool] = {}
+                self._otrv4_users: dict[str, bool] = {}
             # Client identification only.  See otrv4_client_version().
             if _who_nick:
                 self._otrv4_users[_who_nick] = advertises_otrv4(_who_real)
@@ -744,7 +744,7 @@ class IrcProtocolMixin:
             # /names marker current for that nick.
             if target:
                 if not hasattr(self, "_otrv4_users"):
-                    self._otrv4_users: Dict[str, bool] = {}
+                    self._otrv4_users: dict[str, bool] = {}
                 self._otrv4_users[target] = _peer_version is not None
             _wp = self.panel_manager.active_panel or "system"
             self._whois_panel = _wp

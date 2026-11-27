@@ -46,11 +46,10 @@ import binascii
 import hashlib
 import os
 import re
-import stat
 import tempfile
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Optional, Tuple
+from typing import Callable, Dict, Optional
 
 try:
     import otrv4_core as _core

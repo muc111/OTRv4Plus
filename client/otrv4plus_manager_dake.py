@@ -15,7 +15,10 @@ Moved out of otrv4+.py unchanged (2026-11-11), so a reviewer can read the
 handshake on its own.
 """
 import secrets
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # the session class lives in the engine, which imports this module
+    from otrv4plus import EnhancedOTRSession
 
 from otrv4plus_states import DAKEState, SessionState, StateMachineError, UIConstants
 from otrv4plus_tlv import _safe_b64decode
@@ -380,5 +383,5 @@ class ManagerDakeMixin:
         return self.handle_dake1(peer, payload)
 
     def handle_dake3(self, peer: str, payload: str) -> bool:
-        result = self.handle_incoming_message(peer, payload)
+        self.handle_incoming_message(peer, payload)
         return self.has_session(peer)

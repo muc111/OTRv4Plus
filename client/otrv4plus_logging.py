@@ -11,6 +11,7 @@ Moved out of otrv4+.py, which re-exports all three.
 """
 import json
 import logging
+import logging.handlers
 import os
 import threading
 from typing import Any, Dict, Optional

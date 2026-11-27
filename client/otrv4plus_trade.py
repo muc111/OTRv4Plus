@@ -572,7 +572,7 @@ class TradeManager:
 
     def _on_decline(self, peer: str, trade_id: str, seq: int,
                     rest: List[str]) -> None:
-        trade = self._match(peer, trade_id, seq, want=PROPOSED)
+        self._match(peer, trade_id, seq, want=PROPOSED)   # refuses a stray message
         reason = self._reason(rest)
         self.trades.pop(peer, None)
         self._notify("[trade] %s declined %s%s"
@@ -613,7 +613,7 @@ class TradeManager:
 
     def _on_cancel(self, peer: str, trade_id: str, seq: int,
                    rest: List[str]) -> None:
-        trade = self._match(peer, trade_id, seq)
+        self._match(peer, trade_id, seq)   # refuses a stray message
         reason = self._reason(rest)
         self.trades.pop(peer, None)
         self._notify("[trade] %s cancelled %s%s"

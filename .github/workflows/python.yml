@@ -76,6 +76,12 @@ jobs:
         run: |
           python3 -m pip install --quiet "reuse==6.3.0"
           reuse lint
+      # Undefined names, dead imports and variables (ruff.toml says what and
+      # why). Pinned, like reuse above.
+      - name: Lint (pyflakes rules)
+        run: |
+          python3 -m pip install --quiet "ruff==0.17.6"
+          ruff check --no-cache .
 
   tests:
     name: The suite that asserts the protocol rules

@@ -44,9 +44,9 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
-from typing import Any, Optional
+from typing import Any
 
-from .events import (ErrorOccurred, Event, FileTransferChanged, SecurityState,
+from .events import (ErrorOccurred, FileTransferChanged, SecurityState,
                      VoiceNoteReceived)
 
 __all__ = ["FileBridge", "FileOutcome", "is_file_signal"]

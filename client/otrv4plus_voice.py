@@ -161,7 +161,6 @@ import hmac
 import os
 import secrets
 import socket as _socket
-import struct
 import threading
 import time
 

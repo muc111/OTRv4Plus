@@ -29,7 +29,6 @@
 # =============================================================================
 import sys
 import os
-import socket
 import threading
 
 # Started as `python <client>`: run again with the project interpreter
@@ -71,7 +70,7 @@ if not all(hasattr(socks, _attr) for _attr in
 # BECOME one, and that property is structural in SmpFlow -- there is no edge
 # from a remote transition into AWAITING_SECRET.  A second copy of the logic
 # here would be a second chance to get it wrong.
-import otrv4plus_smpflow as _smpflow
+import otrv4plus_smpflow as _smpflow  # noqa: F401  (the IRC client imports it from here)
 # Moved out of this file (2026-11-11) and re-exported under the same names.
 from otrv4plus_states import (  # noqa: E402,F401
     DAKEState, SessionState, StateMachineError, UIConstants, colorize)
@@ -82,7 +81,6 @@ from otrv4plus_session_smp import (  # noqa: E402,F401
     _is_smp_version_mismatch)
 # Address rules shared with the Android app, including the project server's
 # shipped address (SHIPPED_SERVERS). Standard library only.
-import otrv4plus_address as _address
 # I2P: the alias file for short names and the SAM v3.1 client.
 from otrv4plus_i2p import (  # noqa: E402,F401  (re-exported for callers)
     I2P_HOSTS_FILENAME,
@@ -215,31 +213,18 @@ def _check_rust_requirements():
 _check_rust_requirements()
 
 import time
-import secrets
 import hashlib
 import json
 import re
 import hmac
 import struct
 import base64
-import math
-import select
 import ctypes
 import ctypes.util
 import tempfile
-import getpass
-import textwrap
-import atexit
-import gc
-import resource
-import shutil
-import logging
-import logging.handlers
-from typing import Optional, Dict, Any, Tuple, List, Set, Callable
-from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, Tuple, List
+from dataclasses import dataclass
 from collections import defaultdict, deque
-from enum import IntEnum
-import concurrent.futures
 
 CRYPTO_AVAILABLE = True
 
@@ -1084,7 +1069,7 @@ class SecureMemory:
                 try:
                     self._libc = ctypes.CDLL(ctypes.util.find_library(name) or name)
                     break
-                except (OSError, TypeError) as e:
+                except (OSError, TypeError):
                     continue
 
             if self._libc is None:
@@ -1142,14 +1127,14 @@ class SecureMemory:
                     buf_size = len(self._buffer)
                     if hasattr(self._libc, "munlock"):
                         self._libc.munlock(buf_addr, buf_size)
-                except (OSError, AttributeError, Exception) as e:
+                except (OSError, AttributeError, Exception):
                     if _debug.FLAGS.debug:
                         print("[SecureMemory] munlock failed")
                 self._locked = False
 
             self._buffer = None
 
-        except Exception as e:
+        except Exception:
             if _debug.FLAGS.debug:
                 print("[SecureMemory] zeroize error")
             raise
@@ -1169,7 +1154,7 @@ class SecureMemory:
                 raise RuntimeError("SecureMemory buffer destroyed")
 
             if len(data) > self._size:
-                raise ValueError(f"Data too large for SecureMemory")
+                raise ValueError("Data too large for SecureMemory")
 
             try:
                 n = len(self._buffer)
@@ -1545,7 +1530,7 @@ class ClientProfile:
             hex_str = fp_bytes.hex().upper()
             groups = [hex_str[i : i + 8] for i in range(0, 128, 8)]
             return " ".join(groups)
-        except (AttributeError, TypeError, ValueError) as e:
+        except (AttributeError, TypeError, ValueError):
             if _debug.FLAGS.debug:
                 print("[ClientProfile] Error getting fingerprint")
             return ""
@@ -1559,7 +1544,7 @@ class ClientProfile:
             if not actual or not fingerprint:
                 return False
             return hmac.compare_digest(actual.encode("utf-8"), fingerprint.encode("utf-8"))
-        except (TypeError, AttributeError, ValueError) as e:
+        except (TypeError, AttributeError, ValueError):
             if _debug.FLAGS.debug:
                 print("[ClientProfile] Fingerprint verification failed")
             return False
@@ -1580,7 +1565,7 @@ class ClientProfile:
                 return ""
             fp_bytes = hashlib.sha3_512(prekey_pub).digest()
             return fp_bytes.hex().upper()
-        except (AttributeError, TypeError, ValueError) as e:
+        except (AttributeError, TypeError, ValueError):
             if _debug.FLAGS.debug:
                 print("[ClientProfile] Error getting prekey fingerprint")
             return ""
@@ -3492,7 +3477,7 @@ class TrustDatabase:
 
 
 # The full-screen UI (tabs, panels, pager) is otrv4plus_panels.
-import otrv4plus_panels as _panels  # noqa: E402
+import otrv4plus_panels as _panels  # noqa: E402,F401  (tests patch the pager through it)
 from otrv4plus_panels import (  # noqa: E402,F401  (re-exported for callers)
     ChatPanel, Pager, PanelManager, Screen, TabBar)
 
@@ -3861,7 +3846,7 @@ class EnhancedOTRSession(SessionSmpMixin):
                     "QUEUE",
                     "OUTGOING",
                     str(len(self.pending_messages)),
-                    f"message queued (DAKE in progress)",
+                    "message queued (DAKE in progress)",
                 )
                 return None
 
@@ -4871,7 +4856,7 @@ class SessionManager:
         try:
             self.smp_storage.set_secret(peer, secret)
             self.logger.debug("set_smp_secret: stored")
-        except Exception as e:
+        except Exception:
             self.logger.debug("set_smp_secret: storage FAILED")
 
         if peer in self.sessions:
@@ -4880,7 +4865,7 @@ class SessionManager:
                 if hasattr(session, "set_smp_secret"):
                     session.set_smp_secret(secret)
                     self.logger.debug("set_smp_secret: session bound")
-            except Exception as e:
+            except Exception:
                 self.logger.debug("set_smp_secret: session bind FAILED")
 
         return True
@@ -4901,7 +4886,7 @@ class SessionManager:
             self.logger.debug("start_smp: returned")
             return result
 
-        self.logger.debug(f"start_smp: Session has no start_smp method")
+        self.logger.debug("start_smp: Session has no start_smp method")
         return None
 
     def process_smp_message(self, peer: str, smp_tlv: bytes) -> Optional[str]:
@@ -4917,7 +4902,7 @@ class SessionManager:
             if hasattr(session, "process_smp_message"):
                 return session.process_smp_message(smp_tlv)
 
-        except Exception as e:
+        except Exception:
             if _debug.FLAGS.debug:
                 print("SMP message processing failed")
 
@@ -5031,7 +5016,7 @@ class SessionManager:
             session = self.sessions[peer]
             if hasattr(session, "process_auto_smp_response"):
                 return session.process_auto_smp_response(smp_tlv)
-        except Exception as e:
+        except Exception:
             if _debug.FLAGS.debug:
                 print("Auto-SMP processing failed")
         return None
@@ -5372,7 +5357,7 @@ class EnhancedSessionManager(ManagerDakeMixin, ManagerSmpMixin):
                             "QUEUE",
                             "MESSAGE",
                             "QUEUED",
-                            f"message queued for later encryption",
+                            "message queued for later encryption",
                         )
 
                         return dake1, True
@@ -5381,7 +5366,7 @@ class EnhancedSessionManager(ManagerDakeMixin, ManagerSmpMixin):
                         return None, False
                 else:
                     self.tracer.trace(
-                        peer, "ERROR", "SEND", "BLOCKED", f"plaintext session but DAKE not started"
+                        peer, "ERROR", "SEND", "BLOCKED", "plaintext session but DAKE not started"
                     )
                     return None, False
 
@@ -5389,7 +5374,7 @@ class EnhancedSessionManager(ManagerDakeMixin, ManagerSmpMixin):
                 session.queue_outgoing_message(message)
 
                 self.tracer.trace(
-                    peer, "QUEUE", "MESSAGE", "QUEUED", f"DAKE in progress, message queued"
+                    peer, "QUEUE", "MESSAGE", "QUEUED", "DAKE in progress, message queued"
                 )
 
                 return None, False
@@ -5421,7 +5406,7 @@ class EnhancedSessionManager(ManagerDakeMixin, ManagerSmpMixin):
                     "ERROR",
                     "RECEIVE",
                     "PLAINTEXT",
-                    f"encrypted session but received plaintext - possible downgrade attack",
+                    "encrypted session but received plaintext - possible downgrade attack",
                 )
                 return None
 
@@ -6022,7 +6007,7 @@ class EnhancedSessionManager(ManagerDakeMixin, ManagerSmpMixin):
                 return False
 
             if not hmac.compare_digest(actual_fp, fingerprint):
-                self.tracer.trace(peer, "TRUST", "VERIFY", "FAILED", f"fingerprint mismatch")
+                self.tracer.trace(peer, "TRUST", "VERIFY", "FAILED", "fingerprint mismatch")
                 return False
 
             success = self.trust_db.add_trust(peer, fingerprint)

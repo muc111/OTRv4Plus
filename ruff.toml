@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
+# Copyright (C) 2025-2026 muc111
+#
+# Lint for the project's Python, run in CI (python.yml, licence-headers job).
+# Pyflakes' rules only: undefined names, unused imports and variables,
+# redefinitions, f-strings with nothing to format. Style is not enforced.
+#
+# An import kept for another module's sake (a re-export) is marked
+# `# noqa: F401` with the reason, so it is not mistaken for dead code.
+target-version = "py312"
+extend-exclude = [
+    "tests",
+    "third_party",
+    "Rust/vendor",
+    # The engine under its other names (symlinks to client/otrv4+.py).
+    "otrv4+.py",
+    "otrv4plus_xmpp.py",
+    "client/otrv4_.py",
+    "client/otrv4plus.py",
+]
+
+[lint]
+select = ["F"]
