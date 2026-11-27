@@ -42,6 +42,13 @@ on:
 permissions:
   contents: read
 
+# A newer push to the same branch makes an older run pointless: on claude/**
+# branches it is cancelled. Never on main or dev, where a run may be
+# publishing; there a newer run waits its turn instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
 jobs:
   compile:
     name: Fuzz harnesses compile

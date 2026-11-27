@@ -136,6 +136,13 @@ env:
   # Must stay on the same 3.12 line as PYTHON_VERSION.
   CHAQUOPY_TARGET: "3.12.15-0"
 
+# A newer push to the same branch makes an older run pointless: on claude/**
+# branches it is cancelled. Never on main or dev, where a run may be
+# publishing; there a newer run waits its turn instead.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
+
 jobs:
   # ---------------------------------------------------------------------------
   # Proves: the Gradle build files are valid and every dependency resolves.
