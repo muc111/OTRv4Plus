@@ -14,6 +14,7 @@ call carries silence.
 import asyncio
 import math
 import os
+import pathlib
 import struct
 import sys
 
@@ -149,7 +150,7 @@ def test_a_group_call_masks_before_opus():
 
 
 def test_a_one_to_one_call_masks_before_opus():
-    src = open(os.path.join(ROOT, "client", "otrv4plus_voice.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_voice.py")).read_text(encoding="utf-8")
     assert "self._masker = _audio.LiveMasker()" in src
     levelled = src.index("pcm = self._mic_gain.process(self._mic_comp.process(raw))")
     masked = src.index("pcm = self._masker.process(pcm)")
@@ -170,7 +171,7 @@ def test_the_apps_switch_and_ask():
 
 
 def test_the_terminal_has_mask():
-    src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_xmpp.py")).read_text(encoding="utf-8")
     assert 'lstrip in ("/mask", "/mask on", "/mask off")' in src
     assert "/mask [on|off]" in src
 

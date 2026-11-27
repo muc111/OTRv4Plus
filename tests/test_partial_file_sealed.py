@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import pathlib
 import tempfile
 
 import pytest
@@ -65,7 +66,7 @@ class TestThePartialFileIsSealedAsItArrives:
             assert chunk[:24] not in on_disk, "a chunk reached the disk in the clear"
         arrived = landing.files()
         assert arrived and arrived[0].endswith(".otrv")
-        assert verified.bob.open_received(arrived[0]) == open(a_file, "rb").read()
+        assert verified.bob.open_received(arrived[0]) == pathlib.Path(a_file).read_bytes()
         incoming = os.path.join(landing.path, ".incoming")
         assert not os.path.exists(incoming) or os.listdir(incoming) == [], \
             "the partial file outlived the transfer"
@@ -85,7 +86,7 @@ class TestTheReseal:
         key = core.RunKey()
         path, n = _part(chunks, key)
         assert n == len(PLAIN)
-        assert PLAIN[:24] not in open(path, "rb").read()
+        assert PLAIN[:24] not in pathlib.Path(path).read_bytes()
         dek, dst = _dek(), os.path.join(tempfile.mkdtemp(), "f.otrv")
         digest = bytes(core.otrv_reseal_run_file(key, dek, path, dst, n))
         assert digest == hashlib.sha256(PLAIN).digest()
@@ -102,7 +103,7 @@ class TestTheReseal:
     def test_a_tampered_part_is_refused_and_leaves_nothing(self):
         key = core.RunKey()
         path, n = _part([PLAIN[:5000], PLAIN[5000:9000]], key)
-        raw = bytearray(open(path, "rb").read())
+        raw = bytearray(pathlib.Path(path).read_bytes())
         raw[40] ^= 1
         open(path, "wb").write(bytes(raw))
         dst = os.path.join(tempfile.mkdtemp(), "f.otrv")
@@ -124,7 +125,7 @@ class TestTheReseal:
         # records' labels is refused.
         key = core.RunKey()
         path, n = _part([b"A" * 2000, b"B" * 2000], key)
-        raw = bytearray(open(path, "rb").read())
+        raw = bytearray(pathlib.Path(path).read_bytes())
         rec = 8 + 2000 + 16
         raw[16:20], raw[16 + rec:20 + rec] = raw[16 + rec:20 + rec], raw[16:20]
         open(path, "wb").write(bytes(raw))

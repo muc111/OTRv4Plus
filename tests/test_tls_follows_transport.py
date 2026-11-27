@@ -27,6 +27,7 @@ is which branch sets the SSL context.
 import ast
 import inspect
 import os
+import pathlib
 import sys
 import textwrap
 
@@ -126,7 +127,7 @@ class TestTheFlagIsNoLongerNeeded:
     def test_no_documented_i2p_command_passes_it(self):
         """A flag nobody has to type is the point of the change."""
         readme = "".join(
-            open(os.path.join(ROOT, name), encoding="utf-8").read()
+            pathlib.Path(os.path.join(ROOT, name)).read_text(encoding="utf-8")
             for name in ("README.md", "docs/TECHNICAL.md"))
         for block in readme.split("```"):
             if "otrv4plus_xmpp.py" not in block:

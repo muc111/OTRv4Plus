@@ -18,6 +18,7 @@ without an Android SDK.
 """
 
 import os
+import pathlib
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -199,7 +200,7 @@ class TestTheAndroidResourcesParse:
         'invalid token at line 6, column 51'."""
         offenders = []
         for path in self._xml_files():
-            text = open(path, encoding="utf-8", errors="replace").read()
+            text = pathlib.Path(path).read_text(encoding="utf-8", errors="replace")
             for comment in re.findall(r"<!--(.*?)-->", text, flags=re.S):
                 if "--" in comment:
                     offenders.append(os.path.relpath(path, ROOT))

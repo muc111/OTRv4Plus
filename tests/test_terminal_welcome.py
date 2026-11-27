@@ -11,6 +11,7 @@ created -- and joins it unless `--no-welcome`.
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import types
 
 import pytest
@@ -147,8 +148,8 @@ def test_no_welcome_keeps_the_terminal_out():
     args = xmpp._parser().parse_args(["--jid", "b@otrv4plus.i2p", "--no-welcome"])
     assert args.no_welcome is True
     assert xmpp._parser().parse_args(["--jid", "b@otrv4plus.i2p"]).no_welcome is False
-    src = open(xmpp.__file__, encoding="utf-8").read()
+    src = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
     assert 'client._join_welcome = not getattr(args, "no_welcome", False)' in src
     start = src[src.index("        self.send_presence()\n        # The apps list who is online"):][:600]
     assert 'if getattr(self, "_join_welcome", False):' in start
-    assert "asyncio.ensure_future(self._welcome_join())" in start
+    assert "_tasks.spawn(self._welcome_join())" in start

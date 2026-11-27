@@ -35,6 +35,7 @@ from source_of import voice_source  # noqa: E402
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import ast
 import os
+import pathlib
 import secrets
 import sys
 
@@ -114,7 +115,7 @@ PRODUCTION = ["client/otrv4+.py", "client/otrv4plus_irc.py", "client/otrv4plus_v
 
 
 def _raw_calls(relpath):
-    src = open(os.path.join(ROOT, relpath), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, relpath)).read_text(encoding="utf-8")
     tree = ast.parse(src)
     found = []
 
@@ -273,7 +274,7 @@ class TestTheRatchetIsBuiltOnlyFromTheDake:
     def test_no_production_code_constructs_a_ratchet_from_keys(self, relpath):
         if not os.path.exists(os.path.join(ROOT, relpath)):
             pytest.skip("%s not in this checkout" % relpath)
-        tree = ast.parse(open(os.path.join(ROOT, relpath), encoding="utf-8").read())
+        tree = ast.parse(pathlib.Path(os.path.join(ROOT, relpath)).read_text(encoding="utf-8"))
         made = [n.lineno for n in ast.walk(tree)
                 if isinstance(n, ast.Call)
                 and (getattr(n.func, "id", "") or getattr(n.func, "attr", ""))
@@ -298,7 +299,7 @@ class TestAtRestKeysAreReadByRustOnly:
     def test_no_python_opens_a_key_file(self, relpath):
         if not os.path.exists(os.path.join(ROOT, relpath)):
             pytest.skip("%s not in this checkout" % relpath)
-        tree = ast.parse(open(os.path.join(ROOT, relpath), encoding="utf-8").read())
+        tree = ast.parse(pathlib.Path(os.path.join(ROOT, relpath)).read_text(encoding="utf-8"))
         opened = []
         for n in ast.walk(tree):
             if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "open":
@@ -321,7 +322,7 @@ class TestAtRestKeysAreReadByRustOnly:
     def test_the_termux_dek_handle_has_no_raw_key(self):
         import otrv4plus_identity as I
         assert not hasattr(I._FileDekHandle, "raw_key_for_rust")
-        src = open(os.path.join(ROOT, "client", "otrv4plus_identity.py"), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_identity.py")).read_text(encoding="utf-8")
         assert "FileDek.load_or_create" in src
         assert "token_bytes(32)" not in src, "the DEK is generated in Python again"
 

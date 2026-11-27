@@ -19,6 +19,7 @@ exactly that change, and they did; they now pin the new shape instead.
 
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
+import pathlib
 import re
 import sys
 
@@ -32,15 +33,14 @@ otr = pytest.importorskip("otrv4_")
 
 def _rust_sources():
     d = os.path.join(ROOT, "Rust", "src")
-    return {f: open(os.path.join(d, f), encoding="utf-8").read()
+    return {f: pathlib.Path(os.path.join(d, f)).read_text(encoding="utf-8")
             for f in os.listdir(d) if f.endswith(".rs")}
 
 
 class TestArgon2IsInTheRustCore:
 
     def test_it_is_a_crate_dependency(self):
-        cargo = open(os.path.join(ROOT, "Rust", "Cargo.toml"),
-                     encoding="utf-8").read()
+        cargo = pathlib.Path(os.path.join(ROOT, "Rust", "Cargo.toml")).read_text(encoding="utf-8")
         assert re.search(r"(?m)^\s*argon2\s+=", cargo), (
             "argon2 is no longer a Rust dependency -- SMP 0x03 cannot work "
             "without it, and it must not silently fall back to 0x02")
@@ -108,7 +108,7 @@ class TestArgon2IsInTheRustCore:
 class TestTheDocumentationSaysSo:
 
     def _doc(self, name):
-        return open(os.path.join(ROOT, name), encoding="utf-8").read()
+        return pathlib.Path(os.path.join(ROOT, name)).read_text(encoding="utf-8")
 
     def test_features_no_longer_puts_argon2_in_the_vault(self):
         rows = [l for l in self._doc("docs/FEATURES.md").split("\n")
@@ -151,14 +151,12 @@ class TestWhereTheKdfsReallyAre:
         assert "SmpSecretStore" in src
 
     def test_the_smp_passphrase_derivation_is_memory_hard_under_0x03(self):
-        smp = open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
-                   encoding="utf-8").read()
+        smp = pathlib.Path(os.path.join(ROOT, "Rust", "src", "smp.rs")).read_text(encoding="utf-8")
         assert "fn stretch_argon2id(" in smp
         assert "Algorithm::Argon2id" in smp
 
     def test_the_legacy_shake_stretch_is_still_available_for_0x02_peers(self):
-        smp = open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
-                   encoding="utf-8").read()
+        smp = pathlib.Path(os.path.join(ROOT, "Rust", "src", "smp.rs")).read_text(encoding="utf-8")
         assert "fn stretch_shake_legacy(" in smp
         m = re.search(r"const KDF_ROUNDS:\s*u32\s*=\s*([0-9_]+);", smp)
         assert m, "KDF_ROUNDS is gone; 0x02 peers can no longer be talked to"
@@ -166,8 +164,7 @@ class TestWhereTheKdfsReallyAre:
 
     def test_the_argon2_cost_is_the_same_as_the_at_rest_cost(self):
         """Two cost profiles in one codebase is one more thing to get wrong."""
-        smp = open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
-                   encoding="utf-8").read()
+        smp = pathlib.Path(os.path.join(ROOT, "Rust", "src", "smp.rs")).read_text(encoding="utf-8")
         assert "const ARGON2_M_COST_KIB: u32 = 65_536;" in smp
         assert "const ARGON2_T_COST:     u32 = 3;" in smp
         assert "const ARGON2_P_COST:     u32 = 4;" in smp
@@ -180,7 +177,7 @@ class TestWhereTheKdfsReallyAre:
         assert "Algorithm::Argon2id, Version::V0x13" in at_rest
 
     def test_the_spec_documents_the_derivation_that_is_implemented(self):
-        spec = open(os.path.join(ROOT, "docs/SPEC.md"), encoding="utf-8").read()
+        spec = pathlib.Path(os.path.join(ROOT, "docs/SPEC.md")).read_text(encoding="utf-8")
         i = spec.index("### 6.4 Secret Derivation")
         section = spec[i:i + 4000]
         assert "Argon2id" in section
@@ -234,8 +231,7 @@ class TestTheSmpStretchIsSalted:
     """
 
     def _smp(self):
-        return open(os.path.join(ROOT, "Rust", "src", "smp.rs"),
-                    encoding="utf-8").read()
+        return pathlib.Path(os.path.join(ROOT, "Rust", "src", "smp.rs")).read_text(encoding="utf-8")
 
     def _set_secret(self):
         src = self._smp()

@@ -12,6 +12,7 @@ setup every capture and playback failed. The desktop host now says it is
 the desktop, and the bridge keeps the Linux hooks there.
 """
 import os
+import pathlib
 import sys
 
 import pytest
@@ -65,6 +66,6 @@ def test_the_phone_still_pins_aaudio(monkeypatch):
 
 
 def test_the_desktop_host_says_it_is_the_desktop_before_anything_loads():
-    src = open(os.path.join(ROOT, "desktop_bridge", "host.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "desktop_bridge", "host.py")).read_text(encoding="utf-8")
     main = src[src.index("def main()"):]
     assert main.index('os.environ["OTRV4PLUS_HOST"] = "desktop"') < main.index("Host(proto)")

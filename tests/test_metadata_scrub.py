@@ -23,6 +23,7 @@ image decodes, every pixel identical, the ICC profile kept.
 
 import io
 import os
+import pathlib
 import struct
 import sys
 import tempfile
@@ -325,8 +326,8 @@ class TestFiles:
                 "the peer would see a different name from the one picked")
             assert os.path.dirname(os.path.dirname(cleaned)) == directory, (
                 "the cleaned copy was written outside the staging directory")
-            assert b"PhoneMaker" not in open(cleaned, "rb").read()
-            assert open(original, "rb").read() == jpeg, (
+            assert b"PhoneMaker" not in pathlib.Path(cleaned).read_bytes()
+            assert pathlib.Path(original).read_bytes() == jpeg, (
                 "the user's own file was modified")
         finally:
             os.unlink(cleaned)

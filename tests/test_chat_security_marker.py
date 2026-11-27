@@ -82,8 +82,8 @@ class TestTheColoursAreTheProjectsOwn:
     A second, contradicting vocabulary in the message prefix is how a reader
     ends up trusting the wrong one."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def engine():
         return pytest.importorskip("otrv4plus")
 
@@ -148,8 +148,8 @@ class TestRedactionSurvivesThePrefix:
 class TestTheRendererUsesIt:
     """Having the helper is not the fix; calling it is."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def source():
         with open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
                   encoding="utf-8") as fh:

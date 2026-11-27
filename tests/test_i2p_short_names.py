@@ -24,6 +24,7 @@ user spelled out.
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -196,9 +197,9 @@ class TestRememberingTheB32:
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
         otr.remember_i2p_alias("a-private-server.i2p", B32, path)
-        before = open(path, encoding="utf-8").read()
+        before = pathlib.Path(path).read_text(encoding="utf-8")
         assert otr.remember_i2p_alias("a-private-server.i2p", B32, path) == ""
-        assert open(path, encoding="utf-8").read() == before
+        assert pathlib.Path(path).read_text(encoding="utf-8") == before
 
     def test_a_changed_destination_is_reported_and_not_rewritten(self):
         """The security-relevant one.  A server whose destination changed is
@@ -251,8 +252,7 @@ class TestTheClientOnlyWritesItsOwnFile:
         import ast as _ast
         offenders = []
         for name in ("otrv4+.py", "otrv4plus_xmpp.py"):
-            tree = _ast.parse(open(os.path.join(ROOT, name),
-                                   encoding="utf-8").read())
+            tree = _ast.parse(pathlib.Path(os.path.join(ROOT, name)).read_text(encoding="utf-8"))
             for node in _ast.walk(tree):
                 if not isinstance(node, _ast.Call):
                     continue
@@ -340,7 +340,7 @@ class TestShippedDefaults:
         d = tempfile.mkdtemp()
         path = os.path.join(d, "i2p_hosts")
         otr.remember_i2p_alias("some-server.i2p", B32, path)
-        assert otr.LEARNED_MARKER in open(path, encoding="utf-8").read()
+        assert otr.LEARNED_MARKER in pathlib.Path(path).read_text(encoding="utf-8")
         assert otr.i2p_aliases(path, with_provenance=True) == {
             "some-server.i2p": (B32, True)}
 

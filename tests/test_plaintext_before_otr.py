@@ -195,8 +195,8 @@ class TestTheTerminalClientUsesIt:
         c._peer_is_alive = lambda peer: None
         c._check_rate_limit = lambda peer: True
         scheduled = []
-        monkeypatch.setattr(xmpp.asyncio, "ensure_future",
-                            lambda coro: (scheduled.append(coro), coro.close()))
+        monkeypatch.setattr(xmpp._tasks, "spawn",
+                            lambda coro, **kw: (scheduled.append(coro), coro.close()))
         msg = {"type": "chat", "from": types.SimpleNamespace(bare=PEER),
                "body": xmpp.OTR_PREFIX + "AAAA"}
         c._on_message(msg)

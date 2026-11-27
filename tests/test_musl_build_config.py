@@ -257,8 +257,8 @@ class TestTheSharedLibraryIsActuallyProduced:
     # anything stored on it is invisible to the tests. This one only returns a
     # value, so nothing was ever wrong here -- but the shape is what pytest
     # warns about, and the shape is free to correct.
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def target_table():
         if not os.path.exists(CONFIG):
             pytest.fail("Rust/.cargo/config.toml is gone")

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only OR LicenseRef-OTRv4Plus-Commercial
 # Copyright (C) 2025-2026 muc111
 """The server load test's group logic, with an in-memory room (no server)."""
+import pathlib
 import random
 
 import pytest
@@ -141,7 +142,7 @@ def test_a_non_observer_never_decrypts_chat():
 
 def test_the_flag_is_hidden_and_admin_only_by_design():
     import otrv4plus_xmpp
-    src = open(otrv4plus_xmpp.__file__).read()
+    src = pathlib.Path(otrv4plus_xmpp.__file__).read_text()
     assert '"--stresstest" in sys.argv' in src
     assert 'import_module("otrv4plus_stresstest")' in src    # not in the APK
     ap = st.build_parser()
@@ -149,7 +150,7 @@ def test_the_flag_is_hidden_and_admin_only_by_design():
     # Accounts come from the server's admin command, which the server
     # refuses to anyone but its admins.
     assert st.ADMIN_ADD.endswith("admin#add-user")
-    assert "getpass" in open(st.__file__).read()
+    assert "getpass" in pathlib.Path(st.__file__).read_text()
 
 
 def test_an_older_core_without_identities_still_adds():
@@ -180,7 +181,7 @@ def test_the_runner_uses_the_apps_pacer_and_sees_bounces():
     """Run of 2026-10-16: delivery 43% with "room errors 0". The room's
     refusals arrive as type="error" (slixmpp's message_error event), which
     the old hand-made pacing never listened to, and nothing re-sent them."""
-    src = open(st.__file__).read()
+    src = pathlib.Path(st.__file__).read_text()
     assert "from android_bridge.groups import RoomPacer" in src
     assert '"message_error"' in src and ".rejected(bot.room)" in src
     assert ".confirm(bot.room," in src          # echoes confirm, so unechoed re-send

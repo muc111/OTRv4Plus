@@ -34,6 +34,7 @@ everything on logout" cannot quietly take it.
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -204,10 +205,10 @@ class TestTheEngineIsToldOnLogout:
     wiring is asserted structurally -- the behaviour it protects is driven
     above."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def logout_branch():
-        source = open(SERVICE_KT, encoding="utf-8").read()
+        source = pathlib.Path(SERVICE_KT).read_text(encoding="utf-8")
         start = source.index("ACTION_LOGOUT ->")
         return source[start:source.index("ACTION_START ->", start)]
 
@@ -231,7 +232,7 @@ class TestTheEngineIsToldOnLogout:
         `core.shutdown()` never runs and the engine keeps the signed-out
         account's sessions for the next account to inherit.
         """
-        source = open(SERVICE_KT, encoding="utf-8").read()
+        source = pathlib.Path(SERVICE_KT).read_text(encoding="utf-8")
         destroy = source[source.index("override fun onDestroy()"):]
         destroy = destroy[:destroy.index("super.onDestroy()")]
         assert "scope.cancel()" in destroy, (
@@ -262,7 +263,7 @@ class TestTheEngineIsToldOnLogout:
         teardown was. Its body runs the `WipeAndExit.Runner`, whose engine
         step is `core.wipe()`.
         """
-        source = open(SERVICE_KT, encoding="utf-8").read()
+        source = pathlib.Path(SERVICE_KT).read_text(encoding="utf-8")
         assert source.count("teardown.launch") == 3, (
             "the scope that outlives the service grew a new use; it carries "
             "teardown and nothing else")
@@ -281,7 +282,7 @@ class TestTheEngineIsToldOnLogout:
         transport's worker thread, its authenticated stream and its I2P
         tunnel alive with nothing holding a reference that could close them.
         """
-        source = open(SERVICE_KT, encoding="utf-8").read()
+        source = pathlib.Path(SERVICE_KT).read_text(encoding="utf-8")
         body = source[source.index("fun stopConnection("):]
         body = body[:body.index("\n    }")]
         assert "core.disconnect()" in body, (
@@ -300,7 +301,7 @@ class TestTheEngineIsToldOnLogout:
     def test_an_ordinary_disconnect_does_not_tear_the_engine_down(self):
         """Only LOGOUT forgets. Pressing Disconnect, or a dropped stream,
         must not destroy sessions the user has not asked to forget."""
-        source = open(SERVICE_KT, encoding="utf-8").read()
+        source = pathlib.Path(SERVICE_KT).read_text(encoding="utf-8")
         stop = source[source.index("ACTION_STOP ->"):]
         stop = stop[:stop.index("ACTION_LOGOUT ->")]
         assert "core.shutdown()" not in stop, (

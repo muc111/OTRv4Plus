@@ -15,6 +15,7 @@ receipt, checks it and reports fingerprints only. Real MLS clients
 """
 from __future__ import annotations
 
+import pathlib
 import pytest
 
 core = pytest.importorskip("otrv4_core")
@@ -120,8 +121,8 @@ def test_a_client_from_before_hides_it():
         old._on_control(ROOM, "alice@example.org", True, payload)
     assert shown == [], "an older client shows a key publication"
     import os
-    rust = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "Rust", "mls", "src", "client.rs"), encoding="utf-8").read()
+    rust = pathlib.Path(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "Rust", "mls", "src", "client.rs")).read_text(encoding="utf-8")
     assert 'REVEAL_MAGIC: &[u8] = b"\\x00OTRv4GV1:' in rust
 
 

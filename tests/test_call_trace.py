@@ -8,6 +8,7 @@ laptop's terminal showed the call ring, be answered and stall at
 Each line now also becomes a trace event: a stage code, and for a failure
 the reason, with identities replaced by labels. Never the line itself."""
 import os
+import pathlib
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,5 +75,5 @@ def test_lines_that_are_not_calls_are_not_recorded():
 def test_wrapping_twice_is_once():
     w = traced_call_print(print)
     assert w._otrv4plus_traced
-    src = open(os.path.join(ROOT, "android_bridge", "voice.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "android_bridge", "voice.py")).read_text(encoding="utf-8")
     assert 'getattr(current, "_otrv4plus_traced", False)' in src

@@ -18,6 +18,7 @@ These tests make that unification fail loudly.
 
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -183,8 +184,7 @@ class TestIrcDoesNotImportTheIdentityModule:
         assert found >= 1, "nothing loads the identity module any more"
 
     def test_the_identity_module_says_why_it_is_separate(self):
-        src = open(os.path.join(ROOT, "client", "otrv4plus_identity.py"),
-                   encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_identity.py")).read_text(encoding="utf-8")
         head = src[:src.index('"""', 3)]
         assert "IRC" in head and "XMPP" in head
         assert "filesystem permissions" in head.lower(), (
@@ -197,6 +197,5 @@ class TestIrcDoesNotImportTheIdentityModule:
         the identity change TOFU exists to flag."""
         ident = pytest.importorskip("otrv4plus_identity")
         assert issubclass(ident.IdentityUnavailable, RuntimeError)
-        src = open(os.path.join(ROOT, "client", "otrv4plus_identity.py"),
-                   encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_identity.py")).read_text(encoding="utf-8")
         assert "Raised rather than falling back" in src

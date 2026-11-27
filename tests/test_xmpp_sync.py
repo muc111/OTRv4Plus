@@ -8,6 +8,7 @@ history xep-0313 and anything else conversations app uses".
 from __future__ import annotations
 
 import os
+import pathlib
 import tempfile
 import xml.etree.ElementTree as ET
 
@@ -166,7 +167,7 @@ def test_the_cursor_is_per_account_private_and_opaque():
     c.set(ME, "R42")
     c.set(BOB, "R7")
     assert (c.get(ME), c.get(BOB)) == ("R42", "R7")
-    text = open(path).read()
+    text = pathlib.Path(path).read_text()
     assert ME not in text and BOB not in text
     assert oct(os.stat(path).st_mode & 0o777) == "0o600"
     c.forget()

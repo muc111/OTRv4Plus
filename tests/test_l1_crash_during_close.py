@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import re
 import signal
 import subprocess
@@ -96,10 +97,10 @@ def killed():
     proc.wait(timeout=30)
     if not line.startswith("REPORTED"):
         pytest.fail("child did not reach the close: %s" % proc.stderr.read()[-2000:])
-    frames = [tuple(f) for f in json.load(open(os.path.join(out, "wire.json")))]
+    frames = [tuple(f) for f in json.loads(pathlib.Path(out, "wire.json").read_text())]
     return {"home": home, "report": line.split(), "frames": frames,
-            "lines": json.load(open(os.path.join(out, "lines.json"))),
-            "oracle": [bytes.fromhex(k) for k in json.load(open(os.path.join(out, "oracle.json")))],
+            "lines": json.loads(pathlib.Path(out, "lines.json").read_text()),
+            "oracle": [bytes.fromhex(k) for k in json.loads(pathlib.Path(out, "oracle.json").read_text())],
             "returncode": proc.returncode}
 
 

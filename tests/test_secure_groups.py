@@ -10,6 +10,7 @@ its SMP state per pair. The MLS is the real Rust core.
 import base64
 import collections
 import os
+import pathlib
 import tempfile
 
 import pytest
@@ -366,7 +367,7 @@ def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     a.groups.create(ROOM)
     _invite(w, "alice@x.i2p", "bob@x.i2p")
     path = _state_file(os.path.join(root, "b"), "bob@x.i2p")
-    blob = open(path, "rb").read()
+    blob = pathlib.Path(path).read_bytes()
     assert b"bob@x.i2p" not in blob and ROOM.encode() not in blob
     assert "bob" not in os.path.basename(path)       # no address in a file name
     # Bob restarts (the old process is gone).
@@ -390,7 +391,7 @@ def test_state_survives_a_restart_sealed_and_bound_to_the_account():
     assert not m.is_secure(ROOM)
     m.create("other@conference.example.i2p")
     m.close()
-    assert open(path, "rb").read()                    # Bob's file untouched
+    assert pathlib.Path(path).read_bytes()                    # Bob's file untouched
     b3 = Member(w, "bob@x.i2p", os.path.join(root, "b"))
     assert b3.groups.is_secure(ROOM)
 

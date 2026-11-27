@@ -28,6 +28,7 @@ has to prove itself.
 
 from source_of import voice_source  # noqa: E402
 import os
+import pathlib
 import re
 import sys
 
@@ -40,7 +41,7 @@ POLICY = os.path.join(ROOT, "docs/TRANSPORT_POLICY.md")
 
 
 def _read(path):
-    return open(path, encoding="utf-8").read()
+    return pathlib.Path(path).read_text(encoding="utf-8")
 
 
 def _branch(src, anchor):

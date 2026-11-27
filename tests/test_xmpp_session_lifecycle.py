@@ -9,6 +9,7 @@ Code-path tests. They do not prove live TLS, Tor or I2P operation.
 """
 
 import asyncio
+import pathlib
 
 import pytest
 
@@ -50,7 +51,7 @@ class TestNoCredentialsOverAnUnencryptedStream:
             "over an unencrypted stream" % setting)
 
     def test_the_application_does_not_re_enable_any_of_them(self):
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         for setting in ("unencrypted_plain", "unencrypted_scram",
                         "unencrypted_digest", "unencrypted_cram"):
             assert setting not in source, (
@@ -60,20 +61,20 @@ class TestNoCredentialsOverAnUnencryptedStream:
 
 class TestTlsConfiguration:
     def test_starttls_is_enabled_and_direct_tls_is_not(self):
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         assert "client.enable_starttls = True" in source
         assert "client.enable_direct_tls = False" in source
 
     def test_verification_is_only_disabled_by_the_explicit_flag(self):
         # Never as a fallback after a handshake failure.
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         assert source.count("CERT_NONE") == 1
         idx = source.index("CERT_NONE")
         assert "insecure_tls" in source[max(0, idx - 600):idx]
 
     def test_the_clearnet_warning_names_the_actual_risk(self):
         # A warning that does not say what is lost teaches nothing.
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         start = source.index("--insecure-tls on a CLEARNET connection")
         window = source[start:start + 500]
         assert "MITM" in window
@@ -95,7 +96,7 @@ class TestTransportCannotChangeAtRuntime:
                                        "_sam_params", "_tor_params"])
     def test_the_marker_is_never_reassigned_after_setup(self, field):
         import re
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         # Assignments of the form `<something>._is_i2p =` or `self._is_i2p =`.
         assignments = re.findall(r"^\s*(?:self|client)\.%s\s*=" % field,
                                  source, re.MULTILINE)

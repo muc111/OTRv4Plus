@@ -30,6 +30,7 @@ of device verification is made for one of them.
 
 import io
 import os
+import pathlib
 import re
 
 import pytest
@@ -100,8 +101,8 @@ class TestTheOpenGatesAreStillDeclaredOpen:
     from that list.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def unverified(notes):
         start = notes.index("## NOT verified")
         return notes[start:notes.index("\n## ", start + 4)]
@@ -286,7 +287,7 @@ class TestExactlyOneAndroidRelease:
     def _src(self):
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return open(os.path.join(root, self.SCRIPT)).read()
+        return pathlib.Path(os.path.join(root, self.SCRIPT)).read_text()
 
     def test_a_build_of_main_gets_its_own_tag_and_is_latest(self):
         s = self._src()

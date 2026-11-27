@@ -404,13 +404,13 @@ class TestTheAndroidLifecycleIsWiredForRecreation:
     """Structural. Kotlin does not run here; these are the facts that decide
     whether a rotation costs you your connection, asserted by parsing."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def connect_screen():
         return _read(UI, "ui", "ConnectScreen.kt")
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def view_model():
         return _read(UI, "ConnectionViewModel.kt")
 

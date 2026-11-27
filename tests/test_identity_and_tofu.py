@@ -15,6 +15,7 @@ indicate a MITM attack". The tests below pin the behaviour that replaced it.
 
 from source_of import class_source  # noqa: E402
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -113,15 +114,15 @@ class TestCorruptIdentityFailsClosed:
         with open(rec, "r+b") as fh:
             fh.seek(20)
             fh.write(b"\xff\xff\xff\xff")
-        before = open(rec, "rb").read()
+        before = pathlib.Path(rec).read_bytes()
         with pytest.raises(ident.IdentityUnavailable):
             ident.load_or_create_identity(rec, dek)
-        assert open(rec, "rb").read() == before
+        assert pathlib.Path(rec).read_bytes() == before
 
     def test_a_truncated_record_raises(self, statedir):
         rec, dek = _paths(statedir)
         ident.load_or_create_identity(rec, dek)
-        blob = open(rec, "rb").read()
+        blob = pathlib.Path(rec).read_bytes()
         with open(rec, "wb") as fh:
             fh.write(blob[:len(blob) // 2])
         with pytest.raises(ident.IdentityUnavailable):
@@ -143,7 +144,7 @@ class TestCorruptIdentityFailsClosed:
             fh.write(b"short")
         with pytest.raises(ident.IdentityUnavailable):
             ident.load_or_create_identity(rec, dek)
-        assert open(dek, "rb").read() == b"short", "the key file was replaced"
+        assert pathlib.Path(dek).read_bytes() == b"short", "the key file was replaced"
 
     def test_no_path_configured_raises(self):
         with pytest.raises(ident.IdentityUnavailable):

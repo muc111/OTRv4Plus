@@ -11,6 +11,7 @@ one cannot join them. When one is split, lower or remove its entry.
 import ast
 import glob
 import os
+import pathlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIMIT = 200
@@ -30,7 +31,7 @@ def _functions():
         if os.path.islink(path):
             continue
         rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
 
         def walk(node, prefix):
             for child in ast.iter_child_nodes(node):
@@ -149,7 +150,7 @@ def _kotlin_functions():
     head = re.compile(r"\bfun\s+(?:<[^>]*>\s*)?(?:[A-Za-z0-9_.]+\.)?([A-Za-z0-9_]+)\s*\(")
     for path in sorted(paths):
         rel = os.path.relpath(path, ROOT).replace(os.sep, "/")
-        s = _strip_kotlin(open(path, encoding="utf-8").read())
+        s = _strip_kotlin(pathlib.Path(path).read_text(encoding="utf-8"))
         for m in head.finditer(s):
             i, depth = m.end(), 1
             while i < len(s) and depth:

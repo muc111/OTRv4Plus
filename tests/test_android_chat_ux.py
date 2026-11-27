@@ -307,8 +307,8 @@ class TestStateLivesInAViewModel:
     """A Composable is a description of what to draw, not a place to keep what
     was said. State held in one is gone the moment the composition is."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def chat_vm():
         return _read(ANDROID, "chat", "ChatViewModel.kt")
 
@@ -401,8 +401,8 @@ class TestStateLivesInAViewModel:
 
 class TestNavigationCarriesNoObjects:
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def activity():
         return _code_only(_read(ANDROID, "MainActivity.kt"))
 
@@ -431,8 +431,8 @@ class TestTheSecurityBoundaryHoldsInTheUi:
     """Transport connectivity is not OTR security, and the UI must not be able
     to confuse them even by accident."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def conversation():
         return conversation_screen_source()
 
@@ -552,13 +552,13 @@ class TestTheRulesAreExecutable:
     amount of source-matching here would replace them.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def state():
         return _read(ANDROID, "chat", "ChatState.kt")
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def chat_vm():
         return _uncommented(_read(ANDROID, "chat", "ChatViewModel.kt"))
 
@@ -665,8 +665,8 @@ class TestPresenceInTheUi:
 
 class TestTheConversationList:
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def state():
         return _read(ANDROID, "chat", "ChatState.kt")
 
@@ -712,8 +712,8 @@ class TestTheConversationList:
 
 class TestTheComposer:
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def conversation():
         return conversation_screen_source()
 
@@ -774,8 +774,8 @@ class TestNothingSensitiveReachesTheUi:
 
 class TestTheStorageAbstraction:
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def store():
         # Uncommented: this class asks what the store DOES, and the header
         # comment names the very things it must not do.
@@ -843,13 +843,13 @@ class TestTheOtrTapReachesTheWire:
     swallowed on the way back are the two checked here.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def chat_vm():
         return _code_only(_read(ANDROID, "chat", "ChatViewModel.kt"))
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def provider():
         return _code_only(_read(ANDROID, "crypto", "OtrV4PlusProvider.kt"))
 
@@ -920,20 +920,20 @@ class TestIdentityVerificationReachesTheUser:
     depend on a button, and the passphrase does not go anywhere it should not.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def screen():
         return _code_only(conversation_screen_source())
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def screen_text():
         """With string bodies KEPT. The user-facing sentences are the subject
         of some of these, and `_code_only` blanks them."""
         return _uncommented(conversation_screen_source())
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def rules():
         return _read(ANDROID, "crypto", "Verification.kt")
 

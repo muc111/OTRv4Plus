@@ -27,6 +27,7 @@ their time goes on the design rather than on chasing stale constants.
 """
 
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
+import pathlib
 import re
 
 import pytest
@@ -35,7 +36,7 @@ SPEC = "docs/SPEC.md"
 
 
 def spec_text():
-    return open(SPEC).read()
+    return pathlib.Path(SPEC).read_text()
 
 
 def _section(text, start, end):
@@ -70,7 +71,7 @@ class TestTheVersionStamp:
 # ---------------------------------------------------------------------------
 
 def code_usage_ids():
-    src = open("Rust/src/kdf.rs").read()
+    src = pathlib.Path("Rust/src/kdf.rs").read_text()
     block = src[src.index("pub mod usage"):]
     block = block[:block.index("\n}")]
     return {m.group(1): int(m.group(2), 16)
@@ -107,7 +108,7 @@ class TestTheUsageIdRegistry:
 
     def test_the_domain_separator_is_what_the_spec_says(self):
         """The spec is explicit that it is "OTRv4", not "OTRv4+"."""
-        assert 'b"OTRv4"' in open("Rust/src/kdf.rs").read()
+        assert 'b"OTRv4"' in pathlib.Path("Rust/src/kdf.rs").read_text()
         assert '`"OTRv4"` is the 5-byte ASCII domain separator' in spec_text()
 
 
@@ -180,7 +181,7 @@ class TestTheApplicationLayerExtensions:
 
     def test_the_tip_tlv_bounds_match_the_implementation(self):
         # Read the constants without importing: the module pulls in the engine.
-        src = open("client/otrv4plus_tip.py").read()
+        src = pathlib.Path("client/otrv4plus_tip.py").read_text()
         bounds = {m.group(1): int(m.group(2))
                   for m in re.finditer(r'^(MAX_\w+)\s*=\s*(\d+)', src, re.M)}
         text = spec_text()
@@ -190,7 +191,7 @@ class TestTheApplicationLayerExtensions:
                 "not appear in SPEC §5.6.2" % (name, value))
 
     def test_the_tip_tlv_type_agrees_with_the_engine(self):
-        src = open("client/otrv4plus_tip.py").read()
+        src = pathlib.Path("client/otrv4plus_tip.py").read_text()
         mirrored = int(re.search(r'TIP_TLV_TYPE = (0x[0-9a-fA-F]+)',
                                  src).group(1), 16)
         assert code_tlv_types()["TIP"] == mirrored
@@ -198,7 +199,7 @@ class TestTheApplicationLayerExtensions:
 
     def test_the_trade_prefix_is_documented(self):
         prefix = re.search(r'TRADE_PREFIX = "([^"]+)"',
-                           open("client/otrv4plus_trade.py").read()).group(1)
+                           pathlib.Path("client/otrv4plus_trade.py").read_text()).group(1)
         assert prefix in spec_text(), (
             "%r appears on the wire inside encrypted bodies and is documented "
             "nowhere in docs/SPEC.md" % prefix)
@@ -211,7 +212,7 @@ class TestTheApplicationLayerExtensions:
 class TestTheFixedSizes:
 
     def test_they_match_the_dake_constants(self):
-        src = open("Rust/src/dake.rs").read()
+        src = pathlib.Path("Rust/src/dake.rs").read_text()
         code = {m.group(1): int(m.group(2))
                 for m in re.finditer(r'const (\w+):\s*usize = (\d+);', src)}
         table = _section(spec_text(), "### 1.1 Fixed Sizes",
@@ -242,7 +243,7 @@ class TestTheFixedSizes:
 class TestTheSmpParameters:
 
     def _smp(self):
-        return open("Rust/src/smp.rs").read()
+        return pathlib.Path("Rust/src/smp.rs").read_text()
 
     def test_the_wire_versions_agree(self):
         code = {m.group(1): int(m.group(2), 16) for m in re.finditer(

@@ -10,6 +10,7 @@ debug log as it is created; the diagnostic report opens with a tally.
 import ast
 import glob
 import os
+import pathlib
 
 from android_bridge import codes, report
 from android_bridge.app_base import BridgeError
@@ -31,7 +32,7 @@ def _literal_codes():
     argument (`_refuse_room(peer, "room_not_verifiable")`)."""
     found = set()
     for path in glob.glob(os.path.join(ROOT, "android_bridge", "*.py")):
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
         helpers = set()
         for fn in ast.walk(tree):
             if isinstance(fn, ast.FunctionDef) and any(a.arg == "code" for a in fn.args.args):

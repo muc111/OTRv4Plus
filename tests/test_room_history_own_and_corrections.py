@@ -12,6 +12,7 @@ phone, our own earlier lines and corrections in the Welcome room were gone.
 
 from source_of import app_source  # noqa: E402
 import os
+import pathlib
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -85,8 +86,8 @@ def test_the_app_shows_and_applies_our_history_but_not_our_live_echo():
 
 
 def test_history_is_stored_but_never_announced():
-    kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                           "android/chat/ChatState.kt")).read()
+    kt = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                           "android/chat/ChatState.kt")).read_text()
     body = kt[kt.index("fun receiveRoom("):]
     body = body[:body.index("fun receive(")]
     assert 'return added && event.source == "live"' in body

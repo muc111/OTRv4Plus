@@ -22,6 +22,7 @@ therefore have to hold, and this file is the offline half of them.
 """
 
 import os
+import pathlib
 import re
 
 import pytest
@@ -69,7 +70,7 @@ def _pip_block():
     quotes `install("aiodns")`. Matching before stripping would find the
     forbidden package inside the comment that forbids it.
     """
-    src = open(GRADLE).read()
+    src = pathlib.Path(GRADLE).read_text()
     start = src.index("pip {")
     depth = 0
     for i in range(start, len(src)):
@@ -141,7 +142,7 @@ class TestTheThingThatForcedIt:
         failure they have to diagnose from scratch unless the reason is
         written down next to it.
         """
-        src = open(GRADLE).read()
+        src = pathlib.Path(GRADLE).read_text()
         assert "pycares" in src
         assert "aiodns" in src
 
@@ -161,7 +162,7 @@ class TestTheCheckThatNeedsAnIndex:
 
     def test_the_workflow_runs_it(self):
         workflow = ".github/workflows/android.yml"
-        assert "verify_python_closure.py" in open(workflow).read(), (
+        assert "verify_python_closure.py" in pathlib.Path(workflow).read_text(), (
             "the closure check is only worth having if it runs")
 
     def test_the_exclusions_agree_with_this_file(self):
@@ -171,7 +172,7 @@ class TestTheCheckThatNeedsAnIndex:
         exclusions but not here, the build breaks on pycares again with a test
         suite that said nothing.
         """
-        src = open(".github/scripts/verify_python_closure.py").read()
+        src = pathlib.Path(".github/scripts/verify_python_closure.py").read_text()
         block = src[src.index("EXCLUDED_BY_DESIGN = {"):]
         block = block[:block.index("\n}")]
         for name in FORBIDDEN:

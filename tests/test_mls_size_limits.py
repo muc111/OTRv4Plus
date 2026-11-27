@@ -16,6 +16,7 @@ its own bound, the same number on both sides:
 import ast
 import base64
 import os
+import pathlib
 import re
 
 import pytest
@@ -47,7 +48,7 @@ def _eval_const(expr: str) -> int:
 
 
 def _rust_consts():
-    src = open(RUST, encoding="utf-8").read()
+    src = pathlib.Path(RUST).read_text(encoding="utf-8")
     return {m.group(1): _eval_const(m.group(2))
             for m in re.finditer(r"const (MAX_\w+): usize = ([^;]+);", src)}
 
@@ -60,7 +61,7 @@ def test_rust_and_python_bounds_are_the_same_numbers():
 
 
 def test_the_rust_binding_checks_each_input_against_its_own_bound():
-    src = open(RUST, encoding="utf-8").read()
+    src = pathlib.Path(RUST).read_text(encoding="utf-8")
     assert 'bounded(kp, MAX_KEY_PACKAGE, "key package")' in src
     assert 'bounded(key_package, MAX_KEY_PACKAGE, "key package")' in src
     assert 'bounded(welcome, MAX_WELCOME, "welcome")' in src
@@ -69,7 +70,7 @@ def test_the_rust_binding_checks_each_input_against_its_own_bound():
 
 
 def test_every_python_decode_names_its_bound():
-    tree = ast.parse(open(GROUPS, encoding="utf-8").read())
+    tree = ast.parse(pathlib.Path(GROUPS).read_text(encoding="utf-8"))
     calls = [n for n in ast.walk(tree)
              if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "_b64d"]
     assert calls, "no _b64d call sites found"

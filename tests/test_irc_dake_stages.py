@@ -196,8 +196,8 @@ class TestNoSecretsInTheHandshakeOutput:
 class TestTheHandlersUseIt:
     """Having the helper is not the change; the DAKE handlers calling it is."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def sources():
         import ast
         import os

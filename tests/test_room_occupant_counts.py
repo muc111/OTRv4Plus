@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
 import sys
 
 import pytest
@@ -145,12 +146,12 @@ class TestListing:
 
 
 def test_kotlin_renders_unknown_as_nothing():
-    src = open(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
-                            "otrv4plus", "android", "ui", "RoomsScreen.kt")).read()
+    src = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
+                            "otrv4plus", "android", "ui", "RoomsScreen.kt")).read_text()
     assert "room.occupants?.let" in src
-    core = open(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
+    core = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
                              "otrv4plus", "android", "bridge",
-                             "ChaquopyOtrCore.kt")).read()
+                             "ChaquopyOtrCore.kt")).read_text()
     assert 'entry(item, "occupants").toIntOrNull()' in core
 
 

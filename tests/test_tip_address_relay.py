@@ -585,8 +585,8 @@ class TestTheQrCode:
 class TestItIsStillARelay:
     """INV-25, the same assertions the trade courier carries."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def source():
         with open(os.path.join(ROOT, "client", "otrv4plus_tip.py"),
                   encoding="utf-8") as fh:
@@ -642,8 +642,8 @@ class TestTipOutputNeverReachesTheSessionLog:
     to add `tip` to `_LOG_SAFE_TAGS` so the transcript reads better.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def xmpp():
         return pytest.importorskip("otrv4plus_xmpp")
 
@@ -668,8 +668,8 @@ class TestTheEngineHook:
     """The TLV type and the registry live in `otrv4+.py`; this module only
     names the type. They must agree, and the registry must stay narrow."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def engine():
         return pytest.importorskip("otrv4plus")
 

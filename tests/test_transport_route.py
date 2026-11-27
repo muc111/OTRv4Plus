@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from source_of import transport_source  # noqa: E402
 import os
+import pathlib
 import ssl
 import sys
 
@@ -526,7 +527,7 @@ class TestNothingWeakensTLS:
         for bad in ("_create_unverified_context", "verify=False",
                     "CERT_OPTIONAL", "trust_all", "trustAll"):
             assert bad not in src, bad
-        route_src = open(os.path.join(ROOT, "android_bridge", "route.py")).read()
+        route_src = pathlib.Path(os.path.join(ROOT, "android_bridge", "route.py")).read_text()
         assert "07f" not in route_src.replace("`07f.de`", ""), (
             "no special case for the server in the report")
 

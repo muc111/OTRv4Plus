@@ -12,6 +12,7 @@ import asyncio
 import gc
 import logging
 import os
+import pathlib
 import sys
 import warnings
 
@@ -25,6 +26,9 @@ import otrv4plus_tasks as tasks  # noqa: E402
 
 def test_a_task_runs_to_the_end_with_no_other_reference():
     done = []
+    # Other tests may leave a task pending on a loop they closed; count
+    # only this test's own.
+    before = tasks.running()
 
     async def slow():
         fut = asyncio.get_running_loop().create_future()
@@ -42,7 +46,7 @@ def test_a_task_runs_to_the_end_with_no_other_reference():
 
     asyncio.run(main())
     assert done == [True]
-    assert tasks.running() == 0
+    assert tasks.running() == before
 
 
 def test_a_failure_names_the_task_not_the_secret(caplog):
@@ -87,7 +91,7 @@ def test_nothing_starts_a_task_and_drops_it():
             path = os.path.join(ROOT, folder, name)
             if not name.endswith(".py") or os.path.islink(path) or name == "otrv4plus_tasks.py":
                 continue
-            tree = ast.parse(open(path, encoding="utf-8").read())
+            tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if (isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
                         and isinstance(node.value.func, ast.Attribute)

@@ -10,6 +10,7 @@ without an entry, or changed without its recorded hash following, fails here.
 
 import hashlib
 import os
+import pathlib
 import re
 import subprocess
 
@@ -29,7 +30,7 @@ def _tracked_images():
 
 
 def _record():
-    return open(os.path.join(ROOT, "docs/ASSETS.md"), encoding="utf-8").read()
+    return pathlib.Path(os.path.join(ROOT, "docs/ASSETS.md")).read_text(encoding="utf-8")
 
 
 def test_every_image_is_recorded():
@@ -47,7 +48,7 @@ def test_recorded_hashes_match_the_files():
         m = re.search(r"`%s`[^\n]*?`([0-9a-f]{64})`" % re.escape(short), record)
         if not m:
             continue
-        digest = hashlib.sha256(open(os.path.join(ROOT, p), "rb").read()).hexdigest()
+        digest = hashlib.sha256(pathlib.Path(os.path.join(ROOT, p)).read_bytes()).hexdigest()
         if digest != m.group(1):
             stale.append(p)
     assert stale == [], "changed without updating docs/ASSETS.md: %s" % stale

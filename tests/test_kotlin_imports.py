@@ -8,6 +8,7 @@ Android job on rc.156. These catch that class of mistake in seconds.
 """
 import glob
 import os
+import pathlib
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -24,7 +25,7 @@ def _code(src):
 def test_every_file_using_composable_imports_it():
     missing = []
     for path in SOURCES:
-        src = open(path, encoding="utf-8").read()
+        src = pathlib.Path(path).read_text(encoding="utf-8")
         if re.search(r"^\s*@Composable\b", _code(src), re.M) and not re.search(
                 r"^import androidx\.compose\.runtime\.(Composable|\*)$", src, re.M):
             missing.append(os.path.relpath(path, ROOT))
@@ -36,7 +37,7 @@ def test_fully_qualified_project_names_exist():
     `...android.theme`: a qualified name must point at a real declaration."""
     declared = set()
     for path in SOURCES:
-        src = open(path, encoding="utf-8").read()
+        src = pathlib.Path(path).read_text(encoding="utf-8")
         pkg = re.search(r"^package\s+([\w.]+)", src, re.M)
         names = re.findall(r"^(?:\w+\s+)*(?:class|object|interface|val)\s+(\w+)", src, re.M)
         # An extension's receiver is not a declaration: `fun A.B.c(` declares c.
@@ -46,7 +47,7 @@ def test_fully_qualified_project_names_exist():
                 declared.add(pkg.group(1) + "." + name)
     wrong = set()
     for path in SOURCES:
-        code = _code(open(path, encoding="utf-8").read())
+        code = _code(pathlib.Path(path).read_text(encoding="utf-8"))
         for ref in re.findall(r"\b(org\.otrv4plus\.(?:android|desktop)(?:\.[a-z]\w*)+\.[A-Z]\w*)", code):
             if ref not in declared:
                 wrong.add("%s: %s" % (os.path.relpath(path, ROOT), ref))

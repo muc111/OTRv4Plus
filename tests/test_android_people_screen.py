@@ -10,6 +10,7 @@ virtualized, that search is local, that the button sits beside the connection
 state, and that tapping opens details. Those are pinned here.
 """
 import os
+import pathlib
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,9 +53,9 @@ def test_people_is_one_tap_from_the_chat_list():
     # Owner, 2026-10-15: the bar is on every top-level screen (MainNavBar.kt),
     # not only the chat list.
     import os
-    bar = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    bar = pathlib.Path(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                             "android", "app", "src", "main", "java", "org", "otrv4plus",
-                            "android", "ui", "MainNavBar.kt")).read()
+                            "android", "ui", "MainNavBar.kt")).read_text()
     assert "onSelect(MainTab.PEOPLE)" in bar
     assert "OnlineUsers.peopleButton(model.directory)" in bar
     assert "model.pendingSubscriptions.size" in bar
@@ -88,8 +89,8 @@ def test_the_bottom_bar_is_on_every_tab_and_never_in_a_chat():
     import os
     import re
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    main = open(os.path.join(root, "android", "app", "src", "main", "java", "org",
-                             "otrv4plus", "android", "MainActivity.kt")).read()
+    main = pathlib.Path(os.path.join(root, "android", "app", "src", "main", "java", "org",
+                             "otrv4plus", "android", "MainActivity.kt")).read_text()
     for tab in ("MainTab.CHATS", "MainTab.PEOPLE", "MainTab.ROOMS", "MainTab.PROFILE"):
         assert re.search(r"MainTabs\(%s, chat, (::)?selectTab\)" % re.escape(tab), main), tab
     convo = main[main.index("Screen.CONVERSATION -> {"):main.index("Screen.CONVERSATIONS ->")]
@@ -98,6 +99,6 @@ def test_the_bottom_bar_is_on_every_tab_and_never_in_a_chat():
     assert "MainTabs(" not in route, "a conversation must not carry the bottom bar"
     assert "MainTabs(" not in convo, "a conversation must not carry the bottom bar"
     assert "screen = lastTab" in convo, "leaving a chat returns to the tab it came from"
-    chats = open(os.path.join(root, "android", "app", "src", "main", "java", "org",
-                              "otrv4plus", "android", "ui", "ConversationsScreen.kt")).read()
+    chats = pathlib.Path(os.path.join(root, "android", "app", "src", "main", "java", "org",
+                              "otrv4plus", "android", "ui", "ConversationsScreen.kt")).read_text()
     assert not re.search(r"\bNavigationBar\s*\{", chats), "one bar, in MainNavBar.kt"

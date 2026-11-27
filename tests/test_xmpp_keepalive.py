@@ -17,6 +17,7 @@ consequences.
 """
 
 import asyncio
+import pathlib
 import sys
 import types
 
@@ -348,7 +349,7 @@ class TestNoDuplicateLoops:
     def test_starting_the_keepalive_cancels_any_predecessor(self):
         # Two loops probing one stream reach the threshold in half the time,
         # because they share the counter.
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         start = source.index("Whitespace keepalive to maintain")
         window = source[start:start + 700]
         assert "existing.cancel()" in window

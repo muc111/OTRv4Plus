@@ -18,6 +18,7 @@ the same raw key. So the fix is the key itself (SPEC §3.1):
 Key generation and sealing are unchanged.
 """
 import os
+import pathlib
 import tempfile
 
 import pytest
@@ -148,7 +149,7 @@ class TestTheAccountBoundary:
         ctl = C.controller_for(_App(), jid="carol@example.i2p")
         assert calls == ["carol@example.i2p"]
         assert ctl is not None
-        src = open(C.__file__, encoding="utf-8").read()
+        src = pathlib.Path(C.__file__).read_text(encoding="utf-8")
         fn = src[src.index("def controller_for("):src.index("def _follow_sam_udp_port(")]
         assert fn.index("bind(jid)") < fn.index("return ConnectionController(app, profile)")
 
@@ -176,7 +177,7 @@ class TestTerminalRecords:
             with open(legacy + suffix, "wb") as fh:
                 fh.write(b"sealed" + suffix.encode())
         a = xmpp._identity_path_for("alice@one.test")
-        assert open(a, "rb").read() == b"sealed" and open(a + ".mldsa", "rb").read() == b"sealed.mldsa"
+        assert pathlib.Path(a).read_bytes() == b"sealed" and pathlib.Path(a + ".mldsa").read_bytes() == b"sealed.mldsa"
         assert not os.path.exists(legacy)
         b = xmpp._identity_path_for("bob@two.test")
         assert not os.path.exists(b), "a second account starts fresh"

@@ -368,8 +368,8 @@ class TestInv06CoversTheIrcClientNow:
     could grow a masked read without anyone checking what could reach it.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def methods():
         with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
@@ -486,8 +486,8 @@ class TestFirstContactPinsInsteadOfAsking:
     """INV-11 semantics on IRC: pin on first contact, report a change, never
     auto-accept a change."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def source():
         with open_irc_and_engine() as fh:
             return fh.read()

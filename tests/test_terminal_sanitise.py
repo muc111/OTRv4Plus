@@ -8,6 +8,7 @@ output. These hold the single copy to what it must remove, and both clients
 to using it.
 """
 import os
+import pathlib
 import sys
 
 import pytest
@@ -75,7 +76,7 @@ def test_no_other_copy_exists():
             continue
         if name == "otrv4plus_sanitise.py":
             continue
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef) and node.name in ("_sanitise", "sanitise"):
                 body = ast.unparse(node)

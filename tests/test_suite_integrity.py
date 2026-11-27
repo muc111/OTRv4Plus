@@ -35,6 +35,7 @@ pass vacuously.
 """
 
 import os
+import pathlib
 import sys
 
 import pytest
@@ -126,7 +127,7 @@ def test_conftest_does_not_leave_a_broken_engine_behind():
     costs more than it proves. What matters is that the two branches do not
     leave `sys.modules['otrv4_']` populated with something that failed.
     """
-    source = open(os.path.join(ROOT, "conftest.py"), encoding="utf-8").read()
+    source = pathlib.Path(os.path.join(ROOT, "conftest.py")).read_text(encoding="utf-8")
     # `rindex` for the closing bound: `_load_main()` is a substring of
     # `def _load_main():` too, and `index` would return an empty block that
     # makes every assertion below fire for the wrong reason.

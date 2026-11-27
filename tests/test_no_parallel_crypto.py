@@ -17,6 +17,7 @@ These tests fail if a cipher, a key, or a file write comes back.
 
 import ast
 import os
+import pathlib
 import sys
 
 import pytest
@@ -28,7 +29,7 @@ LOG_MODULE = os.path.join(ROOT, "client", "otrv4plus_log.py")
 
 
 def _src(path=LOG_MODULE):
-    return open(path, encoding="utf-8").read()
+    return pathlib.Path(path).read_text(encoding="utf-8")
 
 
 def _code_only(path=LOG_MODULE):

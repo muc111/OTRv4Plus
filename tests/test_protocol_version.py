@@ -19,6 +19,7 @@ it casually and invalidate every profile.
 """
 
 import os
+import pathlib
 import struct
 import sys
 
@@ -286,14 +287,12 @@ class TestSmpWireByte:
         Reusing 0x02 for the Argon2id derivation would have made a stale peer
         report "passphrase does not match" for a passphrase that matches.
         """
-        smp_rs = open(
-            os.path.join(ROOT, "Rust", "src", "smp.rs"), encoding="utf-8"
-        ).read()
+        smp_rs = pathlib.Path(os.path.join(ROOT, "Rust", "src", "smp.rs")).read_text(encoding="utf-8")
         assert "const SMP_VERSION_PQ:        u8 = 0x02;" in smp_rs
         assert "const SMP_VERSION_PQ_ARGON2: u8 = 0x03;" in smp_rs
 
     def test_versioning_doc_lists_every_smp_byte_the_code_defines(self):
-        doc = open(os.path.join(ROOT, "docs/VERSIONING.md"), encoding="utf-8").read()
+        doc = pathlib.Path(os.path.join(ROOT, "docs/VERSIONING.md")).read_text(encoding="utf-8")
         row = [l for l in doc.split("\n") if l.startswith("| SMP wire byte |")]
         assert row, "the SMP wire byte row vanished from docs/VERSIONING.md"
         for byte in ("0x01", "0x02", "0x03"):

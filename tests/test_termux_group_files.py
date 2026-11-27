@@ -9,6 +9,7 @@ question; a kind that cannot be checked is sent and said so. The same in
 1:1 and in groups, and the app asks the same thing (MetadataChoice.kt).
 """
 import os
+import pathlib
 import shutil
 import struct
 import sys
@@ -109,7 +110,7 @@ class TestTheMetadataQuestion:
         assert chose == [] and gone == [1]
 
     def test_it_is_answered_before_any_other_y_n(self):
-        src = open(X.__file__, encoding="utf-8").read()
+        src = pathlib.Path(X.__file__).read_text(encoding="utf-8")
         line = src.index("answer_metadata(line):")
         assert line < src.index("consent_for = self._pending_consent_peer()")
         assert line < src.index("groups.answer_prompt(line)")

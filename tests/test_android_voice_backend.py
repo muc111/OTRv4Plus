@@ -35,6 +35,7 @@ import re
 import struct
 import sys
 import math
+import pathlib
 
 import pytest
 
@@ -135,7 +136,7 @@ class TestAndroidNeedsNoOpuslib:
             app.shutdown()
 
     def test_the_android_bridge_source_asks_no_termux_availability(self):
-        src = open(os.path.join(ROOT, "android_bridge", "voice.py"), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "android_bridge", "voice.py")).read_text(encoding="utf-8")
         code = "\n".join(l for l in src.splitlines() if not l.strip().startswith("#"))
         assert '_HOST["voice_available"]' not in code
         assert "voice_available()" not in code.replace("android_audio.voice_available", "")
@@ -231,23 +232,22 @@ class TestTermuxIsUnchanged:
         for name in ("otrv4plus_xmpp.py", "otrv4plus_voice.py", "otrv4plus_voice_params.py",
                      "otrv4plus_voice_crypto.py", "otrv4plus_voice_jitter.py",
                      "otrv4plus_audio.py"):
-            src = open(os.path.join(ROOT, "client", name), encoding="utf-8").read()
+            src = pathlib.Path(os.path.join(ROOT, "client", name)).read_text(encoding="utf-8")
             assert "android_audio" not in src, name
             assert "OpusEncoder" not in src, name
 
     def test_only_the_android_build_enables_the_codec(self):
-        build_sh = open(os.path.join(ROOT, "Rust", "build.sh"), encoding="utf-8").read()
+        build_sh = pathlib.Path(os.path.join(ROOT, "Rust", "build.sh")).read_text(encoding="utf-8")
         assert "android-opus" not in build_sh, "the Termux build took the Android codec"
-        android = open(os.path.join(ROOT, ".github", "workflows", "android.yml"),
-                       encoding="utf-8").read()
+        android = pathlib.Path(os.path.join(ROOT, ".github", "workflows", "android.yml")).read_text(encoding="utf-8")
         assert re.search(r"--features [^\n]*android-opus", android), \
             "the APK's core is built without its codec"
         assert "ANDROID_NDK_HOME" in android
 
     def test_the_crypto_core_keeps_forbid_unsafe(self):
-        lib = open(os.path.join(ROOT, "Rust", "src", "lib.rs"), encoding="utf-8").read()
+        lib = pathlib.Path(os.path.join(ROOT, "Rust", "src", "lib.rs")).read_text(encoding="utf-8")
         assert "#![forbid(unsafe_code)]" in lib
-        codec = open(os.path.join(ROOT, "Rust", "src", "opus_codec.rs"), encoding="utf-8").read()
+        codec = pathlib.Path(os.path.join(ROOT, "Rust", "src", "opus_codec.rs")).read_text(encoding="utf-8")
         assert "unsafe" not in re.sub(r"//.*", "", codec)
 
 
@@ -274,7 +274,7 @@ class TestTransportIsUntouched:
             assert mode == voice.VOICE_TRANSPORT_DATAGRAM
 
     def test_android_audio_imports_no_socket(self):
-        src = open(os.path.join(ROOT, "android_bridge", "android_audio.py"), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "android_bridge", "android_audio.py")).read_text(encoding="utf-8")
         assert "import socket" not in src and "create_connection" not in src
 
     @needs_codec

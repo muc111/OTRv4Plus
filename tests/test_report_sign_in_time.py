@@ -9,6 +9,7 @@ splits it into the router, the I2P tunnels and the server login.
 """
 
 import os
+import pathlib
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -94,8 +95,8 @@ class TestSignInTime:
 class TestTheServiceNotesIt:
 
     def test_the_service_notes_the_timing_when_it_connects(self):
-        src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                                "android/connection/OtrConnectionService.kt")).read()
+        src = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read_text()
         ok = src[src.index("lastConnectTiming = ConnectTiming.Result("):]
         ok = ok[:ok.index('enter(LinkPhase.CONNECTED')]
         assert 'core.note("service", "connect_timing", "info"' in ok
@@ -103,8 +104,8 @@ class TestTheServiceNotesIt:
         assert "registerMs = registerMs" in src
 
     def test_create_account_does_not_restart_the_clock(self):
-        src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                                "android/connection/OtrConnectionService.kt")).read()
+        src = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read_text()
         reg = src[src.index("private fun startRegistration()"):]
         reg = reg[:reg.index("private suspend fun registerWhenReachable")]
         assert reg.index("startTiming()") < reg.index("scope.launch")
@@ -118,14 +119,14 @@ class TestTheServiceNotesIt:
         assert when.index("chooseRouter()") < when.index("routerWaited(routerFrom)")
 
     def test_a_router_still_joining_is_counted(self):
-        src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                                "android/connection/OtrConnectionService.kt")).read()
+        src = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read_text()
         timed = src[src.index("private fun routerWaited(from: Long)"):]
         timed = timed[:timed.index("\n    }\n")]
         assert "RouterChoice.State.JOINING" in timed
 
 
 def test_the_build_with_the_timing_is_told_apart_from_rc_187():
-    gradle = open(os.path.join(ROOT, "android/app/build.gradle.kts")).read()
+    gradle = pathlib.Path(os.path.join(ROOT, "android/app/build.gradle.kts")).read_text()
     code = int(__import__("re").search(r"versionCode = (\d+)", gradle).group(1))
     assert code >= 189

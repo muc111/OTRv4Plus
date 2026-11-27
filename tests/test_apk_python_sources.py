@@ -18,6 +18,7 @@ the app.
 
 import ast
 import os
+import pathlib
 import re
 import sys
 
@@ -69,7 +70,7 @@ def import_closure():
         if path in seen or not os.path.exists(os.path.join(CLIENT, path)):
             continue
         seen.add(path)
-        tree = ast.parse(open(os.path.join(CLIENT, path)).read())
+        tree = ast.parse(pathlib.Path(os.path.join(CLIENT, path)).read_text())
         # The `if __name__ == "__main__":` block runs only when the file is
         # started as a program (otrv4+.py hands over to the IRC client
         # there); the app imports the file and never reaches it.
@@ -95,7 +96,7 @@ def _task_source():
     version of this helper looked for the closing paren before stripping and
     ended the block inside the comment, finding two filenames out of twelve.
     """
-    src = open(GRADLE).read()
+    src = pathlib.Path(GRADLE).read_text()
     task = src[src.index("val syncPythonSources"):]
     return re.sub(r"//[^\n]*", "", task)
 
@@ -206,7 +207,7 @@ class TestTheOrchestrationLayerIsImportable:
 
     def test_the_alias_is_one_bootstrap_actually_asks_for(self):
         import ast
-        tree = ast.parse(open("android_bridge/bootstrap.py").read())
+        tree = ast.parse(pathlib.Path("android_bridge/bootstrap.py").read_text())
         aliases = None
         for node in tree.body:
             if isinstance(node, ast.Assign) and any(
@@ -236,7 +237,7 @@ def test_what_the_android_bridge_imports_is_packaged():
     for name in os.listdir("android_bridge"):
         if not name.endswith(".py"):
             continue
-        tree = ast.parse(open(os.path.join("android_bridge", name)).read())
+        tree = ast.parse(pathlib.Path(os.path.join("android_bridge", name)).read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 mods = [a.name for a in node.names]

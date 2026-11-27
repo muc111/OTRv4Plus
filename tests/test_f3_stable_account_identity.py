@@ -12,6 +12,7 @@ Keystore vault (sealed a second time), on the desktop as 0600 files. Accounts
 stay unlinkable (F2): independent random keys.
 """
 import os
+import pathlib
 import re
 import tempfile
 
@@ -230,16 +231,16 @@ class TestWiring:
         assert _signed_in_fingerprint(host._real_app(), "alice@one.test") == first
 
     def test_android_passes_its_own_identity_vault(self):
-        src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                                "bridge/ChaquopyOtrCore.kt"), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                                "bridge/ChaquopyOtrCore.kt")).read_text(encoding="utf-8")
         call = src[src.index('"use_identity_store"'):]
         call = call[:call.index("\n            }")]
         assert '"for_android"' in call
         assert "KeystoreVault.open(appContext, KeystoreVault.IDENTITY)" in call
 
     def test_the_identity_vault_is_apart_from_chat_history_and_wiped(self):
-        src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                                "security/KeystoreVault.kt"), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                                "security/KeystoreVault.kt")).read_text(encoding="utf-8")
         assert re.search(r'const val IDENTITY = "identity-vault"', src)
         assert re.search(r'const val DEFAULT = "vault"', src)
         destroy = src[src.index("fun destroy(context: Context)"):]

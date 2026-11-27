@@ -22,6 +22,7 @@ deleting a received message is not recoverable.
 
 import io
 import os
+import pathlib
 
 import pytest
 
@@ -248,7 +249,7 @@ class TestTheWiring:
         assert xmpp._term._PRINT_SEQ > before
 
     def test_the_input_loop_arms_it(self):
-        src = open("client/otrv4plus_xmpp.py").read()
+        src = pathlib.Path("client/otrv4plus_xmpp.py").read_text()
         assert "client._plain_echo = (_term._PRINT_SEQ, line.rstrip(\"\\n\"))" in src
 
     def _echo(self, monkeypatch, text="hello there"):

@@ -10,6 +10,7 @@ gets --no-index, so it can install nothing else. The Qubes build already
 checks its wheels this way (qubes/packaging/lock-cp313.sha256).
 """
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -32,7 +33,7 @@ def _norm(name):
 
 def _lock():
     """{name: (version, [hashes])} from the lock."""
-    text = open(LOCK).read().replace("\\\n", " ")
+    text = pathlib.Path(LOCK).read_text().replace("\\\n", " ")
     out = {}
     for line in text.splitlines():
         line = line.strip()
@@ -74,14 +75,14 @@ class TestNothingElseCanBeInstalled:
         assert re.search(r'options\(\s*"--no-index"\s*\)', _pip_block())
 
     def test_the_fetch_requires_hashes(self):
-        src = open(FETCH).read()
+        src = pathlib.Path(FETCH).read_text()
         assert "--require-hashes" in src and "-r android/app/python-lock.txt" in src
         assert "-d android/app/wheels" in src
 
     def test_every_ci_job_that_builds_fetches_first(self):
         """Each job that downloads the Rust core and runs Gradle fetches the
         locked files between the two."""
-        text = open(WORKFLOW).read()
+        text = pathlib.Path(WORKFLOW).read_text()
         jobs = text.split("pattern: otrv4_core-*")[1:]
         assert len(jobs) >= 4
         for job in jobs:
@@ -91,7 +92,7 @@ class TestNothingElseCanBeInstalled:
     def test_the_rust_core_check_looks_for_the_core_itself(self):
         """With the locked wheels in the same directory, `*.whl` would pass
         without the Rust core."""
-        text = open(WORKFLOW).read()
+        text = pathlib.Path(WORKFLOW).read_text()
         assert "ls android/app/wheels/*.whl" not in text
         assert "ls android/app/wheels/otrv4_core-*.whl" in text
 
@@ -136,7 +137,7 @@ def test_a_file_that_does_not_match_the_lock_is_refused():
         bad = pip_download("0" * 64)
         assert bad.returncode != 0 and "HASH" in (bad.stdout + bad.stderr).upper()
 
-        real = hashlib.sha256(open(wheel, "rb").read()).hexdigest()
+        real = hashlib.sha256(pathlib.Path(wheel).read_bytes()).hexdigest()
         good = pip_download(real)
         assert good.returncode == 0, good.stdout + good.stderr
     finally:
@@ -152,12 +153,12 @@ def test_builds_after_the_tested_one_say_untested():
     then rc.194 on 2026-11-10); an APK made after it is marked untested
     until it is tested too. So: exactly the tested build without the mark,
     or a later one with it -- never a later one without it."""
-    gradle = open(GRADLE).read()
+    gradle = pathlib.Path(GRADLE).read_text()
     name = re.search(r'versionName = "([^"]+)"', gradle).group(1)
     rc = int(re.search(r"experimental\.rc\.(\d+)", name).group(1))
     if "-untested" in name:
         assert rc > TESTED_RC
     else:
         assert rc == TESTED_RC, "a build after the tested one must say -untested"
-    changelog = open(os.path.join(os.path.dirname(GRADLE), "..", "..", "CHANGELOG.md")).read()
+    changelog = pathlib.Path(os.path.join(os.path.dirname(GRADLE), "..", "..", "CHANGELOG.md")).read_text()
     assert "rc.%d" % TESTED_RC in changelog[:3000]

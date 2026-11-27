@@ -11,6 +11,7 @@ the Python side is not holding what Rust should.
 from source_of import voice_source  # noqa: E402
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
+import pathlib
 import re
 import sys
 
@@ -22,7 +23,7 @@ RUST = os.path.join(ROOT, "Rust", "src")
 
 
 def _rs(name):
-    return open(os.path.join(RUST, name), encoding="utf-8").read()
+    return pathlib.Path(os.path.join(RUST, name)).read_text(encoding="utf-8")
 
 
 class TestTheSecretWrappers:

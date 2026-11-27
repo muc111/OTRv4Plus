@@ -943,8 +943,8 @@ class TestAnsweringAHeldRequest:
     (`otrv4+.py:15312`, `otrv4plus_xmpp.py:3661`).
     """
 
-    @staticmethod
     @pytest.fixture
+    @staticmethod
     def holding(app):
         a, engine, transport, sink = app
         engine.encrypted()

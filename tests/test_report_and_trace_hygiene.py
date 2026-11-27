@@ -10,6 +10,7 @@
 """
 import asyncio
 import os
+import pathlib
 import sys
 import threading
 
@@ -48,7 +49,7 @@ def test_the_core_reports_its_version():
         assert info["version"] == expected
     else:                        # a core built before the export: said so
         assert info["version"].startswith("unknown")
-    src = open(os.path.join(ROOT, "Rust", "src", "lib.rs"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "Rust", "src", "lib.rs")).read_text(encoding="utf-8")
     assert 'm.add("__version__", env!("CARGO_PKG_VERSION"))' in src
 
 

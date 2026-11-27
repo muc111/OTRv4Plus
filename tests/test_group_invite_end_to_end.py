@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import collections
 import os
+import pathlib
 import tempfile
 import time
 import types
@@ -255,16 +256,16 @@ def test_nothing_waiting_nothing_started(monkeypatch, clock):
 
 
 def test_the_ui_tick_runs_the_retry():
-    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "android_bridge", "connection.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "android_bridge", "connection.py")).read_text(encoding="utf-8")
     fn = src[src.index("    def drain_events("):src.index("    def add_contact(")]
     assert "self._app.retry_stalled_handshakes()" in fn
     assert fn.index("retry_stalled_handshakes") < fn.index("return self._events.drain(limit)")
 
 
 def test_no_automatic_start_asks_has_session_any_more():
-    src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                            "android_bridge", "app.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "android_bridge", "app.py")).read_text(encoding="utf-8")
     for name in ("    def ensure_otr(", "    def _auto_start(", "    def send_message("):
         if name not in src:
             continue

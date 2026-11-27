@@ -26,6 +26,7 @@ configurations interoperate at the protocol layer; the handset run in
 """
 
 import os
+import pathlib
 import tempfile
 import uuid
 
@@ -154,7 +155,7 @@ class TestTheTwoConfigurationsInteroperate:
 
     def test_the_config_matches_the_terminal_clients(self):
         import otrv4plus_xmpp as X
-        src = open(X.__file__, encoding="utf-8").read()
+        src = pathlib.Path(X.__file__).read_text(encoding="utf-8")
         body = src[src.index("def _xmpp_otr_config"):src.index("OTR_MODULE =")]
         for flag in ("persist_identity=True", "persist_trust=True", "test_mode=True"):
             assert flag in body, "the terminal client's config changed: %s" % flag

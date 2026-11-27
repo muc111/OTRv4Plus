@@ -20,6 +20,7 @@ changed key after the restart.
 from __future__ import annotations
 
 import os
+import pathlib
 import re
 import tempfile
 
@@ -335,7 +336,7 @@ def test_the_record_is_sealed_names_no_jid_and_is_bound_to_its_account(home):
     d = account_trust.trust_dir()
     records = [f for f in os.listdir(d) if f.endswith(".sealed")]
     assert len(records) == 1 and "alice" not in records[0] and "one.test" not in records[0]
-    blob = open(os.path.join(d, records[0]), "rb").read()
+    blob = pathlib.Path(os.path.join(d, records[0])).read_bytes()
     assert b"bob@" not in blob and b"c" * 64 not in blob, "ciphertext only"
     assert os.stat(os.path.join(d, records[0])).st_mode & 0o077 == 0
     # Another account's slot: the record is bound to its name.
@@ -398,8 +399,8 @@ def test_wipe_and_exit_destroys_the_trust_store(home, kind):
 
 
 def test_android_destroys_the_trust_section_with_the_key():
-    src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                            "security/KeystoreVault.kt"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                            "security/KeystoreVault.kt")).read_text(encoding="utf-8")
     assert re.search(r'const val TRUST = "trust-vault"', src)
     assert re.search(r"private val SECTIONS = setOf\(DEFAULT, IDENTITY, TRUST\)", src)
     destroy = src[src.index("fun destroy(context: Context)"):]
@@ -410,8 +411,8 @@ def test_android_destroys_the_trust_section_with_the_key():
 # ── wiring, and the residual where the Keystore does not work ───────────────
 
 def test_android_passes_its_own_trust_vault_and_whether_it_keeps_records():
-    src = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                            "bridge/ChaquopyOtrCore.kt"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                            "bridge/ChaquopyOtrCore.kt")).read_text(encoding="utf-8")
     call = src[src.index("KeystoreVault.open(appContext, KeystoreVault.TRUST)"):]
     call = call[:call.index("\n            }")]
     assert '"use_trust_store"' in call and '"for_android", trust, KeystoreVault.isKeystore(trust)' in call
@@ -442,7 +443,7 @@ def test_residual_without_a_working_keystore_the_pins_last_one_run(home):
 
 
 def test_the_terminal_keeps_its_pins_across_restarts_as_before():
-    src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_xmpp.py")).read_text(encoding="utf-8")
     assert "persist_trust=True," in src
     path = os.path.join(tempfile.mkdtemp(), "trust.json")
     otr.TrustDatabase(path, persistent=True).check_or_pin(PEER, "a" * 64)
@@ -610,10 +611,10 @@ def test_the_stale_discard_runs_only_after_a_confirmed_create_account():
                       recursive=True):
         if os.path.islink(path):
             continue
-        src = open(path, encoding="utf-8").read()
+        src = pathlib.Path(path).read_text(encoding="utf-8")
         if "discard_stale_account_trust" in src or "_after_account_created" in src:
             users.add(os.path.basename(path))
     # Defined in app_smp.py; reached from connection.py alone.
     assert users == {"app_smp.py", "connection.py"}, users
-    src = open(os.path.join(root, "android_bridge", "connection.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(root, "android_bridge", "connection.py")).read_text(encoding="utf-8")
     assert 'notice = self._after_account_created() if ok else ""' in src

@@ -315,10 +315,10 @@ def test_sealed_received_file_opens_via_a_transient_view_and_export_writes_it(
     view = opened[-1]
     assert view != container, "the sealed container was handed to the viewer"
     assert ".views" in view and view.endswith("cat.png")
-    assert open(view, "rb").read() == b"PLAINTEXT-PNG"      # decrypted copy
+    assert pathlib.Path(view).read_bytes() == b"PLAINTEXT-PNG"      # decrypted copy
     # The persistent received directory holds only the sealed container.
-    assert open(container, "rb").read() == b"SEALED"
+    assert pathlib.Path(container).read_bytes() == b"SEALED"
 
     dest = os.path.join(root, "exported.png")
     c._cmd_export("cc " + dest)
-    assert open(dest, "rb").read() == b"PLAINTEXT-PNG"      # the deliberate plaintext-out
+    assert pathlib.Path(dest).read_bytes() == b"PLAINTEXT-PNG"      # the deliberate plaintext-out

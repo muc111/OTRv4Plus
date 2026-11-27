@@ -213,8 +213,8 @@ class TestTheWarningResetsWhenASessionExists:
 class TestTheHooksAreWired:
     """The helpers are not the change; the two silent paths calling them is."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def tree():
         import ast
         import os

@@ -12,6 +12,7 @@ the app's own check so the two cannot drift.
 import argparse
 import base64
 import os
+import pathlib
 import types
 
 import pytest
@@ -158,7 +159,7 @@ def test_a_typed_b32_or_a_shipped_name_cannot_be_approved(store, monkeypatch):
 
 def test_reconnects_check_the_destination_and_never_retry_a_change():
     path = os.path.join(os.path.dirname(os.path.realpath(xmpp.__file__)), "otrv4plus_xmpp_connection.py")
-    src = open(path, encoding="utf-8").read()
+    src = pathlib.Path(path).read_text(encoding="utf-8")
     block = src[src.index("_tunnels.start_i2p_sam_forwarder("):][:1500]
     assert 'verify=getattr(self, "_server_check", None)' in block
     assert "DestinationChanged" in block and "return" in block
@@ -217,13 +218,13 @@ def test_the_terminal_refuses_an_unreadable_pins_file_before_the_router_is_asked
     assert started == [], "the SAM forwarder was started"
     err = capsys.readouterr().err
     assert path in err and "Nothing was sent" in err
-    assert open(path, encoding="utf-8").read() == '{"chat.i2p": {"b32": 5}}'
+    assert pathlib.Path(path).read_text(encoding="utf-8") == '{"chat.i2p": {"b32": 5}}'
 
 
 def test_a_terminal_reconnect_stops_at_an_unreadable_pins_file(monkeypatch):
     path = os.path.join(os.path.dirname(os.path.realpath(xmpp.__file__)),
                         "otrv4plus_xmpp_connection.py")
-    src = open(path, encoding="utf-8").read()
+    src = pathlib.Path(path).read_text(encoding="utf-8")
     block = src[src.index('getattr(check, "preflight"'):]
     assert block.index("PinsUnreadable") < block.index("_tunnels.start_i2p_sam_forwarder(")
     assert "return" in block[:block.index("_tunnels.start_i2p_sam_forwarder(")]

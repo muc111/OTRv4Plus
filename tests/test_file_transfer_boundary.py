@@ -17,6 +17,7 @@ import ast
 import hashlib
 import inspect
 import os
+import pathlib
 import sys
 import tempfile
 import time
@@ -133,14 +134,14 @@ class TestAWholeTransfer:
         landed = os.listdir(ft.state_dir())
         landed = [f for f in landed if not f.startswith(".")]
         assert landed == ["video.mp4"]
-        got = open(os.path.join(ft.state_dir(), "video.mp4"), "rb").read()
+        got = pathlib.Path(os.path.join(ft.state_dir(), "video.mp4")).read_bytes()
         assert got == blob
         assert hashlib.sha256(got).digest() == hashlib.sha256(blob).digest()
 
     @pytest.mark.parametrize("size", [0, 1, 100, 20_000, 200_000])
     def test_sizes_from_empty_to_multi_chunk(self, wired, size):
         _incoming, blob = _run(wired, size)
-        got = open(os.path.join(ft.state_dir(), "video.mp4"), "rb").read()
+        got = pathlib.Path(os.path.join(ft.state_dir(), "video.mp4")).read_bytes()
         assert got == blob
 
     def test_the_offer_reaches_the_peer_before_any_data(self, wired):
@@ -503,7 +504,7 @@ class TestTheFeatureIsXmppOnly:
             path = os.path.join(ROOT, "client", name)
             if os.path.islink(path):
                 continue
-            if "otrv4plus_filetransfer" in open(path, encoding="utf-8").read():
+            if "otrv4plus_filetransfer" in pathlib.Path(path).read_text(encoding="utf-8"):
                 importers.append(name)
         # The XMPP client is otrv4plus_xmpp.py and the otrv4plus_xmpp_*.py
         # modules its class is mixed from; nothing else may touch it.
@@ -592,7 +593,7 @@ class TestTheEngineIsTransportIndependent:
         # accept() sends ACCEPT, which the sender answers by pumping.  No
         # manual pump: this is the real sequence.
         wire.bob.accept(incoming.offer.transfer_id, b_ratchet)
-        got = open(os.path.join(ft.state_dir(), "clip.bin"), "rb").read()
+        got = pathlib.Path(os.path.join(ft.state_dir(), "clip.bin")).read_bytes()
         assert got == blob
         assert hashlib.sha256(got).digest() == hashlib.sha256(blob).digest()
 

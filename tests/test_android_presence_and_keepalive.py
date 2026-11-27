@@ -388,8 +388,8 @@ class TestTheIntervalsMatchTheTerminalClient:
     """Bound to the originals so the two clients cannot drift into
     disagreeing about how long a silent I2P tunnel may stay silent."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def terminal():
         xmpp = pytest.importorskip(
             "otrv4plus_xmpp", reason="slixmpp not installed")

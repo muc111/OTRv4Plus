@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import pathlib
 import re
 
 import pytest
@@ -179,7 +180,7 @@ def test_a_closing_message_is_given_up_after_its_tries():
 
 
 def test_the_ui_tick_retries_and_wipe_forgets():
-    src = open(os.path.join(ROOT, "android_bridge", "connection.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "android_bridge", "connection.py")).read_text(encoding="utf-8")
     tick = src[src.index("    def drain_events("):src.index("    def add_contact(")]
     assert "self._app.resend_unconfirmed_closings()" in tick
     wire, alice, bob = _pair(answer=False)
@@ -232,7 +233,7 @@ def test_the_terminal_confirms_the_same_way():
     assert ok and got.find(b"CLOSING-MESSAGE") < got.find(b"urn:xmpp:ping")
     ok, _got, _ = asyncio.run(run(False))
     assert ok is False
-    src = open(xmpp.__file__, encoding="utf-8").read()
+    src = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
     fn = src[src.index("    def make_deniable(self, peer):"):src.index("    def start_otr(self, peer):")]
     assert "_confirm_then_restart" in fn
     body = fn[fn.index("async def _confirm_then_restart"):]

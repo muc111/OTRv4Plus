@@ -214,8 +214,8 @@ class TestThePollDoesNotGambleEverythingOnOneCall:
     behavioural coverage is ChatStateTest; this pins the shape that caused
     the outage."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def service():
         # The reads moved here with the drain loop: whoever drains the
         # engine's destructive queue has to be something that exists while the
@@ -246,8 +246,8 @@ class TestThePollDoesNotGambleEverythingOnOneCall:
 
 class TestTheUiDistinguishesUnknownFromDisconnected:
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def screen():
         return _read(ANDROID, "ui", "ConversationsScreen.kt")
 

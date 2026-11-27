@@ -183,8 +183,8 @@ class TestTheFragmentCallbackNoLongerAsksForIt:
     that explains the removal.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def switch_call_guards():
         with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())
@@ -228,8 +228,8 @@ class TestTheUserCommandAsksForTheRedraw:
     """`/switch` is the one caller that should be able to replay the current
     tab, so it is the one caller allowed to pass force."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def forced_calls():
         with open_irc_and_engine() as fh:
             tree = ast.parse(fh.read())

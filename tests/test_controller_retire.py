@@ -13,6 +13,7 @@ dead transport so its tunnel cannot linger.
 """
 
 import os
+import pathlib
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -96,8 +97,8 @@ def test_a_controller_that_was_not_retired_still_reports_drops():
 
 
 def test_kotlin_retires_the_old_controller_before_building_one():
-    kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                           "android/bridge/ChaquopyOtrCore.kt")).read()
+    kt = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                           "android/bridge/ChaquopyOtrCore.kt")).read_text()
     body = kt[kt.index("fun prepareConnection("):]
     body = body[:body.index("return connectionStatus()")]
     assert body.index('old.callAttr("retire")') < body.index('"controller_for"')

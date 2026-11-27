@@ -40,7 +40,7 @@ def _commands(method):
 
 def _claims(family, line):
     self = mock.MagicMock()
-    with mock.patch.object(xmpp.asyncio, "ensure_future"), \
+    with mock.patch.object(xmpp._tasks, "spawn"), \
             mock.patch.object(xmpp.threading, "Thread"), \
             mock.patch("builtins.print"):
         try:

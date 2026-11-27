@@ -10,6 +10,7 @@ safe on a path where -- unlike this one, today -- a secret might one day be in
 flight. Every test below pins one side or the other.
 """
 
+import pathlib
 import sys
 
 import pytest
@@ -179,7 +180,7 @@ class TestTheModuleShips:
         gradle = "android/app/build.gradle.kts"
         if not os.path.exists(gradle):
             pytest.skip("no android/ project in this checkout")
-        src = open(gradle).read()
+        src = pathlib.Path(gradle).read_text()
         assert 'from(repoRoot.resolve("android_bridge"))' in src
         assert 'include("*.py")' in src
 

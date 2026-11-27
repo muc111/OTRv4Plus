@@ -16,6 +16,7 @@ configured public, and nothing ever asked for that. Now:
 from __future__ import annotations
 
 import os
+import pathlib
 import sys
 import xml.etree.ElementTree as ET
 
@@ -150,6 +151,6 @@ class TestCreatedRoomsAskToBeListed:
         from source_of import transport_source
         termux = os.path.join(ROOT, "client", "otrv4plus_groups.py")
         for path, src in (("android_bridge/transport*.py", transport_source()),
-                          (termux, open(termux, encoding="utf-8").read())):
+                          (termux, pathlib.Path(termux).read_text(encoding="utf-8"))):
             assert "muc#roomconfig_publicroom" in src, path
             assert "SECURE_GROUP_DESC" in src, path

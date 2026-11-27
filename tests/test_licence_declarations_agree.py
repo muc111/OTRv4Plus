@@ -231,8 +231,8 @@ class TestTheNoticeCoversWhatShips:
     # instance and anything stored on it is invisible to the tests. This one
     # only returns a value, so nothing was ever wrong -- the shape is what
     # pytest warns about, and correcting it is free.
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def notice():
         return _read("NOTICE")
 
@@ -465,13 +465,13 @@ class TestTheNoticeActuallyReachesTheArtifact:
     deleting the asset copy or the screen has to delete a test too.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def build_script():
         return _read("android", "app", "build.gradle.kts")
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def about_screen():
         return _read("android", "app", "src", "main", "java", "org",
                      "otrv4plus", "android", "ui", "AboutScreen.kt")

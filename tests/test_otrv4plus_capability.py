@@ -19,6 +19,7 @@ real OtrApp engines doing a real DAKE.
 from source_of import transport_source  # noqa: E402
 import asyncio
 import os
+import pathlib
 import sys
 import tempfile
 import types
@@ -428,7 +429,7 @@ class TestAutomaticOtr:
 class TestBothClientsAgree:
 
     def test_the_termux_client_advertises_the_same_feature(self):
-        src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_xmpp.py")).read_text(encoding="utf-8")
         assert "_caps.FEATURE" in src and "add_feature" in src
 
     def test_the_android_transport_registers_entity_capabilities(self):

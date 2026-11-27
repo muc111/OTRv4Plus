@@ -13,6 +13,7 @@ XMPP only.  `test_file_transfer_boundary.py` fails if this reaches IRC.
 
 import hashlib
 import os
+import pathlib
 import posixpath
 import sys
 import tempfile
@@ -186,7 +187,7 @@ class TestThePicker:
         assert os.path.isfile(path)
         assert os.path.basename(path).startswith("image-")
         assert path.endswith(".jpg")
-        assert open(path, "rb").read() == b"\xff\xd8\xff\xe0hi"
+        assert pathlib.Path(path).read_bytes() == b"\xff\xd8\xff\xe0hi"
 
     def test_the_staged_copy_is_owner_only(self):
         """It is a plaintext copy of whatever the user picked."""
@@ -289,7 +290,7 @@ class TestThePickerWaitsForTheHuman:
                             timeout=60.0, sleeper=sleeper,
                             clock=self._fake_clock())
         assert os.path.basename(path).startswith("image-")
-        assert open(path, "rb").read() == b"\xff\xd8\xff\xe0hello-jpeg"
+        assert pathlib.Path(path).read_bytes() == b"\xff\xd8\xff\xe0hello-jpeg"
 
     def test_a_still_growing_copy_is_not_sent_truncated(self):
         """It must wait for the size to settle, not for the file to exist."""
@@ -298,7 +299,7 @@ class TestThePickerWaitsForTheHuman:
         path = ft.pick_file(runner=runner, which=lambda b: "/usr/bin/" + b,
                             timeout=60.0, sleeper=sleeper,
                             clock=self._fake_clock())
-        assert open(path, "rb").read() == payload
+        assert pathlib.Path(path).read_bytes() == payload
 
     def test_a_nonzero_exit_status_is_not_read_as_a_refusal(self):
         """The shim's status describes dispatching the intent, not the human.
@@ -379,7 +380,7 @@ class TestDuplicateNames:
         open(first, "wb").write(b"original")
         second = ft.unique_path(filedir, "photo.jpg")
         assert second != first
-        assert open(first, "rb").read() == b"original", (
+        assert pathlib.Path(first).read_bytes() == b"original", (
             "a peer replaced a file you had already accepted")
 
     def test_the_suffix_keeps_the_extension(self, filedir):

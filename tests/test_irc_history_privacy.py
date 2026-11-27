@@ -324,8 +324,8 @@ class TestThePurgeIsWiredIntoTheLifecycle:
     that neither path can be edited into forgetting the purge.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def source():
         import os
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

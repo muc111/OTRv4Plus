@@ -10,6 +10,7 @@ answer says so; the invitation goes once they accept, through the same path
 a contact's takes; and the screen counts only what was sent.
 """
 import os
+import pathlib
 import types
 
 
@@ -84,17 +85,17 @@ def test_an_established_session_sends_at_once():
 
 
 def test_the_screen_counts_only_what_was_sent():
-    vm = open(os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus",
-                           "android", "chat", "ChatViewModel.kt"), encoding="utf-8").read()
+    vm = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus",
+                           "android", "chat", "ChatViewModel.kt")).read_text(encoding="utf-8")
     body = vm[vm.index("fun inviteManyToGroup"):]
     body = body[:body.index("\n    }\n")]
     assert 'outcome?.ok == true && code == "ok"' in body
-    text = open(os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus",
-                             "android", "chat", "GroupText.kt"), encoding="utf-8").read()
+    text = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus",
+                             "android", "chat", "GroupText.kt")).read_text(encoding="utf-8")
     assert '"waiting_for_contact" ->' in text and '"waiting_for_otr" ->' in text
 
 
 def test_the_controller_passes_both_waiting_codes_through():
     from android_bridge import connection_groups
-    src = open(connection_groups.__file__, encoding="utf-8").read()
+    src = pathlib.Path(connection_groups.__file__).read_text(encoding="utf-8")
     assert '"waiting_for_contact"' in src

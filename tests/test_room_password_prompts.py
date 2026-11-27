@@ -6,6 +6,7 @@ encrypted group's password never mistaken for membership (owner,
 """
 
 import os
+import pathlib
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -16,7 +17,7 @@ D = os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus", "
 
 
 def _read(*p):
-    return open(os.path.join(*p), encoding="utf-8").read()
+    return pathlib.Path(os.path.join(*p)).read_text(encoding="utf-8")
 
 
 def test_the_room_list_asks_before_joining():

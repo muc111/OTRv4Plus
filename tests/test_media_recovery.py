@@ -24,6 +24,7 @@ this is an announcement and not a rekey.
 
 from source_of import voice_source, init_source  # noqa: E402
 import asyncio
+import pathlib
 import threading
 import types
 
@@ -1596,7 +1597,7 @@ class TestTheWorstCaseIsBounded:
         # docs/VOICE_MEDIA_PATH.md states these numbers; if a constant moves and
         # the document does not, this fails rather than the document quietly
         # becoming wrong.
-        text = open("docs/VOICE_MEDIA_PATH.md", encoding="utf-8").read()
+        text = pathlib.Path("docs/VOICE_MEDIA_PATH.md").read_text(encoding="utf-8")
         for cold in (False, True):
             for held in (False, True):
                 secs = self.worst_case_seconds(cold=cold, held=held)

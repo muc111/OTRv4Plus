@@ -10,6 +10,7 @@ This file is what makes the registry load-bearing.
 """
 
 import os
+import pathlib
 import sys
 
 import pytest
@@ -77,13 +78,13 @@ class TestEveryInvariantHasATest:
 
     @pytest.mark.parametrize("module", S.all_test_modules())
     def test_the_named_module_contains_tests(self, module):
-        src = open(os.path.join(TESTS, module), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(TESTS, module)).read_text(encoding="utf-8")
         assert "def test_" in src, "%s contains no tests" % module
 
     @pytest.mark.parametrize("module", S.all_test_modules())
     def test_the_named_module_says_which_invariant_it_enforces(self, module):
         """A reader arriving at the test should not have to guess."""
-        src = open(os.path.join(TESTS, module), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(TESTS, module)).read_text(encoding="utf-8")
         head = src[:2000]
         owners = [i.id for i in S.INVARIANTS if module in i.tests]
         assert any(owner in head for owner in owners), (
@@ -114,7 +115,7 @@ class TestTheDocumentAgrees:
         path = os.path.join(ROOT, "docs/SECURITY_INVARIANTS.md")
         if not os.path.exists(path):
             pytest.skip("docs/SECURITY_INVARIANTS.md not written yet")
-        return open(path, encoding="utf-8").read()
+        return pathlib.Path(path).read_text(encoding="utf-8")
 
     def test_every_invariant_appears(self):
         doc = self._doc()

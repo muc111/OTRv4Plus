@@ -11,6 +11,7 @@ on a locked screen.
 """
 
 import os
+import pathlib
 import re
 from kotlin_parts import with_parts  # noqa: E402
 
@@ -95,8 +96,8 @@ class TestEveryoneOnScreenGetsATone:
         assert "AlertFeedback.inApp(context)" in screen[i:i + 600]
 
     def test_vibration_is_declared(self):
-        manifest = open(os.path.join(ROOT, "android", "app", "src", "main",
-                                     "AndroidManifest.xml")).read()
+        manifest = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main",
+                                     "AndroidManifest.xml")).read_text()
         assert "android.permission.VIBRATE" in manifest
 
 

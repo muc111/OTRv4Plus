@@ -32,6 +32,7 @@ import asyncio
 import collections
 import concurrent.futures
 import os
+import pathlib
 import tempfile
 import uuid
 
@@ -814,7 +815,7 @@ class TestBoundaries:
                                              fromlist=["x"]).SecureGroups
 
     def test_no_mls_cryptography_in_python(self):
-        src = open(OG.__file__, encoding="utf-8").read()
+        src = pathlib.Path(OG.__file__).read_text(encoding="utf-8")
         for banned in ("hashlib", "hmac", "cryptography", "Cipher", "AESGCM",
                        "import secrets", "nacl"):
             assert banned not in src, banned
@@ -827,7 +828,7 @@ class TestBoundaries:
 
     def test_the_termux_build_enables_mls(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        build = open(os.path.join(root, "Rust", "build.sh"), encoding="utf-8").read()
+        build = pathlib.Path(os.path.join(root, "Rust", "build.sh")).read_text(encoding="utf-8")
         assert '"$MATURIN" build --release --features mls' in build
         # The import check the procedure (docs/PHYSICAL_TEST_PLAN.md 7a) relies on.
         assert 'print("otrv4_core imported OK")' in build
@@ -918,7 +919,7 @@ class TestAcceptWhenTheSessionHasEnded:
         assert w.b.lines("after the new session")
 
     def test_a_new_session_answers_the_waiting_invitations(self):
-        src = open(X.__file__, encoding="utf-8").read()
+        src = pathlib.Path(X.__file__).read_text(encoding="utf-8")
         hook = src[src.index("    def _check_dake_complete(self, peer):"):]
         hook = hook[:hook.index("\n    def ")]
         assert "groups.on_otr_ready(peer)" in hook

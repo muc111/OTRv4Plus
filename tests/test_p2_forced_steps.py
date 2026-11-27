@@ -19,6 +19,7 @@ the double ratchet. Rust: `pq_ratchet::p2_a_second_send_step_toward_the_same_rem
 """
 from __future__ import annotations
 
+import pathlib
 import random
 
 import pytest
@@ -90,7 +91,7 @@ def test_a_chat_open_for_two_days(monkeypatch):
 
 
 def test_one_forced_step_per_remote_key():
-    src = open(otr.__file__, encoding="utf-8").read()
+    src = pathlib.Path(otr.__file__).read_text(encoding="utf-8")
     enc = src[src.index("    def encrypt_message(self, plaintext):"):]
     enc = enc[:enc.index("\n    def ", 10)]
     assert '_rekey_target != getattr(self, "_forced_toward", None)' in enc

@@ -112,8 +112,8 @@ class TestTheEngineNamesPySocksItself:
     """`otrv4plus_xmpp.py` is not the only entry point. Someone running
     `otrv4+.py` directly, or importing it, hits the bare `import socks`."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def engine_source():
         with open_irc_and_engine() as fh:
             return fh.read()

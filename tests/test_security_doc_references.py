@@ -13,6 +13,7 @@ claims:
 """
 import functools
 import os
+import pathlib
 import re
 
 import pytest
@@ -62,7 +63,7 @@ def _all_test_names():
             if not f.endswith((".py", ".rs", ".kt")):
                 continue
             try:
-                src = open(os.path.join(base, f), encoding="utf-8").read()
+                src = pathlib.Path(os.path.join(base, f)).read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
             names.update(re.findall(r"\bdef (\w+)\(", src))

@@ -23,6 +23,7 @@ from source_of import irc_and_engine_source, open_irc_and_engine, class_source, 
 import ast
 import inspect
 import os
+import pathlib
 import sys
 
 import pytest
@@ -477,7 +478,7 @@ class TestRemoteCannotCapture:
 
     def test_no_inbound_path_reaches_the_armer(self):
         """The call graph, not a hand-written list."""
-        src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_xmpp.py")).read_text(encoding="utf-8")
         tree = ast.parse(src)
         methods = {}
         for node in ast.walk(tree):
@@ -522,7 +523,7 @@ class TestRemoteCannotCapture:
         """
         for name in ("otrv4plus_xmpp.py", "otrv4+.py"):
             path = os.path.join(ROOT, name)
-            src = open(path, encoding="utf-8").read()
+            src = pathlib.Path(path).read_text(encoding="utf-8")
             tree = ast.parse(src)
             for node in ast.walk(tree):
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
@@ -733,7 +734,7 @@ class TestTheCoreApiContract:
         """The two must not drift: the README is where someone looks when the
         client is not running at all."""
         import otrv4plus_coreapi as coreapi
-        readme = open(os.path.join(ROOT, "README.md"), encoding="utf-8").read()
+        readme = pathlib.Path(os.path.join(ROOT, "README.md")).read_text(encoding="utf-8")
         for line in ("bash build.sh", ".venv/bin/python otrv4plus_xmpp.py"):
             assert line in readme, "README no longer documents: %s" % line
             assert line in coreapi.REBUILD_HINT
@@ -755,10 +756,8 @@ class TestTheCoreApiContract:
         quietly wrong is worse than no answer.
         """
         import re
-        cargo = open(os.path.join(ROOT, "Rust", "Cargo.toml"),
-                     encoding="utf-8").read()
-        pyproj = open(os.path.join(ROOT, "Rust", "pyproject.toml"),
-                      encoding="utf-8").read()
+        cargo = pathlib.Path(os.path.join(ROOT, "Rust", "Cargo.toml")).read_text(encoding="utf-8")
+        pyproj = pathlib.Path(os.path.join(ROOT, "Rust", "pyproject.toml")).read_text(encoding="utf-8")
         c = re.search(r'^version\s*=\s*"([^"]+)"', cargo, re.M).group(1)
         p = re.search(r'^version\s*=\s*"([^"]+)"', pyproj, re.M).group(1)
         assert c == p, (
@@ -911,8 +910,7 @@ class TestTheGuidedFlagActuallyReachesTheEngine:
     def test_the_client_turns_it_on(self):
         """Structural, because the defect was an assignment that did not
         exist anywhere."""
-        src = open(os.path.join(ROOT, "client", "otrv4plus_xmpp.py"),
-                   encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_xmpp.py")).read_text(encoding="utf-8")
         tree = ast.parse(src)
         enabled = False
         for node in ast.walk(tree):

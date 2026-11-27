@@ -10,6 +10,7 @@ fixtures are not touched: this reads only the shipped source set.
 """
 
 import os
+import pathlib
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -52,7 +53,7 @@ def test_no_production_source_carries_a_demo_identity_or_credential():
             if not name.endswith((".kt", ".xml")):
                 continue
             path = os.path.join(dirpath, name)
-            code = _code(open(path, encoding="utf-8").read())
+            code = _code(pathlib.Path(path).read_text(encoding="utf-8"))
             # `domain="root"` is Android's backup-rule token, not a user.
             code = re.sub(r'domain="[a-z_]+"', "", code)
             for m in DEMO_NAMES.finditer(code):

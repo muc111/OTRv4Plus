@@ -122,7 +122,7 @@ class TestAGroupFileIsNeverPlaintextOnDisk:
             class Watch:
                 def write_at(self, i, piece):
                     writer.write_at(i, piece)
-                    snapshots.append((bytes(piece), open(p, "rb").read()))
+                    snapshots.append((bytes(piece), pathlib.Path(p).read_bytes()))
 
                 def finish(self):
                     return writer.finish()
@@ -174,11 +174,11 @@ class TestAFileReachesTheGroup:
         assert _offer(c).transfer_id == tid
         assert b.files.accept(tid) and c.files.accept(tid)
         _run([a, b, c], now)
-        want = hashlib.sha256(open(path, "rb").read()).digest()
+        want = hashlib.sha256(pathlib.Path(path).read_bytes()).digest()
         for m in (b, c):
             row = _received(m, tid)
             assert row["state"] == "received" and row["from"] == "alice@x.i2p"
-            assert hashlib.sha256(open(row["path"], "rb").read()).digest() == want
+            assert hashlib.sha256(pathlib.Path(row["path"]).read_bytes()).digest() == want
             # (Both members share one directory here: the second is "photo (1)".)
             assert os.path.basename(row["path"]).startswith("photo")
         out = _received(a, tid)
@@ -414,7 +414,7 @@ class TestMetadataIsTheUsersChoice:
             tid = _offer(b).transfer_id
             b.files.accept(tid)
             _run([a, b], now)
-            got[strip] = open(_received(b, tid)["path"], "rb").read()
+            got[strip] = pathlib.Path(_received(b, tid)["path"]).read_bytes()
         assert b"GPS-LOCATION" in got[False]
         assert b"GPS-LOCATION" not in got[True]
         # The user's original is untouched either way.

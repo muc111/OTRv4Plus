@@ -16,6 +16,7 @@ import dis
 import glob
 import importlib
 import os
+import pathlib
 import sys
 import types
 
@@ -58,7 +59,7 @@ def test_every_global_a_function_reads_exists(name, path):
         module = importlib.import_module(name)
     except ImportError as exc:
         pytest.skip("cannot import here: %s" % exc)
-    top = compile(open(path, encoding="utf-8").read(), path, "exec")
+    top = compile(pathlib.Path(path).read_text(encoding="utf-8"), path, "exec")
     have = vars(module)
     missing = set()
     for code in _code_objects(top):

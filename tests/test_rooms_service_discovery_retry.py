@@ -4,6 +4,7 @@
 2026-10-17: "it now says this server does not advertise a rooms service")."""
 import asyncio
 import os
+import pathlib
 import sys
 
 import pytest
@@ -55,8 +56,8 @@ def test_it_gives_up_on_one_item_without_emptying_the_list():
 
 
 def test_the_screen_never_calls_a_failed_ask_a_finding():
-    vm = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                           "RoomsViewModel.kt"), encoding="utf-8").read()
+    vm = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                           "RoomsViewModel.kt")).read_text(encoding="utf-8")
     body = vm[vm.index("fun discover()"):vm.index("fun refreshRooms(")]
     assert "if (outcome.ok && (service != null || found.isNotEmpty()))" in body
     assert "roomService = service ?: roomService" in body

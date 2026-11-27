@@ -7,6 +7,7 @@ version byte is worth checking on real bytes rather than on a struct field.
 """
 
 import os
+import pathlib
 import sys
 import time
 
@@ -212,10 +213,8 @@ class TestTheUserIsToldTheRealCause:
 
     def test_the_rust_message_actually_contains_the_matched_phrase(self):
         """Guards against the Rust text drifting away from the Python matcher."""
-        smp_rs = open(
-            os.path.join(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__))), "Rust", "src", "smp.rs"),
-            encoding="utf-8").read()
+        smp_rs = pathlib.Path(os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), "Rust", "src", "smp.rs")).read_text(encoding="utf-8")
         assert "SMP version mismatch:" in smp_rs, (
             "the Rust error text changed; _is_smp_version_mismatch matches on "
             "it and would silently stop recognising the condition")

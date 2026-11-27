@@ -4,6 +4,7 @@
 bans, unbans and sees every room; a banned account is told so and not
 retried. The server half is tests/test_prosody_moderation_module.py."""
 import os
+import pathlib
 import sys
 import types
 
@@ -92,19 +93,19 @@ def test_the_ban_text_says_until_when():
 
 
 def test_a_banned_account_is_not_reconnected():
-    kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                           "connection/ConnectProblem.kt"), encoding="utf-8").read()
+    kt = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                           "connection/ConnectProblem.kt")).read_text(encoding="utf-8")
     assert 'ACCOUNT_BANNED = "%s"' % T.BANNED_CODE in kt
     needs = kt[kt.index("val NEEDS_YOU"):kt.index("val TRANSIENT")]
     assert "ACCOUNT_BANNED" in needs
 
 
 def test_only_an_admin_sees_the_controls():
-    screen = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                               "ui/ProfileScreen.kt"), encoding="utf-8").read()
+    screen = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                               "ui/ProfileScreen.kt")).read_text(encoding="utf-8")
     assert "if (!own && model.isServerAdmin) ModerationSection(model, jid)" in screen
-    vm = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
-                           "chat/ChatViewModel.kt"), encoding="utf-8").read()
+    vm = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
+                           "chat/ChatViewModel.kt")).read_text(encoding="utf-8")
     body = vm[vm.index("fun moderate(jid"):vm.index("private fun moderationOp(")]
     assert "if (!isServerAdmin || moderationBusy) return" in body
 

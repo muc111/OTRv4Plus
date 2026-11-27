@@ -10,13 +10,13 @@ failed copy removes the half-written document. The copy and naming logic is
 plain Kotlin with its own unit test (FileExportTest); this checks the wiring.
 """
 import os
+import pathlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PKG = os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus", "android")
-VIEWER = open(os.path.join(PKG, "ui", "FileViewer.kt"), encoding="utf-8").read()
-EXPORT = open(os.path.join(PKG, "crypto", "FileExport.kt"), encoding="utf-8").read()
-MANIFEST = open(os.path.join(ROOT, "android", "app", "src", "main", "AndroidManifest.xml"),
-                encoding="utf-8").read()
+VIEWER = pathlib.Path(os.path.join(PKG, "ui", "FileViewer.kt")).read_text(encoding="utf-8")
+EXPORT = pathlib.Path(os.path.join(PKG, "crypto", "FileExport.kt")).read_text(encoding="utf-8")
+MANIFEST = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main", "AndroidManifest.xml")).read_text(encoding="utf-8")
 
 
 def test_it_uses_the_system_save_dialog_and_no_storage_permission():

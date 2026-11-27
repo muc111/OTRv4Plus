@@ -17,6 +17,7 @@ bare PyException, and the service kept only the class name. Now:
 from __future__ import annotations
 
 import os
+import pathlib
 import tempfile
 
 import pytest
@@ -129,9 +130,8 @@ def test_the_android_sequence_returns_a_result_for_a_new_account(home, jid, serv
 
 def test_android_reports_a_failure_by_its_code_not_its_class():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src = open(os.path.join(root, "android", "app", "src", "main", "java", "org", "otrv4plus",
-                            "android", "connection", "OtrConnectionService.kt"),
-               encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(root, "android", "app", "src", "main", "java", "org", "otrv4plus",
+                            "android", "connection", "OtrConnectionService.kt")).read_text(encoding="utf-8")
     body = src[src.index("private fun codeOf(t: Throwable)"):][:220]
     assert "OtrBridgeException.reportableCode(t)" in body
     assert body.index("reportableCode(t)") < body.index("simpleName"), \

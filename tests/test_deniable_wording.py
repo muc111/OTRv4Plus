@@ -10,6 +10,7 @@ them in detail); the terminal's are its `/help`. This holds all three to
 the same rule, at the source.
 """
 import os
+import pathlib
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -26,7 +27,7 @@ PROPERTY = ("pending external audit", "no longer proves", "could have forged",
 def _strings(path):
     """The string literals of [path]'s code (not its comments, which may
     cite an old wording on purpose), joined the way the code joins them."""
-    src = open(path, encoding="utf-8").read()
+    src = pathlib.Path(path).read_text(encoding="utf-8")
     src = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
     src = re.sub(r"(?m)^\s*//.*$", "", src)
     return " ".join(re.findall(r'"((?:[^"\\]|\\.)*)"', src)).replace("\\n", " ")
@@ -44,7 +45,7 @@ def test_the_apps_words_state_no_property():
 
 
 def test_the_terminal_words_state_no_property_and_name_the_residuals():
-    src = open(TERMINAL, encoding="utf-8").read()
+    src = pathlib.Path(TERMINAL).read_text(encoding="utf-8")
     help_text = src[src.index('"  /deniable [jid]'):src.index('"  /smp start')]
     words = _flat(" ".join(re.findall(r'"((?:[^"\\]|\\.)*)"', help_text)).replace("\\n", " "))
     for phrase in PROPERTY:
@@ -63,7 +64,7 @@ def test_no_source_says_offline_closing_messages_are_dropped():
             "android_bridge/app_deniable.py", "android_bridge/app.py"]
     bad = []
     for src in srcs:
-        text = re.sub(r"\s+", " ", open(os.path.join(ROOT, src), encoding="utf-8").read())
+        text = re.sub(r"\s+", " ", pathlib.Path(os.path.join(ROOT, src)).read_text(encoding="utf-8"))
         for sentence in re.split(r"(?<=[.;])\s", text):
             low = sentence.lower()
             if re.search(r"\b(without a network|offline)\b", low) and "dropped" in low:
@@ -81,7 +82,7 @@ def test_kept_closing_messages_are_always_said_to_be_in_memory():
             "docs/AUDIT_THREAT_MODEL.md", "docs/DENIABILITY_LAYERS.md")
     bad = []
     for doc in docs:
-        text = re.sub(r"\s+", " ", open(os.path.join(ROOT, doc), encoding="utf-8").read())
+        text = re.sub(r"\s+", " ", pathlib.Path(os.path.join(ROOT, doc)).read_text(encoding="utf-8"))
         for sentence in re.split(r"(?<=[.;|])\s", text):
             low = sentence.lower()
             if "closing" in low and re.search(r"\bkept\b", low) and "memory" not in low:

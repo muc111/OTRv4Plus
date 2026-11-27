@@ -9,6 +9,7 @@ quietly turned off; Rust/build.sh's own check failed the desktop installer
 (found 2026-10-24). This starts a clean interpreter exactly that way.
 """
 import os
+import pathlib
 import subprocess
 import sys
 
@@ -38,7 +39,7 @@ def test_every_client_module_that_imports_the_bridge_asks_for_the_path_first():
         path = os.path.join(CLIENT, name)
         if os.path.islink(path):
             continue
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
         uses = any(isinstance(n, (ast.Import, ast.ImportFrom))
                    and any((getattr(n, "module", "") or a.name or "").startswith("android_bridge")
                            for a in n.names)

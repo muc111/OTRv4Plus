@@ -507,8 +507,8 @@ class TestItIsWiredIn:
     """The v10.23.2 lesson: a command in the base class is not reachable if
     the subclass claims it, and a helper nothing calls is not a change."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def tree():
         import ast
         import os
@@ -969,8 +969,8 @@ class TestTheReconnectDoesNotContradictItself:
     rebuilding it.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def auto_join_src():
         import ast
         import os

@@ -15,6 +15,7 @@ tests/test_transport_policy.py.
 
 from source_of import voice_source  # noqa: E402
 import asyncio
+import pathlib
 import types
 
 import pytest
@@ -130,7 +131,7 @@ class TestTransportSelectionIsExplicit:
         # through Tor as well. The implementation is a hand-rolled SOCKS5
         # CONNECT to a loopback forwarder instead: applied to one connection
         # or not at all. docs/TRANSPORT_POLICY.md section 6 states the rule.
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         assert "PROXY_TYPE_SOCKS5" not in source
         assert "set_proxy" not in source
         assert "socks5_connect" in source, (
@@ -139,7 +140,7 @@ class TestTransportSelectionIsExplicit:
             "asserting the absence of something for the wrong reason")
 
     def test_the_clearnet_insecure_flag_is_opt_in(self):
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         # Verification off must require the explicit flag, never a fallback
         # after a handshake failure.
         assert "CERT_NONE" in source

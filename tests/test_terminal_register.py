@@ -12,6 +12,7 @@ and then signs in with the password just set.
 from __future__ import annotations
 
 import argparse
+import pathlib
 
 import pytest
 
@@ -89,7 +90,7 @@ def test_insecure_tls_is_refused_before_anything_is_sent(transport):
 
 
 def test_main_asks_twice_and_registers_before_signing_in():
-    src = open(xmpp.__file__, encoding="utf-8").read()
+    src = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
     main = src[src.index("def main():"):]
     reg = main.index("_register_account(args, password)")
     assert main.index('getpass.getpass("Same password again: ")') < reg

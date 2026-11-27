@@ -20,6 +20,7 @@ that a real Tor daemon carries a real XMPP session.
 """
 
 import asyncio
+import pathlib
 import socket
 
 import pytest
@@ -253,7 +254,7 @@ class TestPysocksIsNotUsed:
     def test_the_global_socket_class_is_never_replaced(self):
         # PySocks routes by assigning socket.socket globally, which here
         # would also capture the I2P SAM bridge and every voice media socket.
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         assert "socket.socket = " not in source
         assert "setdefaultproxy" not in source
 

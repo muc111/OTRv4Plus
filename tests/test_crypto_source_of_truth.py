@@ -11,6 +11,7 @@ module's exports, and to the Kotlin sources.
 from source_of import voice_source  # noqa: E402
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import os
+import pathlib
 import re
 
 import pytest
@@ -21,7 +22,7 @@ KOTLIN = os.path.join(ROOT, "android", "app", "src", "main", "java")
 
 
 def _doc():
-    return open(DOC, encoding="utf-8").read()
+    return pathlib.Path(DOC).read_text(encoding="utf-8")
 
 
 def _table_rows():
@@ -32,7 +33,7 @@ def _table_rows():
 
 
 def test_every_crate_named_is_a_dependency_of_the_core():
-    cargo = open(os.path.join(ROOT, "Rust", "Cargo.toml"), encoding="utf-8").read()
+    cargo = pathlib.Path(os.path.join(ROOT, "Rust", "Cargo.toml")).read_text(encoding="utf-8")
     named = set()
     for row in _table_rows():
         crate_col = row.split("|")[2]
@@ -62,7 +63,7 @@ def test_only_the_vault_uses_platform_cryptography_in_kotlin():
     for dirpath, _, files in os.walk(KOTLIN):
         for f in files:
             if f.endswith(".kt"):
-                src = open(os.path.join(dirpath, f), encoding="utf-8").read()
+                src = pathlib.Path(os.path.join(dirpath, f)).read_text(encoding="utf-8")
                 if re.search(r"^import (javax\.crypto|java\.security)\.", src, re.M):
                     users.append(f)
     assert users == ["KeystoreVault.kt"], (

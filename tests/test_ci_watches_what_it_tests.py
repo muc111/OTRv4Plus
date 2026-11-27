@@ -8,13 +8,14 @@ install broke and no run noticed for eight builds (found 2026-10-24). These
 assert the dependencies are in the filter.
 """
 import os
+import pathlib
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _paths(workflow):
-    text = open(os.path.join(ROOT, ".github", "workflows", workflow), encoding="utf-8").read()
+    text = pathlib.Path(os.path.join(ROOT, ".github", "workflows", workflow)).read_text(encoding="utf-8")
     block = text[text.index("paths:"):text.index("workflow_dispatch:")]
     return set(re.findall(r'^\s+-\s+"([^"]+)"\s*$', block, re.M))
 
@@ -28,7 +29,7 @@ def test_the_desktop_install_runs_when_what_it_installs_changes():
 
 def test_python_has_no_path_filter():
     """python.yml runs on every push, deliberately (see its header)."""
-    text = open(os.path.join(ROOT, ".github", "workflows", "python.yml"), encoding="utf-8").read()
+    text = pathlib.Path(os.path.join(ROOT, ".github", "workflows", "python.yml")).read_text(encoding="utf-8")
     on = text[text.index("\non:"):text.index("\npermissions:")]
     assert "paths:" not in on
 

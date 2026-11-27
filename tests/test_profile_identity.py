@@ -10,6 +10,7 @@ from there would let a compromised server vouch for itself.
 import os
 import sys
 import re
+import pathlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -19,7 +20,7 @@ KT = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
 
 
 def _read(*parts):
-    return open(os.path.join(*parts), encoding="utf-8").read()
+    return pathlib.Path(os.path.join(*parts)).read_text(encoding="utf-8")
 
 
 def _section(src, start):

@@ -11,6 +11,7 @@ the other device out, which would do the same back, forever.
 """
 
 import os
+import pathlib
 import sys
 import threading
 import time
@@ -102,15 +103,15 @@ class TestTheControllerStopsThere:
         assert app.presence_lost == 1
 
     def test_kotlin_treats_the_code_as_needing_the_user(self):
-        kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                               "android/connection/ConnectProblem.kt")).read()
+        kt = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                               "android/connection/ConnectProblem.kt")).read_text()
         assert 'SIGNED_IN_ELSEWHERE = "%s"' % T.REPLACED_CODE in kt
         needs = kt[kt.index("val NEEDS_YOU"):kt.index("val TRANSIENT")]
         assert "SIGNED_IN_ELSEWHERE" in needs
 
     def test_the_service_stops_on_it_after_a_drop(self):
-        svc = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                                "android/connection/OtrConnectionService.kt")).read()
+        svc = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read_text()
         watch = svc[svc.index("private suspend fun watchUntilDropped"):]
         watch = watch[:watch.index("private fun codeOf")]
         assert "ConnectProblem.SIGNED_IN_ELSEWHERE" in watch
@@ -131,7 +132,7 @@ class TestTheServerModule:
     """The Lua is checked against a simulated Prosody in development; here,
     that it says what docs/SECURITY_SESSIONS.md promises."""
 
-    SRC = open(os.path.join(ROOT, "prosody", "mod_otrv4plus_one_session.lua")).read()
+    SRC = pathlib.Path(os.path.join(ROOT, "prosody", "mod_otrv4plus_one_session.lua")).read_text()
 
     def test_it_closes_the_old_session_with_conflict(self):
         assert '"pre-resource-bind"' in self.SRC
@@ -147,7 +148,7 @@ class TestAFullServer:
     """prosody/mod_otrv4plus_capacity.lua refuses a new person at bind with
     resource-constraint once max_online_users are online."""
 
-    SRC = open(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")).read()
+    SRC = pathlib.Path(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")).read_text()
 
     def test_the_module_refuses_with_resource_constraint_and_spares_reconnects(self):
         assert 'get_option_number("max_online_users", 1600)' in self.SRC
@@ -158,8 +159,8 @@ class TestAFullServer:
 
     def test_the_app_names_it_and_keeps_trying(self):
         assert T.SERVER_FULL_CODE == "server_full"
-        kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                               "android/connection/ConnectProblem.kt")).read()
+        kt = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                               "android/connection/ConnectProblem.kt")).read_text()
         assert 'SERVER_FULL = "server_full"' in kt
         needs = kt[kt.index("val NEEDS_YOU"):kt.index("val TRANSIENT")]
         assert "SERVER_FULL" not in needs        # retried, never latched
@@ -169,7 +170,7 @@ class TestSignInPacing:
     """mod_otrv4plus_capacity login_rate: a crowd of sign-ins (a server
     restart) is let in a few a second; the rest retry, spread out."""
 
-    SRC = open(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")).read()
+    SRC = pathlib.Path(os.path.join(ROOT, "prosody", "mod_otrv4plus_capacity.lua")).read_text()
 
     def test_the_module_refuses_before_tls_once_per_connection(self):
         assert 'get_option_number("login_rate", 10)' in self.SRC
@@ -179,13 +180,13 @@ class TestSignInPacing:
 
     def test_the_app_says_busy_not_full(self):
         assert T.SERVER_BUSY_CODE == "server_busy"
-        kt = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                               "android/connection/ConnectProblem.kt")).read()
+        kt = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                               "android/connection/ConnectProblem.kt")).read_text()
         assert 'SERVER_BUSY = "server_busy"' in kt
 
     def test_reconnects_are_spread(self):
-        svc = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                                "android/connection/OtrConnectionService.kt")).read()
+        svc = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                                "android/connection/OtrConnectionService.kt")).read_text()
         assert "ReconnectPolicy(jitter = RECONNECT_JITTER)" in svc
         from source_of import client_source
         assert "secrets.randbelow(501)" in client_source()

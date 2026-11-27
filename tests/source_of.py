@@ -8,6 +8,7 @@ asking "does any method of the client set X" would stop seeing the methods
 that moved. This reads every class in the MRO that is ours.
 """
 import inspect
+import pathlib
 
 
 def class_source(cls) -> str:
@@ -29,7 +30,7 @@ def client_files() -> list:
 
 def client_source() -> str:
     """All of the XMPP client's source, one file after another."""
-    return "\n".join(open(p, encoding="utf-8").read() for p in client_files())
+    return "\n".join(pathlib.Path(p).read_text(encoding="utf-8") for p in client_files())
 
 
 #: The modules split out of the engine (otrv4+.py), which re-exports them:
@@ -49,7 +50,7 @@ def engine_source() -> str:
     """The engine: otrv4+.py and the modules split out of it."""
     import os
     client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
-    return "\n".join(open(os.path.join(client, name), encoding="utf-8").read()
+    return "\n".join(pathlib.Path(os.path.join(client, name)).read_text(encoding="utf-8")
                      for name in ["otrv4+.py"] + ENGINE_PARTS)
 
 
@@ -63,7 +64,7 @@ def irc_and_engine_source() -> str:
     client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
     names = ["otrv4+.py"] + ENGINE_PARTS + ["otrv4plus_irc.py"] + sorted(
         os.path.basename(p) for p in glob.glob(os.path.join(client, "otrv4plus_irc_*.py")))
-    return "\n".join(open(os.path.join(client, name), encoding="utf-8").read()
+    return "\n".join(pathlib.Path(os.path.join(client, name)).read_text(encoding="utf-8")
                      for name in names)
 
 
@@ -85,7 +86,7 @@ def transport_files() -> list:
 
 def transport_source() -> str:
     """All of the transport's source, one file after another."""
-    return "\n".join(open(p, encoding="utf-8").read() for p in transport_files())
+    return "\n".join(pathlib.Path(p).read_text(encoding="utf-8") for p in transport_files())
 
 
 def app_files() -> list:
@@ -100,7 +101,7 @@ def app_files() -> list:
 
 def app_source() -> str:
     """All of OtrApp's source, one file after another."""
-    return "\n".join(open(p, encoding="utf-8").read() for p in app_files())
+    return "\n".join(pathlib.Path(p).read_text(encoding="utf-8") for p in app_files())
 
 
 def connection_files() -> list:
@@ -115,7 +116,7 @@ def connection_files() -> list:
 
 def connection_source() -> str:
     """All of the controller's source, one file after another."""
-    return "\n".join(open(p, encoding="utf-8").read() for p in connection_files())
+    return "\n".join(pathlib.Path(p).read_text(encoding="utf-8") for p in connection_files())
 
 
 def voice_files() -> list:
@@ -130,7 +131,7 @@ def voice_files() -> list:
 
 def voice_source() -> str:
     """All of the voice subsystem's source, one file after another."""
-    return "\n".join(open(p, encoding="utf-8").read() for p in voice_files())
+    return "\n".join(pathlib.Path(p).read_text(encoding="utf-8") for p in voice_files())
 
 
 def main_source(module) -> str:
@@ -171,7 +172,7 @@ def conversation_screen_source() -> str:
     ui = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                       "android", "app", "src", "main", "java", "org", "otrv4plus",
                       "android", "ui")
-    return "\n".join(open(os.path.join(ui, n), encoding="utf-8").read()
+    return "\n".join(pathlib.Path(os.path.join(ui, n)).read_text(encoding="utf-8")
                      for n in CONVERSATION_SCREEN_PARTS)
 
 
@@ -183,4 +184,4 @@ def irc_source() -> str:
     client = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "client")
     paths = [os.path.join(client, "otrv4plus_irc.py")] + sorted(
         glob.glob(os.path.join(client, "otrv4plus_irc_*.py")))
-    return "\n".join(open(p, encoding="utf-8").read() for p in paths)
+    return "\n".join(pathlib.Path(p).read_text(encoding="utf-8") for p in paths)

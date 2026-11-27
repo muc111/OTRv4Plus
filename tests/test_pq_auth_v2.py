@@ -15,6 +15,7 @@ it, and an attacker able to forge Ed448 could simply leave it out. Now:
     the Ed448 fingerprint the user would check matches in exactly that attack.
 """
 import os
+import pathlib
 import shutil
 import tempfile
 
@@ -144,12 +145,12 @@ def test_a_damaged_record_fails_closed_and_is_not_replaced(store):
     from otrv4plus_identity import load_or_create_mldsa, IdentityUnavailable
     load_or_create_mldsa(*store)
     path = store[0] + ".mldsa"
-    blob = bytearray(open(path, "rb").read())
+    blob = bytearray(pathlib.Path(path).read_bytes())
     blob[50] ^= 1
     open(path, "wb").write(bytes(blob))
     with pytest.raises(IdentityUnavailable):
         load_or_create_mldsa(*store)
-    assert open(path, "rb").read() == bytes(blob), "left for the user to decide"
+    assert pathlib.Path(path).read_bytes() == bytes(blob), "left for the user to decide"
 
 
 def test_a_persistent_identity_brings_its_ml_dsa_key_across_restarts(store):

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import os
+import pathlib
 import socket
 import stat
 import sys
@@ -426,7 +427,7 @@ class TestAnUnreadablePinsFileIsRefused:
         err = _refused(sam, path)
         assert err.code == "i2p_server_pins_unreadable"
         assert path in str(err)
-        assert open(path, encoding="utf-8").read() == "{not json", "the file was changed"
+        assert pathlib.Path(path).read_text(encoding="utf-8") == "{not json", "the file was changed"
         assert not os.path.exists(path + ".tmp")
         assert sam.streams_to() == [] and not sam.received
         assert not _password_reached(sam, DEST_A)
@@ -448,7 +449,7 @@ class TestAnUnreadablePinsFileIsRefused:
         path = _pins_file(content)
         err = _refused(sam, path)
         assert err.code == "i2p_server_pins_unreadable" and path in str(err)
-        assert open(path, encoding="utf-8").read() == content
+        assert pathlib.Path(path).read_text(encoding="utf-8") == content
 
     def test_the_refusal_fires_before_naming_lookup_and_session_create(self, sam):
         err = _refused(sam, _pins_file("{not json"))
@@ -463,11 +464,11 @@ class TestAnUnreadablePinsFileIsRefused:
         pins = SP.ServerPins(path)
         with pytest.raises(TransportError):
             _connect(sam, pins)
-        assert pins.confirm(NAME) is None and open(path).read() == "{not json"
+        assert pins.confirm(NAME) is None and pathlib.Path(path).read_text() == "{not json"
         os.replace(path, path + ".aside")               # the user moves it aside
         _connect(sam, pins)
         assert pins.pinned(NAME) == B32_A
-        assert open(path + ".aside").read() == "{not json"
+        assert pathlib.Path(path + ".aside").read_text() == "{not json"
 
     def test_a_shipped_or_typed_b32_server_does_not_consult_the_pins(self):
         pins = SP.ServerPins(_pins_file("{not json"))
@@ -491,7 +492,7 @@ class TestAnUnreadablePinsFileIsRefused:
             assert not ctl.approve_server_destination(B32_B)["ok"]
         finally:
             SP._DEFAULT = saved
-        assert open(path).read() == "{not json"
+        assert pathlib.Path(path).read_text() == "{not json"
 
     def test_registration_is_refused_too(self, sam):
         path = _pins_file("{not json")
@@ -502,7 +503,7 @@ class TestAnUnreadablePinsFileIsRefused:
             t.close()
         assert code == "server_identity_changed"
         assert not any(c.startswith(("NAMING LOOKUP", "SESSION CREATE")) for c in sam.commands)
-        assert open(path, encoding="utf-8").read() == "{not json"
+        assert pathlib.Path(path).read_text(encoding="utf-8") == "{not json"
 
     def test_wipe_still_destroys_a_pins_file_that_would_not_open(self):
         path = _pins_file("{not json")

@@ -578,8 +578,8 @@ class TestTradeOutputNeverReachesTheSessionLog:
     disk in plaintext.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def xmpp():
         return pytest.importorskip("otrv4plus_xmpp")
 
@@ -608,8 +608,8 @@ class TestItIsNotAWallet:
     """INV-25, asserted against the source because it is a claim about what
     the module does NOT contain."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def source():
         with open(os.path.join(ROOT, "client", "otrv4plus_trade.py"),
                   encoding="utf-8") as fh:

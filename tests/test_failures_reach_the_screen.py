@@ -14,6 +14,7 @@ a new code cannot land on the fallback unnoticed.
 import ast
 import glob
 import os
+import pathlib
 import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -25,7 +26,7 @@ KT = [os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4p
 def emitted_codes():
     codes = set()
     for path in glob.glob(os.path.join(ROOT, "android_bridge", "*.py")):
-        tree = ast.parse(open(path, encoding="utf-8").read())
+        tree = ast.parse(pathlib.Path(path).read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -47,7 +48,7 @@ def test_the_scan_finds_codes():
 
 
 def test_every_code_has_a_sentence_or_a_reason_to_be_quiet():
-    kt = "".join(open(p, encoding="utf-8").read() for p in KT)
+    kt = "".join(pathlib.Path(p).read_text(encoding="utf-8") for p in KT)
     missing = sorted(c for c in emitted_codes() if '"%s"' % c not in kt)
     assert not missing, (
         "the bridge emits %s, which the app would show only as the fallback "
@@ -56,9 +57,9 @@ def test_every_code_has_a_sentence_or_a_reason_to_be_quiet():
 
 
 def test_chat_state_routes_every_failure_through_failure_text():
-    src = open(os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus",
-                            "android", "chat", "ChatState.kt"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus",
+                            "android", "chat", "ChatState.kt")).read_text(encoding="utf-8")
     block = src[src.index("is OtrEvent.Failed ->"):][:300]
     assert "FailureText.text(event.code, event.peer)" in block
-    ft = open(KT[0], encoding="utf-8").read()
+    ft = pathlib.Path(KT[0]).read_text(encoding="utf-8")
     assert re.search(r"return fallback\(code\)", ft), "an unknown code would be silent"

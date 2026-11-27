@@ -17,6 +17,7 @@ puts it through the boundary, and fails if any of it survives.
 """
 
 import os
+import pathlib
 import re
 import sys
 
@@ -235,7 +236,7 @@ class TestTheSmpTagIsMarkedEverywhere:
     """
 
     def test_no_bare_smp_tag_is_left_in_the_client(self):
-        source = open(xmpp.__file__, encoding="utf-8").read()
+        source = pathlib.Path(xmpp.__file__).read_text(encoding="utf-8")
         bare = [n for n, line in enumerate(source.split("\n"), 1)
                 if ('"[smp]' in line or "'[smp]" in line)
                 and not line.startswith("_SMP =")]

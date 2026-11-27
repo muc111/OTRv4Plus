@@ -8,6 +8,7 @@ machines most likely to be checking a build.
 """
 
 import os
+import pathlib
 
 
 class TestTheExtensionIsNamedPlainly:
@@ -29,7 +30,7 @@ class TestTheExtensionIsNamedPlainly:
         assert os.path.exists(self.SCRIPT)
 
     def test_the_workflow_runs_it_before_packaging(self):
-        wf = open(".github/workflows/android.yml").read()
+        wf = pathlib.Path(".github/workflows/android.yml").read_text()
         assert "plain_so_name.py" in wf, (
             "the rename is only worth having if it runs")
         # Before the DT_NEEDED check, so that check inspects what ships.

@@ -10,6 +10,7 @@ the terminal hung; and Backspace in the middle of a masked passphrase
 re-echoed the rest of it in clear.
 """
 import os
+import pathlib
 import sys
 import threading
 
@@ -175,14 +176,14 @@ def test_nothing_writes_the_state_through_old_names():
     for name in sorted(os.listdir(client)):
         path = os.path.join(client, name)
         if name.endswith(".py") and not os.path.islink(path):
-            for n, line in enumerate(open(path, encoding="utf-8"), 1):
+            for n, line in enumerate(pathlib.Path(path).read_text(encoding="utf-8").splitlines(keepends=True), 1):
                 if pattern.search(line):
                     offenders.append("%s:%d: %s" % (name, n, line.strip()))
     assert not offenders, "\n".join(offenders)
 
 
 def test_the_irc_client_registers_its_hooks():
-    src = open(os.path.join(ROOT, "client", "otrv4plus_irc.py"), encoding="utf-8").read()
+    src = pathlib.Path(os.path.join(ROOT, "client", "otrv4plus_irc.py")).read_text(encoding="utf-8")
     assert "client.attach_terminal()" in src
     for hook in ("on_keypress", "debug_sink", "refresh_prompt", "redraw"):
         assert "_tty.TTY.%s = " % hook in src, hook
@@ -224,7 +225,7 @@ def test_no_terminal_client_module_keeps_state_in_builtins():
         if (name.startswith("otrv4plus_irc") or name in (
                 "otrv4+.py", "otrv4plus_tty.py", "otrv4plus_panels.py")) \
                 and name.endswith(".py") and not os.path.islink(path):
-            for n, line in enumerate(open(path, encoding="utf-8"), 1):
+            for n, line in enumerate(pathlib.Path(path).read_text(encoding="utf-8").splitlines(keepends=True), 1):
                 if pattern.search(line):
                     offenders.append("%s:%d: %s" % (name, n, line.strip()))
     assert not offenders, "\n".join(offenders)

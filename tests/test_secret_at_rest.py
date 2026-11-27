@@ -9,6 +9,7 @@ code that wrote them.
 from source_of import irc_and_engine_source, open_irc_and_engine  # noqa: E402,F401
 import json
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -41,7 +42,7 @@ class TestSmpSecretsAtRest:
         store.set_secret("alice@example.i2p", SECRET)
         path = os.path.join(statedir, "smp_secrets.json")
         assert os.path.exists(path), "nothing was written at all"
-        raw = open(path, "rb").read()
+        raw = pathlib.Path(path).read_bytes()
         assert SECRET.encode() not in raw
         assert SECRET.encode("utf-16-le") not in raw
 
@@ -49,14 +50,14 @@ class TestSmpSecretsAtRest:
         """Named .json for history; it is a sealed blob."""
         store = self._store(statedir)
         store.set_secret("alice@example.i2p", SECRET)
-        raw = open(os.path.join(statedir, "smp_secrets.json"), "rb").read()
+        raw = pathlib.Path(os.path.join(statedir, "smp_secrets.json")).read_bytes()
         with pytest.raises(Exception):
             json.loads(raw.decode("utf-8"))
 
     def test_the_peer_name_is_not_in_the_file_either(self, statedir):
         store = self._store(statedir)
         store.set_secret("alice@example.i2p", SECRET)
-        raw = open(os.path.join(statedir, "smp_secrets.json"), "rb").read()
+        raw = pathlib.Path(os.path.join(statedir, "smp_secrets.json")).read_bytes()
         assert b"alice@example.i2p" not in raw, (
             "the sealed blob leaks who you have SMP secrets with")
 
@@ -88,9 +89,9 @@ class TestSmpSecretsAtRest:
         path = os.path.join(statedir, "smp_secrets.json")
         store = self._store(statedir)
         store.set_secret("alice@example.i2p", SECRET)
-        first = open(path, "rb").read()
+        first = pathlib.Path(path).read_bytes()
         store.set_secret("bob@example.i2p", SECRET)
-        assert open(path, "rb").read() != first
+        assert pathlib.Path(path).read_bytes() != first
 
 
 class TestTheLegacyStoreMigratesInRust:
@@ -123,7 +124,7 @@ class TestTheLegacyStoreMigratesInRust:
         store = otr.SMPAutoRespondStorage(path)
         assert sorted(store.peers()) == ["alice@example.i2p", "bob@example.i2p"]
         assert store._store.migrated
-        assert open(path, "rb").read().startswith(b"OTRV4SMP\x02"), (
+        assert pathlib.Path(path).read_bytes().startswith(b"OTRV4SMP\x02"), (
             "the legacy file was not rewritten in the current format")
         assert sorted(otr.SMPAutoRespondStorage(path).peers()) == [
             "alice@example.i2p", "bob@example.i2p"]

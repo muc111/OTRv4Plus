@@ -41,6 +41,7 @@ remove" cannot quietly take it:
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -233,11 +234,10 @@ class TestTheAndroidHalfForgetsTheLocalRecord:
     behaviour it protects -- that `conversations()` unions the saved list --
     is driven in `ChatStateTest` and `SavedContactsTest`."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def remove_body():
-        source = open(os.path.join(ANDROID, "chat", "ChatViewModel.kt"),
-                      encoding="utf-8").read()
+        source = pathlib.Path(os.path.join(ANDROID, "chat", "ChatViewModel.kt")).read_text(encoding="utf-8")
         start = source.index("fun removeContact(")
         return source[start:source.index("\n    /**", start)]
 
@@ -259,8 +259,7 @@ class TestTheAndroidHalfForgetsTheLocalRecord:
 
     def test_adding_a_contact_still_saves_only_on_success(self):
         """The mirror image, asserted here so the pair cannot drift."""
-        source = open(os.path.join(ANDROID, "chat", "ChatViewModel.kt"),
-                      encoding="utf-8").read()
+        source = pathlib.Path(os.path.join(ANDROID, "chat", "ChatViewModel.kt")).read_text(encoding="utf-8")
         start = source.index("fun addContact(")
         body = source[start:source.index("\n    /**", start)]
         assert "if (result.ok) {" in body and "savedContacts.save(" in body
@@ -273,8 +272,7 @@ class TestTheSavedRecordIsReadBackCanonically:
 
     @staticmethod
     def _decode_body():
-        source = open(os.path.join(ANDROID, "chat", "SavedContacts.kt"),
-                      encoding="utf-8").read()
+        source = pathlib.Path(os.path.join(ANDROID, "chat", "SavedContacts.kt")).read_text(encoding="utf-8")
         return source[source.index("private fun decode("):]
 
     def test_decode_folds_the_stored_jid(self):

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import pathlib
 import stat
 import subprocess
 import sys
@@ -113,7 +114,7 @@ def test_after_a_restart_the_terminal_refuses_a_changed_key(state):
 
 def test_the_sealed_record_names_no_contact_and_its_key_file_is_private(state):
     _start(state).check_or_pin(PEER, FP)
-    blob = open(_sealed(state), "rb").read()
+    blob = pathlib.Path(_sealed(state)).read_bytes()
     assert PEER.encode() not in blob and FP.encode() not in blob
     dek = os.path.join(state, "trust", "trust.dek")
     assert stat.S_IMODE(os.stat(dek).st_mode) == 0o600
@@ -136,13 +137,13 @@ def test_a_plaintext_file_that_will_not_open_blocks_the_move_and_stays(state):
     with pytest.raises(Exception) as caught:
         _start(state)
     assert type(caught.value).__name__ == "TrustUnavailable"
-    assert open(_plain(state), encoding="utf-8").read() == "{not json"
+    assert pathlib.Path(_plain(state)).read_text(encoding="utf-8") == "{not json"
     assert not os.path.exists(_sealed(state)), "nothing was sealed in its place"
 
 
 def test_a_sealed_record_that_will_not_open_is_refused_and_not_replaced(state):
     _start(state).check_or_pin(PEER, FP)
-    blob = bytearray(open(_sealed(state), "rb").read())
+    blob = bytearray(pathlib.Path(_sealed(state)).read_bytes())
     blob[-1] ^= 0x01
     with open(_sealed(state), "wb") as fh:
         fh.write(blob)
@@ -150,7 +151,7 @@ def test_a_sealed_record_that_will_not_open_is_refused_and_not_replaced(state):
         with pytest.raises(Exception) as caught:
             _start(state)
         assert type(caught.value).__name__ == "TrustUnavailable"
-    assert open(_sealed(state), "rb").read() == bytes(blob)
+    assert pathlib.Path(_sealed(state)).read_bytes() == bytes(blob)
     assert not os.path.exists(_plain(state))
 
 
@@ -167,15 +168,15 @@ def test_both_files_differing_are_refused_and_neither_is_touched(state):
     """An older build wrote trust.json after the upgrade. Taking either side
     would drop pins without saying so."""
     _start(state).check_or_pin(PEER, FP)
-    sealed_before = open(_sealed(state), "rb").read()
+    sealed_before = pathlib.Path(_sealed(state)).read_bytes()
     _write_plain(state, {PEER: {"fingerprint": OTHER_FP, "trusted": False}})
     with pytest.raises(Exception) as caught:
         _start(state)
     assert type(caught.value).__name__ == "TrustUnavailable"
     assert _plain(state) in str(caught.value) and _sealed(state) in str(caught.value), \
         "both files are named"
-    assert open(_sealed(state), "rb").read() == sealed_before
-    assert json.load(open(_plain(state)))[PEER]["fingerprint"] == OTHER_FP
+    assert pathlib.Path(_sealed(state)).read_bytes() == sealed_before
+    assert json.loads(pathlib.Path(_plain(state)).read_text())[PEER]["fingerprint"] == OTHER_FP
 
 
 # -- what does not change -----------------------------------------------------
@@ -209,7 +210,7 @@ def test_the_trust_listing_says_where_the_pins_are(state):
     d = tempfile.mkdtemp(prefix="otrv4plus-plain-trust-")
     assert otr.TrustDatabase(os.path.join(d, "t.json"), persistent=True).where().endswith("(plaintext)")
     import otrv4plus_xmpp_trust as T
-    src = open(T.__file__, encoding="utf-8").read()
+    src = pathlib.Path(T.__file__).read_text(encoding="utf-8")
     assert "self.otr.trust_db.where()" in src
 
 

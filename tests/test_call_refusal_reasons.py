@@ -11,6 +11,7 @@ CallUi.failure (CallUiTest) has a sentence for each.
 """
 import asyncio
 import os
+import pathlib
 import sys
 import threading
 
@@ -73,7 +74,7 @@ def test_an_unknown_or_missing_reason_keeps_the_generic_code():
 
 def test_every_refusal_the_manager_records_is_one_the_bridge_knows():
     import re
-    src = open(V.__file__, encoding="utf-8").read()
+    src = pathlib.Path(V.__file__).read_text(encoding="utf-8")
     recorded = set(re.findall(r'self\.last_refusal = "([a-z_]+)"', src))
     assert recorded, "start_call no longer records why it refused"
     assert recorded <= bridge_voice.CALL_REFUSALS
@@ -82,7 +83,7 @@ def test_every_refusal_the_manager_records_is_one_the_bridge_knows():
 def test_the_app_has_a_sentence_for_each():
     path = os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
                         "otrv4plus", "android", "crypto", "CallUi.kt")
-    kt = open(path, encoding="utf-8").read()
+    kt = pathlib.Path(path).read_text(encoding="utf-8")
     for reason in bridge_voice.CALL_REFUSALS:
         assert '"call_%s" ->' % reason in kt, reason
 

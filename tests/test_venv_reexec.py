@@ -85,6 +85,6 @@ def test_both_clients_call_it_before_loading_the_core():
     # the engine, after its first import line.
     for name, before in (("otrv4+.py", "from otrv4_core"),
                          ("otrv4plus_xmpp.py", "\nimport argparse")):
-        src = open(os.path.join(root, name), encoding="utf-8").read()
+        src = pathlib.Path(os.path.join(root, name)).read_text(encoding="utf-8")
         at = src.index('import_module("otrv4plus_venv").ensure(__file__)')
         assert at < src.index(before), name

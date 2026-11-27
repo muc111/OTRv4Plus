@@ -17,11 +17,12 @@ Two defects, both in OtrConnectionService:
    state is checked now, and Sign out clears the flag.
 """
 import os
+import pathlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PKG = os.path.join(ROOT, "android", "app", "src", "main", "java", "org", "otrv4plus", "android")
-SERVICE = open(os.path.join(PKG, "connection", "OtrConnectionService.kt"), encoding="utf-8").read()
-CORE = open(os.path.join(PKG, "bridge", "ChaquopyOtrCore.kt"), encoding="utf-8").read()
+SERVICE = pathlib.Path(os.path.join(PKG, "connection", "OtrConnectionService.kt")).read_text(encoding="utf-8")
+CORE = pathlib.Path(os.path.join(PKG, "bridge", "ChaquopyOtrCore.kt")).read_text(encoding="utf-8")
 
 
 def _body(text, signature):
@@ -63,5 +64,5 @@ def test_the_engine_is_reinitialised_after_sign_out():
 def test_being_replaced_by_another_device_stops_reconnecting():
     # The first half of the report is by design: newest session wins, and
     # reconnecting would throw the other phone out in turn.
-    transport = open(os.path.join(ROOT, "android_bridge", "transport.py"), encoding="utf-8").read()
+    transport = pathlib.Path(os.path.join(ROOT, "android_bridge", "transport.py")).read_text(encoding="utf-8")
     assert 'if cond == "conflict":\n            self._replaced = True' in transport

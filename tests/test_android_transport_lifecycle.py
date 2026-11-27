@@ -35,6 +35,7 @@ press Connect again.
 """
 
 import asyncio
+import pathlib
 import threading
 import time
 
@@ -759,7 +760,7 @@ class TestNoFailureFallsBackToADirectConnection:
         for dirpath, _, files in os.walk(root):
             for f in files:
                 if f.endswith(".kt"):
-                    src = open(os.path.join(dirpath, f), encoding="utf-8").read()
+                    src = pathlib.Path(os.path.join(dirpath, f)).read_text(encoding="utf-8")
                     assert "use_i2p" not in src and "useI2p" not in src, f
         assert ConnectionProfile(jid="a@b.i2p", server="b.i2p").route.kind == "i2p_sam"
         assert ConnectionProfile(jid="a@07f.de").route.kind == "clearnet_tls"

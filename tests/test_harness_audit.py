@@ -17,6 +17,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+import pathlib
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -198,7 +199,7 @@ class TestRustAtRestStore(unittest.TestCase):
 
     def test_07_ciphertext_on_disk(self):
         self.core.SmpSecretStore(self.path).set("a@x", "findable-passphrase")
-        raw = open(self.path, "rb").read()
+        raw = pathlib.Path(self.path).read_bytes()
         self.assertNotIn(b"findable-passphrase", raw)
         self.assertNotIn(b"a@x", raw, "even the peer name is sealed")
 

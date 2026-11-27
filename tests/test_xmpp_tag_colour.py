@@ -12,6 +12,7 @@ line goes with `startswith("[keepalive]")`.  An escape sequence in front of
 the tag defeats both.  Those are what most of this file is about.
 """
 
+import pathlib
 import re
 
 import pytest
@@ -24,7 +25,7 @@ def _module_constant(name):
     looked for the closing brace and found the one inside `frozenset({`.
     """
     import ast
-    tree = ast.parse(open("client/otrv4plus_term.py").read())
+    tree = ast.parse(pathlib.Path("client/otrv4plus_term.py").read_text())
     for node in tree.body:
         if not isinstance(node, ast.Assign):
             continue
@@ -42,7 +43,7 @@ def _load(colorize=None):
     substituted here so an assertion failure prints `<yellow>[keepalive]</>`
     instead of a line of escape bytes.
     """
-    src = open("client/otrv4plus_term.py").read()
+    src = pathlib.Path("client/otrv4plus_term.py").read_text()
     start = src.index("_TAG_COLOURS = {")
     end = src.index("def print(*args, **kwargs):")
     ns = {"re": re,
@@ -210,19 +211,19 @@ class TestItDoesNotBreakTheTranscript:
         # claim being checked is that something PRINTS it.  Both plain and
         # f-string forms are used in this client.
         import glob
-        src = "".join(open(p).read()
+        src = "".join(pathlib.Path(p).read_text()
                       for p in sorted(glob.glob("client/otrv4plus_*.py")))
         for tag in mod["_TAG_COLOURS"]:
             assert ('"[%s]' % tag) in src, (
                 "[%s] is coloured but nothing prints it" % tag)
 
     def test_the_log_is_written_before_the_colour_is_applied(self):
-        src = open("client/otrv4plus_term.py").read()
+        src = pathlib.Path("client/otrv4plus_term.py").read_text()
         body = src[src.index("def print(*args, **kwargs):"):]
         assert body.index("_log_to_file(msg)") < body.index("_colour_tag(msg)")
 
     def test_the_channel_log_is_written_before_the_colour_is_applied(self):
-        src = open("client/otrv4plus_term.py").read()
+        src = pathlib.Path("client/otrv4plus_term.py").read_text()
         body = src[src.index("def print(*args, **kwargs):"):]
         assert body.index("channel_log.append") < body.index("_colour_tag(msg)")
 
@@ -237,11 +238,11 @@ class TestItDoesNotBreakPanelRouting:
         of those tests fails silently: keepalive ticks stop going to the
         debug panel and land in whichever chat panel was last active.
         """
-        src = open("client/otrv4plus_term.py").read()
+        src = pathlib.Path("client/otrv4plus_term.py").read_text()
         body = src[src.index("def print(*args, **kwargs):"):]
         assert "_tui_route_output(msg)" in body
         assert "_tui_route_output(shown)" not in body
 
     def test_routing_still_matches_a_plain_tag(self):
-        src = open("client/otrv4plus_xmpp_tui.py").read()
+        src = pathlib.Path("client/otrv4plus_xmpp_tui.py").read_text()
         assert '"[keepalive]",' in src        # still a bare-prefix match

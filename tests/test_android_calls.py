@@ -48,6 +48,7 @@ network, and the assertions stop exactly there.
 """
 
 import os
+import pathlib
 import sys
 import tempfile
 
@@ -792,8 +793,8 @@ class TestTheCoreExposesTheCalls:
     """The methods that did not exist. Compose cannot run here, so the wiring
     is asserted structurally; the behaviour it reaches is driven above."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def core():
         return _kt("bridge", "ChaquopyOtrCore.kt")
 
@@ -994,8 +995,8 @@ class TestAnIncomingCallRingsThePhone:
     unreachable by an unverified peer -- `_on_invite` refuses before a
     session exists, which `TestTheSmpGate` drives with a real INVITE."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def service():
         return _kt("connection", "OtrConnectionService.kt")
 
@@ -1021,9 +1022,9 @@ class TestAnIncomingCallRingsThePhone:
         permission Play restricts. The heads-up notification rings just as
         loudly and shows nothing. See CallAlert.kt and the device test doc."""
         assert "setFullScreenIntent" not in service
-        manifest = open(os.path.join(os.path.dirname(os.path.dirname(
+        manifest = pathlib.Path(os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "android", "app", "src", "main",
-            "AndroidManifest.xml"), encoding="utf-8").read()
+            "AndroidManifest.xml")).read_text(encoding="utf-8")
         assert "USE_FULL_SCREEN_INTENT" not in manifest
 
     def test_the_call_channel_is_secret_on_the_lock_screen(self, service):

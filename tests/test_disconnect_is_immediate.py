@@ -10,6 +10,7 @@ kept saying connected and both buttons seemed to do nothing.
 """
 
 import os
+import pathlib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVICE = os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
@@ -17,7 +18,7 @@ SERVICE = os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/android/"
 
 
 def _stop_connection() -> str:
-    src = open(SERVICE).read()
+    src = pathlib.Path(SERVICE).read_text()
     body = src[src.index("fun stopConnection(explicit: Boolean"):]
     return body[:body.index("private suspend fun connectLoop")]
 
@@ -37,7 +38,7 @@ def test_the_teardowns_result_is_what_the_screen_reads_after():
 
 
 def test_sign_out_goes_through_the_same_path():
-    src = open(SERVICE).read()
+    src = pathlib.Path(SERVICE).read_text()
     logout = src[src.index("ACTION_LOGOUT ->"):]
     logout = logout[:logout.index("credentials.clear()")]
     assert "stopConnection(explicit = true, stopRouter = true)" in logout
@@ -46,7 +47,7 @@ def test_sign_out_goes_through_the_same_path():
 def test_only_sign_out_wipe_closing_and_stop_take_the_router():
     """rc.100: no Disconnect; the built-in router stays warm between
     connections, because one started cold cannot be reached for minutes."""
-    src = open(SERVICE).read()
+    src = pathlib.Path(SERVICE).read_text()
     body = _stop_connection()
     assert "if (stopRouter) {" in body
     assert "fun stopConnection(explicit: Boolean, stopRouter: Boolean = false)" in body
@@ -55,15 +56,15 @@ def test_only_sign_out_wipe_closing_and_stop_take_the_router():
     assert "stopConnection(explicit = true, stopRouter = true)" in destroy
     stop = src[src.index("ACTION_STOP ->"):src.index("ACTION_LOGOUT ->")]
     assert "stopRouter = !keepRouter" in stop
-    vm = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                           "android/ConnectionViewModel.kt")).read()
+    vm = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                           "android/ConnectionViewModel.kt")).read_text()
     assert "fun disconnect()" not in vm
     cancel = vm[vm.index("fun cancelConnect()"):]
     assert "keepRouter = true" in cancel[:cancel.index("}")]
 
 
 def test_a_lost_router_is_restarted_from_the_failure_path():
-    src = open(SERVICE).read()
+    src = pathlib.Path(SERVICE).read_text()
     loop = src[src.index("private suspend fun connectLoop()"):]
     loop = loop[:loop.index("val wait = (if (ConnectProblem.settling(")]
     assert "restartRouterIfLost(failure)" in loop
@@ -74,7 +75,7 @@ def test_a_lost_router_is_restarted_from_the_failure_path():
 
 
 def test_the_connection_is_timed_from_start_or_drop_to_signed_in():
-    src = open(SERVICE).read()
+    src = pathlib.Path(SERVICE).read_text()
     start = src[src.index("fun startConnection()"):]
     start = start[:start.index("worker = scope.launch { connectLoop() }")]
     assert "startTiming()" in start
@@ -84,13 +85,13 @@ def test_the_connection_is_timed_from_start_or_drop_to_signed_in():
     loop = src[src.index("private suspend fun connectLoop()"):]
     ok = loop[loop.index("if (ok) {"):loop.index("reconnect.onConnected()")]
     assert "lastConnectTiming = ConnectTiming.Result(" in ok
-    screen = open(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
-                               "android/ui/ConnectScreen.kt")).read()
+    screen = pathlib.Path(os.path.join(ROOT, "android/app/src/main/java/org/otrv4plus/"
+                               "android/ui/ConnectScreen.kt")).read_text()
     assert 'StatusRow("Connected in"' in screen
 
 
 def test_a_settling_router_is_retried_soon():
-    src = open(SERVICE).read()
+    src = pathlib.Path(SERVICE).read_text()
     loop = src[src.index("private suspend fun connectLoop()"):]
     loop = loop[:loop.index("private suspend fun watchUntilDropped")] if "private suspend fun watchUntilDropped" in loop else loop
     assert "ConnectProblem.settling(failure, bundledRouterUpMs())" in loop

@@ -9,6 +9,7 @@ starts a router it does not need, or an I2P account connects with none.
 Every case in RouterChoiceTest is run here against the bridge.
 """
 import os
+import pathlib
 import re
 
 import otrv4plus_address as address
@@ -22,7 +23,7 @@ CASE = re.compile(r'assert(True|False)\(RouterChoice\.needsI2p\("([^"]*)", "([^"
 
 def _cases():
     return [(kind == "True", jid, server)
-            for kind, jid, server in CASE.findall(open(KT_TEST, encoding="utf-8").read())]
+            for kind, jid, server in CASE.findall(pathlib.Path(KT_TEST).read_text(encoding="utf-8"))]
 
 
 def test_the_kotlin_cases_are_found():

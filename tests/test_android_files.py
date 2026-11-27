@@ -35,6 +35,7 @@ marker" -- and the Android bridge reads the same one.
 
 from source_of import app_source  # noqa: E402
 import os
+import pathlib
 import sys
 import tempfile
 import time
@@ -345,8 +346,8 @@ class TestAFileReallyArrives:
         # (android_bridge.files.open_received). The bytes are read back the
         # way the viewer reads them.
         assert arrived[0].endswith(".otrv"), arrived
-        sent = open(a_file, "rb").read()
-        assert sent[:32] not in open(arrived[0], "rb").read(), \
+        sent = pathlib.Path(a_file).read_bytes()
+        assert sent[:32] not in pathlib.Path(arrived[0]).read_bytes(), \
             "the received file rests as plaintext"
         assert verified.bob.open_received(arrived[0]) == sent, (
             "the delivered bytes are not the bytes that were sent")
@@ -536,8 +537,8 @@ class TestTheTwoSidesAgreeOnTheCodes:
 
 class TestTheCoreExposesTheTransfers:
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def core():
         return _kt("bridge", "ChaquopyOtrCore.kt")
 
@@ -575,8 +576,8 @@ class TestTheAndroidSideUsesSaf:
     an APK has no business doing that. Android picks through the Storage
     Access Framework and hands down a resolved path."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def screen():
         return conversation_screen_source()
 
@@ -763,14 +764,14 @@ class TestTheMetadataChoiceReachesThePeer:
     def test_kept_means_it_arrives_exactly_as_it_was(self, verified, landing):
         """The user's other choice, honoured just as literally."""
         photo = _fixture_photo()
-        original = open(photo, "rb").read()
+        original = pathlib.Path(photo).read_bytes()
         assert self._deliver(verified, landing, photo, False) == original
 
     def test_the_default_changes_nothing(self, verified, landing):
         """No silent scrubbing behind the user's back either: a caller that
         does not ask gets the file as it is."""
         photo = _fixture_photo()
-        original = open(photo, "rb").read()
+        original = pathlib.Path(photo).read_bytes()
         assert verified.alice.send_file(verified.bob_jid, photo) == \
             FileOutcome.STARTED
         offered = verified.bob.transfers()[0]
@@ -783,9 +784,9 @@ class TestTheMetadataChoiceReachesThePeer:
 
     def test_the_users_own_file_is_never_modified(self, verified):
         photo = _fixture_photo()
-        original = open(photo, "rb").read()
+        original = pathlib.Path(photo).read_bytes()
         verified.alice.send_file(verified.bob_jid, photo, True)
-        assert open(photo, "rb").read() == original
+        assert pathlib.Path(photo).read_bytes() == original
 
     def test_no_scrubbed_copy_is_left_behind(self, verified):
         """The engine seals the file into memory in `offer_file` and never
@@ -815,8 +816,8 @@ class TestTheMetadataChoiceOnAndroid:
     driven in `MetadataChoiceTest`, and the scrub itself in
     `tests/test_metadata_scrub.py` against real photographs."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def model():
         return _kt("chat", "ChatViewModel.kt")
 
@@ -891,7 +892,7 @@ class TestOnlyAVerifiedFileCanBeOpened:
         # Sealed at rest; the path opens through the bridge, to the bytes
         # that were sent.
         assert row["path"].endswith(".otrv")
-        assert verified.bob.open_received(row["path"]) == open(a_file, "rb").read()
+        assert verified.bob.open_received(row["path"]) == pathlib.Path(a_file).read_bytes()
         assert os.stat(row["path"]).st_mode & 0o077 == 0, \
             "the received file is readable by others"
 

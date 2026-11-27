@@ -340,8 +340,8 @@ class TestTheReconnectPathUsesIt:
     """Having the method is not the fix; `_try_reconnect` calling it is --
     and the destructive block it replaced must not come back."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def reconnect_src():
         import ast
         import os

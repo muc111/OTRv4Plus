@@ -23,6 +23,7 @@ a test must never be able to reach the real one.
 """
 
 import os
+import pathlib
 import re
 import tempfile
 import threading
@@ -416,7 +417,7 @@ class TestWhatWasOnDisk:
         base = self._plant(isolated_home)
         os.symlink(precious, os.path.join(base, "files", "link"))
         OtrApp(_manager(), Wire(), Sink()).wipe()
-        assert open(precious).read() == "not ours"
+        assert pathlib.Path(precious).read_text() == "not ours"
 
     def test_the_configured_file_directory_is_destroyed_too(self, monkeypatch):
         elsewhere = tempfile.mkdtemp(prefix="received-")

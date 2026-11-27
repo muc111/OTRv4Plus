@@ -598,8 +598,8 @@ class TestTheSessionMethodItself:
     fragile. Read structurally rather than driven, because standing up a real
     Session means a real DAKE."""
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def source():
         import ast
         from source_of import engine_source

@@ -18,6 +18,7 @@ rather than the general property.
 """
 
 import os
+import pathlib
 import re
 
 import pytest
@@ -30,7 +31,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def source():
-    return open(SCREEN).read()
+    return pathlib.Path(SCREEN).read_text()
 
 
 def test_the_export_button_is_not_behind_a_failure_check():
@@ -66,4 +67,4 @@ def test_flag_secure_is_still_set():
     """The export exists so that screenshots need not be weakened."""
     activity = ("android/app/src/main/java/org/otrv4plus/android/"
                 "MainActivity.kt")
-    assert "FLAG_SECURE" in open(activity).read()
+    assert "FLAG_SECURE" in pathlib.Path(activity).read_text()

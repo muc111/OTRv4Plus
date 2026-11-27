@@ -213,8 +213,8 @@ class TestItOwnsTheConnection:
 
 class TestTheViewModelOnlyBinds:
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def view_model():
         return _read(JAVA, "ConnectionViewModel.kt")
 
@@ -294,8 +294,8 @@ class TestItDoesNotConnectBeforeThereIsAnAccount:
     the service asks it, and that the guard did not simply move to the screen.
     """
 
-    @staticmethod
     @pytest.fixture(scope="class")
+    @staticmethod
     def start_branch(service):
         """The ACTION_START arm of onStartCommand, comments stripped."""
         code = _code_only(service)

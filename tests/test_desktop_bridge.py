@@ -15,6 +15,7 @@ import enum
 import io
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -212,8 +213,8 @@ class TestTheOperationsAreTheEngines:
             assert not re.search(r"key|seed|export|secret_bytes|dump|raw", name), name
 
     def test_every_op_the_gui_uses_exists(self):
-        src = open(os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus",
-                                "desktop", "engine", "DesktopCore.kt")).read()
+        src = pathlib.Path(os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org", "otrv4plus",
+                                "desktop", "engine", "DesktopCore.kt")).read_text()
         used = set(re.findall(r'(?:call|controller)\("([a-z_]+)"', src))
         known = set(H.CONTROLLER_OPS) | set(H.APP_OPS) | {"prepare", "connect", "status",
                                                           "wipe", "wipe_crypto",
@@ -245,7 +246,7 @@ class TestSharedWithAndroid:
     """The desktop compiles Android's plain-Kotlin files from the Android tree."""
 
     def _shared(self):
-        gradle = open(os.path.join(ROOT, "desktop", "build.gradle.kts")).read()
+        gradle = pathlib.Path(os.path.join(ROOT, "desktop", "build.gradle.kts")).read_text()
         block = gradle.split("val sharedFromAndroid = listOf(", 1)[1].split(")", 1)[0]
         return re.findall(r'"([^"]+\.kt)"', block)
 
@@ -254,7 +255,7 @@ class TestSharedWithAndroid:
         files = self._shared()
         assert len(files) > 40
         for rel in files:
-            src = open(os.path.join(base, rel)).read()
+            src = pathlib.Path(os.path.join(base, rel)).read_text()
             imports = re.findall(r"^import\s+([\w.]+)", src, re.M)
             bad = [i for i in imports if i.startswith(("android.", "androidx.", "com.chaquo"))]
             assert not bad, (rel, bad)
@@ -274,10 +275,10 @@ class TestSharedWithAndroid:
                 assert n not in {os.path.basename(f) for f in files}, "copied, not shared: " + n
 
     def test_events_are_read_like_android(self):
-        android = open(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
-                                    "otrv4plus", "android", "bridge", "ChaquopyEvents.kt")).read()
-        desktop = open(os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org",
-                                    "otrv4plus", "desktop", "engine", "DesktopCore.kt")).read()
+        android = pathlib.Path(os.path.join(ROOT, "android", "app", "src", "main", "java", "org",
+                                    "otrv4plus", "android", "bridge", "ChaquopyEvents.kt")).read_text()
+        desktop = pathlib.Path(os.path.join(ROOT, "desktop", "src", "main", "kotlin", "org",
+                                    "otrv4plus", "desktop", "engine", "DesktopCore.kt")).read_text()
 
         def types(src, start):
             body = src.split(start, 1)[1].split("else -> null", 1)[0]
